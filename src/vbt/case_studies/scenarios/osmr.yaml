@@ -1,0 +1,47 @@
+id: osmr
+title: "Clinical translation failure analysis: anti-OSMRβ (vixarelimab) MOONGLOW trial in ulcerative colitis"
+paper_section: "Results — Case study 3; Fig. 5; Supplementary Text VI"
+paper_cost_usd: 59.0
+profiles: []
+
+turns:
+  - >
+    We want to understand why trial NCT06137183 was terminated. This trial tested a
+    first-in-class monoclonal antibody against OSMR in patients with UC. The results have been
+    posted, and the trial was terminated due to interim futility analysis, which showed lack of
+    efficacy. This termination was not related to safety concerns.
+  - >
+    Please cover the trial protocol and eligibility, the mechanism of OSMRβ signaling in
+    treatment-refractory UC tissue (single-cell), whether other receptors converge on the same
+    pathway, and whether OSMR up-regulation is specific to UC. Deep-dive depth.
+  - >
+    If gp130-family redundancy explains refractory disease, can a composite gp130-axis score
+    predict anti-TNF non-response better than OSMR alone in independent bulk cohorts?
+  - "Is the OSMR stromal activation program conserved across other diseases?"
+
+expected_findings:
+  - id: refractory_population
+    text: "Protocol review: MOONGLOW enrolled a treatment-refractory population (inadequate response to conventional or advanced therapies)."
+  - id: taurus_dataset
+    text: "Uses the TAURUS longitudinal anti-TNF UC single-cell atlas (pre/post treatment, responders vs non-responders) as the relevant dataset."
+  - id: osmr_fibroblasts
+    text: "OSMR expression increases in fibroblast states in non-responders after treatment."
+  - id: stat1_active
+    text: "TF activity screen (CollecTRI + mixed models) finds STAT1 activity elevated in non-responder stroma (paper: 9 of 10 stromal cell types, FDR<0.05)."
+  - id: shapley_partial
+    text: "Shapley/LMG variance decomposition across gp130-family receptors shows OSMR explains less STAT1 variance than other co-receptors in most stromal types, implying partial blockade/redundancy."
+  - id: gp130_score
+    text: "A 10-gene gp130-axis score outperforms OSMR alone and is comparable to the Arijs 5-gene signature for predicting infliximab non-response across GSE12251, GSE16879, GSE23597, GSE73661."
+  - id: cross_disease
+    text: "Cross-disease CELLxGENE survey recovers OSMR up-regulation in UC/colorectal/gastric stroma and myocarditis cardiomyocytes, and highlights other diseases (e.g. AKI, periodontitis, pilocytic astrocytoma, AD)."
+
+reference_data:
+  - "ClinicalTrials.gov NCT06137183 (Protocol GA44839 v2)"
+  - "TAURUS single-cell atlas (PMID 39438660): 435,857 cells, 20 UC patients"
+  - "GEO: GSE12251, GSE16879, GSE23597, GSE73661"
+  - "CELLxGENE Census (112 diseases)"
+reference_analyses:
+  - "vbt.analysis.tf_activity.tf_mixed_model_screen"
+  - "vbt.analysis.variance_decomposition.lmg_shares / bootstrap_lmg (Fig. 5B)"
+  - "vbt.analysis.biomarker.compare_scores_across_cohorts (Fig. 5C)"
+  - "vbt.analysis.cross_disease.disease_vs_normal_lmm (Fig. 5D)"

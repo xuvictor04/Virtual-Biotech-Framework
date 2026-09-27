@@ -1,0 +1,88 @@
+# Virtual Biotech harness — default configuration.
+# Override with profiles (configs/profiles/*.yaml) via `vbt --profile NAME ...`.
+
+vars:
+  upstream: ${VBT_UPSTREAM:-${vars.project_root}/third_party/TheVirtualBiotech}
+  # Interpreter used to launch the upstream FastMCP servers. Point this at the
+  # upstream conda env (`conda env create -f third_party/TheVirtualBiotech/environment.yml`)
+  # if the harness runs in a different environment.
+  mcp_python: ${VBT_MCP_PYTHON:-python3}
+
+# ---------------------------------------------------------------- provider
+# The only provider-specific block. To switch model families, register a new
+# adapter in src/vbt/providers and change `name` (and the model IDs below).
+provider:
+  name: anthropic
+  options:
+    refusal_fallback: true        # server-side fallback on safety refusals (Opus 5 / Fable 5.1)
+    web_search_model: claude-sonnet-5
+    prompt_caching: true
+    max_retries: 4
+
+# ---------------------------------------------------------------- model tiers
+# Agents reference a tier; the paper used Sonnet 4.5 for CSO + scientists and
+# Haiku 4.5 for Chief of Staff + Scientific Reviewer (see profiles/paper.yaml).
+models:
+  orchestrator: {model: claude-opus-5, effort: high, max_tokens: 64000, thinking: true}
+  scientist:    {model: claude-opus-5, effort: high, max_tokens: 64000, thinking: true}
+  support:      {model: claude-haiku-4-5, effort: null, max_tokens: 16000, thinking: false}
+  bulk:         {model: claude-opus-5, effort: medium, max_tokens: 32000, thinking: true}
+
+# ---------------------------------------------------------------- paths
+paths:
+  runs_dir: runs
+  prompts_dir: ${vars.upstream}/src/agents          # upstream system prompts (Supplementary Text X)
+  local_prompts_dir: src/vbt/prompts
+  skills:                                           # searched in order by the Skill tool
+    - skills
+    - ${vars.upstream}/.claude/skills
+  read_roots:                                       # read-only data agents may open
+    - ${vars.upstream}/.claude/skills
+    - ${vars.upstream}/datasets
+    - ${OPEN_TARGETS_DATA_PATH:-}
+    - ${TAHOE_DATA_PATH:-}
+    - ${VBT_DATA_DIR:-data}
+    - skills
+
+agents_file: configs/agents.yaml
+mcp_servers_file: configs/mcp_servers.yaml
+
+# ---------------------------------------------------------------- limits
+limits:
+  max_agent_turns: 100            # model calls per agent invocation
+  max_parallel_agents: 8          # concurrent Task delegations per CSO turn
+  max_delegation_depth: 1         # CSO -> scientist only (scientists cannot delegate)
+  tool_output_max_chars: 40000    # longer tool outputs are saved to file and truncated
+  max_turn_cost_usd: 150          # hard stop per user turn
+
+# ---------------------------------------------------------------- orchestration (Fig. 1C)
+orchestration:
+  # Before the first scientific turn: Chief of Staff briefing runs in parallel
+  # with the CSO's clarification interview.
+  strategic_orientation: true
+  # The harness enforces that the Scientific Reviewer sees specialist output
+  # before the CSO's final synthesis of a turn with delegations.
+  enforce_review: true
+  max_review_rounds: 2
+
+# ---------------------------------------------------------------- tools
+bash:
+  enabled: true
+  default_timeout_s: 1800
+  max_timeout_s: 14400
+  blocked_patterns:
+    - '\bpip3?\s+install\b'
+    - '\bconda\s+(install|create)\b'
+    - '\bmamba\s+install\b'
+    - '\bapt(-get)?\s+install\b'
+    - '\bnpm\s+install\b'
+    - '\bsudo\b'
+
+web:
+  enabled: true                   # set false to reproduce the no-web B7-H3 case study setting
+  fetch_max_chars: 60000
+
+# Environment passed to Bash and to MCP servers
+tool_env:
+  OPEN_TARGETS_DATA_PATH: ${OPEN_TARGETS_DATA_PATH:-}
+  TAHOE_DATA_PATH: ${TAHOE_DATA_PATH:-}

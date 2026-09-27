@@ -1,0 +1,27 @@
+id: trial_curation
+title: "Target prioritization: CSO-driven design of the trial-outcome curation (Case study 1, agentic part)"
+paper_section: "Results — Case study 1; Fig. 2-3"
+profiles: []
+# The paper gave the system Razuvayevskaya et al. (Nat Genet 2024) and asked it to
+# critique its own infrastructure and propose extensions. The deterministic,
+# massively parallel execution of the resulting protocol lives in `vbt case1 annotate`.
+turns:
+  - >
+    Here is prior work: Razuvayevskaya et al., "Genetic factors associated with reasons for
+    clinical trial stoppage" (Nat Genet 2024), which linked human genetic support to trial
+    progression and stoppage using the Open Targets clinical trial dataset. Critically evaluate
+    our own data and tool infrastructure and recommend directions to expand this analysis.
+  - >
+    Curate clinical trial outcomes for the Phase II and III trials in the Open Targets dataset.
+    Have the clinical trialist design the protocol: required outcome fields, evidence hierarchy,
+    and source-tracking requirements, and test it on NCT00000115 and NCT06137183.
+  - >
+    Have the single-cell agent propose target-level single-cell features, computed on Tabula
+    Sapiens, to test for association with trial outcomes.
+expected_findings:
+  - id: outcome_fields
+    text: "Proposes outcome variables: phase progression, primary and secondary endpoint results, adverse-event rates, stop reasons."
+  - id: cascade
+    text: "Defines an evidence hierarchy ClinicalTrials.gov -> PubMed (NCT-confirmed) -> press releases/regulatory, with per-field source tracking."
+  - id: features
+    text: "Proposes the tau cell-type specificity index and an expression bimodality measure (bimodality coefficient from skewness and kurtosis)."

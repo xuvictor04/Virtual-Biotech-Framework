@@ -1,0 +1,55 @@
+id: b7h3
+title: "Target validation and modality selection: B7-H3 (CD276) in lung cancer"
+paper_section: "Results — Case study 2; Fig. 4; Supplementary Text V"
+paper_cost_usd: 50.0
+# "This case study was conducted without web search to prevent information leakage"
+profiles: [no-web]
+knowledge_cutoff_note: >
+  The paper's model had a January 2025 knowledge cutoff; the FDA Breakthrough Therapy
+  designation for ifinatamab deruxtecan (Aug 2025) served as external support. Newer models
+  may know this, so treat the ADC nomination as leakage-prone unless the model's cutoff
+  precedes August 2025.
+
+# User turns. The first is verbatim from the paper; later turns are the kind of
+# lightweight steering the paper describes (answering clarifications, asking for
+# follow-ups after each iteration). Edit freely.
+turns:
+  - "Evaluate the therapeutic candidacy of B7-H3 as a target in lung cancer."
+  - >
+    Focus on lung adenocarcinoma (LUAD) and small cell lung cancer (SCLC). Priorities: human
+    genetic evidence, cell-type-resolved expression in tumor vs healthy lung (single-cell),
+    prior clinical and survival evidence, and modality selection. Standard-depth analysis.
+  - >
+    The ligand-receptor inference comes from dissociated cells. Can we verify with spatial
+    transcriptomics whether B7-H3-high regions show immune exclusion in LUAD tissue?
+  - >
+    Does this immunosuppressive phenotype correspond to differences in patient outcomes?
+    Run a biomarker-stratified survival analysis in the TCGA LUAD cohort.
+  - "Given all of the evidence, which therapeutic modality would you recommend and why?"
+
+# What the paper's run found (Fig. 4). Used by `vbt scenario score` as a rubric.
+expected_findings:
+  - id: genetics_weak
+    text: "Germline genetic evidence for B7-H3 in lung cancer is weak (no significant GWAS associations/credible sets at the locus), and this is judged non-disqualifying for an immune-checkpoint target."
+  - id: fibroblast_up
+    text: "Cell-type-resolved pseudobulk DE shows B7-H3 up-regulation concentrated in fibroblasts in both SCLC (paper: log2FC 2.13) and LUAD (paper: log2FC 1.79)."
+  - id: lr_signaling
+    text: "Ligand-receptor analysis of B7-H3-high vs low fibroblasts finds immunomodulatory signaling to immune cells (sheddases, myeloid reprogramming, angiogenic factors, immunosuppressive cytokines, chemokines)."
+  - id: reviewer_spatial
+    text: "The scientific reviewer flags the lack of spatial context, prompting a spatial transcriptomics follow-up."
+  - id: spatial_exclusion
+    text: "In LUAD Visium data, B7-H3-high spots have fewer neighbouring immune cells (T cells, macrophages, monocytes, DCs), strongest in the nearest ring and attenuating with distance."
+  - id: survival
+    text: "In TCGA LUAD, top- vs bottom-quartile B7-H3 expression associates with worse survival in an adjusted Cox model (paper: OS HR 1.62, DFS HR 2.06)."
+  - id: modality_adc
+    text: "Surface localization plus stromal/TME overexpression and lack of chemical binders leads to nominating an antibody-drug conjugate; small molecules/PROTACs de-prioritized."
+
+reference_data:
+  - "CELLxGENE Census: SCLC atlas (62,341 cells, 9 donors), LUAD atlas (337,002 cells, 69 donors), healthy lung (86,478 cells, 26 donors)"
+  - "Visium LUAD, 12 samples (PMID 38782901)"
+  - "TCGA PanCancer Atlas LUAD via cBioPortal: luad_tcga_pan_can_atlas_2018"
+reference_analyses:
+  - "vbt.analysis.singlecell.pseudobulk_de (Fig. 4C)"
+  - "vbt.analysis.singlecell.ligand_receptor_contrast (Fig. 4D)"
+  - "vbt.analysis.spatial.immune_neighborhood_analysis (Fig. 4E)"
+  - "vbt.analysis.survival.quartile_cox (Fig. 4F)"

@@ -1,0 +1,11 @@
+# Exact model configuration reported in the paper (Materials & Methods):
+# "All agents operate using Claude Sonnet 4.5, except for the Chief of Staff
+#  and Scientific Reviewer, which use Claude Haiku 4.5."
+models:
+  orchestrator: {model: claude-sonnet-4-5, effort: null, max_tokens: 64000, thinking: true}
+  scientist:    {model: claude-sonnet-4-5, effort: null, max_tokens: 64000, thinking: true}
+  support:      {model: claude-haiku-4-5, effort: null, max_tokens: 16000, thinking: false}
+  bulk:         {model: claude-sonnet-4-5, effort: null, max_tokens: 32000, thinking: true}
+provider:
+  options:
+    web_search_model: claude-sonnet-4-5

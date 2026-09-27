@@ -1,0 +1,7 @@
+# Offline dry run: scripted provider, no MCP servers, no network, no cost.
+provider:
+  name: mock
+  options: {}
+mcp_servers_file: configs/mcp_servers.none.yaml
+orchestration:
+  strategic_orientation: false

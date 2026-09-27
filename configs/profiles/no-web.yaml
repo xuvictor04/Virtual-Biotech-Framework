@@ -1,0 +1,4 @@
+# Case study 2 (B7-H3) setting: "conducted without web search to prevent
+# information leakage". Removes WebSearch/WebFetch from every agent.
+web:
+  enabled: false

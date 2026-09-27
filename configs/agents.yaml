@@ -1,0 +1,213 @@
+# The Virtual Biotech organization (Fig. 1A, table S1).
+#
+# Each agent: division, description (shown to the CSO for routing), system
+# prompt, model tier, and a tool allowlist (exact names or globs). Prompts are
+# the upstream originals (Supplementary Text X) unless `prompt` starts with
+# "local:", which resolves to src/vbt/prompts/.
+#
+# Tool lists mirror the upstream registry (src/agents/registry.py) so each
+# scientist sees only its expertise-aligned MCP tools.
+
+x-workspace-tools: &ws
+  - Read
+  - Write
+  - Edit
+  - Glob
+  - Grep
+  - Bash
+  - TodoWrite
+  - Skill
+  - mcp__provenance__register_artifact
+  - mcp__provenance__list_artifacts
+
+cso:
+  division: Office of the CSO
+  description: Chief Scientific Officer — orchestrates divisions, never analyzes data directly.
+  prompt: cso/system_prompt.md
+  tier: orchestrator
+  # The CSO only routes and synthesises: no data or MCP analysis tools.
+  tools: [Task, TodoWrite, Read, Glob, Grep, Skill,
+          mcp__provenance__write_plan, mcp__provenance__record_claims, mcp__provenance__list_artifacts]
+
+agents:
+  # ---------------------------------------------------------- Target ID & Prioritization
+  genomics-analyst:
+    division: Target Identification and Prioritization
+    role: Statistical genetics agent
+    description: "[Target ID] Genetic evidence: GWAS, L2G predictions, QTL colocalization, target tractability, druggability."
+    prompt: target_id/system_prompts/genomics_analyst_short.md
+    tier: scientist
+    tools:
+      - *ws
+      - mcp__genetics__*
+      - mcp__target__get_target_info
+      - mcp__target__search_targets_by_name
+      - mcp__target__get_target_tractability
+      - mcp__target__get_target_prioritisation_scores
+      - mcp__target__prioritize_targets
+      - mcp__target__get_target_safety_profile
+      - mcp__disease__get_disease_info
+      - mcp__disease__search_diseases_by_name
+
+  functional-genomics-analyst:
+    division: Target Identification and Prioritization
+    role: Functional genomics and perturbation agent
+    description: "[Target ID] CRISPR essentiality, DepMap dependency, drug perturbation (Tahoe-100M), cancer selectivity. CANCER ONLY."
+    prompt: target_id/system_prompts/functional_genomics_analyst_short.md
+    tier: scientist
+    tools:
+      - *ws
+      - mcp__functional_genomics__*
+      - mcp__target__get_target_info
+      - mcp__target__search_targets_by_name
+
+  single-cell-analyst:
+    division: Target Identification and Prioritization; Target Safety
+    role: Single cell atlas agent
+    description: "[Target ID / Safety] Single-cell RNA-seq: cell type expression, differential expression, cell-cell communication, spatial, CELLxGENE Census, Tabula Sapiens."
+    prompt: target_id/system_prompts/single_cell_analyst_short.md
+    tier: scientist
+    effort: max
+    tools:
+      - *ws
+      - WebFetch
+      - WebSearch
+      - mcp__single_cell__*
+      - mcp__pubmed__*
+      - mcp__target__get_target_info
+      - mcp__target__search_targets_by_name
+      - mcp__expression__*
+
+  # ---------------------------------------------------------- Target Safety
+  bio-pathways-ppi-analyst:
+    division: Target Safety
+    role: Bio-pathways and protein-protein interaction agent
+    description: "[Target Safety] Pathway context and PPI networks: Reactome pathways, GO annotations, protein interactions, network-based safety."
+    prompt: safety/system_prompts/bio_pathways_ppi_analyst_short.md
+    tier: scientist
+    tools:
+      - *ws
+      - mcp__pathway__*
+      - mcp__interaction__get_interactions
+      - mcp__interaction__get_interaction_evidence
+      - mcp__target__get_target_info
+      - mcp__target__search_targets_by_name
+
+  fda-safety-officer:
+    division: Target Safety; Clinical Officers
+    role: FDA safety officer agent
+    description: "[Target Safety & Clinical Officers] FDA regulatory safety: drug warnings, adverse events (OpenFDA), target liabilities, mouse phenotypes, risk-benefit."
+    prompt: safety/system_prompts/fda_safety_officer_short.md
+    tier: scientist
+    tools:
+      - *ws
+      - WebFetch
+      - WebSearch
+      - mcp__pubmed__*
+      - mcp__drug__search_known_drugs
+      - mcp__drug__get_drug_warnings
+      - mcp__drug__get_drug_indications
+      - mcp__drug__get_drug_mechanisms
+      - mcp__drug__get_drug_adverse_events
+      - mcp__target__get_target_info
+      - mcp__target__search_targets_by_name
+      - mcp__target__get_target_safety_profile
+      - mcp__target__get_mouse_phenotype
+      - mcp__target__get_pharmacogenomics
+      - mcp__target__get_homologues
+
+  # ---------------------------------------------------------- Modality Selection
+  target-biologist:
+    division: Modality Selection
+    role: Target biologist agent
+    description: "[Modality] Protein structure and target biology: druggability, binding sites, subcellular localization, protein class, mechanism."
+    prompt: modality_selection/system_prompts/target_biologist_short.md
+    tier: scientist
+    tools:
+      - *ws
+      - mcp__target__get_target_info
+      - mcp__target__search_targets_by_name
+      - mcp__target__get_target_tractability
+      - mcp__target__get_subcellular_locations
+      - mcp__target__get_target_class
+      - mcp__target__get_chemical_probes
+      - mcp__target__get_homologues
+      - mcp__drug__search_known_drugs
+      - mcp__drug__get_drug_mechanisms
+      - mcp__drug__get_drug_indications
+      - mcp__interaction__get_interactions
+      - mcp__interaction__get_interaction_evidence
+      - mcp__pathway__get_gene_pathways
+      - mcp__pathway__get_pathway_info
+      - mcp__pathway__find_genes_in_pathway
+      - mcp__expression__*
+
+  medchem-pharmacologist:
+    division: Modality Selection
+    role: Pharmacologist agent
+    description: "[Modality] Drug development: clinical precedence (ChEMBL), modality ranking (top 3), feasibility, timeline, cost."
+    prompt: modality_selection/system_prompts/medchem_pharmacologist_short.md
+    tier: scientist
+    tools:
+      - *ws
+      - mcp__drug__search_known_drugs
+      - mcp__drug__get_drug_mechanisms
+      - mcp__drug__get_drug_indications
+      - mcp__drug__get_drug_warnings
+      - mcp__target__get_target_info
+      - mcp__target__search_targets_by_name
+      - mcp__target__get_target_tractability
+      - mcp__target__get_chemical_probes
+      - mcp__target__get_homologues
+      - mcp__pathway__get_gene_pathways
+      - mcp__pathway__find_genes_in_pathway
+      - mcp__interaction__get_interactions
+
+  # ---------------------------------------------------------- Clinical Officers
+  clinical-trialist:
+    division: Clinical Officers
+    role: Clinical trialist agent
+    description: "[Clinical Officers] Clinical trial data extraction: ClinicalTrials.gov, cBioPortal cancer genomics and survival, trial outcomes, clinical precedence, failure analysis."
+    prompt: safety/system_prompts/clinical_trialist_short.md
+    tier: scientist
+    tools:
+      - *ws
+      - WebFetch
+      - WebSearch
+      - mcp__clinicaltrials__*
+      - mcp__pubmed__*
+      - mcp__drug__search_known_drugs
+      - mcp__drug__get_drug_mechanisms
+      - mcp__drug__get_drug_indications
+      - mcp__target__get_target_info
+      - mcp__target__search_targets_by_name
+
+  trial-matching-specialist:
+    division: Clinical Officers
+    role: Patient-to-trial matching (upstream extension, not in the paper)
+    description: "[Clinical Officers] Patient-to-trial matching: searches recruiting trials, evaluates eligibility, ranks recommendations."
+    prompt: trial_matching/system_prompt.md
+    tier: scientist
+    tools:
+      - *ws
+      - WebFetch
+      - WebSearch
+      - mcp__clinicaltrials__*
+      - mcp__drug__*
+
+  # ---------------------------------------------------------- Office of the CSO
+  chief-of-staff:
+    division: Office of the CSO
+    role: Chief of Staff
+    description: "[Intelligence] Rapid due diligence: field overview, data landscape (MCP tool inventory), recent news/context."
+    prompt: chief_of_staff/system_prompt.md
+    tier: support
+    tools: [Read, Write, Glob, Grep, TodoWrite, WebFetch, WebSearch, ListTools, mcp__pubmed__*]
+
+  scientific-reviewer:
+    division: Office of the CSO
+    role: Scientific reviewer
+    description: "[Quality Assurance] Review specialist outputs for scientific rigor, user alignment, logical conclusions."
+    prompt: scientific_reviewer/system_prompt.md
+    tier: support
+    tools: [Read]
