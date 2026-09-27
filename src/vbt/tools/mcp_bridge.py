@@ -15,7 +15,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
-from .base import Tool, ToolContext, ToolFailure
+from .base import Tool, ToolContext, ToolFailure, inline_refs
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ class MCPBridge:
             self.tools.append(Tool(
                 name=f"mcp__{cfg.name}__{t.name}",
                 description=(t.description or t.name).strip(),
-                input_schema=dict(schema),
+                input_schema=inline_refs(dict(schema)),
                 handler=self._make_handler(cfg, t.name),
                 source=f"mcp:{cfg.name}",
             ))

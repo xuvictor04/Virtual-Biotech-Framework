@@ -27,7 +27,7 @@ from pydantic import BaseModel, ValidationError
 
 from .agents import AgentDefinition
 from .runtime import Runtime
-from .tools.base import Tool, ToolContext, ToolFailure
+from .tools.base import Tool, ToolContext, ToolFailure, inline_refs
 
 
 @dataclass
@@ -54,23 +54,6 @@ class BulkStats:
             "elapsed_s": round(el, 1),
             "items_per_hour": round(3600 * (self.done + self.failed) / el, 1) if el > 0 else None,
         }
-
-
-def inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
-    """Inline ``$defs``/``$ref`` so the schema works with every provider's tool API."""
-    defs = schema.get("$defs", {})
-
-    def walk(node: Any) -> Any:
-        if isinstance(node, dict):
-            if "$ref" in node:
-                target = walk(defs[node["$ref"].split("/")[-1]])
-                return {**target, **{k: walk(v) for k, v in node.items() if k != "$ref"}}
-            return {k: walk(v) for k, v in node.items() if k != "$defs"}
-        if isinstance(node, list):
-            return [walk(v) for v in node]
-        return node
-
-    return walk(schema)
 
 
 def _submit_tool(model: type[BaseModel], sink: dict[str, Any]) -> Tool:

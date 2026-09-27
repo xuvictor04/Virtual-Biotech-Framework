@@ -62,6 +62,23 @@ def schema(properties: dict[str, Any], required: list[str] | None = None) -> dic
     return {"type": "object", "properties": properties, "required": required or []}
 
 
+def inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
+    """Inline ``$defs``/``$ref`` so the schema works with every provider's tool API."""
+    defs = {**schema.get("definitions", {}), **schema.get("$defs", {})}
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            if "$ref" in node and node["$ref"].split("/")[-1] in defs:
+                target = walk(defs[node["$ref"].split("/")[-1]])
+                return {**target, **{k: walk(v) for k, v in node.items() if k != "$ref"}}
+            return {k: walk(v) for k, v in node.items() if k not in ("$defs", "definitions")}
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+
+    return walk(schema)
+
+
 def to_text(result: Any) -> str:
     if isinstance(result, str):
         return result
