@@ -155,6 +155,22 @@ python -m pytest -q      # offline: scripted provider, synthetic data, no API ca
 - **Code execution.** `Bash` runs on the host inside the run directory and has a command
   blocklist, but it is not a security sandbox. Run the harness in a container or VM.
 
+## Status and known gaps
+
+- The offline test suite covers the agent loop, delegation, review enforcement, bulk runs, Case 1
+  statistics and the pure-Python parts of every reference analysis. It uses a scripted provider,
+  synthetic data, and a fake Messages API for the Claude streaming path.
+- Not yet exercised end to end: live Claude runs, the Open Targets–backed MCP tools, and the
+  wrappers around optional heavy dependencies (PyDESeq2, LIANA, decoupler, lifelines,
+  Cell2Location, CELLxGENE Census, rpy2/lme4/glmmTMB). The build environment had no API key
+  and no network access to the data sources.
+- Case 1 calibration (harness addition): the paper takes the minimum feature value across a
+  drug's targets, which makes the trial-level feature depend on the number of targets.
+  - With *random* gene features, the null odds ratios are about 1.08–1.20, not 1.0.
+  - `vbt case1 stats` therefore also reports a target-count-adjusted analysis.
+    `--gene-perm N` adds a gene-label permutation null. Compare real effects against that
+    null, not against OR = 1.
+
 ## License and citation
 
 This harness is released under the MIT License. The upstream prompts, servers and datasets are © the
