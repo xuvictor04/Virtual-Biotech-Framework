@@ -65,9 +65,11 @@ def _tool_of(rec: Mapping[str, Any]) -> str:
 
 
 def _key_of(rec: Mapping[str, Any]) -> tuple[str, str]:
+    """Resolution key: the tool plus the sha256 of the canonical input (equivalent to
+    ``canonical_key``, and comparable with spilled inputs known only by their sha)."""
     if "_key" in rec:
         return rec["_key"]  # type: ignore[return-value]
-    return canonical_key(_tool_of(rec), rec.get("input"))
+    return _tool_of(rec), input_sha256(rec.get("input"))
 
 
 def _public(rec: Mapping[str, Any]) -> dict[str, Any]:
@@ -152,7 +154,7 @@ def records_from_trace(events: Iterable[Mapping[str, Any]], *, run_dir: str | Pa
         if inp is None and (start.get("input_ref") or ev.get("input_ref")):
             inp = _load_spilled_input(start.get("input_ref") or ev.get("input_ref"), run_dir)
             if inp is None and (start.get("input_sha256") or ev.get("input_sha256")):
-                key = (str(tool), "sha256:" + str(start.get("input_sha256") or ev.get("input_sha256")))
+                key = (str(tool), str(start.get("input_sha256") or ev.get("input_sha256")))
         is_error = bool(ev.get("is_error")) or kind == "tool_error"
         rec: dict[str, Any] = {"tool": tool, "tool_use_id": tuid, "input": inp if inp is not None else {},
                                "is_error": is_error, "agent": who}
