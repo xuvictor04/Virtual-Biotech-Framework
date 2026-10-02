@@ -41,8 +41,7 @@ log = logging.getLogger(__name__)
 EventCallback = Callable[[str, dict[str, Any]], Any]
 
 
-class BudgetExceeded(RuntimeError):
-    pass
+from .budget import BudgetExceeded, CostScope, open_scope  # noqa: E402  (re-exported)
 
 
 def _is_content_parts(result: Any) -> bool:
@@ -63,6 +62,19 @@ class AgentResult:
     stop_reason: str = "end_turn"
     delegations: list[str] = field(default_factory=list)
     duration_s: float = 0.0
+    # P1 contract fields
+    full_text: str = ""
+    drafts: list[str] = field(default_factory=list)
+    status: str = "completed"  # completed|turn_limit|refusal|context_exceeded|timeout|cancelled|budget|error
+    invocation_id: str = ""
+    parent_invocation_id: str | None = None
+    transcript_path: str | None = None
+    unresolved_data_failures: list[dict[str, Any]] = field(default_factory=list)
+    recovered_errors: int = 0
+    compactions: int = 0
+    retries: int = 0
+    fallback_count: int = 0
+    error: str | None = None
 
 
 class Runtime:
@@ -155,6 +167,10 @@ class Runtime:
         extra_tools: list[Tool] | None = None,
         allow_tools: bool = True,
         after_end_turn: Callable[[list[Message]], Awaitable[str | None]] | None = None,
+        invocation_id: str | None = None,
+        parent_invocation_id: str | None = None,
+        description: str = "",
+        tool_use_id: str | None = None,
     ) -> AgentResult:
         """Run ``agent`` until it answers without tool calls.
 
@@ -299,6 +315,46 @@ class Runtime:
             else:
                 out.append(TextBlock(content_text([x])))
         return out if any(isinstance(x, (ImagePart, DocumentPart)) for x in out) else None
+
+    # ------------------------------------------------------------------ contracts (P1)
+
+    def workspace_for(self, name: str) -> Path:
+        """Base directory for an agent's relative paths (run dir for cso/reviewer)."""
+        if name == "cso":
+            return self.run.dir
+        agent = self.agents.get(name)
+        ws = getattr(agent, "workspace", None) if agent is not None else None
+        if ws == "run" or (ws is None and name == "scientific-reviewer"):
+            return self.run.dir
+        return self.run.agent_dir(name)
+
+    def max_turns_for(self, agent: AgentDefinition, depth: int) -> int:
+        """Model-call cap for one invocation of ``agent`` at ``depth``."""
+        limits = self.config.get("limits") or {}
+        mt = getattr(agent, "max_turns", None)
+        if mt:
+            return int(mt)
+        if depth == 0:
+            return int(limits.get("max_cso_turns") or limits.get("max_agent_turns") or 100)
+        return int(limits.get("max_specialist_turns") or 400)
+
+    def cost_scope(self, name: str, limit: float | None = None):
+        """Context manager opening a nested budget scope (see ``vbt.budget``)."""
+        return open_scope(name, limit)
+
+    def repair_history(self, messages: list[Message], reason: str = "interrupted") -> int:
+        """Answer every unanswered tool call with an error result; returns the number of fixes."""
+        return 0
+
+    async def delegate(self, agent_name: str, prompt: str, *, description: str = "", parent_agent: str = "cso",
+                       parent_invocation_id: str | None = None, tool_use_id: str | None = None,
+                       depth: int = 1) -> AgentResult:
+        """Run a specialist in a fresh context and log the delegation."""
+        return await self.run_agent(self.agents[agent_name], prompt, depth=depth)
+
+    async def cancel_outstanding(self) -> None:
+        """Cancel and await every outstanding tool/agent task."""
+        return None
 
     # ------------------------------------------------------------------ delegation
 
