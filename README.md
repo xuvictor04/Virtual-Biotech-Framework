@@ -51,17 +51,41 @@ git clone --recursive <this repo> && cd Virtual-Biotech-Framework
 # or, in an existing clone:
 git submodule update --init
 
-# Option A: the upstream conda environment (complete scientific stack incl. R, scanpy, LIANA, decoupler)
-conda env create -f third_party/TheVirtualBiotech/environment.yml && conda activate vbt
-pip install -e ".[anthropic,dev]"
+# Supported: one conda env for the harness, the MCP data servers and agents' Bash
+# (Python + R statistics stack: scanpy, LIANA, decoupler, PyDESeq2, gseapy, lme4,
+# lmerTest, glmmTMB, betareg, MuMIn, rpy2, CELLxGENE Census, FastMCP).
+conda env create -f environment.yml && conda activate vbt-harness
+pip install -e ".[anthropic,web,tools,dev]"
 
-# Option B: pip only
+# pip only (no R): `all` covers the provider, every MCP server's imports, the
+# analysis/single-cell/survival stacks and the web UI; `full` adds rpy2 and Cell2Location.
 pip install -e ".[all]"
 
 cp .env.example .env    # set ANTHROPIC_API_KEY and OPEN_TARGETS_DATA_PATH
 python third_party/TheVirtualBiotech/tools/download_open_targets.py /data/open_targets --workers 8
-vbt doctor --smoke      # checks prompts, keys, data, and starts all 12 MCP servers
+vbt doctor --smoke      # credentials, data, MCP imports, then one live call per MCP server
+vbt doctor --analysis   # also the Python/R analysis stack agents use from Bash
 ```
+
+**Environment variables.** `.env` is read first, then `third_party/TheVirtualBiotech/.env`
+(the file the upstream README tells you to edit); exported variables win over both. A
+blank value such as `VBT_MCP_PYTHON=""` means *unset*: the default from
+`configs/default.yaml` is used (`${VAR:-default}` treats empty as unset; `${VAR-default}`
+only replaces an unset variable). The MCP servers run with `vars.mcp_python` (default:
+the interpreter running `vbt`; set `VBT_MCP_PYTHON` to the conda env's python if `vbt`
+runs elsewhere). The conda env from `environment.yml` is the supported interpreter for
+both the MCP servers and agents' `Bash`. Provider keys and other secrets are never passed
+to MCP servers or agent `Bash` commands (`src/vbt/envpolicy.py`); a server gets a secret
+only when it lists it in `env_passthrough` (the PubMed server: `NCBI_API_KEY`, `NCBI_EMAIL`).
+
+**Readiness checks (preflight).** Before a session starts and before every turn, the
+harness checks the provider credentials (a blank key counts as missing) and the reference
+data the enabled MCP servers need (Open Targets layout via the upstream doctor; Tahoe-100M
+when `TAHOE_DATA_PATH` is set). A failure stops the turn *before any billable model call*
+with a message naming the fix. It is skipped for the mock provider and with
+`orchestration.require_reference_data: false`. `vbt doctor` runs the same checks plus the
+MCP interpreter's imports (`--smoke`: one cheap call per server, failing on any tool error;
+`--analysis`: scanpy, PyDESeq2, gseapy, LIANA, lifelines, rpy2 and the R packages).
 
 **Data requirements:**
 - Open Targets 25.09: about 40 GB, required by most data tools.
@@ -124,14 +148,29 @@ Each scenario replays the paper's initial prompt followed by light steering turn
   - `models`: model tiers `orchestrator`, `scientist`, `support` and `bulk`.
   - `paths`: prompts, skills and read-only data roots.
   - `limits`: turns, parallelism, output truncation and per-turn budget.
-  - `orchestration`: strategic orientation and enforced review.
+  - `orchestration`: strategic orientation, enforced review, `cso_tools`
+    (`restricted` (default) or `upstream`) and `require_reference_data`.
+  - `mcp`: server start attempts/timeouts, crash restarts, default call timeout.
   - `bash` and `web`: tool policies.
-- `configs/agents.yaml`: the organization. It lists each agent's division, prompt, model tier
-  and tool allowlist; glob patterns such as `mcp__genetics__*` are allowed. You can add or remove
-  agents here.
+  - `agent_overrides`: per-run tweaks per agent (`effort`, `model`, `max_turns`, `tools_add`).
+- `configs/agents.yaml`: the organization. It lists each agent's division, prompt, model tier,
+  tool allowlist (glob patterns such as `mcp__genetics__*` are allowed), prompt `addenda`,
+  `max_turns`, `memory` (`project`: notes in `memory/<agent>/MEMORY.md` are injected into later
+  delegations of the same role) and `workspace` (`agent` or `run`). `x-parity-exceptions` lists
+  the deliberate differences from the upstream tool lists.
 - `configs/mcp_servers.yaml`: any MCP server, either stdio or HTTP. Its tools appear to agents
-  as `mcp__<server>__<tool>`.
+  as `mcp__<server>__<tool>`. Per server: `timeout_s` (single_cell 7200 s, functional_genomics
+  3600 s, others 1800 s), `max_concurrency`, `env_passthrough`. The bridge retries failed starts,
+  restarts crashed servers and retries the call once, and writes server stderr to a per-server
+  log (`logs/mcp/<name>.log` in the run).
 - Profiles in `configs/profiles/` are layered in order: `paper`, `no-web`, `mock`, or your own.
+  `no-web` removes WebSearch/WebFetch, keeps PubMed only below a publication-date ceiling
+  (`web.literature_max_date`), and blocks network commands in Bash; ClinicalTrials.gov and
+  cBioPortal stay live.
+
+System prompts are assembled as a stable, cacheable prefix (upstream prompt, addenda,
+role-aware harness rules, CSO addendum) followed by a short volatile Session block (date,
+run paths, skill and data roots, unavailable servers, agent memory).
 
 ## Tests
 
@@ -146,6 +185,13 @@ python -m pytest -q      # offline: scripted provider, synthetic data, no API ca
   WebSearch, WebFetch, Task) on its own loop, so the original prompts run on any provider.
 - **Provenance tools.** The upstream provenance MCP server is replaced by native tools with
   the same names.
+- **Tool surface.** Agent tool lists match the upstream registry except where
+  `configs/agents.yaml: x-parity-exceptions` says otherwise. The main deviation: the CSO has no
+  `Bash`, `Write`, `Edit`, `NotebookEdit` or web tools (the paper's CSO "never directly accesses
+  data"); `orchestration.cso_tools: upstream` restores them. Harness additions: PubMed for
+  literature-using agents, Open Targets association tools (gene-burden evidence) for the
+  genomics analyst, `ListTools` for the Chief of Staff, `UpdateMemory`, and `BulkDispatch` for
+  the CSO when bulk dispatch is enabled.
 - **PubMed server.** A PubMed MCP server was added (`src/vbt/mcp_servers/pubmed_server.py`)
   for the literature step of the trial-annotation cascade.
 - **Review is enforced.** The harness enforces the Scientific Reviewer step before synthesis.
@@ -160,6 +206,12 @@ python -m pytest -q      # offline: scripted provider, synthetic data, no API ca
 - The offline test suite covers the agent loop, delegation, review enforcement, bulk runs, Case 1
   statistics and the pure-Python parts of every reference analysis. It uses a scripted provider,
   synthetic data, and a fake Messages API for the Claude streaming path.
+- The MCP bridge is tested against local FastMCP fixture servers (environment policy, error
+  envelopes, crash restart and retry, timeouts, startup retries, stderr logs), with both the
+  upstream-pinned fastmcp 3.2 / mcp 1.26 and fastmcp 4 / mcp 2. The roster test checks every
+  agent's tool list against the upstream registry and every allowlist entry against the tools the
+  servers register. `vbt doctor --smoke` was run against the real servers without Open Targets
+  data: they start, and the data tools fail the smoke test as expected.
 - Not yet exercised end to end: live Claude runs, the Open Targets–backed MCP tools, and the
   wrappers around optional heavy dependencies (PyDESeq2, LIANA, decoupler, lifelines,
   Cell2Location, CELLxGENE Census, rpy2/lme4/glmmTMB). The build environment had no API key
