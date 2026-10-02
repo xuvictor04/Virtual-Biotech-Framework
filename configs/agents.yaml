@@ -6,12 +6,24 @@
 # "local:", which resolves to src/vbt/prompts/.
 #
 # Tool lists mirror the upstream registry (src/agents/registry.py) so each
-# scientist sees only its expertise-aligned MCP tools.
+# scientist sees only its expertise-aligned MCP tools; tests/test_roster.py
+# checks every upstream tool against these lists. Deliberate deviations are
+# listed in x-parity-exceptions below.
+#
+# Other per-agent keys (all optional):
+#   addenda:   extra prompt files appended after `prompt` (same ref syntax)
+#   max_turns: model-call cap per invocation (default: limits.max_specialist_turns)
+#   memory:    project (default; per-run memory/<agent>/MEMORY.md is injected into
+#              the prompt and the UpdateMemory tool is added) | none
+#   workspace: agent (default; work/<agent>/) | run (relative paths resolve to the run dir)
+# Per-run tweaks without editing this file: config `agent_overrides`
+# ({agent: {effort, model, max_turns, tools_add}}).
 
 x-workspace-tools: &ws
   - Read
   - Write
   - Edit
+  - NotebookEdit
   - Glob
   - Grep
   - Bash
@@ -20,14 +32,38 @@ x-workspace-tools: &ws
   - mcp__provenance__register_artifact
   - mcp__provenance__list_artifacts
 
+# Deliberate differences from the upstream tool lists (agent -> {tool: reason}).
+x-parity-exceptions:
+  cso:
+    Agent: "Upstream SDK alias of Task; the harness exposes delegation only as Task."
+    Bash: "Restricted CSO (paper: the CSO never touches data). orchestration.cso_tools: upstream restores it."
+    Write: "Restricted CSO; session files are written by the harness. cso_tools: upstream restores it."
+    Edit: "Restricted CSO; cso_tools: upstream restores it."
+    NotebookEdit: "Restricted CSO; cso_tools: upstream restores it."
+    WebFetch: "Restricted CSO; web research is delegated (Chief of Staff, specialists). cso_tools: upstream restores it."
+    WebSearch: "Restricted CSO; web research is delegated. cso_tools: upstream restores it."
+  "*":
+    WebFetch: "Removed from every agent when web.enabled is false (no-web leakage control)."
+    WebSearch: "Removed from every agent when web.enabled is false (no-web leakage control)."
+# Harness additions beyond upstream (not deviations): NotebookEdit for trial-matching,
+# ListTools + PubMed for the Chief of Staff, PubMed for literature-using specialists,
+# association tools for the genomics analyst, BulkDispatch/BulkStatus for the CSO,
+# UpdateMemory (memory: project), and whole-server globs where upstream lists every tool.
+
 cso:
   division: Office of the CSO
   description: Chief Scientific Officer — orchestrates divisions, never analyzes data directly.
   prompt: cso/system_prompt.md
   tier: orchestrator
   # The CSO only routes and synthesises: no data or MCP analysis tools.
+  # orchestration.cso_tools: upstream adds Bash, Write, Edit, NotebookEdit, WebFetch, WebSearch.
+  # BulkDispatch/BulkStatus resolve only when bulk.dispatch_enabled registers them.
   tools: [Task, TodoWrite, Read, Glob, Grep, Skill,
-          mcp__provenance__write_plan, mcp__provenance__record_claims, mcp__provenance__list_artifacts]
+          mcp__provenance__write_plan, mcp__provenance__record_claims, mcp__provenance__list_artifacts,
+          BulkDispatch, BulkStatus]
+  workspace: run
+  # The CSO keeps its whole conversation; project memory is for delegated agents.
+  memory: none
 
 agents:
   # ---------------------------------------------------------- Target ID & Prioritization
@@ -48,6 +84,14 @@ agents:
       - mcp__target__get_target_safety_profile
       - mcp__disease__get_disease_info
       - mcp__disease__search_diseases_by_name
+      # Harness addition: rare-variant burden and other association evidence
+      - mcp__association__query_evidence
+      - mcp__association__filter_by_datasource
+      - mcp__association__filter_by_datatype
+      - mcp__association__get_associations_for_target
+      - mcp__association__query_associations
+      - mcp__association__compare_direct_indirect
+    addenda: [local:genomics_burden_addendum.md]
 
   functional-genomics-analyst:
     division: Target Identification and Prioritization
@@ -68,6 +112,7 @@ agents:
     prompt: target_id/system_prompts/single_cell_analyst_short.md
     tier: scientist
     effort: max
+    max_turns: 600
     tools:
       - *ws
       - WebFetch
@@ -202,12 +247,18 @@ agents:
     description: "[Intelligence] Rapid due diligence: field overview, data landscape (MCP tool inventory), recent news/context."
     prompt: chief_of_staff/system_prompt.md
     tier: support
-    tools: [Read, Write, Glob, Grep, TodoWrite, WebFetch, WebSearch, ListTools, mcp__pubmed__*]
+    max_turns: 60
+    tools: [Read, Write, Edit, Glob, Grep, Bash, TodoWrite, Skill, WebFetch, WebSearch, ListTools,
+            mcp__provenance__register_artifact, mcp__provenance__list_artifacts, mcp__pubmed__*]
 
   scientific-reviewer:
     division: Office of the CSO
     role: Scientific reviewer
     description: "[Quality Assurance] Review specialist outputs for scientific rigor, user alignment, logical conclusions."
     prompt: scientific_reviewer/system_prompt.md
+    addenda: [local:reviewer_addendum.md]
     tier: support
+    max_turns: 40
+    # Read-only reviewer: relative paths (e.g. from list_artifacts) resolve to the run dir.
+    workspace: run
     tools: [Read]
