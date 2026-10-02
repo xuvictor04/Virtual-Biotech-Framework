@@ -20,6 +20,17 @@ dependencies = [
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=1.0"]
+# Everything the MCP data servers import (upstream FastMCP servers + the PubMed server).
+# fastmcp: upstream pins 3.2.0; 4.x is tested with the harness bridge.
+mcp = [
+    "fastmcp>=3.2,<5",
+    "mcp>=1.26",
+    "pybioportal>=1.0",
+    "pyarrow>=16",
+    "pandas>=2.2",
+    "requests>=2.31",
+    "pronto>=2.5",
+]
 analysis = [
     "numpy>=1.26",
     "pandas>=2.2",
@@ -27,6 +38,8 @@ analysis = [
     "statsmodels>=0.14",
     "scikit-learn>=1.4",
     "pyarrow>=16",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
 ]
 singlecell = [
     "anndata>=0.10",
@@ -36,12 +49,20 @@ singlecell = [
     "decoupler>=2.0",
     "liana>=1.5",
     "cellxgene-census>=1.15",
+    "gseapy>=1.1",
+    "pronto>=2.5",
 ]
 spatial = ["cell2location>=0.1.4"]
 survival = ["lifelines>=0.29"]
 r = ["rpy2>=3.5"]
+# Read tool: images (downscaling) and PDF text.
+tools = ["pillow>=10", "pypdf>=4"]
+# `vbt web` (fig. S1 interface).
+web = ["starlette>=0.37", "uvicorn>=0.29"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
-all = ["vbt-harness[anthropic,analysis,singlecell,survival,dev]"]
+all = ["vbt-harness[anthropic,mcp,analysis,singlecell,survival,tools,web,dev]"]
+# all + R bridge (needs R with lme4/lmerTest/glmmTMB/betareg/MuMIn; see environment.yml) + Cell2Location.
+full = ["vbt-harness[all,r,spatial]"]
 
 [project.scripts]
 vbt = "vbt.cli:main"
@@ -50,7 +71,7 @@ vbt = "vbt.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-vbt = ["prompts/**/*.md", "case_studies/**/*.md", "case_studies/**/*.yaml"]
+vbt = ["prompts/**/*.md", "case_studies/**/*.md", "case_studies/**/*.yaml", "web/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,61 @@
+# Supported interpreter for the harness, the MCP data servers and agents' Bash
+# (Python + R statistics stack used by the skills and the case studies).
+#
+#   conda env create -f environment.yml && conda activate vbt-harness
+#   pip install -e ".[anthropic,web,tools,dev]"
+#   vbt doctor --analysis --smoke
+#
+# Versions follow third_party/TheVirtualBiotech/environment.yml where it pins
+# them; the R packages and gseapy/pydeseq2/cell2location are additions needed
+# by the paper's analyses (glmmTMB beta GMM, betareg, MuMIn R², lmerTest).
+name: vbt-harness
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pip
+  # Core scientific stack
+  - numpy=1.26
+  - pandas>=2.2
+  - scipy>=1.12
+  - scikit-learn>=1.4
+  - statsmodels>=0.14
+  - matplotlib>=3.8
+  - seaborn>=0.13
+  - pillow
+  - pypdf
+  # Single-cell / spatial
+  - anndata>=0.10
+  - scanpy>=1.10
+  - h5py
+  - harmonypy
+  - decoupler>=2.0
+  - liana>=1.5
+  - pydeseq2>=0.4
+  - gseapy>=1.1
+  - pronto>=2.5
+  # Survival analysis (B7-H3 case study)
+  - lifelines>=0.29
+  # CELLxGENE Census (single_cell MCP server, cross-disease survey)
+  - cellxgene-census>=1.15
+  - tiledbsoma
+  # MCP data-server dependencies
+  - pyarrow>=16
+  - requests
+  - httpx>=0.27
+  - python-dotenv>=1.0
+  # R and the mixed-effects / beta-regression packages (Case 1-3 statistics)
+  - libopenblas            # rpy2's compiled extension links libopenblas.so.0
+  - r-base=4.4
+  - r-lme4
+  - r-lmertest
+  - r-glmmtmb
+  - r-betareg
+  - r-mumin
+  - rpy2>=3.5
+  - pip:
+      - fastmcp>=3.2,<5
+      - mcp>=1.26
+      - pybioportal>=1.0
+      - cell2location>=0.1.4

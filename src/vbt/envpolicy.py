@@ -19,12 +19,12 @@ from pathlib import Path
 
 #: Variables (exact names or fnmatch patterns) copied from the parent environment.
 ALLOW: tuple[str, ...] = (
-    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TMPDIR",
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TMPDIR", "VIRTUAL_ENV", "JAVA_HOME",
     "LANG", "LANGUAGE", "LC_*", "TZ",
     "CONDA_*", "R_*", "RHOME",
     "PYTHONHASHSEED",
     "OMP_*", "MKL_*", "OPENBLAS_*", "NUMBA_*", "NUMEXPR_*", "VECLIB_MAXIMUM_THREADS",
-    "LD_LIBRARY_PATH",
+    "LD_LIBRARY_PATH", "CUDA_*", "NVIDIA_*", "XDG_*", "MPLBACKEND", "MPLCONFIGDIR",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
     "http_proxy", "https_proxy", "no_proxy", "all_proxy",

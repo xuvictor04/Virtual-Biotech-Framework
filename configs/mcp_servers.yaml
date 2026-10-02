@@ -2,64 +2,94 @@
 # Defaults launch the upstream FastMCP servers (Supplementary Text I). Any MCP
 # server can be added: stdio (command/args) or streamable HTTP (url).
 # The provenance server is replaced by native harness tools (src/vbt/tools/provenance.py).
+#
+# Per-server keys (all optional except name and command/url):
+#   timeout_s        per tool call (default mcp.default_timeout_s = 1800)
+#   max_concurrency  concurrent calls in flight to this server (default unlimited)
+#   start_timeout_s  per startup attempt (default mcp.start_timeout_s = 180)
+#   env              extra environment for the server process
+#   env_passthrough  parent variables copied even though they look like secrets
+#   inherit_env      true = pass the full parent environment (default mcp.inherit_env = false:
+#                    an allow-list via src/vbt/envpolicy.py, so provider keys never reach servers)
+#   cwd, enabled
+#
+# Interpreter flag: -E makes Python ignore PYTHON* variables (PYTHONPATH,
+# PYTHONHOME, ...), so the environment cannot redirect what the servers import.
+# The stricter -I also drops user site-packages; that broke every server in an
+# installation whose dependencies live in ~/.local (pip --user), so it is not the
+# default. Use -I when vars.mcp_python is a dedicated conda env.
 servers:
   - name: expression
     # GTEx bulk RNA-seq expression
     command: ${vars.mcp_python}
-    args: ["${vars.upstream}/src/mcp_servers/expression_mcp/server.py"]
+    args: ["-E", "${vars.upstream}/src/mcp_servers/expression_mcp/server.py"]
+    timeout_s: 1800
     enabled: true
   - name: functional_genomics
     # DepMap CRISPR essentiality + Tahoe-100M drug perturbations
     command: ${vars.mcp_python}
-    args: ["${vars.upstream}/src/mcp_servers/functional_genomics_mcp/server.py"]
+    args: ["-E", "${vars.upstream}/src/mcp_servers/functional_genomics_mcp/server.py"]
+    timeout_s: 3600
     enabled: true
   - name: genetics
     # Open Targets Genetics (GWAS, L2G, credible sets, QTL coloc)
     command: ${vars.mcp_python}
-    args: ["${vars.upstream}/src/mcp_servers/genetics_mcp/server.py"]
+    args: ["-E", "${vars.upstream}/src/mcp_servers/genetics_mcp/server.py"]
+    timeout_s: 1800
     enabled: true
   - name: target
     # Open Targets target annotations, tractability, safety
     command: ${vars.mcp_python}
-    args: ["${vars.upstream}/src/mcp_servers/target_mcp/server.py"]
+    args: ["-E", "${vars.upstream}/src/mcp_servers/target_mcp/server.py"]
+    timeout_s: 1800
     enabled: true
   - name: drug
     # Open Targets / ChEMBL drug mechanisms, indications, warnings
     command: ${vars.mcp_python}
-    args: ["${vars.upstream}/src/mcp_servers/drug_mcp/server.py"]
+    args: ["-E", "${vars.upstream}/src/mcp_servers/drug_mcp/server.py"]
+    timeout_s: 1800
     enabled: true
   - name: single_cell
-    # CELLxGENE Census
+    # CELLxGENE Census (large pulls: call count_cells first, narrow value_filter/genes)
     command: ${vars.mcp_python}
-    args: ["${vars.upstream}/src/mcp_servers/single_cell_mcp/server.py"]
+    args: ["-E", "${vars.upstream}/src/mcp_servers/single_cell_mcp/server.py"]
+    timeout_s: 7200
     enabled: true
   - name: association
     # Open Targets target-disease associations + literature
     command: ${vars.mcp_python}
-    args: ["${vars.upstream}/src/mcp_servers/association_mcp/server.py"]
+    args: ["-E", "${vars.upstream}/src/mcp_servers/association_mcp/server.py"]
+    timeout_s: 1800
     enabled: true
   - name: disease
     # Open Targets disease ontology
     command: ${vars.mcp_python}
-    args: ["${vars.upstream}/src/mcp_servers/disease_mcp/server.py"]
+    args: ["-E", "${vars.upstream}/src/mcp_servers/disease_mcp/server.py"]
+    timeout_s: 1800
     enabled: true
   - name: interaction
     # Protein-protein interaction networks
     command: ${vars.mcp_python}
-    args: ["${vars.upstream}/src/mcp_servers/interaction_mcp/server.py"]
+    args: ["-E", "${vars.upstream}/src/mcp_servers/interaction_mcp/server.py"]
+    timeout_s: 1800
     enabled: true
   - name: pathway
     # Reactome pathways + Gene Ontology
     command: ${vars.mcp_python}
-    args: ["${vars.upstream}/src/mcp_servers/pathway_mcp/server.py"]
+    args: ["-E", "${vars.upstream}/src/mcp_servers/pathway_mcp/server.py"]
+    timeout_s: 1800
     enabled: true
   - name: clinicaltrials
-    # ClinicalTrials.gov + cBioPortal
+    # ClinicalTrials.gov + cBioPortal (live web APIs: not covered by the no-web profile)
     command: ${vars.mcp_python}
-    args: ["${vars.upstream}/src/mcp_servers/clinicaltrials_mcp/server.py"]
+    args: ["-E", "${vars.upstream}/src/mcp_servers/clinicaltrials_mcp/server.py"]
+    timeout_s: 1800
     enabled: true
   - name: pubmed
-    # PubMed search + abstracts via NCBI E-utilities (harness addition; see src/vbt/mcp_servers)
+    # PubMed search + abstracts via NCBI E-utilities (harness addition; see src/vbt/mcp_servers).
+    # VBT_LITERATURE_MAXDATE (from tool_env; set by the no-web profile) caps publication dates.
     command: ${vars.mcp_python}
-    args: ["${vars.project_root}/src/vbt/mcp_servers/pubmed_server.py"]
+    args: ["-E", "${vars.project_root}/src/vbt/mcp_servers/pubmed_server.py"]
+    timeout_s: 1800
+    env_passthrough: [NCBI_API_KEY, NCBI_EMAIL]
     enabled: true
