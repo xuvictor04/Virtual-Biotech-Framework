@@ -19,6 +19,8 @@ from .agents import AgentDefinition, load_roster, system_prompt
 from .config import resolve_path
 from .providers import create_provider
 from .providers.base import (
+    DocumentPart,
+    ImagePart,
     LLMProvider,
     Message,
     ModelResponse,
@@ -26,6 +28,7 @@ from .providers.base import (
     TextBlock,
     ToolCall,
     ToolResult,
+    content_text,
 )
 from .session import Run
 from .tools.base import Tool, ToolContext, ToolFailure, ToolRegistry, schema, to_text
@@ -40,6 +43,12 @@ EventCallback = Callable[[str, dict[str, Any]], Any]
 
 class BudgetExceeded(RuntimeError):
     pass
+
+
+def _is_content_parts(result: Any) -> bool:
+    """A tool returned provider content parts (e.g. MCP text + images)."""
+    return (isinstance(result, list) and bool(result)
+            and all(isinstance(x, (TextBlock, ImagePart, DocumentPart)) for x in result))
 
 
 @dataclass
@@ -193,7 +202,7 @@ class Runtime:
                 results = await asyncio.gather(*(self._execute(c, by_name, agent, depth) for c in calls))
                 messages.append(Message("user", list(results)))
                 result.tool_calls += len(calls)
-                result.tool_errors += [{"tool": c.name, "error": r.content[:500]}
+                result.tool_errors += [{"tool": c.name, "error": content_text(r.content)[:500]}
                                        for c, r in zip(calls, results) if r.is_error]
                 result.delegations += [c.input.get("subagent_type", "?") for c in calls if c.name == "Task"]
                 continue
@@ -241,12 +250,18 @@ class Runtime:
                        input=_clip(call.input))
         self.emit("tool", agent=agent.name, tool=call.name, input=call.input)
         t0 = time.time()
+        parts: list[Any] | None = None  # multimodal result (text + image/document parts)
         if tool is None:
             content, err = f"Tool {call.name!r} is not available to {agent.name}.", True
         else:
             ctx = ToolContext(agent=agent.name, run=self.run, runtime=self, tool_call_id=call.id, depth=depth)
             try:
-                content, err = to_text(await tool(ctx, call.input)), False
+                raw = await tool(ctx, call.input)
+                if _is_content_parts(raw):
+                    content, err = content_text(raw), False
+                    parts = self._supported_parts(agent, raw)
+                else:
+                    content, err = to_text(raw), False
             except ToolFailure as exc:
                 content, err = f"Error: {exc}", True
             except BudgetExceeded:
@@ -262,9 +277,28 @@ class Runtime:
             content = (content[: self.tool_output_max] +
                        f"\n\n[Output truncated: {len(content):,} chars. Full output saved to {path}; "
                        f"Read it with offset/limit or load it from code.]")
+            if parts is not None:  # keep the images/documents, replace the text with the truncated stub
+                parts = [TextBlock(content)] + [x for x in parts if isinstance(x, (ImagePart, DocumentPart))]
         self.run.trace("tool_end", agent=agent.name, tool=call.name, tool_use_id=call.id, is_error=err,
                        duration_s=round(time.time() - t0, 2), output=content[:4000])
-        return ToolResult(call.id, content, err)
+        return ToolResult(call.id, parts if parts is not None else content, err)
+
+    def _supported_parts(self, agent: AgentDefinition, raw: list[Any]) -> list[Any] | None:
+        """Keep the image/document parts the agent's model accepts; unsupported
+        ones become their text stand-ins. None when nothing but text remains."""
+        try:
+            caps = self.provider.capabilities(agent.settings(self.config).model)
+        except Exception:  # noqa: BLE001 - be conservative: fall back to text
+            return None
+        out: list[Any] = []
+        for x in raw:
+            if (isinstance(x, ImagePart) and caps.images) or (isinstance(x, DocumentPart) and caps.documents):
+                out.append(x)
+            elif isinstance(x, TextBlock):
+                out.append(x)
+            else:
+                out.append(TextBlock(content_text([x])))
+        return out if any(isinstance(x, (ImagePart, DocumentPart)) for x in out) else None
 
     # ------------------------------------------------------------------ delegation
 

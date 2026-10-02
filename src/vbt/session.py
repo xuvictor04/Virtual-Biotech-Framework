@@ -105,6 +105,20 @@ def _kind(p: Path) -> str:
 
 # ----------------------------------------------------------------- costs
 
+
+def _usage_from_dict(d: Mapping[str, Any]) -> Usage:
+    """Inverse of ``Usage.as_dict`` for every field the installed Usage defines."""
+    names = getattr(Usage, "__dataclass_fields__", {})
+    kw: dict[str, Any] = {}
+    for name in names:
+        v = d.get(name)
+        if name == "server_tool_requests":
+            if isinstance(v, Mapping):
+                kw[name] = {str(k): int(n or 0) for k, n in v.items()}
+        elif v is not None:
+            kw[name] = int(v or 0)
+    return Usage(**kw)
+
 @dataclass
 class CostLedger:
     by_agent: dict[str, Usage] = field(default_factory=lambda: defaultdict(Usage))
@@ -168,8 +182,7 @@ class CostLedger:
                 ledger.usd_by_agent[a] = float(d.get("usd") or 0.0)
                 ledger.calls_by_agent[a] = int(d.get("model_calls") or 0)
                 ledger.tool_usd_by_agent[a] = float(d.get("tool_usd") or 0.0)
-                ledger.by_agent[a] = Usage(int(d.get("input_tokens") or 0), int(d.get("output_tokens") or 0),
-                                           int(d.get("cache_read_tokens") or 0), int(d.get("cache_write_tokens") or 0))
+                ledger.by_agent[a] = _usage_from_dict(d)
         except (TypeError, ValueError, AttributeError):
             return cls()
         return ledger
