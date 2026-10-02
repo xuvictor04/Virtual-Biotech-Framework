@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>The Virtual Biotech</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <form id="login-form" class="login-card" autocomplete="on">
+    <div class="eyebrow">The Virtual Biotech</div>
+    <h1>Sign in</h1>
+    <p class="muted">This server is protected by an access password (<code>VBT_WEB_PASSWORD</code>).</p>
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autocomplete="current-password" required>
+    <button type="submit" class="primary">Sign in</button>
+    <p id="login-error" class="form-error" role="alert"></p>
+  </form>
+</div>
+
+<div id="app" class="app" hidden>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <div class="title">The Virtual Biotech</div>
+        <div class="muted small" id="run-chip">No run yet: ask a question to start one</div>
+      </div>
+    </div>
+    <div class="controls">
+      <label class="field">Profile <select id="profile" aria-label="Configuration profile"></select></label>
+      <label class="field">Model <select id="model" aria-label="Model"></select></label>
+      <button id="new-session" class="ghost" type="button" title="Close this session and start a new run">New session</button>
+      <a id="dl-run" class="btn ghost" aria-disabled="true" title="The whole run directory: MANIFEST, audit.html, artifacts, evidence, logs">Download run (.zip)</a>
+      <a id="dl-chat" class="btn ghost" aria-disabled="true" title="This conversation as Markdown, with numbered claim references">Download chat (.md)</a>
+      <button id="logout" class="ghost small-btn" type="button" hidden>Sign out</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="chat" aria-label="Conversation">
+      <div id="messages" class="messages">
+        <div id="welcome" class="welcome">
+          <h2>Ask the Chief Scientific Officer</h2>
+          <p class="muted">The CSO plans the analysis, delegates to specialist agents (genetics, single-cell, safety,
+            modality, clinical), has a scientific reviewer check their work, and answers with numbered references
+            to recorded evidence. Agent and tool activity is shown alongside the conversation as it happens.</p>
+          <div id="examples" class="examples"></div>
+        </div>
+      </div>
+      <form id="composer" class="composer">
+        <label for="prompt" class="sr-only">Your question</label>
+        <textarea id="prompt" rows="3" placeholder="Ask a drug-discovery question. Ctrl+Enter to send."></textarea>
+        <div class="composer-row">
+          <span id="status-line" class="status-line" role="status"></span>
+          <button type="button" id="stop" class="danger" disabled>Stop</button>
+          <button type="submit" id="send" class="primary">Send</button>
+        </div>
+      </form>
+    </section>
+
+    <aside class="side" aria-label="Session details">
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" id="tab-activity" data-tab="activity" aria-selected="true">Activity</button>
+        <button type="button" role="tab" id="tab-evidence" data-tab="evidence" aria-selected="false">Evidence <span class="count" id="claims-count"></span></button>
+        <button type="button" role="tab" id="tab-files" data-tab="files" aria-selected="false">Files <span class="count" id="files-count"></span></button>
+        <button type="button" role="tab" id="tab-runs" data-tab="runs" aria-selected="false">Past runs</button>
+      </div>
+
+      <div class="panel" id="panel-activity" role="tabpanel" aria-labelledby="tab-activity">
+        <h3>Agents</h3>
+        <div id="agents" class="divisions"></div>
+        <h3>Tool calls <span class="muted small" id="tool-count"></span></h3>
+        <ol id="tools" class="tools" reversed></ol>
+        <p id="tools-empty" class="muted small">No tool calls yet.</p>
+      </div>
+
+      <div class="panel" id="panel-evidence" role="tabpanel" aria-labelledby="tab-evidence" hidden>
+        <div class="panel-head">
+          <span id="claims-stats" class="muted small">No claims filed yet.</span>
+          <label class="small"><input type="checkbox" id="claims-unverified"> unverified only</label>
+        </div>
+        <div id="claims"></div>
+      </div>
+
+      <div class="panel" id="panel-files" role="tabpanel" aria-labelledby="tab-files" hidden>
+        <div class="panel-head">
+          <span class="muted small" id="files-stats">No files yet.</span>
+          <button type="button" class="ghost small-btn" id="files-refresh">Refresh</button>
+        </div>
+        <div id="gallery" class="gallery"></div>
+        <div id="filelist"></div>
+      </div>
+
+      <div class="panel" id="panel-runs" role="tabpanel" aria-labelledby="tab-runs" hidden>
+        <div class="panel-head">
+          <span class="muted small" id="runs-stats"></span>
+          <button type="button" class="ghost small-btn" id="runs-refresh">Refresh</button>
+        </div>
+        <ul id="runs-list" class="runs"></ul>
+      </div>
+    </aside>
+  </main>
+</div>
+</body>
+</html>
