@@ -6,3 +6,4 @@ results/
 data/
 *.egg-info/
 .pytest_cache/
+.claude/worktrees/
