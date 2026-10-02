@@ -417,7 +417,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=float, default=600, help="per-script timeout for --rerun, seconds")
     ap.add_argument("--json", action="store_true", help="print the machine-readable report")
     args = ap.parse_args(argv)
-    report = verify_run(_resolve_run(args.run), rerun=args.rerun, python=args.python, timeout=args.timeout)
+    try:
+        run_dir = _resolve_run(args.run)
+    except LookupError as exc:  # vbt.audit.index.RunNotFound / AmbiguousRunError
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    report = verify_run(run_dir, rerun=args.rerun, python=args.python, timeout=args.timeout)
     print(json.dumps(report, indent=2, default=str) if args.json else format_report(report))
     return 0 if report["status"] == "COMPLETE" else 1
 
