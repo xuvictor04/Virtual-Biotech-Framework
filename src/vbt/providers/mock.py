@@ -19,6 +19,11 @@ back to an ``<agent-name>`` tag in the system prompt.
 ``strict=True`` (the default) rejects histories that break tool_use/tool_result
 pairing, mirroring the 400 the real API returns, so tests catch history
 corruption.
+
+Other options: ``usage_fn(agent, messages, reply) -> Usage`` (e.g. to report a
+nearly full context window), ``context_window`` (returned by
+``context_window()``) and ``capabilities`` (default: images, documents and web
+search on; server-side context management and history-bound thinking off).
 """
 
 from __future__ import annotations

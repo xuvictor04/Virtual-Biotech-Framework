@@ -1,11 +1,40 @@
 # Exact model configuration reported in the paper (Materials & Methods):
 # "All agents operate using Claude Sonnet 4.5, except for the Chief of Staff
 #  and Scientific Reviewer, which use Claude Haiku 4.5."
+#
+# Thinking. Sonnet 4.5 and Haiku 4.5 predate adaptive thinking and the effort
+# parameter (effort is rejected on both), so thinking is a fixed token budget.
+# Upstream's CSO asked the Agent SDK for adaptive thinking at effort "xhigh";
+# on Sonnet 4.5 that becomes a budget the SDK picks, which we cannot observe.
+# We therefore pin the budgets explicitly instead of relying on the adapter's
+# 8000-token default:
+#   - orchestrator 32000: the CSO plans, delegates and synthesises across long
+#     multi-turn sessions (upstream ran it at the highest effort it exposed);
+#   - scientist 16000: specialists run many short tool-driven steps, and with
+#     interleaved thinking (sent automatically when tools are present) the
+#     budget applies to the reasoning between tool calls of one turn.
+# Both stay well below max_tokens (64000) so answers are never starved. The
+# per-trial bulk annotator keeps the adapter's former implicit 8000, now explicit,
+# so Case 1 cost comparisons are unchanged.
+#
+# Support tier (Chief of Staff, Scientific Reviewer on Haiku 4.5): thinking
+# off. Upstream's AgentDefinition for these agents sets only model='haiku' and
+# no thinking/effort; the Agent SDK's thinking options configure the main
+# (CSO) query, and we could not verify that they propagate to subagents, so we
+# keep Haiku in its default no-thinking mode. To test the alternative, set
+# `support: {thinking: true, thinking_budget: 8000}` in an override profile.
+#
+# Context window: Sonnet 4.5 runs with its standard 200K window (the 1M-token
+# beta was not used upstream); the harness compacts history against it.
 models:
-  orchestrator: {model: claude-sonnet-4-5, effort: null, max_tokens: 64000, thinking: true}
-  scientist:    {model: claude-sonnet-4-5, effort: null, max_tokens: 64000, thinking: true}
-  support:      {model: claude-haiku-4-5, effort: null, max_tokens: 16000, thinking: false}
-  bulk:         {model: claude-sonnet-4-5, effort: null, max_tokens: 32000, thinking: true}
+  orchestrator: {model: claude-sonnet-4-5, effort: null, max_tokens: 64000, thinking: true,
+                 thinking_budget: 32000, context_window_tokens: 200000}
+  scientist:    {model: claude-sonnet-4-5, effort: null, max_tokens: 64000, thinking: true,
+                 thinking_budget: 16000, context_window_tokens: 200000}
+  support:      {model: claude-haiku-4-5, effort: null, max_tokens: 16000, thinking: false,
+                 context_window_tokens: 200000}
+  bulk:         {model: claude-sonnet-4-5, effort: null, max_tokens: 32000, thinking: true,
+                 thinking_budget: 8000, context_window_tokens: 200000}
 provider:
   options:
     web_search_model: claude-sonnet-4-5

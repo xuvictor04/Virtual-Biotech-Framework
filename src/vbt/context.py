@@ -322,10 +322,14 @@ class ContextManager:
                                system: str | list[SystemSegment] | None, agent: str) -> CompactionResult:
         """Compact aggressively after the provider reported a context overflow.
 
-        Raises ContextOverflowError when nothing can be compacted any further.
+        Raises ContextOverflowError when nothing can be compacted any further,
+        or when context management is disabled (``context.enabled: false``).
         """
         window = self.window_for(settings)
         estimate = estimate_tokens(system_text(system)) + estimate_tokens(messages)
+        if not self.policy.enabled:
+            raise ContextOverflowError(f"context overflow for {agent} (~{estimate:,} tokens estimated, window "
+                                       f"{window:,}) and context management is disabled")
         tokens_before = max(estimate, window)  # it did not fit
         res = await self._compact(messages, settings=settings, system=system, agent=agent, window=window,
                                   tokens_before=tokens_before, aggressive=True)
