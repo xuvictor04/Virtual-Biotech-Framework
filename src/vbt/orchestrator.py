@@ -27,6 +27,15 @@ with the partial CSO text and a notice, the history is repaired so the next
 ``ask`` is valid, and the exception propagates. The end-of-turn data warning
 names only *unresolved* data-source failures (``vbt.failures``).
 
+Readiness (``vbt.preflight``): ``open_session`` refuses to create a run when
+credentials, reference data or MCP commands are missing (unless
+``preflight.skip``; skipped for the mock provider and when
+``orchestration.require_reference_data`` is false). With
+``preflight.allow_missing_data`` the run proceeds degraded (MANIFEST.degraded)
+and every agent is told which servers lack data. Each turn re-checks
+credentials and data before any model call; a failing check records the turn
+as ``not_sent`` ("This turn has not been sent to the model").
+
 Config (in-code defaults): ``orchestration.review_policy`` (``research``),
 ``orchestration.enforce_plan`` (false), ``orchestration.max_review_rounds`` (2),
 ``orchestration.strategic_orientation`` (true), ``limits.max_turn_cost_usd``.
@@ -202,6 +211,15 @@ class CSOSession:
 
     # ------------------------------------------------------------------ turn
 
+    def _preflight_turn(self) -> None:
+        """Per-turn readiness gate (raises DataReadinessError before any model call)."""
+        pre = self.config.get("preflight") or {}
+        if pre.get("skip"):
+            return
+        from .preflight import require_ready
+        require_ready(self.config, per_turn=True, provider=self.rt.provider,
+                      allow_missing_data=bool(pre.get("allow_missing_data")))
+
     async def _turn(self, user_input: str) -> str:
         rt, run = self.rt, self.run
         self.turn += 1
@@ -210,6 +228,22 @@ class CSOSession:
         status = "in_progress"
         t0 = time.time()
         cost0 = run.cost.total_usd
+        try:
+            self._preflight_turn()
+        except Exception as exc:  # noqa: BLE001 - DataReadinessError (or a broken check): do not send
+            from .preflight import TURN_NOT_SENT, DataReadinessError
+            msg = str(exc) if isinstance(exc, DataReadinessError) else \
+                f"Readiness check failed: {type(exc).__name__}: {exc}. {TURN_NOT_SENT}"
+            if TURN_NOT_SENT not in msg:
+                msg = f"{msg} {TURN_NOT_SENT}"
+            ev0 = len(run.events())
+            self._ts = {"t0": t0, "unstreamed": [msg], "review_rounds": 0, "plan_nudged": False,
+                        "review_skipped": False}
+            run.trace("turn_start", turn=n, prompt=user_input, interface=self.interface)
+            rt.emit("turn_start", turn=n, prompt=user_input)
+            run.trace("turn_not_sent", turn=n, error=msg[:2000])
+            self._finish(n, user_input, msg, "not_sent", t0, cost0, len(rt.delegation_log), ev0)
+            return msg
         try:
             rt.repair_history(self.history, "the previous turn was interrupted before it finished")
         except Exception:  # noqa: BLE001 - a repair problem must not block the turn
@@ -663,6 +697,13 @@ async def open_session(config: dict[str, Any], *, provider=None, on_event=None, 
     from .session import Run
 
     profiles = tuple(profiles or config.get("profiles") or ())
+    # Readiness gate before any run directory exists or any model call is made.
+    pre = config.get("preflight") or {}
+    allow_missing = bool(pre.get("allow_missing_data"))
+    checks: list[Any] = []
+    if not pre.get("skip"):
+        from .preflight import require_ready
+        checks = require_ready(config, provider=provider, allow_missing_data=allow_missing)
     if resume:
         run = Run.open_existing(resume)
     else:
@@ -673,21 +714,31 @@ async def open_session(config: dict[str, Any], *, provider=None, on_event=None, 
         })
     rt = Runtime(config, run, provider=provider, on_event=on_event)
     try:
+        degraded: dict[str, str] = {}
+        if checks:
+            from .preflight import degraded_servers
+            degraded = degraded_servers(config, checks)
+            failed = [c for c in checks if c.required and not c.ok and c.kind == "data"]
+            if failed and not degraded:  # missing data not tied to one server (allow_missing_data)
+                degraded = {"(reference data)": "; ".join(f"{c.label}: {c.detail}" for c in failed)[:500]}
+        if degraded:
+            rt.set_degraded(degraded)
+            run.mark_degraded(degraded)
+            rt.emit("warning", message="Running without reference data for: " + ", ".join(sorted(degraded)))
         if start_mcp:
             failures = await rt.start_mcp()
             if failures:
                 rt.emit("warning", message=f"MCP servers unavailable: {', '.join(sorted(failures))}")
-        try:
-            from .tools.skills import materialize
-            rt.skill_hashes = materialize(run.dir, rt.skill_roots)
-        except Exception as exc:  # noqa: BLE001 - skills are optional
-            run.note_audit_error(f"skill materialize: {type(exc).__name__}: {exc}")
         try:
             pinned = build_pinned_config(config, rt, interface=interface, profiles=profiles)
         except Exception as exc:  # noqa: BLE001 - pinning must never block a session
             log.exception("building the pinned config failed")
             pinned = {"provider": {"name": config["provider"]["name"]}, "models": config.get("models"),
                       "pinning_error": f"{type(exc).__name__}: {exc}"}
+        pinned["preflight"] = {"skipped": bool(pre.get("skip")) or not checks,
+                               "allow_missing_data": allow_missing,
+                               "checks": [{"label": c.label, "ok": c.ok, "kind": c.kind} for c in checks],
+                               "degraded_servers": degraded}
         if resume:
             prev = dict(run.config or {}) if isinstance(run.config, Mapping) else {}
             resumes = list(prev.get("resumes") or [])

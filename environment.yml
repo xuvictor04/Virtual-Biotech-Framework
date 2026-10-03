@@ -25,6 +25,7 @@ dependencies:
   - seaborn>=0.13
   - pillow
   - pypdf
+  - jsonschema              # BulkDispatch schema validation (also in the `tools` extra)
   # Single-cell / spatial
   - anndata>=0.10
   - scanpy>=1.10

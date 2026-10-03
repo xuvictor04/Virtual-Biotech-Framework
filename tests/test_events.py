@@ -116,9 +116,10 @@ async def test_parallel_delegations_to_the_same_agent_are_distinguishable(config
     assert {d["invocation_id"] for d in deleg_end} == {t1.id, t2.id}
     assert all(d["status"] == "completed" for d in deleg_end)
     kinds = [k for k, _ in events]
-    for k in ("agent_start", "agent_end", "tool_start", "tool_end", "tool", "text", "message_end", "thinking",
+    for k in ("agent_start", "agent_end", "tool_start", "tool_end", "text", "message_end", "thinking",
               "delegation", "delegation_end", "cost"):
         assert k in kinds, k
+    assert "tool" not in kinds, "the legacy 'tool' alias is retired (consumers read tool_start)"
     assert all("ts" in d for _, d in events)
     thinking = [d for k, d in events if k == "thinking"]
     assert thinking[0]["text"] == "plan: two lookups" and thinking[0]["streamed"] is True

@@ -13,7 +13,6 @@ from vbt import failures as fl
 from vbt.agents import AgentDefinition
 from vbt.budget import BudgetExceeded
 from vbt.context import CompactionResult
-from vbt.orchestrator import open_session
 from vbt.providers.base import (
     ContextOverflowError,
     Message,
@@ -26,6 +25,7 @@ from vbt.providers.mock import ScriptedProvider, call, fail, reply, turn
 from vbt.providers.retry import RetryPolicy
 from vbt.runtime import BUDGET_GRACE_MSG, repair_history
 from vbt.tools.base import Tool, ToolContext, ToolFailure, schema
+from conftest import open_scripted_session
 
 
 # --------------------------------------------------------------------------- helpers
@@ -37,9 +37,7 @@ def _probe(name="probe", tools=(), **kw):
 
 
 async def _session(config, provider, on_event=None, **limits):
-    config["orchestration"]["enforce_review"] = False
-    config.setdefault("limits", {}).update(limits)
-    return await open_session(config, provider=provider, start_mcp=False, on_event=on_event)
+    return await open_scripted_session(config, provider, on_event=on_event, **limits)
 
 
 def _results(msg):

@@ -5,3 +5,4 @@ provider:
 mcp_servers_file: configs/mcp_servers.none.yaml
 orchestration:
   strategic_orientation: false
+  require_reference_data: false   # no credentials or reference data needed offline

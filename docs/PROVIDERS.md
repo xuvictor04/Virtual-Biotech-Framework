@@ -124,8 +124,10 @@ and a failed response is never appended. Non-retryable errors propagate
 immediately; after the last attempt the final error is re-raised with
 `.attempts`. `resp.retries` reports how many attempts failed first.
 
-Config (in-code defaults): `retry.attempts: 8`, `retry.base_delay_s: 2`,
-`retry.max_delay_s: 60`, `retry.jitter: 0.25`.
+Config (in-code defaults, also listed in `configs/default.yaml`): `retry.attempts: 8`,
+`retry.base_delay_s: 2`, `retry.max_delay_s: 60`, `retry.jitter: 0.25`,
+`retry.max_retry_after_s: 600`. The vendor SDK's own retries
+(`provider.options.max_retries`) apply to each attempt, before the harness retry.
 
 ## Context-window management (`context.py`)
 
@@ -179,10 +181,21 @@ appended since).
   Server-side edits do not count as history edits, so caching and preserved
   thinking stay valid.
 
-Config (in-code defaults): `context.enabled: true`, `soft_ratio: 0.70`,
-`hard_ratio: 0.85`, `keep_recent_calls: 6`, `min_clear_chars: 2000`,
-`summary_max_tokens: 4000`, `server_side: false`; optional
-`models.<tier>.context_window_tokens`.
+Config (in-code defaults, also listed in `configs/default.yaml`): `context.enabled: true`,
+`soft_ratio: 0.70`, `hard_ratio: 0.85`, `keep_recent_calls: 6`, `min_clear_chars: 2000`,
+`min_clear_fraction: 0.05`, `summary_max_tokens: 4000`, `server_side: false`,
+`default_window_tokens: 200000`; optional `models.<tier>.context_window_tokens`.
+Compactions and retries are traced (`compaction`, `provider_retry`), counted in each turn
+record, and shown as notices by `vbt chat` and `vbt web`.
+
+## Choosing a model at the command line
+
+`--model` (chat, run, replay, scenario) sets the orchestrator, scientist and bulk tiers. It
+accepts a `model_aliases` label (`configs/default.yaml`: `opus`, `sonnet`, `haiku`, `paper`),
+a model id already configured in a tier, or an id matching `provider.model_pattern`
+(default `^claude-[a-z0-9.-]+$` for the Anthropic provider; no check for others). Anything
+else exits with code 2 and lists the aliases. The chosen models, with the effective
+thinking/effort per tier, are pinned in the run's `inputs/config.json`.
 
 ## The Claude adapter (`anthropic_provider.py`)
 

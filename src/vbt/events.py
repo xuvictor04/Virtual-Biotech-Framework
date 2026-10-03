@@ -86,7 +86,9 @@ EVENT_KINDS: dict[str, tuple[str, ...]] = {
     "bulk_end": ("job_id", "agent"),
 }
 
-#: Old kind -> new kind it mirrors (emitted alongside the new kind).
+#: Retired kind -> the kind that replaced it. The runtime no longer emits the
+#: legacy kinds; consumers (CLI printer, web UI) still accept them from older
+#: event logs.
 LEGACY_ALIASES = {"tool": "tool_start"}
 
 

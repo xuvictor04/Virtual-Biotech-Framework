@@ -8,24 +8,19 @@ from pathlib import Path
 
 import pytest
 
-from vbt import cli, orchestrator, providers
+from vbt import cli, orchestrator
 from vbt.orchestrator import NO_CLARIFY
-from vbt.providers.mock import ScriptedProvider, call, fail, reply
+from vbt.providers.mock import call, fail, reply
 
 ORIENT = "orchestration:\n  strategic_orientation: true\n  enforce_review: false\n"
 NO_REVIEW = "orchestration:\n  enforce_review: false\n"
 
 
 @pytest.fixture
-def env(tmp_path, monkeypatch):
+def env(tmp_path, monkeypatch, mock_provider):
     """Install a scripted provider for the 'mock' profile and scripted stdin."""
-    state = {"provider": None, "sessions": []}
-
-    def use(rules, **kw):
-        state["provider"] = ScriptedProvider.from_rules(rules, **kw)
-        return state["provider"]
-
-    monkeypatch.setitem(providers._FACTORIES, "mock", lambda **opts: state["provider"])
+    state = {"sessions": []}
+    use = mock_provider.use
 
     def feed(lines):
         it = iter(lines)

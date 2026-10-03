@@ -46,7 +46,7 @@ import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 
 from . import budget, failures
 from .agents import AgentDefinition, load_roster, system_prompt_parts
@@ -311,6 +311,11 @@ class Runtime:
         self.read_roots = [Path(resolve_path(p)).resolve() for p in paths.get("read_roots", []) if p]
         self.skill_roots = [Path(resolve_path(p)).resolve() for p in paths.get("skills", []) if p]
         self.mcp: MCPBridge | None = None
+        #: Servers that started but lack their reference data (preflight with
+        #: --allow-missing-data); told to every agent next to the MCP failures.
+        self.degraded_servers: dict[str, str] = {}
+        #: {skill name: sha256} of the skills materialised into <run>/.claude/skills.
+        self.skill_hashes: dict[str, str] = {}
         self.delegation_log: list[dict[str, Any]] = []
         self.retry_policy = RetryPolicy.from_config(config.get("retry"))
         self.context = ContextManager(self.provider, ContextPolicy.from_config(config.get("context")),
@@ -322,6 +327,7 @@ class Runtime:
         self._system_cache: dict[str, Any] = {}
         self._known_agents: dict[str, AgentDefinition] = {}
         self.registry.extend(builtin_tools(skill_roots=self.skill_roots))
+        self._materialize_skills()
         self.registry.extend(provenance_tools())
         self.registry.add(self._task_tool())
         self.registry.add(self._list_tools_tool())
@@ -335,6 +341,14 @@ class Runtime:
             log.exception("registering bulk dispatch tools failed")
 
     # ------------------------------------------------------------------ setup
+
+    def _materialize_skills(self) -> None:
+        """Link every skill into <run>/.claude/skills and record {name: sha256}."""
+        try:
+            from .tools.skills import materialize
+            self.skill_hashes = materialize(self.run.dir, self.skill_roots)
+        except Exception as exc:  # noqa: BLE001 - skills are optional; never block a runtime
+            self._note_audit_error(f"skill materialize: {type(exc).__name__}: {exc}")
 
     @property
     def search_backend(self):
@@ -352,13 +366,34 @@ class Runtime:
         """Launch configured MCP servers (optionally a subset). Returns failures."""
         specs = [MCPServerConfig(**{k: v for k, v in s.items() if k in MCPServerConfig.__dataclass_fields__})
                  for s in (self.config.get("mcp_servers") or {}).get("servers", [])]
-        self.mcp = MCPBridge(specs, extra_env=self.tool_env())
+        self.mcp = MCPBridge(specs, extra_env=self.tool_env(), log_dir=self.run.dir / "logs" / "mcp",
+                             options=self.config.get("mcp") or {}, on_event=self._mcp_event)
         tools = await self.mcp.start(set(servers) if servers else None)
         self.registry.extend(tools)
         self.run.trace("mcp_started", servers=sorted(self.mcp.sessions), failures=self.mcp.failures,
                        n_tools=len(tools))
         self._system_cache.clear()  # the unavailable-server list may have changed
         return self.mcp.failures
+
+    def _mcp_event(self, kind: str, **data: Any) -> None:
+        """MCP bridge lifecycle events (start, crash, restart, timeout): traced and emitted."""
+        try:
+            self._trace(kind, **data)
+        except Exception:  # noqa: BLE001 - observers must not break tool calls
+            log.debug("tracing %s failed", kind, exc_info=True)
+        self.emit(kind, **data)
+
+    def unavailable_servers(self) -> dict[str, str]:
+        """MCP servers agents cannot rely on: failed starts plus servers without their data."""
+        out = dict(self.degraded_servers or {})
+        if self.mcp:
+            out.update(self.mcp.failures or {})
+        return out
+
+    def set_degraded(self, servers: Mapping[str, str]) -> None:
+        """Record servers that lack reference data (prompts are rebuilt with the notice)."""
+        self.degraded_servers = {str(k): str(v) for k, v in (servers or {}).items()}
+        self._system_cache.clear()
 
     async def aclose(self) -> None:
         await self.cancel_outstanding()
@@ -424,7 +459,7 @@ class Runtime:
         if name == "cso":
             return self.run.dir
         agent = self._definition(name)
-        ws = getattr(agent, "workspace", None) if agent is not None else None
+        ws = agent.workspace if agent is not None else None
         if ws == "run" or (ws is None and name == "scientific-reviewer"):
             return self.run.dir
         return self.run.agent_dir(name)
@@ -432,7 +467,7 @@ class Runtime:
     def max_turns_for(self, agent: AgentDefinition, depth: int) -> int:
         """Model-call cap for one invocation: the agent's own ``max_turns``, else
         ``limits.max_cso_turns`` at depth 0, else ``limits.max_specialist_turns``."""
-        mt = getattr(agent, "max_turns", None)
+        mt = agent.max_turns
         if mt:
             return int(mt)
         limits = self.config.get("limits") or {}
@@ -445,7 +480,7 @@ class Runtime:
         prompt is built once per Runtime; others once per invocation."""
         if agent.can_delegate and agent.name in self._system_cache:
             return self._system_cache[agent.name]
-        unavailable = (self.mcp.failures if self.mcp else None) or None
+        unavailable = self.unavailable_servers() or None
         stable, volatile = system_prompt_parts(agent, run_dir=self.run.dir, workspace=workspace, config=self.config,
                                                roster=self.agents if agent.can_delegate else None,
                                                unavailable_servers=unavailable)
@@ -492,11 +527,7 @@ class Runtime:
         if usage is not None:
             cost.add(agent, usage, usd)
         elif usd:
-            add_extra = getattr(cost, "add_extra", None)
-            if callable(add_extra):
-                add_extra(agent=agent, usd=usd, label=label)
-            else:
-                cost.extra_usd += usd
+            cost.add_extra(agent=agent, usd=usd, label=label)
         budget.charge(usd)
         acc = budget.current_invocation()
         if acc is not None:
@@ -1064,12 +1095,10 @@ class Runtime:
             return None
 
     def _after_tool(self, event: dict[str, Any]) -> None:
-        hook = getattr(self.run, "after_tool", None)
-        if callable(hook):
-            try:
-                hook(event)
-            except Exception as exc:  # noqa: BLE001 - audit hooks never break a call
-                log.warning("after_tool hook failed: %s", exc)
+        try:
+            self.run.after_tool(event)
+        except Exception as exc:  # noqa: BLE001 - audit hooks never break a call
+            log.warning("after_tool hook failed: %s", exc)
 
     async def _execute(self, call: ToolCall, st: _Loop) -> ToolResult:
         agent = st.agent
@@ -1078,8 +1107,6 @@ class Runtime:
         self._trace("tool_start", **self._tool_start_event(call, st))
         self.emit("tool_start", invocation_id=st.inv, tool_use_id=call.id, agent=agent.name, tool=call.name,
                   input_preview=preview(call.input))
-        self.emit("tool", invocation_id=st.inv, tool_use_id=call.id, agent=agent.name, tool=call.name,
-                  input=preview(call.input))  # legacy alias of tool_start
         t0 = time.time()
         raw: Any = None
         parts: list[Any] | None = None  # multimodal result (text + image/document parts)
@@ -1351,15 +1378,16 @@ class Runtime:
             for name in self.registry.names():
                 t = self.registry.get(name)
                 inventory.setdefault(t.source, []).append(f"{name}: {t.description.splitlines()[0][:160]}")
-            failures_ = self.mcp.failures if self.mcp else {}
+            failures_ = self.unavailable_servers()
             out: dict[str, Any] = {"tools_by_source": inventory, "unavailable_servers": failures_,
                                    "agents": {n: a.description for n, a in self.agents.items()}}
-            status = getattr(self.mcp, "status", None) if self.mcp else None
-            if callable(status):
+            if self.mcp is not None:
                 try:
-                    out["servers"] = status()
+                    out["servers"] = self.mcp.status()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.debug("MCP status failed", exc_info=True)
+            if self.degraded_servers:
+                out["servers_without_reference_data"] = dict(self.degraded_servers)
             return out
         return Tool("ListTools", "Inventory every data tool, MCP server and specialist available in this run.",
                     schema({}), handler)

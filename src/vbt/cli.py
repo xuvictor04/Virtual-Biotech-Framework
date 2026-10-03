@@ -1,4 +1,9 @@
-"""Command-line interface: `vbt chat | run | replay | tools | doctor | verify | bulk | case1 | scenario`.
+"""Command-line interface.
+
+Sessions: ``vbt chat | run | replay | tools``; records: ``vbt verify | list |
+index | export | audit | show`` (``vbt.audit.cli``); ``vbt doctor``
+(``vbt.preflight``); ``vbt web`` (``vbt.web``); ``vbt bulk``; case studies
+``vbt case1 | scenario | data`` (``vbt.case_studies``).
 
 * ``vbt chat`` -- interactive CSO session. Ctrl+C during a turn interrupts that
   turn (recorded as ``interrupted``; the session stays usable); Ctrl+C at the
@@ -11,6 +16,9 @@
 * ``vbt replay RUN`` -- re-run a recorded session's turns and write
   ``replay_diff.json`` (a comparison, not a reproduction).
 * ``--resume RUN`` (chat, run) continues a recorded session.
+* ``--skip-preflight`` / ``--allow-missing-data`` (global) map to
+  ``preflight.skip`` / ``preflight.allow_missing_data``: the readiness gate run
+  before a session and before every turn (``vbt.preflight.require_ready``).
 * ``--model`` accepts a ``model_aliases`` label, a configured model id, or an id
   matching ``provider.model_pattern``.
 """
@@ -94,7 +102,8 @@ def _profiles(args, extra_profiles: Iterable[str] = ()) -> list[str]:
 
 def build_config(args, extra_profiles: Iterable[str] = ()) -> dict[str, Any]:
     """The configuration for a command: profiles (plus ``extra_profiles``) and the
-    global flags (--model, --no-web, --runs-dir, --no-clarify). ``config['profiles']``
+    global flags (--model, --no-web, --runs-dir, --no-clarify, --skip-preflight,
+    --allow-missing-data). ``config['profiles']``
     records the profile list for pinning."""
     profiles = _profiles(args, extra_profiles)
     overrides: dict[str, Any] = {}
@@ -104,6 +113,13 @@ def build_config(args, extra_profiles: Iterable[str] = ()) -> dict[str, Any]:
         overrides["paths"] = {"runs_dir": args.runs_dir}
     if getattr(args, "no_clarify", False):
         overrides["orchestration"] = {"strategic_orientation": False}
+    pre: dict[str, Any] = {}
+    if getattr(args, "skip_preflight", False):
+        pre["skip"] = True
+    if getattr(args, "allow_missing_data", False):
+        pre["allow_missing_data"] = True
+    if pre:
+        overrides["preflight"] = pre
     cfg = load_config(profiles, overrides)
     model = getattr(args, "model", None)
     if model:
@@ -113,7 +129,7 @@ def build_config(args, extra_profiles: Iterable[str] = ()) -> dict[str, Any]:
     return cfg
 
 
-_config = build_config  # backwards-compatible name (doctor, verify, handlers)
+_config = build_config  # backwards-compatible name (case-study handlers)
 
 
 class RunResolutionError(Exception):
@@ -901,63 +917,22 @@ async def cmd_tools(args, config: dict[str, Any] | None = None) -> int:
         for name, agent in [("cso", rt.cso), *rt.agents.items()]:
             tools = [t.name for t in rt.tools_for(agent)]
             missing = rt.registry.missing(agent.tools)
+            off = [m for m in missing if m in ("BulkDispatch", "BulkStatus")]
+            no_mcp = [m for m in missing if m.startswith("mcp__") and args.no_mcp]
+            missing = [m for m in missing if m not in off and m not in no_mcp]
             print(f"\n{name} [{agent.tier}: {agent.settings(config).model}] — {len(tools)} tools")
             print("  " + ", ".join(tools))
             if missing:
                 print(f"  (unresolved: {', '.join(missing)})")
+            if off:
+                print(f"  (off: {', '.join(off)}; set bulk.dispatch_enabled: true)")
+            if no_mcp:
+                print(f"  ({len(no_mcp)} MCP tool pattern(s) not resolved: --no-mcp)")
         if rt.mcp and rt.mcp.failures:
             print("\nMCP failures:", json.dumps(rt.mcp.failures, indent=1))
     finally:
         await rt.aclose()
     return 0
-
-
-def cmd_doctor(args) -> int:
-    config = _config(args)
-    ok = True
-
-    def check(label: str, cond: bool, hint: str = "") -> None:
-        nonlocal ok
-        ok &= cond
-        print(f"[{'ok' if cond else '!!'}] {label}" + ("" if cond else f"  -> {hint}"))
-
-    up = Path(config["vars"]["upstream"])
-    check("upstream submodule present", (up / "src" / "agents" / "cso" / "system_prompt.md").exists(),
-          "git submodule update --init")
-    try:
-        from .agents import load_roster
-        cso, agents = load_roster(config)
-        check(f"agent roster loads ({len(agents)} agents + CSO)", True)
-    except Exception as exc:  # noqa: BLE001
-        check("agent roster loads", False, str(exc))
-    if config["provider"]["name"] == "anthropic":
-        check("ANTHROPIC_API_KEY set", bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")),
-              "export ANTHROPIC_API_KEY or add it to .env")
-    ot = os.environ.get("OPEN_TARGETS_DATA_PATH")
-    check("OPEN_TARGETS_DATA_PATH set and exists", bool(ot) and Path(ot).exists(),
-          "python third_party/TheVirtualBiotech/tools/download_open_targets.py <dir>")
-    check("upstream clinical-trial labels present",
-          (up / "datasets" / "clinical_trials" / "clinical_trial_labels_reconciled.csv").exists(), "submodule")
-    if args.smoke:
-        async def smoke():
-            from .runtime import Runtime
-            from .session import Run
-            import tempfile
-            rt = Runtime(config, Run(Path(tempfile.mkdtemp())))
-            failures = await rt.start_mcp()
-            n = len([t for t in rt.registry.names() if t.startswith("mcp__") and "provenance" not in t])
-            await rt.aclose()
-            return failures, n
-        failures, n = asyncio.run(smoke())
-        check(f"MCP servers start ({n} data tools)", not failures, json.dumps(failures))
-    return 0 if ok else 1
-
-
-def cmd_verify(args) -> int:
-    from .verify import verify_run
-    report = verify_run(resolve_path(args.run_dir))
-    print(json.dumps(report, indent=2))
-    return 0 if report["status"] == "COMPLETE" else 1
 
 
 # ---------------------------------------------------------------- entry point
@@ -978,6 +953,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-web", action="store_true", help="disable WebSearch/WebFetch (no-leakage setting)")
     p.add_argument("--no-mcp", action="store_true", help="do not start MCP data servers")
     p.add_argument("--runs-dir")
+    p.add_argument("--skip-preflight", action="store_true",
+                   help="do not check credentials/reference data/MCP commands before the session and each turn")
+    p.add_argument("--allow-missing-data", action="store_true",
+                   help="start even when reference data is missing; the run is marked degraded and the "
+                        "agents are told which servers lack data")
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("chat", help="interactive CSO session")
@@ -995,25 +975,23 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("-q", "--quiet", action="store_true")
     rp.add_argument("--model", dest="replay_model", help="replay with a different model (alias or id)")
     sub.add_parser("tools", help="list agents and their resolved tools")
-    d = sub.add_parser("doctor", help="check installation")
-    d.add_argument("--smoke", action="store_true", help="also start every MCP server")
-    v = sub.add_parser("verify", help="check a run's artifacts and claim evidence")
-    v.add_argument("run_dir")
 
+    from .audit.cli import add_audit_parsers
     from .bulk import add_bulk_parser
     from .case_studies import add_case_parsers
+    from .preflight import add_doctor_parser
+    from .web import add_web_parser
+    add_audit_parsers(sub)      # verify, list, index, export, audit, show
+    add_doctor_parser(sub)      # doctor [--smoke] [--analysis]
+    add_web_parser(sub)         # web [--host] [--port] [--no-auth]
     add_bulk_parser(sub)
-    add_case_parsers(sub)
+    add_case_parsers(sub)       # case1, scenario, data (P9)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     p = build_parser()
     args = p.parse_args(argv)
-    if args.cmd == "doctor":
-        return cmd_doctor(args)
-    if args.cmd == "verify":
-        return cmd_verify(args)
     try:
         config = build_config(args)
         if args.cmd == "replay" and getattr(args, "replay_model", None):
@@ -1023,10 +1001,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.cmd in ("chat", "run", "tools", "replay"):
         fn = {"chat": cmd_chat, "run": cmd_run, "tools": cmd_tools, "replay": cmd_replay}[args.cmd]
+        from .preflight import DataReadinessError
         try:
             return asyncio.run(fn(args, config))
         except RunResolutionError as exc:  # --resume / replay run argument
             print(f"error: {exc}", file=sys.stderr)
+            return 2
+        except DataReadinessError as exc:  # session preflight: nothing was sent to the model
+            print(f"error: {exc}\nRun `vbt doctor` for details; --allow-missing-data starts a degraded run, "
+                  "--skip-preflight skips the check.", file=sys.stderr)
             return 2
     return args.handler(args, config)
 
