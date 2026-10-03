@@ -38,6 +38,8 @@ import dataclasses
 import hashlib
 import importlib
 import json
+import math
+import statistics
 import string
 import time
 from pathlib import Path
@@ -205,10 +207,20 @@ class BulkJob:
     summary: dict[str, Any] | None = None
     error: str | None = None
     started: float = dataclasses.field(default_factory=time.time)
+    #: Cumulative spend of every finished pilot and full run of this job (the
+    #: run in progress, if any, is added by :meth:`total_spent`). Persisted in
+    #: ``summary_path`` so a resumed job cannot reset it.
+    spent_usd: float = 0.0
+
+    def total_spent(self) -> float:
+        r = self.runner
+        live = r.scope.spent if (self.state == "running" and r is not None and r.scope is not None) else 0.0
+        return self.spent_usd + live
 
     def status(self) -> dict[str, Any]:
         out: dict[str, Any] = {"job_id": self.job_id, "state": self.state, "agent": self.agent,
                                "n_items": self.n_items, "budget_usd": self.budget_usd,
+                               "spent_usd": round(self.total_spent(), 6),
                                "results_path": str(self.out_path), "summary_path": str(self.summary_path)}
         r = self.runner
         if r is not None:
@@ -220,6 +232,24 @@ class BulkJob:
         if self.error:
             out["error"] = self.error
         return out
+
+    def persist(self) -> None:
+        try:
+            self.summary_path.write_text(json.dumps(self.status(), indent=2, default=str))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def add_spend(self, runner: BulkRunner) -> None:
+        """Fold a finished pilot/full run's spend into the job total."""
+        if runner.scope is not None:
+            self.spent_usd += float(runner.scope.spent or 0.0)
+
+
+def _persisted_spend(summary_path: Path) -> float:
+    try:
+        return float(json.loads(summary_path.read_text()).get("spent_usd") or 0.0)
+    except Exception:  # noqa: BLE001 - missing or unreadable summary: nothing spent yet
+        return 0.0
 
 
 def _jobs(runtime: Any) -> dict[str, BulkJob]:
@@ -337,18 +367,29 @@ def bulk_dispatch_tools(runtime: Any) -> list[Tool]:
         if job is not None and job.state == "running":
             raise ToolFailure(f"job {job_id} is already running; use BulkStatus")
         if job is None:
-            job = BulkJob(job_id, agent.name, out_path, summary_path, len(items), budget_usd)
+            job = BulkJob(job_id, agent.name, out_path, summary_path, len(items), budget_usd,
+                          spent_usd=_persisted_spend(summary_path))
             jobs[job_id] = job
         job.n_items, job.budget_usd = len(items), budget_usd
         concurrency = int(a.get("concurrency") or 16)
         pilot_size = int(a["pilot_size"]) if a.get("pilot_size") is not None else int(cfg.get("pilot_size") or 5)
+        # budget_usd caps the job's cumulative spend: every pilot and every full run counts against it
+        remaining_budget = budget_usd - job.spent_usd
+        if remaining_budget <= 0:
+            raise ToolFailure(f"job {job_id} already spent ${job.spent_usd:.2f} of budget_usd={budget_usd}; "
+                              "raise budget_usd (within bulk.dispatch_max_budget_usd) to continue")
 
         if not a.get("confirm"):
             pilot_items = items[:max(1, pilot_size)]
-            runner = BulkRunner(rt, agent, model, out_path, concurrency=min(concurrency, len(pilot_items)),
-                                budget_usd=budget_usd, job_id=job_id)
+            pilot_conc = max(1, min(concurrency, len(pilot_items)))
+            runner = BulkRunner(rt, agent, model, out_path, concurrency=pilot_conc,
+                                budget_usd=remaining_budget, job_id=job_id)
             t0 = time.time()
-            summary = await runner.run(pilot_items)
+            try:
+                summary = await runner.run(pilot_items)
+            finally:
+                job.add_spend(runner)
+                job.persist()
             elapsed = time.time() - t0
             results = [r for r in load_results(out_path) if r["id"] in {i.id for i in pilot_items}]
             ok_costs = [float(r.get("cost_usd") or 0) for r in results if r.get("ok")]
@@ -357,6 +398,12 @@ def bulk_dispatch_tools(runtime: Any) -> list[Tool]:
             done_ids = {r["id"] for r in results if r.get("ok")}
             remaining = sum(1 for i in items if i.id not in done_ids)
             ran = max(1, summary.get("completed", 0) + summary.get("failed", 0))
+            # per-item latency: median of the pilot records' own elapsed_s (the pilot ran in parallel,
+            # so elapsed/ran is already divided by its parallelism); fall back to undoing that division
+            lat = [float(r["elapsed_s"]) for r in results if r.get("elapsed_s") is not None]
+            latency = statistics.median(lat) if lat else elapsed / ran * pilot_conc
+            wall_s = math.ceil(remaining / max(1, concurrency)) * latency
+            left = budget_usd - job.spent_usd
             projection = {
                 "n_items": len(items), "n_remaining": remaining,
                 "pilot_cost_usd": round(sum(all_costs), 4),
@@ -364,12 +411,14 @@ def bulk_dispatch_tools(runtime: Any) -> list[Tool]:
                 "median_cost_per_success_usd": summary.get("median_cost_usd"),
                 "projected_remaining_cost_usd": None if per_item is None else round(per_item * remaining, 2),
                 "projected_total_cost_usd": None if per_item is None else round(per_item * len(items), 2),
-                "projected_wall_time_s": round(elapsed / ran * remaining / max(1, concurrency), 1),
-                "budget_usd": budget_usd,
-                "fits_budget": None if per_item is None else per_item * remaining <= budget_usd - sum(all_costs),
+                "projected_wall_time_s": round(wall_s, 1),
+                "budget_usd": budget_usd, "job_spent_usd": round(job.spent_usd, 6),
+                "budget_remaining_usd": round(left, 6),
+                "fits_budget": None if per_item is None else per_item * remaining <= left,
                 "pilot_success_rate": round(len(ok_costs) / len(results), 3) if results else None,
             }
             job.state, job.pilot = "piloted", {"summary": summary, "projection": projection}
+            job.persist()
             return {"job_id": job_id, "state": "piloted", "pilot_results": results[:max(1, pilot_size)],
                     "pilot_summary": summary, "projection": projection, "results_path": str(out_path),
                     "next": "Review the pilot. To run every item call BulkDispatch again with the same "
@@ -378,10 +427,6 @@ def bulk_dispatch_tools(runtime: Any) -> list[Tool]:
         if pilot_size > 0 and job.pilot is None:
             raise ToolFailure("run a pilot first: call BulkDispatch with confirm: false, review the projection, "
                               "then confirm (or pass pilot_size: 0 to skip the pilot)")
-        pilot_spent = float(((job.pilot or {}).get("summary") or {}).get("budget_spent") or 0.0)
-        remaining_budget = budget_usd - pilot_spent  # the pilot counts against the job's budget
-        if remaining_budget <= 0:
-            raise ToolFailure(f"the pilot already spent ${pilot_spent:.2f} of budget_usd={budget_usd}")
         runner = BulkRunner(rt, agent, model, out_path, concurrency=concurrency, budget_usd=remaining_budget,
                             job_id=job_id, account_to_parent=False)
         job.runner, job.state, job.summary, job.error, job.started = runner, "running", None, None, time.time()
@@ -398,10 +443,10 @@ def bulk_dispatch_tools(runtime: Any) -> list[Tool]:
                 job.state, job.error = "failed", f"{type(exc).__name__}: {exc}"
                 job.summary = getattr(exc, "bulk_summary", None)
             finally:
-                try:
-                    summary_path.write_text(json.dumps(job.status(), indent=2, default=str))
-                except Exception:  # noqa: BLE001
-                    pass
+                job.add_spend(runner)
+                if job.state == "running":  # cancelled/failed before a terminal state was set
+                    job.state = "cancelled"
+                job.persist()
                 rt.emit("bulk_end", job_id=job_id, agent=agent.name, state=job.state, error=job.error,
                         summary=job.summary)
 
