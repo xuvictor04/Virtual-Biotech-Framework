@@ -493,6 +493,20 @@ class Run:
             self._harness_written[rel] = (s.st_mtime_ns, s.st_size)
         except OSError:
             pass
+        # A harness record rewritten between saves (plan, claims, artifacts, config) gets its
+        # recorded hash refreshed now, so a run killed before the next save still verifies
+        # (the next MANIFEST write carries the new hash) instead of reporting tampering.
+        manifest = getattr(self, "manifest", None)
+        if isinstance(manifest, dict) and st.is_harness_hashed_rel(rel) and not st.is_ignored_rel(rel):
+            try:
+                digest = st.sha256_file(self.dir / rel)
+            except OSError:
+                return
+            with self._lock:
+                hashes = manifest.get("harness_files")
+                if not isinstance(hashes, dict):
+                    hashes = manifest["harness_files"] = {}
+                hashes[rel] = digest
 
     def _write_harness_text(self, rel: str, text: str) -> None:
         st.write_text_atomic(self.dir / rel, text)
@@ -622,6 +636,30 @@ class Run:
                 return names[0]
         return tool
 
+    def _concurrent_writer(self, tool_use_id: str | None, mtime: float) -> bool:
+        """True when another file-writing call was running at ``mtime`` (parallel tool calls),
+        so a file changed then cannot be credited to ``tool_use_id`` exactly."""
+        with self._lock:
+            calls = list(self._calls.items())
+        for tuid, rec in calls:
+            if tuid == tool_use_id or not is_capture_tool(rec.get("tool")):
+                continue
+            start = _f(rec.get("t_precise"))
+            if start is None:
+                start = _f(rec.get("t"))
+            if start is None or mtime < start:
+                continue
+            if rec.get("pending"):
+                if rec.get("t_precise") is not None:  # a live call still running
+                    return True
+                continue
+            end = _f(rec.get("end_precise"))
+            if end is None:
+                end = _f(rec.get("end_t"))
+            if end is not None and mtime <= end:
+                return True
+        return False
+
     def _upsert_artifact(self, rel: str, stat: tuple[int, int] | None = None, *, agent: str | None = None,
                          tool: str | None = None, tool_use_id: str | None = None,
                          returned: set[str] | frozenset = frozenset(), created_by: str | None = None,
@@ -647,13 +685,18 @@ class Run:
                 produced_by = self._calls[stem].get("agent") or owner
                 tool_use_id, tool, attributed = stem, self._calls[stem].get("tool"), True
                 created_by = tool
-            elif owner is None and tool_use_id and agent and window and window[0] <= stat[0] / 1e9 <= window[1]:
+            elif owner is None and tool_use_id and agent and window and window[0] <= stat[0] / 1e9 <= window[1] \
+                    and not self._concurrent_writer(tool_use_id, stat[0] / 1e9):
                 produced_by, attributed = agent, True
             else:
                 produced_by = prev.get("produced_by") or owner or "unknown"
         else:
             produced_by = owner
-            attributed = bool(tool_use_id) and agent == owner
+            # Exact only when the file changed during this call and no other concurrent
+            # call could have written it; otherwise provenance attribution decides later.
+            attributed = bool(tool_use_id) and agent == owner and (
+                window is None or (window[0] <= stat[0] / 1e9 <= window[1]
+                                   and not self._concurrent_writer(tool_use_id, stat[0] / 1e9)))
         mtime = stat[0] / 1e9
         changed = sha != prev.get("sha256")
         entry = {

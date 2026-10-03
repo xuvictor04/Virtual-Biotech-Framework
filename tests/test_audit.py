@@ -436,3 +436,70 @@ def test_cost_ledger_add_extra_attributes_without_model_call():
     assert r["agents"]["genomics-analyst"]["tool_usd"] == pytest.approx(0.03)
     assert "cso" not in r["agents"]
     assert CostLedger.from_report(r).total_usd == pytest.approx(0.74)
+
+
+# ----------------------------------------------------------------- review fixes A1, A2
+
+def test_mid_turn_harness_writes_rehash_so_killed_run_is_incomplete_not_tampered(tmp_path):
+    """A1: plan/claims/artifacts/config rewritten after a save keep their recorded hashes current."""
+    run = Run(tmp_path / "runs", run_id="K1", config={"provider": "mock"})
+    rel = "work/genomics-analyst/results/tables/l2g.csv"
+    tool_call(run, "genomics-analyst", "Write", "w1", {"file_path": rel}, action=lambda: write(run, rel))
+    assert run.write_plan("g1", [{"id": "s1", "agent": "genomics-analyst", "task": "t"}])["ok"]
+    assert run.record_claims([{"id": "C1", "text": "x", "evidence": [{"kind": "table", "path": rel}]}])["ok"]
+    run.finish_turn(turn(1))
+    assert {"evidence/claims.json", "inputs/plan.json"} <= set(manifest(run)["harness_files"])
+    # turn 2: harness records rewritten mid-turn, then the process "dies" (no finish_turn/close)
+    run.trace("turn_start", turn=2, prompt="q2")
+    assert run.write_plan("g2", [{"id": "s1", "agent": "genomics-analyst", "task": "t2"}])["ok"]
+    assert run.record_claims([{"id": "C2", "text": "y", "evidence": [{"kind": "table", "path": rel}]}])["ok"]
+    assert run.register_artifact(rel, "L2G table", "genomics-analyst")["ok"]
+    run.set_config({"provider": "mock", "model": "m2"})
+    hashes = manifest(run)["harness_files"]
+    for h in ("evidence/claims.json", "inputs/plan.json", "inputs/config.json"):
+        assert hashes[h] == storage.sha256_file(run.dir / h), h
+    v = verify_run(run.dir)
+    assert v["integrity"]["harness_changed"] == []
+    assert v["integrity"]["status"] == "passed"
+    assert v["status"] == "INCOMPLETE" and "unfinished_run" in {p["kind"] for p in v["evidence"]["problems"]}
+    # tampering after the mid-turn write is still caught
+    (run.dir / "inputs" / "plan.json").write_text("{}")
+    assert "inputs/plan.json" in verify_run(run.dir)["integrity"]["harness_changed"]
+
+
+def test_parallel_tool_calls_do_not_cross_credit_owned_files(tmp_path):
+    """A2: a file written by concurrent call B is not credited exactly to call A that ended first."""
+    run = Run(tmp_path / "runs", run_id="PAR")
+    ws = "work/statistician"
+    agent = "statistician"
+    run.trace("tool_start", agent=agent, tool="Bash", tool_use_id="A", input={"command": "python code/scripts/a.py"})
+    run.trace("tool_start", agent=agent, tool="Bash", tool_use_id="B", input={"command": "python code/scripts/b.py"})
+    write(run, f"{ws}/results/tables/b_out.csv", "b\n")  # written by B while A is still running
+    run.trace("tool_end", agent=agent, tool="Bash", tool_use_id="A", is_error=False, duration_s=0.0, output="ok")
+    e = run.manifest["artifacts"][f"{ws}/results/tables/b_out.csv"]
+    assert e["produced_by"] == agent
+    assert e["tool_use_id"] is None and e["created_by"] is None  # ambiguous: left to provenance
+    run.trace("tool_end", agent=agent, tool="Bash", tool_use_id="B", is_error=False, duration_s=0.0, output="ok")
+    assert run.manifest["artifacts"][f"{ws}/results/tables/b_out.csv"]["tool_use_id"] != "A"
+    # a sequential call after both finished still gets exact attribution
+    tool_call(run, agent, "Bash", "C", {"command": "python code/scripts/c.py"},
+              action=lambda: write(run, f"{ws}/results/tables/c_out.csv", "c\n"))
+    c = run.manifest["artifacts"][f"{ws}/results/tables/c_out.csv"]
+    assert c["tool_use_id"] == "C" and c["created_by"] == "c.py"
+    run.finish_turn(turn())
+    arts = manifest(run)["artifacts"]
+    assert arts[f"{ws}/results/tables/b_out.csv"].get("tool_use_id") != "A"
+    assert arts[f"{ws}/results/tables/b_out.csv"].get("created_by") != "a.py"
+    run.close()
+
+
+def test_owned_file_outside_call_window_is_not_credited_exactly(tmp_path):
+    """A2: owned work/ files get the same time-window check as unowned ones."""
+    run = Run(tmp_path / "runs", run_id="WIN")
+    rel = "work/statistician/results/tables/old.csv"
+    p = write(run, rel, "old\n")
+    os.utime(p, (p.stat().st_atime - 3600, p.stat().st_mtime - 3600))  # predates the call
+    tool_call(run, "statistician", "Bash", "D", {"command": "python code/scripts/d.py"})
+    e = run.manifest["artifacts"][rel]
+    assert e["produced_by"] == "statistician" and e["tool_use_id"] is None
+    run.close()
