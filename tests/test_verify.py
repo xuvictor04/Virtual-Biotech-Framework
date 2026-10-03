@@ -277,3 +277,37 @@ def test_rerun_reports_failures_and_missing_outputs(tmp_path):
     assert by["01_det.py"]["outputs_missing"] == [f"{ws}/results/tables/det.csv"]
     assert by["02_fail.py"]["status"] == "failed" and by["02_fail.py"]["returncode"] == 3
     assert rr["ok"] is False
+
+
+def test_rerun_uses_the_bash_env_allow_list_and_redacts_failures(tmp_path, monkeypatch):
+    secret = "sk-ant-test-0123456789abcdefSECRET"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+    monkeypatch.setenv("NCBI_API_KEY", "ncbi-0123456789abcdef")
+    run = Run(tmp_path / "runs", run_id="RS")
+    ws = "work/a"
+    probe = ("import os, sys\nfrom pathlib import Path\n"
+             "Path('seen.txt').write_text(repr(sorted(k for k in os.environ if 'KEY' in k)))\n")
+    leak = "import sys\nsys.stderr.write('token=' + sys.argv[1])\nraise SystemExit(1)\n"
+    write(run, f"{ws}/code/scripts/01_probe.py", probe)
+    tool_call(run, "a", "Bash", "b1", {"command": "python code/scripts/01_probe.py"})
+    write(run, f"{ws}/code/scripts/02_leak.py", leak)
+    tool_call(run, "a", "Bash", "b2", {"command": f"python code/scripts/02_leak.py {secret}"})
+    run.finish_turn({"turn": 1, "prompt": "q", "response": "r", "status": "completed"})
+    run.close()
+    rr = rerun_scripts(run.dir, timeout=60, keep_scratch=True, passthrough=[])
+    import shutil
+    from pathlib import Path
+    try:
+        seen = (Path(rr["scratch_dir"]) / ws / "seen.txt").read_text()
+    finally:
+        shutil.rmtree(Path(rr["scratch_dir"]).parent, ignore_errors=True)
+    assert seen == "[]"  # neither the provider key nor any other *_API_KEY reached the script
+    by = {s["script"].rsplit("/", 1)[-1]: s for s in rr["scripts"]}
+    assert by["02_leak.py"]["status"] == "failed"
+    assert secret not in by["02_leak.py"]["detail"] and "[redacted:ANTHROPIC_API_KEY]" in by["02_leak.py"]["detail"]
+    rr2 = rerun_scripts(run.dir, timeout=60, keep_scratch=True, passthrough=["NCBI_API_KEY"])
+    try:
+        seen = (Path(rr2["scratch_dir"]) / ws / "seen.txt").read_text()
+    finally:
+        shutil.rmtree(Path(rr2["scratch_dir"]).parent, ignore_errors=True)
+    assert seen == "['NCBI_API_KEY']"

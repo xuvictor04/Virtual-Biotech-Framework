@@ -28,8 +28,9 @@ import sys
 import tempfile
 import time
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
+from .. import envpolicy
 from .provenance import build_index, parse_bash, workspace_rel
 from .storage import diff_snapshots, read_json, sha256_file, snapshot_dir, to_rel, work_owner
 
@@ -149,8 +150,17 @@ def _expected_outputs(run: Mapping[str, Any], arts: Mapping[str, Mapping[str, An
     return sorted(set(out))
 
 
+def _default_passthrough() -> list[str]:
+    """``bash.env_passthrough`` from the local configuration (never the run's own copy)."""
+    try:
+        from ..config import load_config
+        return [str(p) for p in (load_config().get("bash") or {}).get("env_passthrough") or [] if p]
+    except Exception:  # noqa: BLE001 - a broken local config must not widen the environment
+        return []
+
+
 def _run_one(run: Mapping[str, Any], scratch: Path, prefixes: list[str], arts: Mapping[str, Mapping[str, Any]],
-             python: str, timeout: float) -> dict[str, Any]:
+             python: str, timeout: float, passthrough: Iterable[str] = ()) -> dict[str, Any]:
     agent = run.get("agent") or work_owner(run["script"]) or ""
     ws = f"work/{work_owner(run['script'])}" if work_owner(run["script"]) else (workspace_rel(agent) or "")
     res: dict[str, Any] = {"script": run["script"], "agent": agent, "cwd": run.get("cwd", ""),
@@ -175,7 +185,10 @@ def _run_one(run: Mapping[str, Any], scratch: Path, prefixes: list[str], arts: M
             v = v.replace(old, str(scratch))
         return v
 
-    env = {k: sub(v) for k, v in os.environ.items()}
+    # Same allow-list as the live Bash tool: provider keys and tokens never reach agent code.
+    base = envpolicy.child_env(os.environ, passthrough=passthrough,
+                               home=scratch.parent / ".home", tmp=scratch.parent / ".tmp")
+    env = {k: sub(v) for k, v in base.items()}
     env.update(VBT_RUN_DIR=str(scratch), VBT_WORKSPACE=str(scratch / ws) if ws else str(scratch),
                MCP_OUTPUT_DIR=str(scratch / "work" / "_mcp" / "data" / "processed"),
                VBT_AGENT=agent, VBT_VERIFY="1", MPLBACKEND="Agg")
@@ -201,7 +214,8 @@ def _run_one(run: Mapping[str, Any], scratch: Path, prefixes: list[str], arts: M
     res["duration_s"] = round(time.time() - t0, 2)
     res["returncode"] = proc.returncode
     if proc.returncode != 0:
-        res.update(status="failed", detail=(proc.stderr or proc.stdout or "")[-2000:])
+        res.update(status="failed", detail=envpolicy.redact((proc.stderr or proc.stdout or "")[-2000:],
+                                                            dict(os.environ)))
         return res
     after = snapshot_dir(scratch)
     changed, _deleted = diff_snapshots(before, after)
@@ -231,8 +245,14 @@ def _run_one(run: Mapping[str, Any], scratch: Path, prefixes: list[str], arts: M
 
 
 def rerun_scripts(run_dir: str | Path, python: str | None = None, timeout: float = 600, *,
-                  keep_scratch: bool = False) -> dict[str, Any]:
-    """Re-execute the run's scripts in a scratch copy; never writes into ``run_dir``."""
+                  keep_scratch: bool = False, passthrough: Iterable[str] | None = None) -> dict[str, Any]:
+    """Re-execute the run's scripts in a scratch copy; never writes into ``run_dir``.
+
+    Scripts get the same allow-listed environment as the live Bash tool
+    (:func:`vbt.envpolicy.child_env`); ``passthrough`` defaults to the local
+    configuration's ``bash.env_passthrough``.
+    """
+    passthrough = _default_passthrough() if passthrough is None else [p for p in passthrough if p]
     given = Path(run_dir).expanduser()
     run_dir = given.resolve()
     python = python or sys.executable
@@ -264,11 +284,11 @@ def rerun_scripts(run_dir: str | Path, python: str | None = None, timeout: float
         except (OSError, shutil.Error) as exc:
             out["ok"] = False
             out["scripts"] = [{"script": r["script"], "agent": r.get("agent"), "status": "copy_failed",
-                               "detail": str(exc)[:500]} for r in runs]
+                               "detail": envpolicy.redact(str(exc)[:500], dict(os.environ))} for r in runs]
             return out
         out["rewritten_files"] = _rewrite_prefix(scratch, prefixes)
         for r in runs:
-            out["scripts"].append(_run_one(r, scratch, prefixes, arts, python, timeout))
+            out["scripts"].append(_run_one(r, scratch, prefixes, arts, python, timeout, passthrough))
     finally:
         if not keep_scratch:
             shutil.rmtree(scratch_root, ignore_errors=True)

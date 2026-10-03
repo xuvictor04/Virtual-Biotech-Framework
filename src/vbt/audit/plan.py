@@ -207,13 +207,57 @@ def _output_produced(expected: str, keys: set[str], names: set[str]) -> bool:
     return PurePosixPath(norm).name in names
 
 
+def _step_order(steps: list[Mapping[str, Any]], declared: Any) -> list[Any]:
+    """The plan's valid_order when it names exactly the steps, else a fresh topological order."""
+    ids = [s.get("id") for s in steps]
+    if isinstance(declared, list) and sorted(map(str, declared)) == sorted(map(str, ids)) \
+            and len(set(ids)) == len(ids):
+        return list(declared)
+    known = set(ids)
+    clean = [{"id": s.get("id"), "depends_on": [d for d in s.get("depends_on") or [] if d in known
+                                                and d != s.get("id")]} for s in steps]
+    if len(set(ids)) == len(ids):
+        order = _topo_sort(clean)
+        if order is not None:
+            return order
+    return ids
+
+
+def _match_steps(steps: list[Mapping[str, Any]], actual: list[str], declared_order: Any = None
+                 ) -> dict[Any, int | None]:
+    """Assign each plan step at most one dispatch index, one to one.
+
+    Steps are visited in dependency order; each takes the earliest unused
+    dispatch of its agent that comes after every dispatch already matched to
+    its dependencies. If no such dispatch exists, the earliest unused dispatch
+    of that agent is taken (the caller then reports the step out of order).
+    A step left with no dispatch of its agent is ``None`` (not run).
+    """
+    by_id = {s.get("id"): s for s in steps}
+    used: set[int] = set()
+    match: dict[Any, int | None] = {}
+    for sid in _step_order(steps, declared_order):
+        s = by_id.get(sid)
+        if s is None:
+            continue
+        agent = str(s.get("agent"))
+        floor = max((match[d] for d in s.get("depends_on") or [] if match.get(d) is not None), default=-1)
+        free = [i for i, a in enumerate(actual) if a == agent and i not in used]
+        pick = next((i for i in free if i > floor), free[0] if free else None)
+        match[sid] = pick
+        if pick is not None:
+            used.add(pick)
+    return match
+
+
 def reconcile(plan: Mapping[str, Any] | None, execution: Iterable[Mapping[str, Any]] | None,
               artifacts: Any = None, *, ignore_unplanned: Iterable[str] = DEFAULT_IGNORE_UNPLANNED
               ) -> dict[str, Any]:
     """Compare the declared plan with what actually ran.
 
     ``execution`` is a list of ``{agent, start|start_t, ...}`` dispatch records;
-    order is by first dispatch. ``artifacts`` is the MANIFEST artifact map (or a
+    each plan step is matched to one
+    dispatch of its agent (see :func:`_match_steps`). ``artifacts`` is the MANIFEST artifact map (or a
     list of paths) used to check ``expected_outputs``.
 
     Returns ``{planned, actual, not_run, unplanned, out_of_order, missing_output,
@@ -236,12 +280,13 @@ def reconcile(plan: Mapping[str, Any] | None, execution: Iterable[Mapping[str, A
     actual = [str(e["agent"]) for e in records]
     out["planned"] = [s.get("agent") for s in steps]
     out["actual"] = actual
-    actual_set = set(actual)
     planned_set = {str(s.get("agent")) for s in steps}
     ignore = set(ignore_unplanned or ())
 
+    by_id = {s.get("id"): s for s in steps}
+    match = _match_steps(steps, actual, plan.get("valid_order"))
     for s in steps:
-        if s.get("agent") not in actual_set:
+        if match.get(s.get("id")) is None:
             d = {"kind": "not_run", "step": s.get("id"), "agent": s.get("agent"),
                  "detail": f"Planned step {s.get('id')} ({s.get('agent')}) never ran."}
             out["not_run"].append(d)
@@ -251,21 +296,20 @@ def reconcile(plan: Mapping[str, Any] | None, execution: Iterable[Mapping[str, A
             reported.add(a)
             out["unplanned"].append({"kind": "unplanned", "agent": a,
                                      "detail": f"{a} ran but was not in the plan."})
-    first: dict[str, int] = {}
-    for i, a in enumerate(actual):
-        first.setdefault(a, i)
-    by_id = {s.get("id"): s for s in steps}
     for s in steps:
+        mine = match.get(s.get("id"))
+        if mine is None:
+            continue
         for dep_id in s.get("depends_on") or []:
             dep = by_id.get(dep_id)
-            if not dep:
+            theirs = match.get(dep_id)
+            if not dep or theirs is None or mine >= theirs:
                 continue
             a, b = s.get("agent"), dep.get("agent")
-            if a in first and b in first and a != b and first[a] < first[b]:
-                out["out_of_order"].append({
-                    "kind": "out_of_order", "step": s.get("id"), "depends_on": dep_id,
-                    "detail": f"{a} (step {s.get('id')}) was dispatched before {b} (step {dep_id}), "
-                              "which it depends on."})
+            out["out_of_order"].append({
+                "kind": "out_of_order", "step": s.get("id"), "depends_on": dep_id,
+                "detail": f"{a} (step {s.get('id')}) was dispatched before {b} (step {dep_id}), "
+                          "which it depends on."})
     if artifacts is not None:
         keys = _artifact_keys(artifacts)
         names = {PurePosixPath(k).name for k in keys}

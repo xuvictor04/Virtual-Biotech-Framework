@@ -69,6 +69,27 @@ def test_reconcile_reports_every_deviation_kind():
     assert "## The analysis plan" in md and "*out_of_order*" in md and "[s1, s2] → [s3] → [s4]" in md
 
 
+def test_reconcile_matches_steps_to_dispatches_one_to_one():
+    plan = validate_plan([
+        {"id": "s1", "agent": "statistician", "task": "a"},
+        {"id": "s2", "agent": "geneticist", "task": "b", "depends_on": "s1"},
+        {"id": "s3", "agent": "statistician", "task": "c", "depends_on": "s2"},
+    ]).plan
+    seq = lambda *agents: [{"agent": a, "start_t": float(i)} for i, a in enumerate(agents)]  # noqa: E731
+    exact = reconcile(plan, seq("statistician", "geneticist", "statistician"))
+    assert exact["n_deviations"] == 0, exact["deviations"]
+    # the repeat statistician step was skipped: s3 is not_run, nothing is out of order
+    skipped = reconcile(plan, seq("statistician", "geneticist"))
+    assert [d["step"] for d in skipped["not_run"]] == ["s3"] and skipped["out_of_order"] == []
+    # geneticist ran before the statistician it depends on
+    early = reconcile(plan, seq("geneticist", "statistician", "statistician"))
+    assert [(d["step"], d["depends_on"]) for d in early["out_of_order"]] == [("s2", "s1")]
+    assert early["not_run"] == []
+    # a stored plan without valid_order is still matched in dependency order
+    bare = {"steps": list(reversed(plan["steps"]))}
+    assert reconcile(bare, seq("statistician", "geneticist", "statistician"))["n_deviations"] == 0
+
+
 def test_run_write_plan_returns_order_and_keeps_history(tmp_path):
     run = Run(tmp_path / "runs", run_id="P1")
     r = run.write_plan("goal 1", _steps(), roster={"single-cell-analyst", "bio-pathways-ppi-analyst",
