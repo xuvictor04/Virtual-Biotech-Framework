@@ -396,3 +396,77 @@ async def test_event_log_wait_and_threads():
     for i in range(5):
         log.publish("x", {"i": i})
     assert [e["data"]["i"] for e in log.since(0)] == [2, 3, 4]  # bounded
+
+
+# ----------------------------------------------------------------- Host / Origin / content-type (S3, S4)
+
+
+async def test_json_check_parses_the_media_type(app_client, monkeypatch):
+    install(monkeypatch, research_rules)
+    app, client = app_client
+    # CORS-safelisted (no preflight) type that merely contains "application/json"
+    r = await client.post("/api/login", content=json.dumps({"password": PASSWORD}),
+                          headers={"Content-Type": "text/plain; x=application/json"})
+    assert r.status_code == 415
+    r = await client.post("/api/login", content=json.dumps({"password": PASSWORD}),
+                          headers={"Content-Type": "Application/JSON; charset=utf-8"})
+    assert r.status_code == 200
+
+
+async def _no_auth_client(web_config, base_url, **kw):
+    app = create_app(web_config, no_auth=True, start_mcp=False, **kw)
+    return app, httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=base_url)
+
+
+async def test_no_auth_rejects_foreign_host_header(web_config, monkeypatch):
+    """DNS rebinding: attacker.example resolving to 127.0.0.1 must not reach the API."""
+    install(monkeypatch, research_rules)
+    app, client = await _no_auth_client(web_config, "http://127.0.0.1:7860", bind_host="127.0.0.1")
+    try:
+        r = await client.post("/api/sessions", json={}, headers={"Host": "attacker.example:7860"})
+        assert r.status_code == 400
+        assert (await client.get("/api/runs", headers={"Host": "attacker.example"})).status_code == 400
+        assert (await client.get("/runs/x/download.zip", headers={"Host": "attacker.example"})).status_code == 400
+        for host in ("127.0.0.1:7860", "localhost:7860", "[::1]:7860", "LOCALHOST"):
+            assert (await client.get("/api/auth", headers={"Host": host})).status_code == 200, host
+        r = await client.post("/api/sessions", json={}, headers={"Origin": "http://127.0.0.1:7860"})
+        assert r.status_code == 201, r.text
+    finally:
+        await client.aclose()
+        await app.state.sessions.aclose()
+
+
+async def test_cross_origin_state_change_is_refused(web_config, monkeypatch):
+    install(monkeypatch, research_rules)
+    app, client = await _no_auth_client(web_config, "http://localhost:7860")
+    try:
+        for origin in ("http://attacker.example", "null", "http://localhost:9999"):
+            r = await client.post("/api/sessions", json={}, headers={"Origin": origin})
+            assert r.status_code == 403, origin
+        r = await client.request("DELETE", "/api/sessions/abc", headers={"Origin": "http://evil.test"})
+        assert r.status_code == 403
+        # GETs are not blocked by Origin (the Host check covers them)
+        assert (await client.get("/api/auth", headers={"Origin": "http://evil.test"})).status_code == 200
+    finally:
+        await client.aclose()
+        await app.state.sessions.aclose()
+
+
+def test_allowed_host_set_rules():
+    from vbt.web.server import allowed_host_set
+    assert allowed_host_set(no_auth=False) is None            # password mode: any host by default
+    s = allowed_host_set(no_auth=False, extra=["vbt.example.org:443"])
+    assert "vbt.example.org" in s and "localhost" in s
+    s = allowed_host_set(no_auth=True, bind_host="::1", extra=["[::2]", "::3"])
+    assert {"localhost", "127.0.0.1", "::1", "::2", "::3"} <= s and "attacker.example" not in s
+    assert "0.0.0.0" not in allowed_host_set(no_auth=True, bind_host="0.0.0.0")
+
+
+async def test_password_mode_honours_configured_allowed_hosts(web_config, monkeypatch):
+    install(monkeypatch, research_rules)
+    web_config.setdefault("web_ui", {})["allowed_hosts"] = ["vbt.example.org"]
+    app = create_app(web_config, password=PASSWORD, start_mcp=False)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://vbt.example.org") as c:
+        assert (await c.get("/api/auth")).status_code == 200
+        assert (await c.get("/api/auth", headers={"Host": "rebind.example"})).status_code == 400
+    await app.state.sessions.aclose()

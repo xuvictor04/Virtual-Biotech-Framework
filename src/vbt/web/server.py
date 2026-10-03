@@ -11,8 +11,15 @@ Security model
   session cookie; repeated failures are slowed down and then refused for a while.
   ``--no-auth`` is accepted only when binding a loopback address, and binding
   any other address without a password refuses to start.
-* State-changing requests must be JSON (``Content-Type: application/json``),
-  which, with the SameSite cookie, keeps other sites from driving a session.
+* State-changing requests must be JSON (the media type of ``Content-Type`` must
+  be exactly ``application/json``, which browsers never send cross-site without
+  a CORS preflight), and a POST/DELETE whose ``Origin`` header names another
+  origin is refused. With the SameSite cookie this keeps other sites from
+  driving a session.
+* The ``Host`` header is checked against an allow-list (always under
+  ``--no-auth``: the bound address plus localhost/127.0.0.1/[::1]; with a
+  password, when ``web_ui.allowed_hosts`` is set), so a DNS-rebinding page
+  cannot reach a localhost server under its own name.
 * Browser sessions are bound to the login cookie that created them.
 * Files are served only from ``runs_dir/<run_id>/``: the run id must be a plain
   directory name, the resolved path must stay inside it, and dot-files and
@@ -38,10 +45,11 @@ import secrets
 import time
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 try:
     from starlette.applications import Starlette
+    from starlette.middleware import Middleware
     from starlette.requests import Request
     from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
     from starlette.routing import Mount, Route
@@ -69,7 +77,11 @@ WEB_UI_DEFAULTS: dict[str, Any] = {
     "event_buffer": 10000,          # events kept per session (for reconnects mid-turn)
     "login_max_failures": 10,       # per client, within login_lockout_s
     "login_lockout_s": 600,
+    "allowed_hosts": [],            # extra Host names accepted (empty + password = any host)
 }
+
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 INLINE_SUFFIXES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
                    ".webp": "image/webp", ".pdf": "application/pdf"}
@@ -108,6 +120,75 @@ def check_bind(host: str, *, password: str | None, no_auth: bool) -> None:
             raise WebAuthError(f"refusing to bind {host} without a password: set VBT_WEB_PASSWORD.")
         raise WebAuthError("VBT_WEB_PASSWORD is not set. Set it, or pass --no-auth to serve only on localhost "
                            "without a password.")
+
+
+# ----------------------------------------------------------------- Host / Origin checks
+
+def _host_name(value: str) -> str:
+    """The host part of a ``Host`` header (``[::1]:7860`` -> ``::1``), lowercased."""
+    h = str(value or "").strip().lower()
+    if h.startswith("["):
+        end = h.find("]")
+        return h[1:end] if end > 0 else ""
+    if h.count(":") == 1:
+        h = h.split(":", 1)[0]
+    return h.rstrip(".")
+
+
+def _cfg_host(value: str) -> str:
+    """A configured host name: ``example.org``, ``example.org:8080``, ``[::1]`` or bare ``::1``."""
+    h = str(value or "").strip().lower()
+    return h.rstrip(".") if h.count(":") > 1 and not h.startswith("[") else _host_name(h)
+
+
+def _norm_netloc(scheme: str, netloc: str) -> str:
+    netloc = netloc.strip().lower()
+    default = {"http": ":80", "https": ":443"}.get(scheme.lower())
+    if default and netloc.endswith(default):
+        netloc = netloc[: -len(default)]
+    return netloc
+
+
+def allowed_host_set(*, no_auth: bool, bind_host: str | None = None,
+                     extra: list[str] | tuple[str, ...] | None = None) -> frozenset[str] | None:
+    """Host names the server answers to, or None for any. Under ``--no-auth`` the list is
+    always enforced (loopback names + the bound address + ``extra``); with a password it is
+    enforced only when ``extra`` (``web_ui.allowed_hosts``) is non-empty."""
+    extra_names = [_cfg_host(h) for h in (extra or []) if str(h).strip()]
+    if not no_auth and not extra_names:
+        return None
+    names = set(LOOPBACK_HOSTS) | set(extra_names)
+    if bind_host:
+        b = _cfg_host(bind_host)
+        if b and b not in ("0.0.0.0", "::"):
+            names.add(b)
+    return frozenset(n for n in names if n)
+
+
+class HostOriginGuard:
+    """ASGI middleware: refuse requests whose ``Host`` is not allowed (DNS rebinding) and
+    state-changing requests whose ``Origin`` is not this server's own origin (CSRF)."""
+
+    def __init__(self, app, *, allowed_hosts: frozenset[str] | None):
+        self.app = app
+        self.allowed_hosts = allowed_hosts
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers") or []}
+        host = headers.get("host", "")
+        if self.allowed_hosts is not None and _host_name(host) not in self.allowed_hosts:
+            return await _err(400, "invalid Host header")(scope, receive, send)
+        if scope["type"] == "http" and scope.get("method", "GET").upper() in UNSAFE_METHODS:
+            origin = headers.get("origin")
+            if origin is not None:
+                parts = urlsplit(origin.strip())
+                if (parts.scheme not in ("http", "https") or not parts.netloc
+                        or _norm_netloc(parts.scheme, parts.netloc)
+                        != _norm_netloc(parts.scheme, host)):
+                    return await _err(403, "cross-origin request refused")(scope, receive, send)
+        return await self.app(scope, receive, send)
 
 
 # ----------------------------------------------------------------- config helpers
@@ -329,8 +410,10 @@ def _err(status: int, message: str, **extra: Any) -> JSONResponse:
 
 
 async def _json_body(request: Request, *, limit: int = 1_000_000) -> dict[str, Any] | JSONResponse:
-    ctype = request.headers.get("content-type", "")
-    if "application/json" not in ctype:
+    # The media-type essence must be exactly application/json: a substring test would accept
+    # ``text/plain; x=application/json``, which browsers send cross-site without a preflight.
+    ctype = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if ctype != "application/json":
         return _err(415, "send application/json")
     body = await request.body()
     if len(body) > limit:
@@ -356,8 +439,10 @@ def _file_url(run_id: str, rel: str) -> str:
 def create_app(config: dict[str, Any], *, provider: Any = None, password: str | None = None, no_auth: bool = False,
                profiles: tuple[str, ...] | list[str] = (), start_mcp: bool | None = None,
                max_sessions: int | None = None, idle_timeout_s: float | None = None,
-               secure_cookie: bool = False) -> Starlette:
-    """Build the ASGI app. ``provider`` is an LLMProvider instance or a zero-argument factory
+               secure_cookie: bool = False, bind_host: str | None = None,
+               allowed_hosts: list[str] | tuple[str, ...] | None = None) -> Starlette:
+    """Build the ASGI app. ``allowed_hosts`` (default ``web_ui.allowed_hosts``) and
+    ``bind_host`` set the Host allow-list (see ``allowed_host_set``). ``provider`` is an LLMProvider instance or a zero-argument factory
     (default: the configured provider, one per session). ``password`` defaults to
     ``VBT_WEB_PASSWORD``; without one the app refuses to build unless ``no_auth``."""
     app_state = WebApp(config, provider=provider, password=password, no_auth=no_auth, profiles=profiles,
@@ -719,7 +804,11 @@ def create_app(config: dict[str, Any], *, provider: Any = None, password: str | 
         Route("/runs/{run_id}/files/{path:path}", run_file),
         Mount("/static", app=StaticFiles(directory=str(STATIC_DIR)), name="static"),
     ]
-    app = Starlette(routes=routes, lifespan=lifespan)
+    hosts = allowed_host_set(no_auth=W.no_auth, bind_host=bind_host,
+                             extra=list(W.ui.get("allowed_hosts") or []) if allowed_hosts is None else allowed_hosts)
+    app = Starlette(routes=routes, lifespan=lifespan,
+                    middleware=[Middleware(HostOriginGuard, allowed_hosts=hosts)])
+    app.state.allowed_hosts = hosts
     app.state.web = W
     app.state.sessions = W.sessions
     return app
@@ -740,7 +829,8 @@ def serve(config: dict[str, Any], *, host: str = "127.0.0.1", port: int = 7860, 
     except ImportError:
         print("error: the web UI needs uvicorn: pip install 'vbt-harness[web]'")
         return 2
-    app = create_app(config, password=password, no_auth=no_auth, profiles=profiles, start_mcp=start_mcp)
+    app = create_app(config, password=password, no_auth=no_auth, profiles=profiles, start_mcp=start_mcp,
+                     bind_host=host)
     shown = f"[{host}]" if ":" in host else host
     print(f"The Virtual Biotech web UI: http://{shown}:{port}/" + ("  (no password: localhost only)" if no_auth
                                                                   else "  (password: VBT_WEB_PASSWORD)"))

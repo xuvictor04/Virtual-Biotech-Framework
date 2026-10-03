@@ -230,6 +230,7 @@ web_ui:
   event_buffer: 10000             # events kept per session for SSE resume (Last-Event-ID)
   login_max_failures: 10
   login_lockout_s: 600
+  allowed_hosts: []               # Host names accepted (DNS-rebinding guard); always loopback + bind addr under --no-auth
 
 # Environment passed to Bash and to MCP servers
 tool_env:
