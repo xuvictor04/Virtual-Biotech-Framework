@@ -202,7 +202,17 @@ def _case1(args, config: dict[str, Any]) -> int:
             ref = val.load_tdc(args.ref[4:])
         else:
             ref = pd.read_csv(args.ref)
-        print(val.agreement_report(pred, ref, exclude_stopped=args.exclude_stopped).to_string(index=False))
+        # registry status for the stopped-early exclusion when pred/ref lack it
+        # (e.g. TDC references, agent labels): released labels, else the mapping
+        parts = [released[["nct_id", "status"]]] if "status" in released.columns else []
+        mp = ann.mapping_path(config)
+        if mp.exists():
+            m = pd.read_parquet(mp)
+            if {"nct_id", "status"} <= set(m.columns):
+                parts.append(m[["nct_id", "status"]])
+        status = pd.concat(parts, ignore_index=True) if parts else None
+        print(val.agreement_report(pred, ref, exclude_stopped=args.exclude_stopped,
+                                   status=status).to_string(index=False))
         return 0
 
     if args.step == "features":

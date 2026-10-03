@@ -9,6 +9,8 @@ endpoint" vs not, restricted to trials where the endpoint is applicable.
 
 from __future__ import annotations
 
+import warnings
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -30,20 +32,40 @@ def _not_applicable(s: pd.Series) -> pd.Series:
 def _status(j: pd.DataFrame) -> pd.Series:
     """Registry status per joined row (reference first, then prediction)."""
     st = pd.Series(np.nan, index=j.index, dtype=object)
-    for c in ("status_ref", "status", "status_pred", "overall_status_pred", "overall_status"):
+    for c in ("status_ref", "status", "status_pred", "overall_status_pred", "overall_status", "status_external"):
         if c in j.columns:
             st = st.where(st.notna(), j[c])
     return st
 
 
+def _status_map(status) -> pd.Series | None:
+    """Normalise an external registry status (Series indexed by nct_id, mapping,
+    or DataFrame with ``nct_id``/``status``) to a Series keyed by nct_id."""
+    if status is None:
+        return None
+    if isinstance(status, pd.DataFrame):
+        status = status.dropna(subset=["status"]).groupby("nct_id")["status"].first()
+    elif isinstance(status, Mapping):
+        status = pd.Series(dict(status), dtype=object)
+    s = pd.Series(status, dtype=object).dropna()
+    return s[~s.index.duplicated(keep="first")]
+
+
 def endpoint_agreement(pred: pd.DataFrame, ref: pd.DataFrame, col: str, *, exclude_stopped: bool = True,
-                       stopped_statuses=STOPPED_STATUSES) -> dict:
+                       stopped_statuses=STOPPED_STATUSES, status=None) -> dict:
     """Agreement on "sufficient evidence of a positive endpoint", over applicable trials.
 
     Applicability (paper Methods): the reference must carry an applicable label
     (missing / NOT_APPLICABLE rows are excluded), the prediction must exist, and
     — with ``exclude_stopped`` (default) — trials that stopped early
     (Terminated / Withdrawn / Suspended) are excluded for endpoints.
+
+    The status comes from ``ref``/``pred`` columns when present, else from
+    ``status`` (Series indexed by nct_id, a mapping nct_id -> status, or a
+    DataFrame with ``nct_id``/``status``), e.g. the registry snapshot when the
+    reference is a status-less TDC CSV. If ``exclude_stopped`` is on but no
+    status can be resolved for any compared trial, a ``UserWarning`` is raised
+    and nothing is excluded.
     """
     keep = ["nct_id", col]
     extra_ref = [c for c in ("status",) if c in ref.columns]
@@ -53,9 +75,17 @@ def endpoint_agreement(pred: pd.DataFrame, ref: pd.DataFrame, col: str, *, exclu
         j = j.rename(columns={"status": "status_pred"})
     elif "status" in extra_ref and "status" not in extra_pred:
         j = j.rename(columns={"status": "status_ref"})
+    ext = _status_map(status)
+    if ext is not None:
+        j["status_external"] = j["nct_id"].map(ext)
+    st = _status(j)
+    if exclude_stopped and len(j) and st.isna().all():
+        warnings.warn(f"exclude_stopped=True but no registry status is available for {col!r} "
+                      "(no 'status' column in pred/ref and no status= given): stopped-early trials "
+                      "cannot be excluded", UserWarning, stacklevel=2)
     ref_na = _not_applicable(j[f"{col}_ref"])
     pred_missing = j[f"{col}_pred"].isna()
-    stopped = _status(j).astype("string").str.strip().str.lower().isin(
+    stopped = st.astype("string").str.strip().str.lower().isin(
         {s.lower() for s in stopped_statuses}).fillna(False).astype(bool)
     if not exclude_stopped:
         stopped = pd.Series(False, index=j.index)
@@ -93,9 +123,13 @@ def ae_agreement(pred: pd.DataFrame, ref: pd.DataFrame, tol_pct_points: float = 
 
 
 def agreement_report(pred: pd.DataFrame, ref: pd.DataFrame, *, exclude_stopped: bool = True,
-                     tol_pct_points: float = 1.0) -> pd.DataFrame:
-    """Per-field agreement with ``n_applicable`` denominators (paper: 88.4% = 76/86 primary)."""
-    rows = [endpoint_agreement(pred, ref, c, exclude_stopped=exclude_stopped)
+                     tol_pct_points: float = 1.0, status=None) -> pd.DataFrame:
+    """Per-field agreement with ``n_applicable`` denominators (paper: 88.4% = 76/86 primary).
+
+    ``status``: optional registry status (see :func:`endpoint_agreement`) used
+    when neither ``pred`` nor ``ref`` carries a ``status`` column.
+    """
+    rows = [endpoint_agreement(pred, ref, c, exclude_stopped=exclude_stopped, status=status)
             for c in ("primary_endpoint_result", "secondary_endpoint_result")
             if c in pred.columns and c in ref.columns]
     if any(c.startswith(AE_COLS_PREFIX) for c in ref.columns):

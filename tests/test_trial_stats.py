@@ -421,3 +421,75 @@ def test_agreement_applicability():
     assert inc.loc["primary_endpoint_result", "n_applicable"] == 4
     ae = rep.loc["serious_ae_rates"]
     assert ae["n_applicable"] == 3 and ae["n_agree"] == 2 and ae["n_excluded_no_exact_statistics"] == 2
+
+
+def test_agreement_status_less_tdc_reference(tmp_path):
+    import warnings
+
+    from vbt.case_studies.trial_outcomes.validation import agreement_report, load_tdc
+
+    tdc = tmp_path / "tdc.csv"
+    pd.DataFrame({"nctid": list("ABCD"), "label": [1, 0, 0, 1]}).to_csv(tdc, index=False)
+    ref = load_tdc(tdc)
+    assert "status" not in ref.columns
+    pred = pd.DataFrame({"nct_id": list("ABCD"),
+                         "primary_endpoint_result": ["POSITIVE", "POSITIVE", "POSITIVE", "POSITIVE"]})
+    # no status anywhere: warns, nothing excluded
+    with pytest.warns(UserWarning, match="no registry status"):
+        rep = agreement_report(pred, ref).set_index("field")
+    assert rep.loc["primary_endpoint_result", "n_excluded_stopped"] == 0
+    assert rep.loc["primary_endpoint_result", "n_applicable"] == 4
+    # registry status supplied externally (Series, dict, or nct_id/status DataFrame)
+    status_df = pd.DataFrame({"nct_id": ["A", "B", "B", "C", "D"],
+                              "status": ["Completed", np.nan, "Terminated", "Withdrawn", "Completed"]})
+    for st in (status_df, status_df.dropna().groupby("nct_id")["status"].first(),
+               status_df.dropna().groupby("nct_id")["status"].first().to_dict()):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            p = agreement_report(pred, ref, status=st).set_index("field").loc["primary_endpoint_result"]
+        assert p["n_excluded_stopped"] == 2 and p["n_applicable"] == 2 and p["n_agree"] == 2
+    # --include-stopped: no warning, all compared
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        inc = agreement_report(pred, ref, exclude_stopped=False).set_index("field")
+    assert inc.loc["primary_endpoint_result", "n_applicable"] == 4
+
+
+def test_agreement_reference_status_wins_over_external():
+    from vbt.case_studies.trial_outcomes.validation import agreement_report
+
+    pred = pd.DataFrame({"nct_id": ["A", "B"], "primary_endpoint_result": ["POSITIVE", "NEGATIVE"]})
+    ref = pd.DataFrame({"nct_id": ["A", "B"], "status": ["Completed", np.nan],
+                        "primary_endpoint_result": ["POSITIVE", "NEGATIVE"]})
+    p = agreement_report(pred, ref, status={"A": "Terminated", "B": "Suspended"}).set_index("field")
+    p = p.loc["primary_endpoint_result"]
+    assert p["n_excluded_stopped"] == 1 and p["n_applicable"] == 1  # A keeps ref status; B filled
+
+
+def test_case1_validate_cli_joins_registry_status_for_tdc(tmp_path, capsys):
+    import argparse
+    import warnings
+
+    from vbt.case_studies import _case1
+
+    ct = tmp_path / "datasets" / "clinical_trials"
+    ct.mkdir(parents=True)
+    # released labels know A, B; the mapping fills C (Withdrawn)
+    pd.DataFrame({"nct_id": ["A", "B"], "status": ["Completed", "Terminated"], "phase": [2.0, 3.0]}).to_csv(
+        ct / "clinical_trial_labels_reconciled.csv", index=False)
+    pd.DataFrame({"nct_id": ["A", "C", "D"], "status": ["Completed", "Withdrawn", "Completed"]}).to_parquet(
+        ct / "chembl_clinical_nct_data.parquet")
+    tdc = tmp_path / "tdc.csv"
+    pd.DataFrame({"nctid": list("ABCD"), "label": [1, 1, 1, 1]}).to_csv(tdc, index=False)
+    pred = tmp_path / "pred.csv"
+    pd.DataFrame({"nct_id": list("ABCD"), "primary_endpoint_result": ["POSITIVE"] * 4}).to_csv(pred, index=False)
+    args = argparse.Namespace(step="validate", sample_manual=None, pred=str(pred), ref=f"tdc:{tdc}",
+                              exclude_stopped=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert _case1(args, {"vars": {"upstream": str(tmp_path)}}) == 0
+    out = capsys.readouterr().out
+    row = next(l for l in out.splitlines() if l.strip().startswith("primary_endpoint_result")).split()
+    header = next(l for l in out.splitlines() if "n_excluded_stopped" in l).split()
+    rec = dict(zip(header, row))
+    assert rec["n_excluded_stopped"] == "2" and rec["n_applicable"] == "2"
