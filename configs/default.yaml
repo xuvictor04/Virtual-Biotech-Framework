@@ -174,6 +174,12 @@ bash:
   sandbox:
     paths: true                   # every path token must pass the read/write policy
     protect_other_workspaces: true  # agents write only under work/<agent>/ (CSO/reviewer: work/_cso/)
+    # OS enforcement: 'bwrap' runs every command under bubblewrap with the filesystem read-only
+    # except work/<agent>/ (all of work/ when protect_other_workspaces is false), .tmp and .home,
+    # and paths.blocked_read hidden. Without it the command policy is only a guardrail on the
+    # command text (interpreter code such as python -c or a script can still open files).
+    # A missing bwrap binary fails closed.
+    os: none
   # Guardrail groups (patterns and upstream guidance messages in
   # vbt.tools.policy.DEFAULT_GROUPS). Per group: enabled, patterns (replace),
   # message; destructive_fs also mode (workspace_only | block) and

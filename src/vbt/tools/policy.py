@@ -22,8 +22,19 @@ The Bash command policy (:func:`check_command`) ports the upstream
 (and scanned only for package installs), the pattern groups are compiled
 case-insensitively, ``rm``/``mv``/``ln``/``chmod``/... are allowed only inside the
 agent's own workspace, every path token must pass the Bash read policy and
-every redirect target the write policy. A command that cannot be parsed is
-denied with a pointer to the Read/Write tools.
+every redirect target the write policy. Command substitutions, ``bash -c``
+and ``eval`` strings and heredocs fed to a shell are checked again as commands;
+``NAME=value`` assignments and ``for`` lists are tracked and an unresolvable
+expansion is denied where it may name a file; in-place editors, ``tar``,
+``unzip``, ``cp -t`` and ``dd of=`` are write targets; the system/network
+groups are also matched against each command word by basename
+(``/bin/kill``). A command that cannot be parsed is denied with a pointer to
+the Read/Write tools.
+
+This is a guardrail on the command text, not an OS sandbox: interpreter code
+(``python -c``, scripts) can still open files. ``bash.sandbox.os: bwrap``
+(:func:`vbt.tools.builtin.bwrap_argv`) enforces the write and blocked-read
+rules at the OS level.
 """
 
 from __future__ import annotations
@@ -573,21 +584,197 @@ _SEPARATORS = (";", ";;", "&&", "||", "|", "&", "|&")
 _WRAPPERS = frozenset({"sudo", "env", "nohup", "time", "nice", "command", "exec", "builtin", "stdbuf", "ionice",
                        "then", "do", "else", "elif", "if", "while", "until", "!", "{", "xargs"})
 #: Commands whose path arguments are written ("all") or whose last argument is ("last").
-WRITE_COMMANDS = {"tee": "all", "touch": "all", "mkdir": "all", "truncate": "all", "cp": "last",
-                  "install": "last"}
-_VAR_RE = re.compile(r"\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))")
+WRITE_COMMANDS = {"tee": "all", "touch": "all", "mkdir": "all", "truncate": "all", "mkfifo": "all",
+                  "cp": "last", "install": "last", "rsync": "last",
+                  "gzip": "all", "gunzip": "all", "bzip2": "all", "bunzip2": "all", "xz": "all", "unxz": "all",
+                  "zstd": "all", "unzstd": "all"}
+#: Compressors write next to (or replace) their inputs unless they only list, test or write stdout.
+_COMPRESSORS = frozenset({"gzip", "gunzip", "bzip2", "bunzip2", "xz", "unxz", "zstd", "unzstd"})
+_COMPRESS_READONLY = frozenset({"-c", "--stdout", "--to-stdout", "-l", "--list", "-t", "--test"})
+#: Commands taking ``-t DIR`` / ``--target-directory=DIR`` as the destination.
+_TARGET_DIR_COMMANDS = frozenset({"cp", "mv", "install", "ln"})
+
+#: Marks a ``$`` or backtick the shell does not expand (single-quoted or backslash-escaped).
+_LIT_DOLLAR = ""
+_LIT_TICK = ""
+
+
+def _protect_literals(text: str) -> str:
+    """Replace ``$``/backticks that the shell leaves literal by sentinels (shlex drops the quotes)."""
+    out: list[str] = []
+    i, n, q = 0, len(text), None
+    while i < n:
+        c = text[i]
+        if q == "'":
+            if c == "'":
+                q = None
+            out.append(_LIT_DOLLAR if c == "$" else _LIT_TICK if c == "`" else c)
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n and text[i + 1] in "$`":
+            out.append(_LIT_DOLLAR if text[i + 1] == "$" else _LIT_TICK)
+            i += 2
+            continue
+        if c == "\\":
+            out.append(text[i:i + 2])
+            i += 2
+            continue
+        if c == '"':
+            q = None if q == '"' else '"'
+        elif c == "'" and q is None:
+            q = "'"
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _unprotect(s: str) -> str:
+    return s.replace(_LIT_DOLLAR, "$").replace(_LIT_TICK, "`")
+
+
+def _shell_c_string(rest: list[str]) -> tuple[bool, str | None]:
+    """For a shell's arguments: (has -c, the -c command string or the script path or None)."""
+    has_c, skip = False, False
+    for t in rest:
+        if skip:
+            skip = False
+            continue
+        if t in _REDIRECTS_WRITE or t in _REDIRECTS_READ or t in ("<<", "<<-", "<<<"):
+            skip = True
+            continue
+        if t == "--":
+            continue
+        if t.startswith(("-", "+")) and len(t) > 1 and not t.startswith("--"):
+            if "c" in t[1:]:
+                has_c = True
+            if t in ("-o", "+o", "-O", "+O"):
+                skip = True
+            continue
+        if t.startswith("--"):
+            continue
+        return has_c, t
+    return has_c, None
+
+
+def _inplace_files(word: str, args: list[str]) -> list[str] | None:
+    """Files edited in place by sed -i / perl -i / awk -i inplace; None when not in-place."""
+    takes_value = {"sed": {"-e", "-f", "-l", "--expression", "--file", "--line-length"},
+                   "perl": {"-e", "-E", "-I", "-M", "-m"},
+                   "awk": {"-f", "-v", "-F", "-e", "-i", "-l", "--file", "--assign", "--field-separator",
+                           "--source", "--include", "--load"}}[word]
+    script_opts = {"sed": {"-e", "-f", "--expression", "--file"}, "perl": {"-e", "-E"},
+                   "awk": {"-f", "-e", "--file", "--source"}}[word]
+    inplace, has_script, skip_for = False, False, None
+    pos: list[str] = []
+    end_opts = False
+    for t in args:
+        if skip_for is not None:
+            if word == "awk" and skip_for in ("-i", "--include") and t in ("inplace", "inplace.awk"):
+                inplace = True
+            skip_for = None
+            continue
+        if not end_opts and t == "--":
+            end_opts = True
+            continue
+        if not end_opts and t.startswith("-") and t != "-":
+            name = t.split("=", 1)[0]
+            if name in script_opts:
+                has_script = True
+            if word == "awk" and name in ("--include",) and t.endswith(("=inplace", "=inplace.awk")):
+                inplace = True
+            if word in ("sed", "perl") and (name in ("--in-place",) or
+                                            (not t.startswith("--") and "i" in t[1:].split("e")[0])):
+                inplace = True
+            if word == "perl" and not t.startswith("--") and "e" in t[1:]:
+                has_script = True
+            if name in takes_value and "=" not in t:
+                skip_for = name
+            continue
+        pos.append(t)
+    if not inplace:
+        return None
+    return pos if has_script else pos[1:]
+
+
+def _tar_writes(args: list[str]) -> list[str]:
+    """Paths a tar invocation writes: the extraction directory or the created archive."""
+    extract = create = False
+    archive = directory = None
+    i = 0
+    while i < len(args):
+        t = args[i]
+        nxt = args[i + 1] if i + 1 < len(args) else None
+        if t.startswith("--"):
+            name, _, val = t.partition("=")
+            if name in ("--extract", "--get"):
+                extract = True
+            elif name in ("--create", "--append", "--update", "--concatenate"):
+                create = True
+            elif name == "--directory":
+                directory = val or nxt
+                i += 0 if val else 1
+            elif name == "--file":
+                archive = val or nxt
+                i += 0 if val else 1
+        elif t.startswith("-") or i == 0:
+            flags = t.lstrip("-")
+            if t.startswith("-") or re.fullmatch(r"[A-Za-z]+", flags or "-"):
+                for k, ch in enumerate(flags):
+                    if ch == "x":
+                        extract = True
+                    elif ch in "cruA":
+                        create = True
+                    elif ch in "fC":
+                        val = flags[k + 1:] or nxt
+                        if ch == "f":
+                            archive = val
+                        else:
+                            directory = val
+                        if not flags[k + 1:]:
+                            i += 1
+                        break
+        i += 1
+    out: list[str] = []
+    if extract:
+        out.append(directory or ".")
+    if create and archive and archive != "-":
+        out.append(archive)
+    return out
+
+
+def _target_dir(args: list[str]) -> str | None:
+    for i, t in enumerate(args):
+        if t in ("-t", "--target-directory"):
+            return args[i + 1] if i + 1 < len(args) else ""
+        if t.startswith("--target-directory="):
+            return t.split("=", 1)[1]
+        if t.startswith("-t") and not t.startswith("--") and len(t) > 2:
+            return t[2:]
+    return None
+#: Shells whose ``-c`` string is checked again as a command.
+_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+#: Commands whose arguments never name files (an unresolvable $VAR there is harmless).
+_NO_FILE_ARGS = frozenset({"echo", "printf", "true", "false", ":", "test", "[", "[[", "expr", "let", "return",
+                           "exit", "shift", "set", "unset", "export", "local", "declare", "readonly", "typeset"})
+#: Special parameters that expand to numbers or flags, never to paths.
+_SPECIAL_PARAMS = re.compile(r"\$(?:[?#$!-]|\{[?#$!-]\})")
+_VAR_RE = re.compile(r"\$(?:\{([A-Za-z_]\w*)(?:(:?[-=])([^}]*))?\}|([A-Za-z_]\w*))")
 _ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
+_MAX_DEPTH = 4
 
 
 def _expand_vars(token: str, env: Mapping[str, str]) -> str | None:
-    """Expand $VAR/${VAR} from ``env``; None when something stays unresolvable."""
+    """Expand $VAR, ${VAR} and ${VAR:-word} from ``env``; None when something stays unresolvable."""
     if "`" in token or "$(" in token:
         return None
+    token = _SPECIAL_PARAMS.sub("0", token)
 
     def sub(m: re.Match) -> str:
-        name = m.group(1) or m.group(2)
-        if name in env:
+        name = m.group(1) or m.group(4)
+        if name in env and not (m.group(2) and m.group(2).startswith(":") and env[name] == ""):
             return env[name]
+        if m.group(2):  # ${NAME:-word} / ${NAME-word} / ${NAME:=word}: the default is what expands
+            return m.group(3) or ""
         raise KeyError(name)
 
     try:
@@ -595,6 +782,61 @@ def _expand_vars(token: str, env: Mapping[str, str]) -> str | None:
     except KeyError:
         return None
     return None if "$" in out else out
+
+
+def command_substitutions(text: str) -> list[str]:
+    """Inner command text of every ``$(...)``, backtick span and ``<(...)``/``>(...)`` outside single quotes.
+
+    ``$((...))`` arithmetic is skipped. Nested substitutions are returned by
+    the recursive check of their parent's text.
+    """
+    out: list[str] = []
+    i, n, q = 0, len(text), None
+    while i < n:
+        c = text[i]
+        if q == "'":
+            if c == "'":
+                q = None
+            i += 1
+            continue
+        if c == "\\":
+            i += 2
+            continue
+        if c == "'" and q is None:
+            q = "'"
+            i += 1
+            continue
+        if c == '"':
+            q = None if q == '"' else '"'
+            i += 1
+            continue
+        opener = (c == "$" or (c in "<>" and q is None)) and text.startswith("(", i + 1)
+        if opener and not text.startswith("((", i + 1):
+            depth, j, iq = 1, i + 2, None
+            while j < n and depth:
+                d = text[j]
+                if iq:
+                    if d == iq:
+                        iq = None
+                elif d in "'\"":
+                    iq = d
+                elif d == "\\":
+                    j += 1
+                elif d == "(":
+                    depth += 1
+                elif d == ")":
+                    depth -= 1
+                j += 1
+            out.append(text[i + 2:j - 1] if depth == 0 else text[i + 2:])
+            i = j
+            continue
+        if c == "`":
+            j = text.find("`", i + 1)
+            out.append(text[i + 1:] if j < 0 else text[i + 1:j])
+            i = n if j < 0 else j + 1
+            continue
+        i += 1
+    return out
 
 
 def _expand_home(token: str, env: Mapping[str, str]) -> str:
@@ -623,7 +865,7 @@ def _command_word(seg: list[str]) -> tuple[int, str]:
     i = 0
     while i < len(seg):
         t = seg[i].lstrip("(")
-        if not t or _ASSIGN_RE.match(t) or t in _WRAPPERS:
+        if not t or _ASSIGN_RE.match(t) or t in _WRAPPERS or ("/" in t and os.path.basename(t) in _WRAPPERS):
             i += 1
             continue
         if t == "timeout":
@@ -639,45 +881,78 @@ def _command_word(seg: list[str]) -> tuple[int, str]:
     return -1, ""
 
 
+def _segments_sep(tokens: list[str]) -> list[tuple[str, list[str]]]:
+    """Segments with the separator that precedes each ("" for the first)."""
+    out: list[tuple[str, list[str]]] = [("", [])]
+    for t in tokens:
+        if t in _SEPARATORS:
+            out.append((t, []))
+        else:
+            out[-1][1].append(t)
+    return [(s, seg) for s, seg in out if seg]
+
+
+def _deny(rule: _Rule) -> CommandDenied:
+    return CommandDenied(f"[SECURITY] Command blocked: {rule.message.format(name=rule.name)}", rule.group, rule.name)
+
+
 def check_command(command: str, policy: PathPolicy, cmd_policy: CommandPolicy, *,
-                  env: Mapping[str, str] | None = None, cwd: Path | None = None) -> None:
-    """Raise :class:`CommandDenied` when ``command`` breaks the Bash policy."""
+                  env: Mapping[str, str] | None = None, cwd: Path | None = None, _depth: int = 0) -> None:
+    """Raise :class:`CommandDenied` when ``command`` breaks the Bash policy.
+
+    Command substitutions, ``bash/sh -c`` strings, ``eval`` arguments and
+    heredocs fed to a shell are checked again as commands of their own.
+    ``NAME=value`` assignments and ``for NAME in ...`` lists are tracked so a
+    path held in a variable is still checked; an expansion that cannot be
+    resolved is denied wherever it may name a file. This is a guardrail on the
+    command text: interpreter code (``python -c``, scripts) can still open
+    files, so ``bash.sandbox.os: bwrap`` adds OS enforcement.
+    """
+    if _depth > _MAX_DEPTH:
+        raise CommandDenied("Command nests shells or substitutions too deeply; write a script file in your "
+                            "workspace and run it instead.", "paths", "nesting")
     env = dict(env or {})
     shell_text, bodies = split_heredocs(command)
 
     for rule in cmd_policy.shell_rules:
         if rule.rx.search(shell_text):
-            raise CommandDenied(f"[SECURITY] Command blocked: {rule.message.format(name=rule.name)}",
-                                rule.group, rule.name)
+            raise _deny(rule)
     for body in bodies:
         for rule in cmd_policy.heredoc_rules:
             if rule.rx.search(body):
-                raise CommandDenied(f"[SECURITY] Command blocked: {rule.message.format(name=rule.name)}",
-                                    rule.group, rule.name)
-    if cmd_policy.network_rules:
-        for rule in cmd_policy.network_rules:
-            if rule.rx.search(command):
-                raise CommandDenied(f"[SECURITY] Command blocked: {rule.message.format(name=rule.name)}",
-                                    rule.group, rule.name)
+                raise _deny(rule)
+    for rule in cmd_policy.network_rules:
+        if rule.rx.search(command):
+            raise _deny(rule)
+
+    def nested(text: str, at: Path | None) -> None:
+        if at is None:
+            raise CommandDenied("Nested command after an unverifiable cd; use absolute paths", "paths", "cwd")
+        check_command(text, policy, cmd_policy, env=venv, cwd=at, _depth=_depth + 1)
 
     check_paths = cmd_policy.paths
     destructive = cmd_policy.fs_enabled and bool(cmd_policy.workspace_commands)
-    if not (check_paths or destructive):
-        return
     try:
-        tokens = tokenize(shell_text)
+        tokens = tokenize(_protect_literals(shell_text))
     except ValueError:
+        if not (check_paths or destructive):
+            return
         raise CommandDenied("Cannot safely parse shell command; use Read/Write tools for file operations.",
                             "paths", "parse") from None
 
     cwd0 = Path(_norm(cwd or policy.workspace))
-    state = {"cwd": cwd0}
+    state: dict[str, Any] = {"cwd": cwd0}
+    venv: dict[str, str] = {**env, "PWD": str(cwd0)}
+    loops: dict[str, list[str]] = {}
+
+    for inner in command_substitutions(shell_text):
+        nested(inner, cwd0)
 
     def resolve_tok(tok: str) -> Path | None:
-        t = _expand_vars(tok, {**env, "PWD": str(state["cwd"] or "")})
+        t = _expand_vars(tok, {**venv, "PWD": str(state["cwd"] or "")})
         if t is None:
             return None
-        t = _expand_home(t, env)
+        t = _unprotect(_expand_home(t, venv))
         p = Path(t)
         if p.is_absolute():
             return Path(_norm(p))
@@ -685,40 +960,115 @@ def check_command(command: str, policy: PathPolicy, cmd_policy: CommandPolicy, *
             return None
         return Path(_norm(state["cwd"] / p))
 
-    def read_check(tok: str) -> None:
+    def resolve_all(tok: str) -> list[Path] | None:
+        """Every path ``tok`` can name (one per loop item); None when an expansion is unknown."""
+        names = [n for n in loops if re.search(r"\$(?:\{%s\}|%s(?!\w))" % (n, n), tok)]
+        variants = [tok]
+        for n in names:
+            rx = re.compile(r"\$(?:\{%s\}|%s(?!\w))" % (n, n))
+            variants = [rx.sub(lambda _m, it=it: it, v) for v in variants for it in loops[n]][:64]
+        out: list[Path] = []
+        for v in variants:
+            p = resolve_tok(v)
+            if p is None:
+                return None
+            out.append(p)
+        return out
+
+    def has_expansion(tok: str) -> bool:
+        return "$" in tok or "`" in tok
+
+    def read_check(tok: str, word: str = "") -> None:
         if not check_paths:
             return
-        p = resolve_tok(tok)
-        if p is None:
-            if "$" in tok or "`" in tok:
-                return  # unresolvable expansion in a read argument: the target cannot be known
-            raise CommandDenied(f"Command references a relative path after an unverifiable cd: {tok}; "
+        ps = resolve_all(tok)
+        if ps is None:
+            if has_expansion(tok):
+                if word in _NO_FILE_ARGS:
+                    return
+                raise CommandDenied(f"Command uses an expansion whose value cannot be verified: {_unprotect(tok)}; "
+                                    f"use literal paths (or a for-loop over literal paths)", "paths", "expansion")
+            raise CommandDenied(f"Command references a relative path after an unverifiable cd: {_unprotect(tok)}; "
                                 f"use absolute paths", "paths", "cwd")
-        if str(p) in SPECIAL_FILES:
-            return
-        why = policy.read_denial(p, bash=True)
-        if why:
-            raise CommandDenied(f"Command references path outside allowed directories: {p} ({why})",
-                                "paths", "read")
+        for p in ps:
+            if str(p) in SPECIAL_FILES:
+                continue
+            why = policy.read_denial(p, bash=True)
+            if why:
+                raise CommandDenied(f"Command references path outside allowed directories: {p} ({why})",
+                                    "paths", "read")
 
     def write_check(tok: str, *, own_only: bool = False, what: str = "Shell output") -> None:
         if tok in SPECIAL_FILES:
             return
-        p = resolve_tok(tok)
-        if p is None:
-            raise CommandDenied(f"{what} target cannot be verified ({tok}); use a literal path inside your "
-                                f"workspace {policy.own_dir}", "paths", "write")
-        if str(p) in SPECIAL_FILES:
-            return
-        why = policy.write_denial(p, own_only=own_only or None)
-        if why is None and own_only and _forms(p)[0] == _norm(policy.own_dir):
-            why = "refusing to remove or move your whole workspace"
-        if why:
-            raise CommandDenied(f"{what} is restricted to your workspace: {p} ({why})", "paths", "write")
+        ps = resolve_all(tok)
+        if ps is None:
+            raise CommandDenied(f"{what} target cannot be verified ({_unprotect(tok)}); use a literal path inside "
+                                f"your workspace {policy.own_dir}", "paths", "write")
+        for p in ps:
+            if str(p) in SPECIAL_FILES:
+                continue
+            why = policy.write_denial(p, own_only=own_only or None)
+            if why is None and own_only and _forms(p)[0] == _norm(policy.own_dir):
+                why = "refusing to remove or move your whole workspace"
+            if why:
+                raise CommandDenied(f"{what} is restricted to your workspace: {p} ({why})", "paths", "write")
 
-    # --- path tokens and redirect targets (upstream _bash_path_denial)
-    for seg in _segments(tokens):
+    for sep, seg in _segments_sep(tokens):
         idx, word = _command_word(seg)
+        # rules again on the command word itself: /bin/kill, /usr/bin/ssh, k''ill, env /bin/kill ...
+        upto = len(seg) if idx < 0 else idx + 1
+        rebuilt = shlex.join([os.path.basename(_unprotect(t.lstrip("("))) if k < upto and "/" in t
+                              else _unprotect(t) for k, t in enumerate(seg)])
+        for rule in (*cmd_policy.shell_rules, *cmd_policy.network_rules):
+            if rule.rx.search(rebuilt):
+                raise _deny(rule)
+        args = [x.strip("()") for x in seg[idx + 1:]] if idx >= 0 else []
+
+        # assignments (NAME=value, export NAME=value) and for-loop lists feed later expansions
+        assigns = seg[:idx] if idx >= 0 else seg
+        if word in ("export", "declare", "local", "readonly", "typeset"):
+            assigns = list(assigns) + args
+        for a in assigns:
+            a = a.lstrip("(")
+            if _ASSIGN_RE.match(a):
+                name, value = a.split("=", 1)
+                v = _expand_vars(value, {**venv, "PWD": str(state["cwd"] or "")})
+                loops.pop(name, None)
+                if v is None:
+                    venv.pop(name, None)
+                else:
+                    venv[name] = _expand_home(v, venv)
+        if word == "for" and len(args) >= 2:
+            name = args[0]
+            items = args[2:] if len(args) > 2 and args[1] == "in" else []
+            venv.pop(name, None)
+            loops[name] = items or ["$" + "@"]
+        elif word in ("read", "mapfile", "readarray"):
+            for n in args:
+                if re.fullmatch(r"[A-Za-z_]\w*", n):
+                    venv.pop(n, None)
+                    loops.pop(n, None)
+
+        # nested shells and eval run their string as a command
+        if word == "eval":
+            nested(" ".join(_unprotect(a) for a in args), state["cwd"])
+        for k, t in enumerate(seg):
+            if os.path.basename(_unprotect(t.lstrip("("))) in _SHELLS:
+                has_c, arg = _shell_c_string(seg[k + 1:])
+                if has_c and arg is not None:
+                    nested(_unprotect(arg), state["cwd"])
+                elif k == idx and arg is None:  # the shell reads its commands from stdin
+                    for m, h in enumerate(seg[k + 1:-1], start=k + 1):
+                        if h == "<<<":
+                            nested(_unprotect(seg[m + 1]), state["cwd"])
+                    for body in bodies:
+                        nested(body, state["cwd"])
+                    if sep in ("|", "|&"):
+                        raise CommandDenied("Piping text into a shell is not allowed; write the commands to a "
+                                            "script in your workspace or run them directly.", "paths", "nesting")
+
+        # --- path tokens and redirect targets (upstream _bash_path_denial)
         skip_next = False
         for j, raw in enumerate(seg):
             if skip_next:
@@ -746,29 +1096,63 @@ def check_command(command: str, policy: PathPolicy, cmd_policy: CommandPolicy, *
                 continue
             if raw.isdigit() and j + 1 < len(seg) and seg[j + 1] in _REDIRECTS_WRITE + _REDIRECTS_READ:
                 continue  # fd number of a redirection (2>file)
+            if _ASSIGN_RE.match(tok) and (idx < 0 or j < idx or word in ("export", "declare", "local",
+                                                                          "readonly", "typeset")):
+                continue  # NAME=value: the value is checked where the variable is used
             if tok.startswith("-"):
                 if "=" in tok:
                     val = tok.split("=", 1)[1]
-                    if val.startswith(("/", "~")):
-                        read_check(val)
+                    if val.startswith(("/", "~")) or has_expansion(val):
+                        read_check(val, word)
                 continue
-            if _is_pathlike(tok):
-                read_check(tok)
-        # file-creating commands: their targets obey the write policy like redirects
-        if check_paths and word in WRITE_COMMANDS and idx >= 0:
-            targets = _args_only([x.strip("()") for x in seg[idx + 1:]])
-            if WRITE_COMMANDS[word] == "last":
-                targets = targets[-1:] if len(targets) >= 2 else []
-            for t in targets:
-                write_check(t, what=word)
+            if _is_pathlike(tok) or (has_expansion(tok) and word not in _NO_FILE_ARGS):
+                read_check(tok, word)
+
+        if check_paths and idx >= 0:
+            # file-creating commands: their targets obey the write policy like redirects
+            if word in WRITE_COMMANDS and not (word in _COMPRESSORS and any(a in _COMPRESS_READONLY for a in args)):
+                targets = _args_only(args)
+                tdir = _target_dir(args) if word in _TARGET_DIR_COMMANDS else None
+                if tdir is not None:
+                    targets = [tdir]
+                elif WRITE_COMMANDS[word] == "last":
+                    targets = targets[-1:] if len(targets) >= 2 else []
+                for t in targets:
+                    write_check(t, what=word)
+            elif word in ("mv", "ln") and _target_dir(args) is not None:
+                write_check(_target_dir(args) or "", own_only=True, what=word)
+            if word in ("sed", "perl", "awk", "gawk"):
+                files = _inplace_files("awk" if word == "gawk" else word, args)
+                for t in files or []:
+                    write_check(t, what=f"{word} in-place edit")
+            elif word in ("tar", "bsdtar"):
+                for t in _tar_writes(args):
+                    write_check(t, what="tar")
+            elif word == "unzip" and not any(a in ("-l", "-t", "-p", "-Z", "-v") for a in args):
+                dest = args[args.index("-d") + 1] if "-d" in args and args.index("-d") + 1 < len(args) else "."
+                write_check(dest, what="unzip")
+            elif word == "dd":
+                for a in args:
+                    if a.startswith("of="):
+                        write_check(a[3:], what="dd")
+            elif word in ("curl", "wget"):
+                for i, a in enumerate(args):
+                    opt, _, val = a.partition("=")
+                    if word == "curl" and a in ("-o", "--output") or word == "wget" and a in (
+                            "-O", "--output-document", "-P", "--directory-prefix"):
+                        val = args[i + 1] if i + 1 < len(args) else ""
+                    elif not (val and opt in ("--output", "--output-document", "--directory-prefix")):
+                        continue
+                    if val and val != "-":
+                        write_check(val, what=word)
         # cd changes the base for later relative paths
         if word in ("cd", "pushd") and idx >= 0:
-            args = [a for a in seg[idx + 1:] if not a.startswith("-")]
-            if not args:
-                state["cwd"] = Path(_norm(env.get("HOME") or policy.workspace))
+            cargs = [a for a in seg[idx + 1:] if not a.startswith("-")]
+            if not cargs:
+                state["cwd"] = Path(_norm(venv.get("HOME") or policy.workspace))
             else:
-                p = resolve_tok(args[0])
-                state["cwd"] = p
+                state["cwd"] = resolve_tok(cargs[0])
+            venv["PWD"] = str(state["cwd"] or "")
         elif word == "popd":
             state["cwd"] = None
 
@@ -782,7 +1166,8 @@ def check_command(command: str, policy: PathPolicy, cmd_policy: CommandPolicy, *
             raw0 = seg[idx].lstrip("(")
             if word in wcmds:
                 args = [a.strip("()") for a in seg[idx + 1:]]
-                args = _args_only(args)
+                tdir = _target_dir(args) if word in _TARGET_DIR_COMMANDS else None
+                args = _args_only(args) + ([tdir] if tdir else [])
                 if word in ("chmod", "chown") and args:
                     args = args[1:]
                 if not args:

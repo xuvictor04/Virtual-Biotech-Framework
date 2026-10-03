@@ -493,6 +493,21 @@ def _resolve_output_path(ctx: ToolContext, raw: str) -> Path:
 
 
 def _query(ctx: ToolContext, a: dict[str, Any]) -> Any:
+    """QueryToolOutput: :func:`_query_raw` with secret values masked (saved outputs are not trusted to be clean)."""
+    from ..envpolicy import redact
+
+    value = _query_raw(ctx, a)
+    if isinstance(value, str):
+        return redact(value, os.environ)
+    try:
+        dumped = json.dumps(value, ensure_ascii=False)
+        masked = redact(dumped, os.environ)
+        return value if masked == dumped else json.loads(masked)
+    except (TypeError, ValueError):
+        return value
+
+
+def _query_raw(ctx: ToolContext, a: dict[str, Any]) -> Any:
     p = _resolve_output_path(ctx, str(a.get("path") or ""))
     limit_chars = int(getattr(ctx.runtime, "tool_output_max", 40000) or 40000) - 600
     jp = a.get("json_path")

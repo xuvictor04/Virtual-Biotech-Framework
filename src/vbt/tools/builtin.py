@@ -23,15 +23,16 @@ import collections
 import io
 import os
 import re
+import shutil
 import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from .. import envpolicy
 from ..providers.base import DocumentPart, ImagePart, TextBlock
-from .base import Tool, ToolContext, ToolFailure, schema
+from .base import Tool, ToolContext, ToolFailure, schema, tool_outputs_root
 from .notebook import notebook_edit_tool, render_notebook
 from .policy import CommandDenied, CommandPolicy, PathPolicy, check_command
 from .skills import SkillIndex, normalize_skill_name
@@ -309,7 +310,18 @@ def _read(ctx: ToolContext, a: dict[str, Any]) -> Any:
     if more:
         why = f" (output capped at {max_chars:,} chars)" if capped else ""
         body += f"\n... (more lines follow{why}; continue with offset={last + 1})"
+    if _is_tool_output(ctx, p):  # saved tool outputs may predate redaction or come from other tools
+        body = envpolicy.redact(body, os.environ)
     return body
+
+
+def _is_tool_output(ctx: ToolContext, p: Path) -> bool:
+    root = tool_outputs_root(ctx.run.dir)
+    try:
+        rp = p.resolve()
+    except OSError:
+        return False
+    return rp == root or root in rp.parents
 
 
 # ---------------------------------------------------------------- Write / Edit
@@ -696,6 +708,33 @@ def _unshare_available() -> bool:
     return _UNSHARE_OK
 
 
+def bwrap_argv(pol: PathPolicy, argv: list[str], cwd: Path, *, bwrap: str = "bwrap",
+               unshare_net: bool = False) -> list[str]:
+    """Wrap ``argv`` in bubblewrap (``bash.sandbox.os: bwrap``).
+
+    The whole filesystem is mounted read-only; only the agent's own work
+    directory (all of ``work/`` when ``protect_other_workspaces`` is off) and
+    the run's ``.tmp``/``.home`` are writable, so harness records and other
+    agents' outputs cannot change even from interpreter code. Blocked paths
+    (``.env``, ``.git``, credentials) are hidden: directories behind an empty
+    tmpfs, files behind ``/dev/null``.
+    """
+    run = pol.run_dir
+    rw = [pol.own_dir if pol.protect_other_workspaces else run / "work", run / ".tmp", run / ".home"]
+    out = [bwrap, "--die-with-parent", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+    if unshare_net:
+        out.append("--unshare-net")
+    for d in rw:
+        d.mkdir(parents=True, exist_ok=True)
+        out += ["--bind", str(d), str(d)]
+    for b in pol.blocked:
+        if os.path.isdir(b):
+            out += ["--tmpfs", b]
+        elif os.path.lexists(b):
+            out += ["--ro-bind", "/dev/null", b]
+    return out + ["--chdir", str(cwd), "--", *argv]
+
+
 def _timeout_s(raw: Any, cfg: dict[str, Any]) -> tuple[float, list[str]]:
     """Claude Code's Bash timeout is in milliseconds; values under 1000 are read as seconds."""
     notes: list[str] = []
@@ -724,7 +763,7 @@ def _timeout_s(raw: Any, cfg: dict[str, Any]) -> tuple[float, list[str]]:
 class _OutputSink:
     """Keep the head and tail of a command's output; spill everything once over the cap."""
 
-    def __init__(self, max_bytes: int, spill: Path) -> None:
+    def __init__(self, max_bytes: int, spill: Path, secrets: Mapping[str, str] | None = None) -> None:
         self.max = max(int(max_bytes), 1024)
         self.half = self.max // 2
         self.spill = spill
@@ -733,6 +772,29 @@ class _OutputSink:
         self.tail = bytearray()
         self.total = 0
         self.fh: Any = None
+        # The spill file is shareable (Read, export, web UI): secret values are masked as it is written.
+        # ``pending`` holds the last len(longest secret)-1 bytes so a secret split across chunks is caught.
+        self._secrets = sorted(((v.encode("utf-8"), f"[redacted:{n}]".encode("utf-8"))
+                                for v, n in envpolicy.secret_values(secrets or {}).items()),
+                               key=lambda kv: -len(kv[0]))
+        self._keep = max((len(v) for v, _ in self._secrets), default=1) - 1
+        self.pending = bytearray()
+
+    def _redact(self, data: bytes) -> bytes:
+        for value, mark in self._secrets:
+            data = data.replace(value, mark)
+        return data
+
+    def _spill_write(self, data: bytes, *, final: bool = False) -> None:
+        self.pending += data
+        if not self._secrets:
+            self.fh.write(bytes(self.pending))
+            self.pending = bytearray()
+            return
+        red = self._redact(bytes(self.pending))
+        cut = len(red) if final else max(len(red) - self._keep, 0)
+        self.fh.write(red[:cut])
+        self.pending = bytearray(red[cut:])
 
     def feed(self, chunk: bytes) -> None:
         self.total += len(chunk)
@@ -741,18 +803,19 @@ class _OutputSink:
             if len(self.buf) > self.max:
                 self.spill.parent.mkdir(parents=True, exist_ok=True)
                 self.fh = open(self.spill, "wb")  # noqa: SIM115
-                self.fh.write(self.buf)
+                self._spill_write(bytes(self.buf))
                 self.head = bytes(self.buf[: self.half])
                 self.tail = bytearray(self.buf[-self.half:])
                 self.buf = bytearray()
             return
-        self.fh.write(chunk)
+        self._spill_write(chunk)
         self.tail += chunk
         if len(self.tail) > 2 * self.half:
             del self.tail[: len(self.tail) - self.half]
 
     def close(self) -> None:
-        if self.fh is not None:
+        if self.fh is not None and not self.fh.closed:
+            self._spill_write(b"", final=True)
             self.fh.close()
 
     def text(self, rel_spill: str) -> str:
@@ -830,14 +893,23 @@ async def _bash(ctx: ToolContext, a: dict[str, Any]) -> str:
     shell = cfg.get("shell") or "/bin/bash"
     argv = [shell, "-c", command]
     iso = cfg.get("network_isolation")
-    if iso == "unshare":
+    os_sandbox = str(((cfg.get("sandbox") or {}).get("os")) or "none").lower()
+    if os_sandbox == "bwrap":
+        exe = shutil.which("bwrap")
+        if not exe:
+            raise ToolFailure("bash.sandbox.os is 'bwrap' but bubblewrap is not installed; install it or set "
+                              "bash.sandbox.os: none (the command policy alone is a guardrail, not a sandbox)")
+        argv = bwrap_argv(pol, argv, cwd, bwrap=exe, unshare_net=iso == "unshare")
+    elif os_sandbox not in ("none", "", "false"):
+        raise ToolFailure(f"unknown bash.sandbox.os {os_sandbox!r} (use bwrap or none)")
+    elif iso == "unshare":
         if _unshare_available():
             argv = ["unshare", "-rn", "--", *argv]
         else:
             notes.append("bash.network_isolation=unshare is unavailable here; the pattern block still applies")
     max_bytes = int(cfg.get("max_output_bytes") or 2_000_000)
     spill = run_dir / "logs" / "tool_outputs" / f"bash_{_safe_id(ctx.tool_call_id)}.txt"
-    sink = _OutputSink(max_bytes, spill)
+    sink = _OutputSink(max_bytes, spill, secrets_env)
     t0 = time.time()
     proc = await asyncio.create_subprocess_exec(
         *argv, cwd=str(cwd), env=env, stdin=asyncio.subprocess.DEVNULL,
@@ -897,7 +969,8 @@ async def _bash(ctx: ToolContext, a: dict[str, Any]) -> str:
     ctx.trace("bash", command=envpolicy.redact(command[:4000], secrets_env), exit_code=proc.returncode,
               timed_out=timed_out, timeout_s=timeout, duration_s=round(time.time() - t0, 2),
               output_bytes=sink.total, output_path=rel_spill if truncated else None, notes=notes or None,
-              network_isolation=iso if iso and argv[0] == "unshare" else None)
+              network_isolation=iso if iso and (argv[0] == "unshare" or os_sandbox == "bwrap") else None,
+              os_sandbox=os_sandbox if os_sandbox == "bwrap" else None)
     prefix = "".join(f"[note: {n}]\n" for n in notes)
     if timed_out:
         raise ToolFailure(f"{prefix}[timed out after {timeout:g}s; process group killed]\n{text}")

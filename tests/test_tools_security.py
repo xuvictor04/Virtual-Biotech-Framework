@@ -358,3 +358,26 @@ async def test_large_output_is_capped_and_spilled(rt):
 async def test_nonzero_exit_is_an_error_with_output(rt):
     msg = await _denied(rt, "Bash", command="echo oops; exit 3")
     assert msg.startswith("exit code 3") and "oops" in msg
+
+
+async def test_bash_spill_file_and_read_of_it_are_redacted(rt, monkeypatch):
+    monkeypatch.setenv("MY_SERVICE_TOKEN", "tok-value-abcdef-987654")
+    rt.config["bash"]["env_passthrough"] = ["MY_SERVICE_TOKEN"]
+    rt.config["bash"]["max_output_bytes"] = 4096
+    out = await _call(rt, "Bash", tid="tu_spill_secret",
+                      command="python3 -c \"import os; print('x' * 9000); print(os.environ['MY_SERVICE_TOKEN'])\"")
+    assert "tok-value-abcdef-987654" not in out
+    spill = rt.run.dir / "logs" / "tool_outputs" / "bash_tu_spill_secret.txt"
+    assert "tok-value-abcdef-987654" not in spill.read_text() and "[redacted:MY_SERVICE_TOKEN]" in spill.read_text()
+    # a saved output written before redaction existed is still masked when read back
+    old = rt.run.dir / "logs" / "tool_outputs" / "legacy.txt"
+    old.write_text("key=tok-value-abcdef-987654\n")
+    assert "tok-value-abcdef-987654" not in await _call(rt, "Read", file_path=str(old))
+    assert "tok-value-abcdef-987654" not in str(await _call(rt, "QueryToolOutput", path=str(old)))
+
+
+async def test_bwrap_sandbox_fails_closed_when_missing(rt, monkeypatch):
+    import vbt.tools.builtin as b
+    monkeypatch.setattr(b.shutil, "which", lambda name: None)
+    rt.config["bash"].setdefault("sandbox", {})["os"] = "bwrap"
+    assert "bubblewrap is not installed" in await _denied(rt, "Bash", command="echo hi")

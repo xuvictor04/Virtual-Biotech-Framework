@@ -371,9 +371,16 @@ def _decode(f: _Fetched) -> tuple[str, str, str]:
     return text, "", "text"
 
 
+#: A tag-like opener: '<' (or a look-alike such as U+FF1C/U+FE64/U+2039/U+3008/U+27E8) followed by an
+#: optional '/' and a letter of any script. Escaping every one of them means no case, spacing or homoglyph
+#: variant of the delimiter can close the untrusted block early ("a < b" reads "a &lt; b"; "x<5" and "<="
+#: are left alone).
+_TAG_OPEN = re.compile(r"[<\uff1c\ufe64\u2039\u3008\u27e8](?=\s*/?\s*[^\W\d_])")
+
+
 def _wrap(source: str, text: str) -> str:
-    safe = text.replace("</untrusted-web-content", "&lt;/untrusted-web-content")
-    src = source.replace('"', "%22")
+    safe = _TAG_OPEN.sub("&lt;", text)
+    src = re.sub(r'["<>&\x00-\x1f\x7f]', lambda m: f"%{ord(m.group(0)):02X}", source)
     return f'<untrusted-web-content source="{src}">\n{safe}\n</untrusted-web-content>'
 
 

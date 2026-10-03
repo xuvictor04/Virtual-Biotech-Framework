@@ -310,9 +310,14 @@ python -m pytest -q      # offline: scripted provider, synthetic data, no API ca
   for installs); `bash.network: false` blocks network commands. Commands run in their own
   process group (killed on timeout or interrupt), with `HOME`/`TMPDIR` inside the run and an
   allow-listed environment without provider keys; output above 2 MB is spilled to a file.
-  The `timeout` argument is in milliseconds, as in Claude Code. These are guardrails, not an
-  OS sandbox (interpreter code can still open arbitrary files): run the harness in a
-  container or VM.
+  The `timeout` argument is in milliseconds, as in Claude Code. Command substitutions,
+  `bash -c`/`eval` strings and heredocs fed to a shell are checked as commands too, paths held
+  in variables are tracked, and in-place editors (`sed -i`, `perl -i`), `tar -C`, `unzip -d`,
+  `cp -t` and `dd of=` count as writes. By default this is a guardrail on the command text, not
+  an OS sandbox: interpreter code (`python -c`, scripts, heredocs) can still open arbitrary
+  files. Set `bash.sandbox.os: bwrap` to run every command under bubblewrap (filesystem
+  read-only except the agent's own `work/<agent>/`, `.tmp` and `.home`; `paths.blocked_read`
+  hidden), or run the harness in a container or VM.
 - **Context and retries.** The Agent SDK manages context and retries itself; here
   `context.py` clears old tool results (spilled to files the agent can query with
   `QueryToolOutput`) and summarises older spans as the window fills, and `retry.py` retries
