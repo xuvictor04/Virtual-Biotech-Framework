@@ -649,6 +649,9 @@ class AnthropicProvider(LLMProvider):
     def supports_web_search(self) -> bool:
         return True
 
+    #: Bounded re-sends when the server-side search loop returns ``pause_turn``.
+    WEB_SEARCH_MAX_CONTINUATIONS = 2
+
     async def web_search(self, query: str, *, max_results: int = 8, allowed_domains: list[str] | None = None,
                          blocked_domains: list[str] | None = None) -> dict[str, Any]:
         """Use Claude's server-side web search tool and return cited results.
@@ -666,48 +669,77 @@ class AnthropicProvider(LLMProvider):
             tool["allowed_domains"] = list(allowed_domains)
         if blocked_domains:
             tool["blocked_domains"] = list(blocked_domains)
-        try:
-            final = await self.client.messages.create(
-                model=model,
-                max_tokens=4000,
-                tools=[tool],
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        "Search the web for the query below. Reply with a concise factual summary "
-                        "of what the top sources say, citing each source's URL and date where given. "
-                        f"Return at most {max_results} sources.\n\nQuery: {query}"
-                    ),
-                }],
-            )
-        except Exception as exc:  # noqa: BLE001
-            mapped = self._map_error(exc)
-            if mapped is None:
-                raise
-            raise mapped from exc
+        messages: list[dict[str, Any]] = [{
+            "role": "user",
+            "content": (
+                "Search the web for the query below. Reply with a concise factual summary "
+                "of what the top sources say, citing each source's URL and date where given. "
+                f"Return at most {max_results} sources.\n\nQuery: {query}"
+            ),
+        }]
         results, summary, errors = [], [], []
-        for b in final.content:
-            if b.type == "web_search_tool_result":
-                if isinstance(b.content, list):
-                    for r in b.content[:max_results]:
-                        results.append({
-                            "title": getattr(r, "title", ""),
-                            "url": getattr(r, "url", ""),
-                            "page_age": getattr(r, "page_age", None),
-                        })
-                else:  # server-tool errors arrive as an object, not an exception
-                    errors.append(str(getattr(b.content, "error_code", b.content)))
-            elif b.type == "text":
-                summary.append(b.text)
-        usage = _usage_from(final.usage)
-        out: dict[str, Any] = {"results": results[:max_results], "summary": "".join(summary),
-                               "cost_usd": self.cost(getattr(final, "model", None) or model, usage)}
+        cost = 0.0
+        final = None
+        assistant: list[Any] = []  # blocks of a paused turn, re-sent to resume it
+        for _ in range(self.WEB_SEARCH_MAX_CONTINUATIONS + 1):
+            try:
+                final = await self.client.messages.create(
+                    model=model, max_tokens=4000, tools=[tool], messages=messages,
+                )
+            except Exception as exc:  # noqa: BLE001
+                mapped = self._map_error(exc)
+                if mapped is None:
+                    raise
+                raise mapped from exc
+            for b in final.content:
+                if b.type == "web_search_tool_result":
+                    if isinstance(b.content, list):
+                        for r in b.content:
+                            results.append({
+                                "title": getattr(r, "title", ""),
+                                "url": getattr(r, "url", ""),
+                                "page_age": getattr(r, "page_age", None),
+                            })
+                    else:  # server-tool errors arrive as an object, not an exception
+                        errors.append(str(getattr(b.content, "error_code", b.content)))
+                elif b.type == "text":
+                    summary.append(b.text)
+            cost += self.cost(getattr(final, "model", None) or model, _usage_from(final.usage))
+            stop = getattr(final, "stop_reason", None)
+            if stop != "pause_turn":
+                break
+            # The server-side tool loop hit its iteration limit: re-send with the
+            # partial assistant turn so the server resumes where it stopped.
+            assistant.extend(_block_dict(b) for b in final.content)
+            messages = [messages[0], {"role": "assistant", "content": list(assistant)}]
+        stop = getattr(final, "stop_reason", None)
+        if stop == "pause_turn":
+            errors.append(f"incomplete: server tool loop still paused after "
+                          f"{self.WEB_SEARCH_MAX_CONTINUATIONS} continuation(s)")
+        elif stop == "max_tokens":
+            errors.append("incomplete: output truncated at max_tokens")
+        elif stop == "refusal":
+            sd = getattr(final, "stop_details", None)
+            detail = f" ({getattr(sd, 'category', None)}: {getattr(sd, 'explanation', '')})" if sd else ""
+            errors.append(f"refusal{detail}")
+        out: dict[str, Any] = {"results": results[:max_results], "summary": "".join(summary), "cost_usd": cost}
+        if stop is not None and stop != "end_turn":
+            out["stop_reason"] = stop
         if errors:
             out["errors"] = errors
         return out
 
     async def aclose(self) -> None:
         await self.client.close()
+
+
+def _block_dict(b: Any) -> Any:
+    """Serialise an SDK content block for re-sending (pause_turn continuation)."""
+    for attr in ("to_dict", "model_dump"):
+        fn = getattr(b, attr, None)
+        if callable(fn):
+            return fn()
+    return dict(vars(b))
 
 
 def _run_sync(coro):  # pragma: no cover - convenience for scripts

@@ -315,3 +315,68 @@ async def test_web_search_fee_cache_tokens_and_domain_filters():
     with pytest.raises(Exception, match="not both"):
         await p.web_search("x", allowed_domains=["a.org"], blocked_domains=["b.org"])
     await p.aclose()
+
+
+def _ws_usage(searches=1):
+    return SimpleNamespace(input_tokens=1000, output_tokens=100, cache_read_input_tokens=0,
+                           cache_creation_input_tokens=0, cache_creation=None,
+                           server_tool_use=SimpleNamespace(web_search_requests=searches, web_fetch_requests=0))
+
+
+async def test_web_search_resumes_pause_turn_and_sums_cost():
+    p = _p(web_search_model="claude-sonnet-5")
+    calls = []
+
+    async def create(**kw):
+        calls.append(kw["messages"])
+        n = len(calls)
+        hit = SimpleNamespace(type="web_search_tool_result",
+                              content=[SimpleNamespace(title=f"r{n}", url=f"https://x.org/{n}", page_age=None)])
+        hit.to_dict = lambda n=n: {"type": "web_search_tool_result", "n": n}
+        text = _blk(type="text", text=f"part{n} ")
+        return SimpleNamespace(model="claude-sonnet-5", content=[hit, text], usage=_ws_usage(),
+                               stop_reason="pause_turn" if n == 1 else "end_turn", stop_details=None)
+
+    p.client.messages.create = create
+    out = await p.web_search("q")
+    assert len(calls) == 2
+    resumed = calls[1]
+    assert resumed[-1]["role"] == "assistant"
+    assert resumed[-1]["content"][0] == {"type": "web_search_tool_result", "n": 1}
+    assert [r["url"] for r in out["results"]] == ["https://x.org/1", "https://x.org/2"]
+    assert out["summary"] == "part1 part2 "
+    one = (1000 * 2 + 100 * 10) / 1e6 + 0.01
+    assert out["cost_usd"] == pytest.approx(2 * one)
+    assert "errors" not in out and "stop_reason" not in out
+
+
+async def test_web_search_bounds_pause_turn_and_flags_degraded_stops():
+    p = _p(web_search_model="claude-sonnet-5")
+    calls = []
+
+    async def paused(**kw):
+        calls.append(kw)
+        return SimpleNamespace(model="claude-sonnet-5", content=[_blk(type="text", text="x")], usage=_ws_usage(),
+                               stop_reason="pause_turn", stop_details=None)
+
+    p.client.messages.create = paused
+    out = await p.web_search("q")
+    assert len(calls) == p.WEB_SEARCH_MAX_CONTINUATIONS + 1
+    assert out["stop_reason"] == "pause_turn" and "incomplete" in out["errors"][0]
+
+    async def truncated(**kw):
+        return SimpleNamespace(model="claude-sonnet-5", content=[_blk(type="text", text="cut")], usage=_ws_usage(),
+                               stop_reason="max_tokens", stop_details=None)
+
+    p.client.messages.create = truncated
+    out = await p.web_search("q")
+    assert out["stop_reason"] == "max_tokens" and "max_tokens" in out["errors"][0]
+
+    async def refused(**kw):
+        return SimpleNamespace(model="claude-sonnet-5", content=[], usage=_ws_usage(0), stop_reason="refusal",
+                               stop_details=SimpleNamespace(category="cyber", explanation="declined"))
+
+    p.client.messages.create = refused
+    out = await p.web_search("q")
+    assert out["stop_reason"] == "refusal" and out["errors"] == ["refusal (cyber: declined)"]
+    assert out["summary"] == ""
