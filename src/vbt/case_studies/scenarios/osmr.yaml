@@ -4,6 +4,17 @@ paper_section: "Results — Case study 3; Fig. 5; Supplementary Text VI"
 paper_cost_usd: 59.0
 profiles: []
 
+# Verbatim user turns (`--turns-source paper`): the main text quotes the initial query;
+# the full transcript is Supplementary Text VI (loaded from paper_turns_file when present).
+paper_turns:
+  - >
+    We want to understand why trial NCT06137183 was terminated. This trial tested a
+    first-in-class monoclonal antibody against OSMR in patients with UC. The results have been
+    posted, and the trial was terminated due to interim futility analysis, which showed lack of
+    efficacy. This termination was not related to safety concerns.
+paper_turns_file: data/supplementary/osmr_supplementary_text_VI.yaml
+
+# Synthetic steering turns (default).
 turns:
   - >
     We want to understand why trial NCT06137183 was terminated. This trial tested a
@@ -34,6 +45,21 @@ expected_findings:
     text: "A 10-gene gp130-axis score outperforms OSMR alone and is comparable to the Arijs 5-gene signature for predicting infliximab non-response across GSE12251, GSE16879, GSE23597, GSE73661."
   - id: cross_disease
     text: "Cross-disease CELLxGENE survey recovers OSMR up-regulation in UC/colorectal/gastric stroma and myocarditis cardiomyocytes, and highlights other diseases (e.g. AKI, periodontitis, pilocytic astrocytoma, AD)."
+
+# Paper numbers checked by `vbt scenario score` (cost: run / $59 as a ratio).
+expected_values:
+  - id: stat1_stromal_types
+    description: "Stromal cell types with STAT1 activity elevated in non-responders (FDR<0.05): 9 of 10"
+    value: 9
+    tolerance: 1
+    source: claims
+    pattern: "STAT1.*(stromal|fibroblast)|(stromal|fibroblast).*STAT1"
+  - id: cross_disease_n
+    description: "Diseases surveyed for OSMR in CELLxGENE Census"
+    value: 112
+    tolerance: "10%"
+    source: claims
+    pattern: "disease"
 
 reference_data:
   - "ClinicalTrials.gov NCT06137183 (Protocol GA44839 v2)"

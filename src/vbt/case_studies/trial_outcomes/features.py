@@ -23,6 +23,13 @@ Tabula Sapiens"* (Zhang et al., "The Virtual Biotech", Science 2026):
   sample *excess* kurtosis.  BC > 5/9 ≈ 0.555 suggests bi-/multimodality.
   The gene-level BC is the mean of the per-tissue BCs.
 
+  **Ambiguity.** The paper's text says "Pearson kurtosis" while Pfister's
+  formula uses excess (Fisher) kurtosis; Pearson = excess + 3 inflates the
+  denominator by 3, which is not a monotone transform across genes (per-gene
+  ranks and odds ratios can change). ``kurtosis='excess'|'pearson'`` and
+  ``bias_correction`` select the variant; check against the paper's Pearson
+  ρ(τ, BC) = 0.54 and τ threshold 0.69 (``case1_headline.json``).
+
 The main entry point :func:`compute_gene_features` accepts an ``AnnData`` or any
 duck-typed object exposing ``.X`` (dense ``numpy`` array or ``scipy.sparse``
 matrix), ``.obs`` (DataFrame), ``.var`` (DataFrame) and ``.var_names`` — so it
@@ -42,8 +49,18 @@ from typing import Iterable, Sequence
 import numpy as np
 import pandas as pd
 
+import logging
+import re
+
+log = logging.getLogger(__name__)
+
+KURTOSIS_MODES = ("excess", "pearson")
+
 __all__ = [
     "BC_THRESHOLD",
+    "KURTOSIS_MODES",
+    "detect_gene_id_column",
+    "looks_like_counts",
     "tau_index",
     "bimodality_coefficient",
     "compute_gene_features",
@@ -81,17 +98,24 @@ def tau_index(mean_expr: np.ndarray) -> float:
     return float(np.sum(1.0 - x / x_max) / (n - 1))
 
 
-def _bc_from_moments(n: np.ndarray, g1: np.ndarray, g2: np.ndarray) -> np.ndarray:
-    """BC given n, bias-corrected skewness g1 and bias-corrected excess kurtosis g2."""
+def _check_kurtosis(kurtosis: str) -> None:
+    if kurtosis not in KURTOSIS_MODES:
+        raise ValueError(f"kurtosis must be one of {KURTOSIS_MODES}, got {kurtosis!r}")
+
+
+def _bc_from_moments(n: np.ndarray, g1: np.ndarray, g2: np.ndarray, kurtosis: str = "excess") -> np.ndarray:
+    """BC given n, skewness g1 and *excess* kurtosis g2 (``kurtosis='pearson'`` adds 3)."""
+    _check_kurtosis(kurtosis)
     n = np.asarray(n, dtype=float)
+    k = g2 + 3.0 if kurtosis == "pearson" else g2
     with np.errstate(divide="ignore", invalid="ignore"):
         corr = 3.0 * (n - 1.0) ** 2 / ((n - 2.0) * (n - 3.0))
-        bc = (g1**2 + 1.0) / (g2 + corr)
+        bc = (g1**2 + 1.0) / (k + corr)
     bc = np.where(n < 4, np.nan, bc)
     return bc
 
 
-def bimodality_coefficient(x: np.ndarray) -> float:
+def bimodality_coefficient(x: np.ndarray, kurtosis: str = "excess", bias_correction: bool = True) -> float:
     """Bimodality coefficient (Pfister et al. 2013) over expressing cells.
 
     Paper Methods, "Single-cell feature extraction from Tabula Sapiens":
@@ -101,18 +125,23 @@ def bimodality_coefficient(x: np.ndarray) -> float:
     bias-corrected *excess* kurtosis
     (``scipy.stats.kurtosis(fisher=True, bias=False)``).
 
+    ``kurtosis='pearson'`` uses Pearson kurtosis (excess + 3) in the
+    denominator, as the paper's text says; ``bias_correction=False`` uses the
+    biased (population) skewness and kurtosis.
+
     Returns ``nan`` if n < 4 or the expressing values have zero variance.
     """
     from scipy import stats
 
+    _check_kurtosis(kurtosis)
     v = np.asarray(x, dtype=float).ravel()
     v = v[np.isfinite(v) & (v > 0)]
     n = v.size
     if n < 4 or np.ptp(v) == 0:
         return float("nan")
-    g1 = stats.skew(v, bias=False)
-    g2 = stats.kurtosis(v, fisher=True, bias=False)
-    return float(_bc_from_moments(np.array([n]), np.array([g1]), np.array([g2]))[0])
+    g1 = stats.skew(v, bias=not bias_correction)
+    g2 = stats.kurtosis(v, fisher=True, bias=not bias_correction)
+    return float(_bc_from_moments(np.array([n]), np.array([g1]), np.array([g2]), kurtosis)[0])
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +160,7 @@ def _is_sparse(m) -> bool:
     return sp.issparse(m)
 
 
-def _bc_columns(chunk) -> tuple[np.ndarray, np.ndarray]:
+def _bc_columns(chunk, kurtosis: str = "excess", bias_correction: bool = True) -> tuple[np.ndarray, np.ndarray]:
     """Vectorized BC per column of ``chunk`` over entries > 0.
 
     ``chunk`` is a scipy.sparse matrix (any format) or a dense array
@@ -165,9 +194,13 @@ def _bc_columns(chunk) -> tuple[np.ndarray, np.ndarray]:
         # Biased (population) moments -> bias-corrected estimators (scipy's
         # skew(bias=False) and kurtosis(fisher=True, bias=False)).
         g1_b = m3 / m2**1.5
-        g1 = np.sqrt(n * (n - 1.0)) / (n - 2.0) * g1_b
-        g2 = ((n**2 - 1.0) * m4 / m2**2 - 3.0 * (n - 1.0) ** 2) / ((n - 2.0) * (n - 3.0))
-    bc = _bc_from_moments(n, g1, g2)
+        if bias_correction:
+            g1 = np.sqrt(n * (n - 1.0)) / (n - 2.0) * g1_b
+            g2 = ((n**2 - 1.0) * m4 / m2**2 - 3.0 * (n - 1.0) ** 2) / ((n - 2.0) * (n - 3.0))
+        else:
+            g1 = g1_b
+            g2 = m4 / m2**2 - 3.0
+    bc = _bc_from_moments(n, g1, g2, kurtosis)
     bc = np.where(const, np.nan, bc)
     return bc, n.astype(int)
 
@@ -218,6 +251,59 @@ def _row_block(matrix, rows: np.ndarray, cols: np.ndarray | None):
     return block
 
 
+_ENSG = re.compile(r"^ENS[A-Z]*G\d+(\.\d+)?$")
+
+
+def detect_gene_id_column(adata, preferred: str | None = None) -> str | None:
+    """Where the Ensembl gene IDs live: ``None`` (= ``var_names``) when most
+    var_names are ENSG IDs (CELLxGENE-distributed h5ad files), else
+    ``preferred`` / ``ensembl_id`` / ``feature_id`` / ``gene_ids`` if present in
+    ``var``. Raises when none is found."""
+    names = pd.Index(np.asarray(adata.var_names).astype(str))
+    sample = names[: min(len(names), 2000)]
+    if len(sample) and np.mean([bool(_ENSG.match(x)) for x in sample]) > 0.8:
+        return None
+    var = adata.var
+    for c in [preferred, "ensembl_id", "feature_id", "gene_ids", "gene_id"]:
+        if c and c in var.columns:
+            vals = var[c].astype(str).head(2000)
+            if len(vals) and np.mean([bool(_ENSG.match(x)) for x in vals]) > 0.5:
+                return c
+    raise KeyError("no Ensembl gene IDs found: var_names are not ENSG IDs and none of "
+                   f"{[c for c in [preferred, 'ensembl_id', 'feature_id', 'gene_ids'] if c]} holds them; "
+                   "pass --gene-id-column")
+
+
+def looks_like_counts(matrix, n_rows: int = 500) -> bool:
+    """True when a sample of ``matrix`` is integer-valued (raw counts, not log-normalised)."""
+    sp = _sparse_module()
+    n = matrix.shape[0]
+    rows = np.unique(np.linspace(0, max(n - 1, 0), num=min(n, n_rows)).astype(int))
+    block = _row_block(matrix, rows, None)
+    data = np.asarray(block.data if sp.issparse(block) else block, dtype=float).ravel()
+    data = data[np.isfinite(data) & (data != 0)]
+    if data.size == 0:
+        return False
+    return bool(np.all(np.mod(data, 1.0) == 0) and data.max() > 1)
+
+
+def _normalize_log1p(block, target_sum: float = 1e4):
+    """normalize_total(target_sum) + log1p on a cells x genes block (all genes)."""
+    sp = _sparse_module()
+    if sp.issparse(block):
+        csr = sp.csr_matrix(block, dtype=float)
+        lib = np.asarray(csr.sum(axis=1)).ravel()
+        scale = np.divide(target_sum, lib, out=np.zeros_like(lib), where=lib > 0)
+        out = sp.diags(scale) @ csr
+        out = sp.csr_matrix(out)
+        out.data = np.log1p(out.data)
+        return sp.csc_matrix(out)
+    dense = np.asarray(block, dtype=float)
+    lib = dense.sum(axis=1)
+    scale = np.divide(target_sum, lib, out=np.zeros_like(lib), where=lib > 0)
+    return np.log1p(dense * scale[:, None])
+
+
 def _gene_index(adata, gene_id_column: str | None) -> pd.Index:
     var_names = pd.Index(np.asarray(adata.var_names).astype(str))
     if gene_id_column is None:
@@ -246,6 +332,9 @@ def compute_gene_features(
     gene_id_column: str | None = None,
     per_tissue: bool = False,
     chunk_size: int = 2000,
+    kurtosis: str = "excess",
+    bias_correction: bool = True,
+    normalize: bool = False,
 ) -> pd.DataFrame:
     """Compute τ and bimodality per gene from a (log-normalized) cell atlas.
 
@@ -284,6 +373,11 @@ def compute_gene_features(
         ``gene, tissue, tau, bimodality, n_celltypes, n_expressing``.
     chunk_size
         Number of genes processed at once inside a tissue.
+    kurtosis, bias_correction
+        Bimodality-coefficient variant (see :func:`bimodality_coefficient`).
+    normalize
+        The matrix holds raw counts: apply normalize_total(1e4) + log1p per
+        cell (library size over all genes) before computing features.
 
     Returns
     -------
@@ -291,6 +385,7 @@ def compute_gene_features(
     ``bimodality``, ``n_tissues_expressed`` (or the long table if
     ``per_tissue``).
     """
+    _check_kurtosis(kurtosis)
     obs = adata.obs
     for key in (tissue_key, celltype_key):
         if key not in obs.columns:
@@ -314,14 +409,22 @@ def compute_gene_features(
     tissue_levels = [t for t in pd.unique(tissues) if not pd.isna(t)]
 
     tau_rows, bc_rows, long_parts = [], [], []
+    kept_log: dict[str, dict[str, int]] = {}
     for tissue in tissue_levels:
         rows = np.flatnonzero(tissues == tissue)
         rows = np.sort(rows)
-        block = _row_block(matrix, rows, cols if n_genes < matrix.shape[1] else None)
+        if normalize:
+            block = _normalize_log1p(_row_block(matrix, rows, None))
+            if n_genes < matrix.shape[1]:
+                block = block[:, cols]
+        else:
+            block = _row_block(matrix, rows, cols if n_genes < matrix.shape[1] else None)
         ct = celltypes[rows]
         ct_series = pd.Series(ct, dtype=object)
         sizes = ct_series.value_counts(dropna=True)
         kept_types = [c for c, s in sizes.items() if s >= min_cells_per_type]
+        kept_log[str(tissue)] = {"n_cells": int(len(rows)), "n_celltypes": int(len(sizes)),
+                                 "n_celltypes_kept": int(len(kept_types))}
         tau_t = np.full(n_genes, np.nan)
         bc_t = np.full(n_genes, np.nan)
         nexp_t = np.zeros(n_genes, dtype=int)
@@ -345,7 +448,7 @@ def compute_gene_features(
                 means = indicator @ sub
                 means = means.toarray() if _is_sparse(means) else np.asarray(means)
                 tau_t[start:stop] = _tau_matrix(means)
-            bc, nexp = _bc_columns(sub)
+            bc, nexp = _bc_columns(sub, kurtosis, bias_correction)
             bc_t[start:stop] = bc
             nexp_t[start:stop] = nexp
 
@@ -365,12 +468,23 @@ def compute_gene_features(
                 )
             )
 
+    n_tau = sum(1 for v in kept_log.values() if v["n_celltypes_kept"] >= 2)
+    log.info("features: %d tissues, %d with >=2 cell types of >=%d cells (tau computed); "
+             "%d of %d cell types kept by the min-%d rule", len(kept_log), n_tau, min_cells_per_type,
+             sum(v["n_celltypes_kept"] for v in kept_log.values()),
+             sum(v["n_celltypes"] for v in kept_log.values()), min_cells_per_type)
+    attrs = {"kept_by_tissue": kept_log, "n_tissues": len(kept_log), "n_tissues_with_tau": n_tau,
+             "min_cells_per_type": min_cells_per_type, "bimodality_kurtosis": kurtosis,
+             "bimodality_bias_correction": bias_correction, "normalized_from_counts": bool(normalize)}
+
     if per_tissue:
         if not long_parts:
             return pd.DataFrame(
                 columns=["gene", "tissue", "tau", "bimodality", "n_celltypes", "n_expressing"]
             )
-        return pd.concat(long_parts, ignore_index=True)
+        out = pd.concat(long_parts, ignore_index=True)
+        out.attrs.update(attrs)
+        return out
 
     if tau_rows:
         tau_mat = np.vstack(tau_rows)
@@ -382,10 +496,12 @@ def compute_gene_features(
     else:
         tau = bcm = np.full(n_genes, np.nan)
         n_expr = np.zeros(n_genes, dtype=int)
-    return pd.DataFrame(
+    out = pd.DataFrame(
         {"tau": tau, "bimodality": bcm, "n_tissues_expressed": n_expr.astype(int)},
         index=out_keys,
     )
+    out.attrs.update(attrs)
+    return out
 
 
 class _silence_mean_warning:
@@ -407,6 +523,10 @@ def compute_features_from_h5ad(
     path: str,
     gene_ids: Sequence[str] | None = None,
     backed: str | bool | None = "r",
+    *,
+    gene_id_column: str | None = None,
+    layer: str | None = None,
+    normalize: str = "auto",
     **kwargs,
 ) -> pd.DataFrame:
     """Compute τ / BC features directly from an ``.h5ad`` atlas file.
@@ -418,9 +538,16 @@ def compute_features_from_h5ad(
     computation (matched against ``gene_id_column`` values or ``var_names``);
     all other keyword arguments go to :func:`compute_gene_features`.
 
-    For Tabula Sapiens, ``gene_id_column="ensembl_id"`` keys the output by
-    Ensembl gene ID so it joins to Open Targets ``targetId``.
+    Gene IDs: ``gene_id_column=None`` auto-detects (``var_names`` when they
+    are ENSG IDs, as in CELLxGENE downloads; else ``ensembl_id`` /
+    ``feature_id``) so the output joins to Open Targets ``targetId``.
+    ``layer`` selects the matrix. Integer-valued (raw-count) matrices are
+    normalised (normalize_total 1e4 + log1p) when ``normalize='auto'`` or
+    ``'always'``; ``'never'`` raises instead. The tissue and cell-type counts
+    kept by the min-cells rule are logged and stored in ``df.attrs``.
     """
+    if normalize not in ("auto", "always", "never"):
+        raise ValueError("normalize must be 'auto', 'always' or 'never'")
     try:
         import anndata  # noqa: F401
     except ImportError as exc:  # pragma: no cover - depends on environment
@@ -429,7 +556,23 @@ def compute_features_from_h5ad(
         ) from exc
     adata = anndata.read_h5ad(path, backed=backed if backed else None)
     try:
-        return compute_gene_features(adata, genes=gene_ids, **kwargs)
+        gid = detect_gene_id_column(adata, gene_id_column)
+        log.info("gene IDs from %s", "var_names" if gid is None else f"var[{gid!r}]")
+        matrix = _get_matrix(adata, layer)
+        counts = normalize == "always" or looks_like_counts(matrix)
+        if counts and normalize == "never":
+            raise ValueError(f"{'layer ' + layer if layer else 'X'} looks like raw counts (integer-valued); "
+                             "tau/bimodality need log-normalised expression: pass --normalize auto or a "
+                             "log-normalised --layer")
+        if counts:
+            log.warning("%s holds raw counts: applying normalize_total(1e4) + log1p per cell",
+                        f"layer {layer!r}" if layer else "X")
+        df = compute_gene_features(adata, genes=gene_ids, gene_id_column=gid, layer=layer,
+                                   normalize=counts, **kwargs)
+        print(f"features: {df.attrs.get('n_tissues')} tissues ({df.attrs.get('n_tissues_with_tau')} with tau); "
+              + ", ".join(f"{t}: {v['n_celltypes_kept']}/{v['n_celltypes']} cell types"
+                          for t, v in list(df.attrs.get("kept_by_tissue", {}).items())[:40]))
+        return df
     finally:
         file = getattr(adata, "file", None)
         if backed and file is not None:

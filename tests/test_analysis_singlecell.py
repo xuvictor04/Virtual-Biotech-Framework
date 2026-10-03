@@ -176,3 +176,69 @@ def test_immune_neighborhood_recovers_negative_effect():
     assert r.loc[("CD8T", "1-6"), "pct_ci_high"] < 0
     assert r.loc[("Bcell", "1-6"), "p"] > 1e-3
     assert r.loc[("CD8T", "1-6"), "n_samples"] == 10 and r.loc[("CD8T", "1-6"), "n_patients"] == 5
+
+
+# ------------------------------------------------------------------ P7 additions
+def _zero_inflated(frac_zero=0.8, n=1000, seed=0):
+    rng = np.random.default_rng(seed)
+    v = np.where(rng.random(n) < frac_zero, 0.0, rng.gamma(2.0, 1.0, n))
+    return pd.Series(v, index=[f"c{i}" for i in range(n)])
+
+
+def test_quartile_ties_on_zero_inflated_expression():
+    v = _zero_inflated()
+    with pytest.warns(scm.QuartileTieWarning, match="expressing"):
+        lab = scm.quartile_groups(v)
+    assert (lab == "low").sum() == 0  # the degenerate split the warning is about
+    with pytest.raises(ValueError, match="degenerate"):
+        scm.quartile_groups(v, on_ties="raise")
+    expr = scm.split_groups(v, mode="expressing")
+    assert (expr == "high").sum() == (v > 0).sum() and (expr == "low").sum() == (v == 0).sum()
+    among = scm.quartile_groups(v, among_expressing=True)
+    nz = v[v > 0]
+    assert among[v == 0].isna().all()
+    assert (among == "high").sum() == pytest.approx(len(nz) / 4, abs=2)
+    assert (among == "low").sum() == pytest.approx(len(nz) / 4, abs=2)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        scm.quartile_groups(pd.Series(np.arange(100.0)))  # no ties -> no warning
+    lab2 = scm.split_groups(v, mode="expressing", labels=("pos", "neg"))
+    assert set(lab2.dropna()) == {"pos", "neg"}
+
+
+def test_pseudobulk_default_min_cells_is_20():
+    obs = _toy_obs()
+    X = np.ones((len(obs), 2))
+    counts, meta = scm.pseudobulk_counts(X, obs, groupby=["donor", "celltype"])
+    assert "d1|B" not in counts.index  # 10 cells < 20
+    assert "d1|Fib" in counts.index and meta["n_cells"].min() >= 20
+
+
+def test_ilisi_and_batch_mixing_report():
+    rng = np.random.default_rng(0)
+    n = 400
+    batch = np.repeat(["b1", "b2"], n // 2)
+    separated = np.column_stack([rng.normal(size=n) + 20 * (batch == "b2"), rng.normal(size=n)])
+    mixed = np.column_stack([rng.normal(size=n), rng.normal(size=n)])
+
+    class A:
+        pass
+
+    a = A()
+    a.obs = pd.DataFrame({"batch": batch})
+    a.obsm = {"X_pca": separated, "X_pca_harmony": mixed}
+    rep = scm.batch_mixing_report(a, "batch", k=30).set_index("representation")
+    assert rep.loc["X_pca", "median_ilisi"] == pytest.approx(1.0)
+    assert rep.loc["X_pca_harmony", "median_ilisi"] > 1.6
+    assert rep.loc["X_pca_harmony", "ilisi_norm"] > 0.6 and rep.loc["X_pca", "n_batches"] == 2
+
+
+def test_abundance_to_proportions():
+    q05 = pd.DataFrame({"T": [1.0, 0.0], "B": [3.0, 0.0]})
+    prop = spatial.abundance_to_proportions(q05)
+    assert prop.loc[0].tolist() == [0.25, 0.75] and prop.loc[1].tolist() == [0.0, 0.0]
+    import inspect
+    assert inspect.signature(spatial.immune_neighborhood_analysis).parameters["n_boot"].default == 10000
+    sig = inspect.signature(spatial.run_cell2location).parameters
+    assert sig["vis_batch_key"].default == "sample" and sig["filter_reference_genes"].default is True

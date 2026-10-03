@@ -1,0 +1,77 @@
+format-version: 1.2
+data-version: mini-cl/test
+ontology: cl
+
+[Term]
+id: CL:0000000
+name: cell
+
+[Term]
+id: CL:0000003
+name: native cell
+is_a: CL:0000000 ! cell
+
+[Term]
+id: CL:0000499
+name: stromal cell
+is_a: CL:0000003 ! native cell
+
+[Term]
+id: CL:0000057
+name: fibroblast
+is_a: CL:0000499 ! stromal cell
+
+[Term]
+id: CL:0002553
+name: fibroblast of lung
+is_a: CL:0000057 ! fibroblast
+relationship: part_of UBERON:0002048 ! lung
+
+[Term]
+id: CL:0000186
+name: myofibroblast cell
+is_a: CL:0000057 ! fibroblast
+
+[Term]
+id: CL:0000738
+name: leukocyte
+is_a: CL:0000003 ! native cell
+
+[Term]
+id: CL:0000084
+name: T cell
+is_a: CL:0000738 ! leukocyte
+
+[Term]
+id: CL:0000625
+name: CD8-positive, alpha-beta T cell
+is_a: CL:0000084 ! T cell
+
+[Term]
+id: CL:0000235
+name: macrophage
+is_a: CL:0000738 ! leukocyte
+
+[Term]
+id: CL:0000066
+name: epithelial cell
+is_a: CL:0000003 ! native cell
+
+[Term]
+id: CL:0002063
+name: type II pneumocyte
+is_a: CL:0000066 ! epithelial cell
+
+[Term]
+id: CL:0000115
+name: endothelial cell
+is_a: CL:0000003 ! native cell
+
+[Term]
+id: CL:0009999
+name: obsolete test cell
+is_obsolete: true
+
+[Typedef]
+id: part_of
+name: part of

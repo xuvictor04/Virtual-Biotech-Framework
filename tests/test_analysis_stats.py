@@ -279,3 +279,152 @@ def test_optional_dependency_error_message():
 
     with pytest.raises(ImportError, match=r"pip install 'vbt-harness\[singlecell\]'"):
         require("liana_not_a_real_module_xyz", "singlecell")
+
+
+# ------------------------------------------------------------------ P7 additions
+def test_cross_disease_pseudobulk_keeps_states_and_tissues_split():
+    # one donor contributes tumour and adjacent-normal cells, in two tissues
+    obs = pd.DataFrame({
+        "dataset_id": "ds1", "donor_id": "d1", "cell_type": "fibroblast",
+        "disease": ["LUAD"] * 30 + ["normal"] * 30 + ["normal"] * 30,
+        "tissue_general": ["lung"] * 60 + ["blood"] * 30,
+        "condition": ["disease"] * 30 + ["normal"] * 60,
+    })
+    counts = np.r_[np.full(30, 4.0), np.zeros(30), np.full(30, 1.0)]
+    pb = cross_disease.pseudobulk_log2cp10k(counts, np.full(90, 1e4), obs, min_cells=25)
+    assert len(pb) == 3
+    by = pb.set_index(["disease", "tissue_general"])
+    assert by.loc[("LUAD", "lung"), "mean_log2_OSMR_cp10k"] == pytest.approx(np.log2(5))
+    assert by.loc[("normal", "lung"), "mean_log2_OSMR_cp10k"] == 0
+    # carried columns must be constant within a group
+    bad = obs.assign(assay=["10x"] * 15 + ["smart"] * 75)
+    with pytest.raises(ValueError, match="assay"):
+        cross_disease.pseudobulk_log2cp10k(counts, np.full(90, 1e4), bad, min_cells=25)
+    # multi-gene long table with a gene column
+    multi = cross_disease.pseudobulk_log2cp10k(np.column_stack([counts, counts * 2]), np.full(90, 1e4), obs,
+                                               gene=["OSMR", "IL6ST"], min_cells=25)
+    assert set(multi.gene) == {"OSMR", "IL6ST"} and len(multi) == 6 and "mean_log2_cp10k" in multi
+
+
+def test_pair_with_normals_priority_and_disease_qc():
+    rows = []
+    for ds, assay in [("dsA", "10x 3' v3"), ("dsB", "10x 3' v3"), ("dsC", "Smart-seq2")]:
+        for donor in range(4):
+            rows.append({"disease_name": "normal", "dataset_id": ds, "assay": assay, "tissue_general": "colon",
+                         "cell_type": "fib", "donor_id": f"{ds}_n{donor}"})
+    for donor in range(4):
+        rows.append({"disease_name": "UC", "dataset_id": "dsA", "assay": "10x 3' v3", "tissue_general": "colon",
+                     "cell_type": "fib", "donor_id": f"uc{donor}"})
+        rows.append({"disease_name": "CD", "dataset_id": "dsX", "assay": "10x 3' v3", "tissue_general": "colon",
+                     "cell_type": "fib", "donor_id": f"cd{donor}"})
+    rows.append({"disease_name": "rare", "dataset_id": "dsY", "assay": "other", "tissue_general": "colon",
+                 "cell_type": "fib", "donor_id": "r0"})
+    df = pd.DataFrame(rows)
+    paired = cross_disease.pair_with_normals(df)
+    uc = paired[(paired.disease_name == "UC") & (paired.condition == "normal")]
+    assert set(uc.dataset_id) == {"dsA"} and set(uc.normal_match) == {"dataset_id"}  # same study first
+    cd = paired[(paired.disease_name == "CD") & (paired.condition == "normal")]
+    assert set(cd.dataset_id) == {"dsA", "dsB"} and set(cd.normal_match) == {"assay"}  # then same assay
+    rare = paired[(paired.disease_name == "rare") & (paired.condition == "normal")]
+    assert set(rare.dataset_id) == {"dsA", "dsB", "dsC"} and set(rare.normal_match) == {"tissue"}
+    kept, report = cross_disease.disease_qc(paired, min_donors_per_arm=3)
+    assert report.attrs["n_passing"] == 2 and set(kept.disease_name) == {"UC", "CD"}
+    assert not report.set_index("disease_name").loc["rare", "passed"]
+
+
+def test_cross_disease_engines_and_global_fdr():
+    df = _cross_df()
+    approx = cross_disease.disease_vs_normal_lmm(df, engine="mixedlm_sqrtw").set_index("disease_name")
+    assert approx.loc["UC", "method"] == "mixedlm_sqrt_weight_APPROX" and approx.loc["CD", "method"] == "wls"
+    assert approx.loc["UC", "beta"] > 0.6 and (approx["engine"] == "mixedlm_sqrtw").all()
+    two = pd.concat([df.assign(gene="OSMR"), df.assign(gene="IL6ST")], ignore_index=True)
+    res = cross_disease.disease_vs_normal_lmm(two, engine="python")
+    assert len(res) == 6 and "gene" in res.columns
+    one = cross_disease.disease_vs_normal_lmm(df, engine="python")
+    assert (res.groupby("gene").fdr.min() >= one.fdr.min() - 1e-12).all()  # family of 6, not 3
+    auto = cross_disease.disease_vs_normal_lmm(df)  # no lmerTest -> python, recorded
+    assert auto["engine"].iloc[0] in {"python", "lmerTest"}
+    plan = cross_disease.census_query_plan(["OSMR", "IL6ST"])
+    assert plan["var_value_filter"] == "feature_name in ['OSMR', 'IL6ST']"
+    assert plan["celltype_col"] == "cell_type_level1" and "cell_type_ontology_term_id" in plan["obs_column_names"]
+    assert plan["pseudobulk_keys"][:2] == ["dataset_id", "donor_id"]
+
+
+def _surv_df(seed=0, n=600):
+    rng = np.random.default_rng(seed)
+    df = pd.DataFrame({"expr": rng.normal(size=n), "age": rng.normal(65, 8, n),
+                       "stage_advanced": rng.integers(0, 2, n).astype(float),
+                       "sex": rng.integers(0, 2, n).astype(float)})
+    for ep, b in [("os", 0.6), ("dfs", 0.8), ("pfs", 0.5), ("dss", 0.4)]:
+        t = rng.exponential(1 / (0.05 * np.exp(b * df.expr)))
+        c = rng.exponential(40, n)
+        df[f"{ep}_time"], df[f"{ep}_event"] = np.minimum(t, c), (t <= c).astype(float)
+    df.loc[: n // 3, ["dfs_time", "dfs_event"]] = np.nan  # DFS missing for many, low-expression-biased
+    df.loc[:9, "age"] = np.nan
+    return df
+
+
+def test_quartile_cox_all_endpoints_fixed_groups():
+    df = _surv_df()
+    res = survival.quartile_cox_all_endpoints(df, "expr", engine="statsmodels").set_index("endpoint")
+    assert list(res.index) == ["OS", "PFS", "DSS", "DFS"]
+    assert (res["n_cohort"] == 590).all() and (res["quartile_scope"] == "cohort").all()
+    assert res["q_high"].nunique() == 1 and res["q_low"].nunique() == 1  # fixed stratification
+    assert res.loc["OS", "n"] == res.loc["OS", "n_high"] + res.loc["OS", "n_low"]
+    assert res.loc["OS", "n"] > res.loc["DFS", "n"]  # DFS fitted on the cohort's groups with DFS data
+    assert res.loc["OS", "hr"] > 1.5 and res.loc["DFS", "hr"] > 1.5
+    per_ep = survival.quartile_cox_all_endpoints(df, "expr", engine="statsmodels",
+                                                 quartile_scope="endpoint").set_index("endpoint")
+    assert per_ep.loc["DFS", "q_low"] != res.loc["DFS", "q_low"]
+    with pytest.raises(ValueError):
+        survival.quartile_cox_all_endpoints(df, "expr", quartile_scope="x")
+
+
+def test_tf_lmg_helpers():
+    import inspect
+
+    assert inspect.signature(tf_activity.score_tf_activity).parameters["exclusions"].default is None
+    net = pd.DataFrame({"source": ["STAT1"] * 4 + ["STAT3"], "target": ["IL6ST", "OSMR", "IRF1", "LIFR", "OSMR"],
+                        "weight": 1.0})
+    clean = tf_activity.clean_regulon(net)
+    assert list(clean[clean.source == "STAT1"].target) == ["IRF1"] and len(clean) == 2
+
+    rng = np.random.default_rng(0)
+    rows, X = [], []
+    for patient in range(12):
+        for ct in ["Fib", "Endo", "Epi"]:
+            for _ in range(15):
+                rows.append({"sample": f"S{patient}", "patient": f"P{patient}", "cell_type": ct})
+                osmr = rng.random() < (0.5 if ct != "Epi" else 0.01)
+                X.append([float(osmr) * rng.gamma(2), rng.gamma(2), rng.gamma(1)])
+
+    class A:
+        pass
+
+    a = A()
+    a.obs = pd.DataFrame(rows, index=[f"c{i}" for i in range(len(rows))])
+    a.X = np.array(X)
+    a.var_names = pd.Index(["OSMR", "IL6ST", "LIFR"])
+    keep, table = tf_activity.select_celltypes_by_detection(a, "OSMR", 0.05, return_table=True)
+    assert keep == ["Endo", "Fib"] and table.loc["Epi", "frac_detected"] < 0.05
+    act = pd.DataFrame({"STAT1": 0.8 * a.X[:, 1] + rng.normal(0, 0.3, len(rows))}, index=a.obs.index)
+    tab = tf_activity.pseudobulk_means(a, act, ["OSMR", "IL6ST", "LIFR"], by=("sample", "cell_type"),
+                                       min_cells=10, carry_cols=("patient",))
+    assert len(tab) == 36 and (tab.n_cells == 15).all() and {"STAT1", "OSMR", "patient"} <= set(tab.columns)
+    small = tf_activity.pseudobulk_means(a, act, ["OSMR"], min_cells=16)
+    assert small.empty
+    res = tf_activity.run_lmg_per_celltype(tab[tab.cell_type.isin(keep)], "STAT1", ["OSMR", "IL6ST", "LIFR"],
+                                           cluster_col="patient", n_boot=50)
+    fib = res[res.cell_type == "Fib"].set_index("predictor")
+    assert set(res.cell_type) == {"Endo", "Fib"}
+    assert fib.loc["IL6ST", "rank"] == 1 and fib["share"].sum() == pytest.approx(fib["r2_total"].iloc[0])
+    assert (fib["ci_low"] <= fib["share"]).all()
+
+
+def test_lmg_engine_recorded():
+    df = _lmg_data()
+    out = vd.lmg_shares(df, "y", ["OSMR", "IL6ST"], groups="patient")
+    assert out.attrs["r2_engine"] == "statsmodels_mixedlm_np_var" and set(out.engine) == {out.attrs["r2_engine"]}
+    assert set(vd.lmg_shares(df, "y", ["OSMR"]).engine) == {"ols"}
+    auto = vd.lmg_shares(df, "y", ["OSMR", "IL6ST"], groups="patient", r2_engine="auto")
+    assert auto.attrs["r2_engine"] in {"statsmodels_mixedlm_np_var", "R:MuMIn"}

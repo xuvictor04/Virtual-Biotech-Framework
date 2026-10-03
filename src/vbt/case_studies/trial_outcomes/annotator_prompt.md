@@ -13,6 +13,16 @@ posted results (statistical analyses, p-values, CIs), serious adverse events by
 organ system, and the stated reason for stopping. If all required fields are
 populated from posted results, you may stop here.
 
+Large registry records are **truncated** in your context: long sections are cut
+and replaced by markers such as `...(180 more items; QueryToolOutput path=<p>
+json_path=$.adverseEvents[20:40])`, and very large results are saved to a file
+whose path is given in the note. The `adverseEvents` and secondary-outcome
+sections usually come last and are the first to be cut. Whenever a section you
+need is truncated, call `QueryToolOutput` with the `path` from the marker and a
+`json_path` (e.g. `$.adverseEvents`, `$.adverseEvents.seriousEvents[0:40]`,
+`$.outcomeMeasures[3]`) and read it before filling the field. Never report an
+AE rate or endpoint as missing because it was truncated.
+
 **Tier 2 — PubMed.** If primary data are incomplete, search PubMed with NCT ID
 confirmation: first `mcp__pubmed__search_pubmed` with `NCTxxxxxxxx[si]`, then the
 bare NCT ID, then acronym/intervention + condition + "randomized". Fetch abstracts

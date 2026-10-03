@@ -15,6 +15,7 @@ everything else is pure numpy/pandas and is unit-tested.
 
 from __future__ import annotations
 
+import warnings
 from typing import Iterable, Sequence
 
 import numpy as np
@@ -32,6 +33,10 @@ __all__ = [
     "pseudobulk_counts",
     "pseudobulk_de",
     "quartile_groups",
+    "split_groups",
+    "QuartileTieWarning",
+    "batch_mixing_report",
+    "ilisi",
     "ligand_receptor_contrast",
     "filter_lr_results",
     "group_specific_interactions",
@@ -174,12 +179,15 @@ def eligible_celltypes(obs: pd.DataFrame, celltype_key: str, donor_key: str, con
 
 
 def pseudobulk_counts(X_counts, obs: pd.DataFrame, groupby: Sequence[str] = ("donor", "celltype"),
-                      var_names: Iterable[str] | None = None, min_cells: int = 10,
+                      var_names: Iterable[str] | None = None, min_cells: int = 20,
                       carry_cols: Sequence[str] | None = None):
     """Sum raw counts per ``groupby`` combination (e.g. donor x cell type).
 
     ``X_counts`` is a cells x genes numpy array or scipy sparse matrix of raw
-    counts. Groups with fewer than ``min_cells`` cells are dropped. Returns
+    counts. Groups with fewer than ``min_cells`` cells are dropped (default 20,
+    the same threshold as the cell-type eligibility rule
+    ``eligible_celltypes(min_cells_per_donor=20)``, so donors with 10-19 cells
+    never enter a pseudobulk). Returns
     ``(counts_df, meta_df)``: pseudobulk samples x genes (int if input is int) and
     per-sample metadata with the ``groupby`` columns, ``n_cells`` and any
     ``carry_cols`` that are constant within the group (e.g. condition).
@@ -266,7 +274,7 @@ def pseudobulk_de(counts_df: pd.DataFrame, meta_df: pd.DataFrame, design_factor:
                   ref_level: str | None = None, test_level: str | None = None,
                   engine: str = "pydeseq2", covariates: Sequence[str] | None = None,
                   fdr: float = 0.05, min_lfc: float = 1.0, min_total_counts: int = 10,
-                  prior_count: float = 1.0) -> pd.DataFrame:
+                  prior_count: float = 1.0, use_deseq_padj: bool = True) -> pd.DataFrame:
     """Pseudobulk differential expression for one cell type (Methods,
     "Pseudobulk differential expression").
 
@@ -274,8 +282,11 @@ def pseudobulk_de(counts_df: pd.DataFrame, meta_df: pd.DataFrame, design_factor:
     design_factor`` with PyDESeq2 and a Wald test ``test_level`` vs ``ref_level``
     (as in the paper). ``engine="ols_log_cpm"`` is a dependency-free fallback:
     per-gene OLS of log2(CPM + prior_count) on the condition indicator (+
-    covariates), t-test p-values. Both use Benjamini-Hochberg FDR and call a
-    gene DE when ``padj < fdr`` and ``|log2FC| > min_lfc``.
+    covariates), t-test p-values. A gene is DE when ``padj < fdr`` and
+    ``|log2FC| > min_lfc``. With PyDESeq2, ``padj`` is PyDESeq2's own
+    (Benjamini-Hochberg after independent filtering, as in DESeq2) unless
+    ``use_deseq_padj=False`` (plain BH over all p-values); the OLS engine uses
+    plain BH.
 
     Returns a table with ``gene, log2FC, pvalue, padj, de, direction``.
     """
@@ -319,9 +330,14 @@ def pseudobulk_de(counts_df: pd.DataFrame, meta_df: pd.DataFrame, design_factor:
         res = pd.DataFrame({"gene": r.index, "baseMean": r["baseMean"].to_numpy(),
                             "log2FC": r["log2FoldChange"].to_numpy(), "lfcSE": r["lfcSE"].to_numpy(),
                             "stat": r["stat"].to_numpy(), "pvalue": r["pvalue"].to_numpy()})
+        if use_deseq_padj and "padj" in r.columns:
+            res["padj"] = r["padj"].to_numpy()
     else:
         raise ValueError(f"unknown engine {engine!r}")
-    res["padj"] = bh_fdr(res["pvalue"].to_numpy())
+    if "padj" not in res.columns:
+        res["padj"] = bh_fdr(res["pvalue"].to_numpy())
+    res["padj_method"] = ("pydeseq2_independent_filtering" if engine == "pydeseq2" and use_deseq_padj
+                          else "bh")
     res["de"] = (res["padj"] < fdr) & (res["log2FC"].abs() > min_lfc)
     res["direction"] = np.where(res["de"], np.where(res["log2FC"] > 0, "up", "down"), "ns")
     res["engine"] = engine
@@ -329,18 +345,117 @@ def pseudobulk_de(counts_df: pd.DataFrame, meta_df: pd.DataFrame, design_factor:
     return res.sort_values("pvalue", kind="stable").reset_index(drop=True)
 
 
-def quartile_groups(values, top: float = 0.75, bottom: float = 0.25):
+class QuartileTieWarning(UserWarning):
+    """Quartile cut-offs tie (zero-inflated expression): the high/low split is degenerate."""
+
+
+def quartile_groups(values, top: float = 0.75, bottom: float = 0.25, *, on_ties: str = "warn",
+                    among_expressing: bool = False):
     """Label values in the top quantile ``'high'``, bottom quantile ``'low'``, else
     ``None`` (middle excluded; NaN -> None). Used for B7-H3-high vs -low
     fibroblasts and all quartile contrasts in the paper. Returns a pandas Series
-    (index preserved if input is a Series)."""
+    (index preserved if input is a Series).
+
+    Zero-inflated expression makes the cut-offs tie: with >= 75% zeros the
+    upper cut-off is 0, every cell becomes 'high' and none 'low'. Ties at the
+    cut-off (``q_hi == q_lo`` or ``q_hi == min``) ``warn`` (default; a
+    :class:`QuartileTieWarning`), ``raise`` a ValueError, or are ignored
+    (``on_ties='ignore'``) — use :func:`split_groups` with ``mode='expressing'``
+    (the paper's LUAD exception) instead. ``among_expressing=True`` computes
+    the quartiles over expressing cells (> 0) only; non-expressing cells are
+    then excluded (None).
+    """
+    if on_ties not in ("warn", "raise", "ignore"):
+        raise ValueError("on_ties must be 'warn', 'raise' or 'ignore'")
     s = pd.Series(values) if not isinstance(values, pd.Series) else values
     v = pd.to_numeric(s, errors="coerce")
-    hi, lo = v.quantile(top), v.quantile(bottom)
+    pool = v[v > 0] if among_expressing else v
     lab = pd.Series([None] * len(v), index=s.index, dtype=object)
-    lab[v >= hi] = "high"
-    lab[(v <= lo) & ~(v >= hi)] = "low"
+    if pool.notna().sum() == 0:
+        return lab
+    hi, lo = pool.quantile(top), pool.quantile(bottom)
+    if on_ties != "ignore" and (hi == lo or hi == pool.min()):
+        frac0 = float((v == 0).mean())
+        msg = (f"quartile cut-offs tie (q{int(top * 100)}={hi:g}, q{int(bottom * 100)}={lo:g}, "
+               f"{frac0:.0%} zeros): the high/low split is degenerate; use split_groups(mode='expressing') "
+               "or among_expressing=True")
+        if on_ties == "raise":
+            raise ValueError(msg)
+        warnings.warn(msg, QuartileTieWarning, stacklevel=2)
+    in_pool = v.index.isin(pool.index) if among_expressing else np.ones(len(v), dtype=bool)
+    lab[(v >= hi) & in_pool] = "high"
+    lab[(v <= lo) & ~(v >= hi) & in_pool] = "low"
     return lab
+
+
+def split_groups(values, mode: str = "quartile", *, top: float = 0.75, bottom: float = 0.25,
+                 on_ties: str = "warn", among_expressing: bool = False, threshold: float = 0.0,
+                 labels: tuple[str, str] = ("high", "low")):
+    """High/low grouping of a focal cell type by a gene's expression.
+
+    ``mode='quartile'``: :func:`quartile_groups` (top vs bottom quartile,
+    middle excluded). ``mode='expressing'``: expressing (> ``threshold``) vs
+    non-expressing cells — the paper's LUAD Fig. S5A contrast, robust to
+    zero inflation. ``labels`` names the (high, low) groups.
+    """
+    if mode == "quartile":
+        lab = quartile_groups(values, top, bottom, on_ties=on_ties, among_expressing=among_expressing)
+        return lab.map({"high": labels[0], "low": labels[1]}).astype(object).where(lab.notna(), None)
+    if mode == "expressing":
+        s = pd.Series(values) if not isinstance(values, pd.Series) else values
+        v = pd.to_numeric(s, errors="coerce")
+        lab = pd.Series([None] * len(v), index=s.index, dtype=object)
+        lab[v > threshold] = labels[0]
+        lab[v <= threshold] = labels[1]
+        return lab
+    raise ValueError("mode must be 'quartile' or 'expressing'")
+
+
+# --------------------------------------------------------------- batch mixing
+def ilisi(rep: np.ndarray, batches, k: int = 30) -> np.ndarray:
+    """Per-cell integration LISI: inverse Simpson index of batch labels among the
+    ``k`` nearest neighbours (self included) in ``rep`` (e.g. PCA coordinates).
+    1 = one batch only; up to the number of batches = perfectly mixed.
+    (Unweighted kNN approximation of Korsunsky et al.'s perplexity-weighted LISI.)"""
+    from sklearn.neighbors import NearestNeighbors
+
+    X = np.asarray(rep, dtype=float)
+    codes, uniq = pd.factorize(pd.Series(batches).astype(str))
+    k = int(min(k, len(X)))
+    _, idx = NearestNeighbors(n_neighbors=k).fit(X).kneighbors(X)
+    nb = codes[idx]
+    out = np.empty(len(X))
+    for i in range(len(X)):
+        p = np.bincount(nb[i], minlength=len(uniq)) / k
+        out[i] = 1.0 / np.sum(p ** 2)
+    return out
+
+
+def batch_mixing_report(adata, batch_key: str, reps: Sequence[str] = ("X_pca", "X_pca_harmony"),
+                        k: int = 30, max_cells: int = 20000, seed: int = 0) -> pd.DataFrame:
+    """Batch mixing before/after integration (iLISI on ``X_pca`` vs ``X_pca_harmony``).
+
+    Returns one row per representation present in ``adata.obsm`` with
+    ``median_ilisi``, ``mean_ilisi``, ``ilisi_norm`` ((median − 1)/(n_batches − 1),
+    0 = unmixed, 1 = fully mixed), ``n_batches``, ``n_cells``. Cells are
+    sub-sampled to ``max_cells``.
+    """
+    obs = adata.obs
+    n = len(obs)
+    rng = np.random.default_rng(seed)
+    pick = np.sort(rng.choice(n, size=min(n, max_cells), replace=False))
+    batches = obs[batch_key].astype(str).to_numpy()[pick]
+    n_b = len(set(batches))
+    rows = []
+    for r in reps:
+        if r not in adata.obsm:
+            continue
+        li = ilisi(np.asarray(adata.obsm[r])[pick], batches, k=k)
+        med = float(np.median(li))
+        rows.append({"representation": r, "median_ilisi": med, "mean_ilisi": float(li.mean()),
+                     "ilisi_norm": (med - 1) / (n_b - 1) if n_b > 1 else np.nan,
+                     "n_batches": n_b, "n_cells": int(len(pick)), "k": k})
+    return pd.DataFrame(rows)
 
 
 # ---------------------------------------------------------- ligand-receptor
@@ -426,19 +541,37 @@ def group_specific_interactions(df_a: pd.DataFrame, df_b: pd.DataFrame,
     }
 
 
+def _gene_values(adata, gene: str, layer: str | None = None) -> np.ndarray:
+    names = list(map(str, adata.var_names))
+    if gene not in names:
+        raise KeyError(f"{gene!r} not in var_names")
+    j = names.index(gene)
+    X = adata.layers[layer] if layer else adata.X
+    col = X[:, j]
+    col = col.toarray() if hasattr(col, "toarray") else np.asarray(col)
+    return np.asarray(col, dtype=float).ravel()
+
+
 def ligand_receptor_contrast(adata, celltype_key: str, focal_celltype: str, group_key: str,
                              group_a: str = "high", group_b: str = "low", n_perms: int = 1000,
                              resource_name: str = "consensus", expr_prop: float = 0.1,
                              seed: int = 0, use_raw: bool = False, filter_kwargs: dict | None = None,
                              key_cols: Sequence[str] = ("source", "target", "ligand_complex",
-                                                        "receptor_complex")) -> dict:
+                                                        "receptor_complex"),
+                             gene: str | None = None, split_mode: str = "quartile",
+                             split_kwargs: dict | None = None, layer: str | None = None,
+                             immune_celltypes: Sequence[str] | None = None) -> dict:
     """LIANA ``rank_aggregate`` for two states of a focal cell type (e.g.
     B7-H3-high vs B7-H3-low fibroblasts) against all other cell types (Methods,
     "Ligand-receptor analysis").
 
     ``adata.obs[group_key]`` labels focal cells ``group_a`` / ``group_b`` (e.g.
     from :func:`quartile_groups` on CD276 expression; other focal cells are
-    dropped). LIANA is run separately for each state with ``n_perms`` (1,000)
+    dropped). With ``gene`` the labels are computed here from the focal cells'
+    expression with :func:`split_groups` (``split_mode='quartile'`` or
+    ``'expressing'`` — the paper's LUAD exception, where >= 75% of fibroblasts
+    have zero CD276 counts). ``immune_celltypes`` keeps only interactions whose
+    partner (the non-focal side) is one of these cell types. LIANA is run separately for each state with ``n_perms`` (1,000)
     permutations, filtered with :func:`filter_lr_results`, and contrasted with
     :func:`group_specific_interactions`. Returns dict with ``raw_a``, ``raw_b``,
     ``filtered_a``, ``filtered_b``, ``a_only``, ``b_only``, ``shared``.
@@ -446,6 +579,12 @@ def ligand_receptor_contrast(adata, celltype_key: str, focal_celltype: str, grou
     li = require("liana")
     obs = adata.obs
     is_focal = obs[celltype_key].astype(str) == str(focal_celltype)
+    if gene is not None:
+        vals = pd.Series(_gene_values(adata, gene, layer), index=obs.index)
+        lab = split_groups(vals[is_focal.to_numpy()], split_mode, labels=(group_a, group_b),
+                           **(split_kwargs or {}))
+        obs[group_key] = pd.Series(None, index=obs.index, dtype=object)
+        obs.loc[lab.index, group_key] = lab.to_numpy()
     results = {}
     for tag, grp in (("a", group_a), ("b", group_b)):
         mask = (~is_focal) | (is_focal & (obs[group_key].astype(str) == str(grp)))
@@ -454,8 +593,14 @@ def ligand_receptor_contrast(adata, celltype_key: str, focal_celltype: str, grou
                              expr_prop=expr_prop, n_perms=n_perms, seed=seed, use_raw=use_raw,
                              verbose=False)
         raw = sub.uns["liana_res"].copy()
-        raw = raw[(raw["source"].astype(str) == str(focal_celltype))
-                  | (raw["target"].astype(str) == str(focal_celltype))]
+        src_f = raw["source"].astype(str) == str(focal_celltype)
+        tgt_f = raw["target"].astype(str) == str(focal_celltype)
+        raw = raw[src_f | tgt_f]
+        if immune_celltypes is not None:
+            imm = {str(c) for c in immune_celltypes}
+            partner = np.where(raw["source"].astype(str) == str(focal_celltype),
+                               raw["target"].astype(str), raw["source"].astype(str))
+            raw = raw[pd.Series(partner, index=raw.index).isin(imm)]
         results[f"raw_{tag}"] = raw.reset_index(drop=True)
         results[f"filtered_{tag}"] = filter_lr_results(raw, **(filter_kwargs or {}))
     results.update(group_specific_interactions(results["filtered_a"], results["filtered_b"],

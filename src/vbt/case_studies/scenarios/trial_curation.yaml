@@ -4,7 +4,13 @@ paper_section: "Results — Case study 1; Fig. 2-3"
 profiles: []
 # The paper gave the system Razuvayevskaya et al. (Nat Genet 2024) and asked it to
 # critique its own infrastructure and propose extensions. The deterministic,
-# massively parallel execution of the resulting protocol lives in `vbt case1 annotate`.
+# massively parallel execution of the resulting protocol lives in `vbt case1 annotate`:
+# `vbt case1 annotate --protocol <this run's dir>` uses the protocol (and JSON Schema, if
+# written) that the clinical trialist designed here as the bulk agent prompt; with
+# bulk.dispatch_enabled the CSO can also pilot and dispatch it itself (BulkDispatch).
+# The verbatim transcript (Supplementary Text IV) is not in the main text; supply it at
+# paper_turns_file to replay it with `--turns-source paper`.
+paper_turns_file: data/supplementary/trial_curation_supplementary_text_IV.yaml
 turns:
   - >
     Here is prior work: Razuvayevskaya et al., "Genetic factors associated with reasons for
@@ -14,10 +20,20 @@ turns:
   - >
     Curate clinical trial outcomes for the Phase II and III trials in the Open Targets dataset.
     Have the clinical trialist design the protocol: required outcome fields, evidence hierarchy,
-    and source-tracking requirements, and test it on NCT00000115 and NCT06137183.
+    and source-tracking requirements, and test it on NCT00000115 and NCT06137183. Save the
+    protocol as a markdown file named *protocol*.md and the output schema as a JSON Schema
+    file named *schema*.json in the clinical trialist's results directory.
   - >
     Have the single-cell agent propose target-level single-cell features, computed on Tabula
     Sapiens, to test for association with trial outcomes.
+expected_values:
+  - id: n_phase2_3_trials
+    description: "Phase II/III trials curated (paper: 37,075 clinical trialist agents)"
+    value: 37075
+    tolerance: "5%"
+    source: claims
+    pattern: "trial"
+
 expected_findings:
   - id: outcome_fields
     text: "Proposes outcome variables: phase progression, primary and secondary endpoint results, adverse-event rates, stop reasons."
