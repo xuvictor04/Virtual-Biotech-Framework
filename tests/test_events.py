@@ -146,3 +146,20 @@ async def test_non_streamed_thinking_is_emitted_after_the_message(config):
     assert th and th[0]["streamed"] is False and th[0]["text"] == "hidden reasoning"
     assert not [d for k, d in events if k == "text"], "specialist text is not streamed"
     await session.close()
+
+
+def test_legacy_tool_kind_is_documented_as_not_emitted():
+    """The module doc must not promise a 'tool' event the runtime never emits."""
+    import pathlib
+    import re
+
+    import vbt.events as events
+
+    doc = events.__doc__ or ""
+    assert "still emitted" not in doc
+    assert "no longer emitted" in doc and "tool_start" in doc and "tool_end" in doc
+    assert events.LEGACY_ALIASES == {"tool": "tool_start"}
+    src = pathlib.Path(events.__file__).resolve().parent
+    pat = re.compile(r"""emit\(\s*["']tool["']""")
+    offenders = [str(p) for p in src.rglob("*.py") if pat.search(p.read_text(encoding="utf-8"))]
+    assert offenders == []

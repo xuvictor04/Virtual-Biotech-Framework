@@ -34,9 +34,12 @@ warning             message
 Kinds emitted by other packages: ``turn_start``, ``turn_end``,
 ``review_enforced``, ``briefing`` (CSO session); ``artifact_registered``,
 ``claims_filed`` (provenance tools); ``bulk_start``, ``bulk_progress``,
-``bulk_end`` (bulk dispatch). The legacy kind ``tool`` (agent, tool,
-input) is still emitted as an alias of ``tool_start`` until every consumer
-reads ``tool_start``.
+``bulk_end`` (bulk dispatch).
+
+The legacy kind ``tool`` (agent, tool, input) is no longer emitted by anything
+(``LEGACY_ALIASES`` maps it to ``tool_start``). It survives only in older event
+logs, which the bundled consumers (CLI printer, web UI) still accept; new
+consumers must read ``tool_start``/``tool_end``.
 """
 
 from __future__ import annotations
