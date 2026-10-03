@@ -40,6 +40,9 @@ __all__ = [
     "ligand_receptor_contrast",
     "filter_lr_results",
     "group_specific_interactions",
+    "assay_design",
+    "MIN_CELLS_PER_DONOR",
+    "AUTHORS_LR_METHOD_COLUMNS",
     "DEFAULT_LR_METHOD_RULES",
 ]
 
@@ -156,8 +159,14 @@ def preprocess(adata, n_hvg: int = 3000, n_pcs: int = 40, batch_key: str | None 
 
 
 # ------------------------------------------------------------------ pseudobulk
+#: Minimum cells per donor (per cell type) for eligibility and pseudobulk
+#: inclusion in the authors' ``b7-h3/code/single_cell/de_analysis_*.py``
+#: (``MIN_CELLS_PER_DONOR = 50``; the Methods text gives no number).
+MIN_CELLS_PER_DONOR = 50
+
+
 def eligible_celltypes(obs: pd.DataFrame, celltype_key: str, donor_key: str, condition_key: str,
-                       min_donors: int = 3, min_cells_per_donor: int = 20,
+                       min_donors: int = 3, min_cells_per_donor: int = MIN_CELLS_PER_DONOR,
                        return_table: bool = False):
     """Cell types eligible for pseudobulk DE (Methods, "Pseudobulk differential
     expression").
@@ -179,15 +188,16 @@ def eligible_celltypes(obs: pd.DataFrame, celltype_key: str, donor_key: str, con
 
 
 def pseudobulk_counts(X_counts, obs: pd.DataFrame, groupby: Sequence[str] = ("donor", "celltype"),
-                      var_names: Iterable[str] | None = None, min_cells: int = 20,
-                      carry_cols: Sequence[str] | None = None):
+                      var_names: Iterable[str] | None = None, min_cells: int = MIN_CELLS_PER_DONOR,
+                      carry_cols: Sequence[str] | None = None, majority_cols: Sequence[str] | None = None):
     """Sum raw counts per ``groupby`` combination (e.g. donor x cell type).
 
     ``X_counts`` is a cells x genes numpy array or scipy sparse matrix of raw
-    counts. Groups with fewer than ``min_cells`` cells are dropped (default 20,
-    the same threshold as the cell-type eligibility rule
-    ``eligible_celltypes(min_cells_per_donor=20)``, so donors with 10-19 cells
-    never enter a pseudobulk). Returns
+    counts. Groups with fewer than ``min_cells`` cells are dropped (default
+    :data:`MIN_CELLS_PER_DONOR` = 50 as in the authors' DE scripts, the same
+    threshold as :func:`eligible_celltypes`). ``majority_cols`` are annotated
+    with their most frequent value within the group (the authors assign each
+    pseudobulk its majority 10x ``assay``). Returns
     ``(counts_df, meta_df)``: pseudobulk samples x genes (int if input is int) and
     per-sample metadata with the ``groupby`` columns, ``n_cells`` and any
     ``carry_cols`` that are constant within the group (e.g. condition).
@@ -224,8 +234,56 @@ def pseudobulk_counts(X_counts, obs: pd.DataFrame, groupby: Sequence[str] = ("do
         if (nun > 1).any():
             raise ValueError(f"carry column {col!r} is not constant within pseudobulk groups")
         meta[col] = obs.iloc[first_pos][col].to_numpy()
+    for col in majority_cols or []:
+        maj = obs[col].astype(str).groupby(codes).agg(lambda v: v.value_counts().index[0])
+        meta[col] = maj.reindex(range(n_groups)).to_numpy()
     keep = n_cells >= min_cells
     return counts_df.loc[keep], meta.loc[keep]
+
+
+def assay_design(meta: pd.DataFrame, condition_col: str = "condition", assay_col: str = "assay",
+                 min_level_n: int = 3) -> tuple[pd.DataFrame, list[str], dict]:
+    """The authors' per-cell-type DE design (``de_analysis_*.py``: ``~ condition
+    + assay_grp`` when identifiable).
+
+    Assay levels with fewer than ``min_level_n`` pseudobulks are collapsed to
+    'other'; an 'other' group still smaller than that is dropped; the most
+    common level is the reference. The assay term is used only when >= 2
+    levels remain and >= 1 level contains both conditions — otherwise the full,
+    unmodified sample set is returned with design ``~ condition`` and a
+    ``fallback_reason``. Returns ``(meta, covariates, diagnostics)`` where
+    ``covariates`` is ``["assay_grp"]`` or ``[]`` (pass to
+    :func:`pseudobulk_de`).
+    """
+    diag = {"design": f"~{condition_col}", "assay_included": False, "assay_levels": 0,
+            "levels_spanning_both_conditions": 0, "collapsed_levels": [], "dropped_samples": [],
+            "fallback_reason": ""}
+    if assay_col not in meta.columns:
+        diag["fallback_reason"] = "assay_column_absent"
+        return meta, [], diag
+    cand = meta.copy()
+    vc = cand[assay_col].value_counts()
+    keep = set(vc[vc >= min_level_n].index)
+    diag["collapsed_levels"] = sorted(map(str, set(vc.index) - keep))
+    grp = cand[assay_col].where(cand[assay_col].isin(keep), "other")
+    would_drop = []
+    n_other = int((grp == "other").sum())
+    if 0 < n_other < min_level_n:
+        would_drop = grp.index[grp == "other"].tolist()
+        cand = cand.drop(index=would_drop)
+        grp = grp.drop(index=would_drop)
+    order = list(grp.value_counts().index)
+    cand["assay_grp"] = pd.Categorical(grp, categories=order)
+    xt = pd.crosstab(cand["assay_grp"], cand[condition_col])
+    n_levels = int(xt.shape[0])
+    spanning = int((xt > 0).all(axis=1).sum()) if xt.shape[1] > 1 else 0
+    diag.update(assay_levels=n_levels, levels_spanning_both_conditions=spanning)
+    if n_levels < 2 or spanning < 1:
+        diag["fallback_reason"] = "only_one_assay_level" if n_levels < 2 else "assay_perfectly_predicts_condition"
+        return meta, [], diag
+    diag.update(assay_included=True, design=f"~{condition_col} + assay_grp", dropped_samples=would_drop)
+    cand["assay_grp"] = cand["assay_grp"].astype(str)
+    return cand, ["assay_grp"], diag
 
 
 def _ols_log_cpm_de(counts_df, meta_df, design_factor, ref_level, test_level, covariates,
@@ -472,6 +530,23 @@ DEFAULT_LR_METHOD_RULES: dict[str, tuple[str, str, float]] = {
 }
 
 
+#: The authors' operationalisation of ">= 3 methods" (b7-h3/code/single_cell/
+#: liana_03b_*.py): a method "detects" an interaction when its column is
+#: non-null and (p-value) < 1.0 or (score) != 0, over these five columns.
+AUTHORS_LR_METHOD_COLUMNS = ("cellphone_pvals", "scaled_weight", "lrscore", "lr_logfc", "expr_prod")
+
+
+def _authors_method_support(df: pd.DataFrame) -> pd.Series:
+    n = pd.Series(0, index=df.index, dtype=int)
+    for col in AUTHORS_LR_METHOD_COLUMNS:
+        if col not in df.columns:
+            continue
+        v = pd.to_numeric(df[col], errors="coerce")
+        hit = v.notna() & ((v < 1.0) if "pval" in col else (v != 0))
+        n += hit.astype(int)
+    return n
+
+
 def _method_support(df: pd.DataFrame, rules) -> pd.Series:
     n = pd.Series(0, index=df.index, dtype=int)
     for _, (col, op, thr) in rules.items():
@@ -495,16 +570,23 @@ def _method_support(df: pd.DataFrame, rules) -> pd.Series:
 
 
 def filter_lr_results(df: pd.DataFrame, top_frac: float = 0.10, cpdb_p: float = 0.01,
-                      min_methods: int = 3, method_rules: dict | None = None) -> pd.DataFrame:
+                      min_methods: int = 3, method_rules: dict | str | None = "authors",
+                      specificity_top_frac: float | None = 0.10) -> pd.DataFrame:
     """Apply the paper's ligand-receptor filter to a LIANA result table (Methods,
     "Ligand-receptor analysis").
 
     Keeps interactions (i) in the top ``top_frac`` by magnitude — using
     ``magnitude_rank`` (lower is better) when present, else ``expr_prod``
-    (higher is better); (ii) with CellPhoneDB ``cellphone_pvals < cpdb_p``; and
-    (iii) supported by ``>= min_methods`` methods. Support is taken from an
-    ``n_methods`` column if present, otherwise computed from ``method_rules``
-    (default :data:`DEFAULT_LR_METHOD_RULES`). Adds ``n_methods``.
+    (higher is better); (ii) with CellPhoneDB ``cellphone_pvals < cpdb_p``;
+    (iii) supported by ``>= min_methods`` methods; and (iv) — the authors'
+    code, not stated in the Methods text — in the top
+    ``specificity_top_frac`` by ``specificity_rank`` when that column exists
+    (``None`` disables it). Support is taken from an ``n_methods`` column if
+    present, otherwise computed with ``method_rules``: ``"authors"`` (default;
+    :data:`AUTHORS_LR_METHOD_COLUMNS`, as in ``liana_03b_*.py``) or a rule
+    dict such as :data:`DEFAULT_LR_METHOD_RULES` (``"harness"``). With the
+    defaults this reproduces the archived consensus tables exactly. Adds
+    ``n_methods``.
     """
     out = df.copy()
     if "magnitude_rank" in out.columns:
@@ -519,8 +601,15 @@ def filter_lr_results(df: pd.DataFrame, top_frac: float = 0.10, cpdb_p: float = 
         raise KeyError("need 'cellphone_pvals' column")
     sig = pd.to_numeric(out["cellphone_pvals"], errors="coerce") < cpdb_p
     if "n_methods" not in out.columns:
-        out["n_methods"] = _method_support(out, method_rules or DEFAULT_LR_METHOD_RULES)
+        if method_rules == "authors":
+            out["n_methods"] = _authors_method_support(out)
+        else:
+            rules = DEFAULT_LR_METHOD_RULES if method_rules in (None, "harness") else method_rules
+            out["n_methods"] = _method_support(out, rules)
     keep = top.fillna(False) & sig.fillna(False) & (out["n_methods"] >= min_methods)
+    if specificity_top_frac is not None and "specificity_rank" in out.columns:
+        spec = pd.to_numeric(out["specificity_rank"], errors="coerce")
+        keep &= (spec <= spec.quantile(specificity_top_frac)).fillna(False)
     return out.loc[keep].reset_index(drop=True)
 
 
@@ -560,7 +649,8 @@ def ligand_receptor_contrast(adata, celltype_key: str, focal_celltype: str, grou
                                                         "receptor_complex"),
                              gene: str | None = None, split_mode: str = "quartile",
                              split_kwargs: dict | None = None, layer: str | None = None,
-                             immune_celltypes: Sequence[str] | None = None) -> dict:
+                             immune_celltypes: Sequence[str] | None = None,
+                             restrict: str = "after_filter") -> dict:
     """LIANA ``rank_aggregate`` for two states of a focal cell type (e.g.
     B7-H3-high vs B7-H3-low fibroblasts) against all other cell types (Methods,
     "Ligand-receptor analysis").
@@ -570,12 +660,24 @@ def ligand_receptor_contrast(adata, celltype_key: str, focal_celltype: str, grou
     dropped). With ``gene`` the labels are computed here from the focal cells'
     expression with :func:`split_groups` (``split_mode='quartile'`` or
     ``'expressing'`` — the paper's LUAD exception, where >= 75% of fibroblasts
-    have zero CD276 counts). ``immune_celltypes`` keeps only interactions whose
-    partner (the non-focal side) is one of these cell types. LIANA is run separately for each state with ``n_perms`` (1,000)
-    permutations, filtered with :func:`filter_lr_results`, and contrasted with
-    :func:`group_specific_interactions`. Returns dict with ``raw_a``, ``raw_b``,
-    ``filtered_a``, ``filtered_b``, ``a_only``, ``b_only``, ``shared``.
+    have zero CD276 counts).
+
+    ``immune_celltypes`` — as in the authors' ``liana_03b_*.py`` (Zenodo
+    archive), each LIANA run contains only the focal cells of one state plus
+    the cells of these partner types (all other cell types are dropped before
+    LIANA), and ``a_only_focal_to_partner`` lists the group-specific
+    interactions sent by the focal type to a partner type (the paper's
+    180/226 fibroblast→immune interactions). ``restrict``: ``"after_filter"``
+    (default, authors) applies :func:`filter_lr_results` to the whole LIANA
+    table — the 10% rank quantiles are taken over every cell-type pair — and
+    restricts afterwards; ``"before_filter"`` (earlier harness behaviour)
+    first keeps rows involving the focal type. LIANA runs with
+    ``return_all_lrs=True`` and ``n_perms`` (1,000) permutations. Returns dict
+    with ``raw_a``, ``raw_b``, ``filtered_a``, ``filtered_b``, ``a_only``,
+    ``b_only``, ``shared`` and ``a_only_focal_to_partner``.
     """
+    if restrict not in ("after_filter", "before_filter"):
+        raise ValueError("restrict must be 'after_filter' or 'before_filter'")
     li = require("liana")
     obs = adata.obs
     is_focal = obs[celltype_key].astype(str) == str(focal_celltype)
@@ -585,24 +687,31 @@ def ligand_receptor_contrast(adata, celltype_key: str, focal_celltype: str, grou
                            **(split_kwargs or {}))
         obs[group_key] = pd.Series(None, index=obs.index, dtype=object)
         obs.loc[lab.index, group_key] = lab.to_numpy()
+    imm = {str(c) for c in immune_celltypes} if immune_celltypes is not None else None
+    ct = obs[celltype_key].astype(str)
     results = {}
     for tag, grp in (("a", group_a), ("b", group_b)):
-        mask = (~is_focal) | (is_focal & (obs[group_key].astype(str) == str(grp)))
+        others = ~is_focal if imm is None else ct.isin(imm)
+        mask = others | (is_focal & (obs[group_key].astype(str) == str(grp)))
         sub = adata[mask.to_numpy()].copy()
-        li.mt.rank_aggregate(sub, groupby=celltype_key, resource_name=resource_name,
-                             expr_prop=expr_prop, n_perms=n_perms, seed=seed, use_raw=use_raw,
-                             verbose=False)
+        kw = dict(groupby=celltype_key, resource_name=resource_name, expr_prop=expr_prop, n_perms=n_perms,
+                  seed=seed, use_raw=use_raw, verbose=False)
+        try:
+            li.mt.rank_aggregate(sub, return_all_lrs=True, **kw)
+        except TypeError:  # older liana without return_all_lrs
+            li.mt.rank_aggregate(sub, **kw)
         raw = sub.uns["liana_res"].copy()
-        src_f = raw["source"].astype(str) == str(focal_celltype)
-        tgt_f = raw["target"].astype(str) == str(focal_celltype)
-        raw = raw[src_f | tgt_f]
-        if immune_celltypes is not None:
-            imm = {str(c) for c in immune_celltypes}
-            partner = np.where(raw["source"].astype(str) == str(focal_celltype),
-                               raw["target"].astype(str), raw["source"].astype(str))
-            raw = raw[pd.Series(partner, index=raw.index).isin(imm)]
+        if restrict == "before_filter":
+            src_f = raw["source"].astype(str) == str(focal_celltype)
+            tgt_f = raw["target"].astype(str) == str(focal_celltype)
+            raw = raw[src_f | tgt_f]
         results[f"raw_{tag}"] = raw.reset_index(drop=True)
         results[f"filtered_{tag}"] = filter_lr_results(raw, **(filter_kwargs or {}))
     results.update(group_specific_interactions(results["filtered_a"], results["filtered_b"],
                                                key_cols))
+    a = results["a_only"]
+    f2p = a["source"].astype(str) == str(focal_celltype)
+    if imm is not None:
+        f2p &= a["target"].astype(str).isin(imm)
+    results["a_only_focal_to_partner"] = a[f2p].reset_index(drop=True)
     return results

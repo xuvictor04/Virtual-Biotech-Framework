@@ -13,6 +13,15 @@ fits every endpoint on those fixed high/low groups:
 :func:`quartile_cox_all_endpoints` (``quartile_scope='cohort'``, default).
 ``quartile_scope='endpoint'`` recomputes quartiles on each endpoint's own
 complete cases (high/low membership then differs between OS and DFS).
+
+Cohort QC follows the authors' ``b7-h3/code/survival/survival_analysis.py``
+(Zenodo archive) by default: endpoints with < 1 month follow-up are set to
+missing (perioperative events) and patients left without any endpoint are
+dropped *before* the quartiles are computed, and MSI-high tumours
+(``MSI_SENSOR_SCORE`` ≥ 3.5) are excluded. With these defaults
+:func:`quartile_cox_all_endpoints` reproduces the archived OS HR 1.62 and DFS
+HR 2.06 (see docs/ZENODO_REPLICATION.md); ``min_followup=None,
+msi_high=None`` gives the plain Methods-text cohort.
 """
 
 from __future__ import annotations
@@ -30,6 +39,7 @@ __all__ = [
     "stage_to_advanced",
     "parse_status",
     "prepare_tcga_clinical",
+    "load_cbioportal_raw",
     "quartile_cox",
     "quartile_cox_all_endpoints",
     "fetch_cbioportal_expression_and_clinical",
@@ -106,7 +116,30 @@ def prepare_tcga_clinical(df: pd.DataFrame, stage_col: str | None = None,
         if mcol in out.columns and scol in out.columns:
             out[f"{ep.lower()}_time"] = pd.to_numeric(out[mcol], errors="coerce")
             out[f"{ep.lower()}_event"] = out[scol].map(parse_status)
+    if "MSI_SENSOR_SCORE" in out.columns:
+        out["msi_sensor"] = pd.to_numeric(out["MSI_SENSOR_SCORE"], errors="coerce")
     return out
+
+
+def load_cbioportal_raw(path) -> pd.DataFrame:
+    """Read the authors' ``b7-h3/data/inputs/tcga/raw_data.csv`` (one row per
+    sample with stringified ``expression_data`` / ``clinical_data`` dicts from
+    the cBioPortal API) into a flat frame: ``patientId``, ``sampleId``,
+    ``expr`` (RSEM value as downloaded) and one column per clinical attribute,
+    ready for :func:`prepare_tcga_clinical`."""
+    import ast
+
+    raw = pd.read_csv(path)
+    rows = []
+    for _, r in raw.iterrows():
+        e = r.get("expression_data")
+        c = r.get("clinical_data")
+        e = ast.literal_eval(e) if isinstance(e, str) else (e if isinstance(e, dict) else {})
+        c = ast.literal_eval(c) if isinstance(c, str) else (c if isinstance(c, dict) else {})
+        val = e.get("value") if isinstance(e, dict) else None
+        rows.append({"patientId": r.get("patientId"), "sampleId": r.get("sampleId"),
+                     "expr": float(val) if val is not None else np.nan, **c})
+    return pd.DataFrame(rows)
 
 
 def _cox_phreg(dat: pd.DataFrame, time_col, event_col, xcols):
@@ -176,7 +209,8 @@ def quartile_cox_all_endpoints(df: pd.DataFrame, expr_col: str = "expr",
                                endpoints: Sequence[str] = ENDPOINTS,
                                covariates: Sequence[str] = ("age", "stage_advanced", "sex"),
                                top: float = 0.75, bottom: float = 0.25, engine: str = "auto",
-                               quartile_scope: str = "cohort") -> pd.DataFrame:
+                               quartile_scope: str = "cohort", min_followup: float | None = 1.0,
+                               msi_high: float | None = 3.5, msi_col: str = "msi_sensor") -> pd.DataFrame:
     """Top- vs bottom-quartile Cox models for every endpoint on fixed groups.
 
     ``quartile_scope='cohort'`` (paper): restrict once to patients with
@@ -185,7 +219,13 @@ def quartile_cox_all_endpoints(df: pd.DataFrame, expr_col: str = "expr",
     (``<ep>_time`` / ``<ep>_event`` columns from :func:`prepare_tcga_clinical`)
     on the cohort's high/low patients that have that endpoint recorded.
     ``'endpoint'`` recomputes the quartiles on each endpoint's complete cases
-    (as :func:`quartile_cox`). Returns one row per endpoint with ``endpoint,
+    (as :func:`quartile_cox`).
+
+    Authors' cohort QC (defaults): ``min_followup`` — an endpoint with time <
+    ``min_followup`` months is set to missing, and patients with no endpoint
+    left are dropped before the quartiles; ``msi_high`` — patients with
+    ``msi_col`` ≥ ``msi_high`` (MSIsensor score; MSI-H) are excluded
+    (missing scores kept). ``None`` disables either step. Returns one row per endpoint with ``endpoint,
     hr, ci_low, ci_high, p, coef, se, n, n_events, n_high, n_low, n_cohort,
     q_low, q_high, quartile_scope, engine`` (``error`` when a fit fails).
     """
@@ -196,6 +236,21 @@ def quartile_cox_all_endpoints(df: pd.DataFrame, expr_col: str = "expr",
     for c in [expr_col, *covariates]:
         base[c] = pd.to_numeric(base[c], errors="coerce")
     cohort = base.dropna(subset=[expr_col, *covariates])
+    if min_followup is not None:
+        cohort = cohort.copy()
+        has_any = pd.Series(False, index=cohort.index)
+        for ep in endpoints:
+            tcol, ecol = f"{ep.lower()}_time", f"{ep.lower()}_event"
+            if tcol not in cohort.columns or ecol not in cohort.columns:
+                continue
+            t = pd.to_numeric(cohort[tcol], errors="coerce")
+            short = t.notna() & (t < min_followup)
+            cohort.loc[short, [tcol, ecol]] = np.nan
+            has_any |= cohort[tcol].notna() & cohort[ecol].notna()
+        cohort = cohort[has_any]
+    if msi_high is not None and msi_col in cohort.columns:
+        msi = pd.to_numeric(cohort[msi_col], errors="coerce")
+        cohort = cohort[msi.isna() | (msi < msi_high)]
     q_hi, q_lo = cohort[expr_col].quantile(top), cohort[expr_col].quantile(bottom)
     rows = []
     for ep in endpoints:

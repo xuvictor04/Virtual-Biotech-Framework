@@ -152,7 +152,8 @@ def immune_neighborhood_analysis(spots_df: pd.DataFrame, gene_col: str, immune_c
                                  rings: Sequence[tuple[int, int]] = DEFAULT_RINGS,
                                  include_self: bool = False, min_expressing_spots: int = 25,
                                  expression_threshold: float = 0.0, n_boot: int = 10000,
-                                 seed: int = 0, engine: str = "statsmodels") -> pd.DataFrame:
+                                 seed: int = 0, engine: str = "statsmodels", *,
+                                 high_rule: str = "gt", min_per_group: int = 3) -> pd.DataFrame:
     """Immune neighbourhood of gene-high vs gene-low spots (Methods, "Spatial
     immune-neighbourhood analysis"; Fig. 4E/F).
 
@@ -162,7 +163,12 @@ def immune_neighborhood_analysis(spots_df: pd.DataFrame, gene_col: str, immune_c
     the spot itself); (2) within each sample with ``>= min_expressing_spots``
     spots expressing ``gene_col`` (> ``expression_threshold``), spots in the
     top quartile of expression are ``high=1`` and bottom quartile ``high=0``
-    (middle 50% excluded); (3) per immune type and ring fit
+    (middle 50% excluded). As in the authors' ``05_lmer_cd276_exclusion.py``
+    (Zenodo archive), ``high`` is *strictly above* the 75th percentile of the
+    expressing spots (``high_rule="gt"``; ``"ge"`` = at or above), ``low`` is
+    expressing and at or below the 25th, and a sample is skipped when either
+    group has fewer than ``min_per_group`` (3) spots; ``gene_col`` should be
+    CP10K of raw counts as in their script; (3) per immune type and ring fit
     ``Y ~ high + z(cov_1) + ...`` (covariates of the index spot, z-scored over
     analysed spots) with random intercepts for patient and sample-within-patient
     — statsmodels ``MixedLM`` (groups=patient, variance component for sample,
@@ -197,8 +203,12 @@ def immune_neighborhood_analysis(spots_df: pd.DataFrame, gene_col: str, immune_c
         if expr.size < min_expressing_spots:
             continue
         q_lo, q_hi = expr.quantile(0.25), expr.quantile(0.75)
-        high.loc[expr.index[expr >= q_hi]] = 1.0
-        high.loc[expr.index[(expr <= q_lo) & (expr < q_hi)]] = 0.0
+        hi_m = (expr > q_hi) if high_rule == "gt" else (expr >= q_hi)
+        lo_m = (expr <= q_lo) & ~hi_m
+        if hi_m.sum() < min_per_group or lo_m.sum() < min_per_group:
+            continue
+        high.loc[expr.index[hi_m]] = 1.0
+        high.loc[expr.index[lo_m]] = 0.0
     analysed = high.notna().to_numpy()
     if analysed.sum() == 0:
         raise ValueError("no sample had enough expressing spots")

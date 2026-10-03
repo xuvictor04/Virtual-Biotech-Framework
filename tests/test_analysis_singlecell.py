@@ -19,11 +19,14 @@ def _toy_obs():
 
 def test_eligible_celltypes():
     obs = _toy_obs()
-    elig, table = scm.eligible_celltypes(obs, "celltype", "donor", "condition", return_table=True)
+    # P9: the default is now the authors' 50 cells/donor; this toy uses the earlier 20
+    elig, table = scm.eligible_celltypes(obs, "celltype", "donor", "condition", return_table=True,
+                                         min_cells_per_donor=20)
     # Fib: 3 donors per arm; T: only 2 ctrl donors with >=20 cells; B: all < 20 cells
     assert elig == ["Fib"]
     assert table.loc["T", "ctrl"] == 2 and table.loc["T", "case"] == 3
-    assert scm.eligible_celltypes(obs, "celltype", "donor", "condition", min_donors=2) == ["Fib", "T"]
+    assert scm.eligible_celltypes(obs, "celltype", "donor", "condition", min_donors=2,
+                                  min_cells_per_donor=20) == ["Fib", "T"]
 
 
 @pytest.mark.parametrize("as_sparse", [False, True])
@@ -97,7 +100,7 @@ def _lr_df():
 
 def test_filter_lr_results():
     df = _lr_df()
-    out = scm.filter_lr_results(df)
+    out = scm.filter_lr_results(df, method_rules="harness")  # P9: default is now the authors' rule
     # top 10% by magnitude_rank => rows 0..9; cpdb p<0.01 => even rows; row 0 lacks support
     assert set(out.ligand_complex) <= {f"L{i}" for i in (2, 4, 6, 8)}
     assert "L0" not in set(out.ligand_complex)
@@ -210,7 +213,9 @@ def test_quartile_ties_on_zero_inflated_expression():
 def test_pseudobulk_default_min_cells_is_20():
     obs = _toy_obs()
     X = np.ones((len(obs), 2))
-    counts, meta = scm.pseudobulk_counts(X, obs, groupby=["donor", "celltype"])
+    # P9: default min_cells is now the authors' 50 (MIN_CELLS_PER_DONOR); the 20-cell rule is explicit
+    assert scm.pseudobulk_counts(X, obs, groupby=["donor", "celltype"])[0].empty
+    counts, meta = scm.pseudobulk_counts(X, obs, groupby=["donor", "celltype"], min_cells=20)
     assert "d1|B" not in counts.index  # 10 cells < 20
     assert "d1|Fib" in counts.index and meta["n_cells"].min() >= 20
 

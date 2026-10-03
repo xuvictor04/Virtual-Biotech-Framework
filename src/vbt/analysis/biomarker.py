@@ -8,6 +8,15 @@ and ROC AUC for discriminating non-responders (positive class) from
 responders, compared between the gp130-axis score, OSMR alone and the Arijs
 et al. five-gene signature across GEO cohorts GSE12251, GSE16879, GSE23597 and
 GSE73661.
+
+Fidelity with the authors' ``osmr/code/03b_ifx_score_distributions.py``
+(Zenodo archive): scores are oriented post hoc — a score whose AUC is below
+0.5 is negated (``orientation="authors"``, the default of
+:func:`compare_scores_across_cohorts`; the Methods text does not mention
+it, ``"fixed"`` keeps the a-priori direction). The archived processed
+cohorts (``osmr/code/data/GSE*.h5ad``) are read with
+:func:`load_processed_cohort`; on them this module reproduces the authors'
+AUC table exactly (docs/ZENODO_REPLICATION.md).
 """
 
 from __future__ import annotations
@@ -25,7 +34,42 @@ __all__ = [
     "GP130_AXIS_GENES", "ARIJS_SIGNATURE", "DEFAULT_SIGNATURES", "GEO_COHORTS",
     "collapse_probes", "composite_score", "delong_auc_ci", "score_auc",
     "compare_scores_across_cohorts", "GeoSeriesMatrix", "load_geo_series_matrix",
+    "AUTHORS_IFX_COHORTS", "load_processed_cohort",
 ]
+
+#: The authors' infliximab cohorts (03b_ifx_score_distributions.py):
+#: cohort -> (drug, response column, disease); baseline samples with R/NR only.
+AUTHORS_IFX_COHORTS: dict[str, tuple[str, str, str]] = {
+    "GSE16879": ("Infliximab", "response_clinical", "UC"),
+    "GSE12251": ("Infliximab", "response_clinical", "UC"),
+    "GSE23597": ("Infliximab", "response_clinical", "UC"),
+    "GSE73661": ("Infliximab", "response_mucosal_healing", "UC"),
+}
+
+
+def load_processed_cohort(path, *, drug: str = "Infliximab", response_col: str = "response_clinical",
+                          disease: str = "UC", baseline_only: bool = True) -> tuple[pd.DataFrame, pd.Series]:
+    """Read an authors' processed cohort h5ad (``osmr/code/data/<GSE>.h5ad``;
+    genes already collapsed) and return ``(expr samples x genes, labels)`` with
+    labels 1 = non-responder, 0 = responder, restricted as in
+    ``03b_ifx_score_distributions.py``. Needs ``anndata`` (``pip install anndata``)."""
+    try:
+        import anndata as ad
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise ImportError("load_processed_cohort needs anndata: pip install 'vbt-harness[singlecell]' "
+                          "or pip install anndata") from exc
+    a = ad.read_h5ad(path)
+    obs = a.obs
+    mask = (obs["disease"] == disease) & (obs["drug"] == drug) & obs[response_col].isin(["R", "NR"])
+    if baseline_only and "is_baseline" in obs:
+        mask &= obs["is_baseline"].astype(bool)
+    mask = mask.to_numpy()
+    X = a.X[mask]
+    X = X.toarray() if hasattr(X, "toarray") else np.asarray(X)
+    expr = pd.DataFrame(X.astype(float), index=obs.index[mask], columns=list(map(str, a.var_names)))
+    labels = (obs.loc[mask, response_col] == "NR").astype(int)
+    labels.index = expr.index
+    return expr, labels
 
 GP130_AXIS_GENES: list[str] = ["OSMR", "IL6ST", "LIFR", "IL6R", "IL11RA", "IL6", "IL11", "OSM",
                                "LIF", "STAT1"]
@@ -174,13 +218,18 @@ def score_auc(scores, labels, ci: str = "delong", n_boot: int = 2000, seed: int 
 
 def compare_scores_across_cohorts(cohorts: Mapping[str, tuple[pd.DataFrame, pd.Series]],
                                   signatures: Mapping[str, Sequence[str]] | None = None,
-                                  ci: str = "delong", **auc_kwargs) -> pd.DataFrame:
+                                  ci: str = "delong", orientation: str = "authors",
+                                  **auc_kwargs) -> pd.DataFrame:
     """AUC table (cohort x signature) as in Fig. 5C.
 
     ``cohorts`` maps a name to ``(expr_df samples x genes, labels)`` with labels
     1 = non-responder, 0 = responder (indexed like ``expr_df`` or positional).
     Default signatures: gp130 axis, OSMR alone, Arijs five-gene signature.
+    ``orientation="authors"`` (default) negates a score whose AUC is < 0.5
+    (``flipped`` column) as the authors' code does; ``"fixed"`` never flips.
     """
+    if orientation not in ("authors", "fixed"):
+        raise ValueError("orientation must be 'authors' or 'fixed'")
     signatures = dict(signatures or DEFAULT_SIGNATURES)
     rows = []
     for name, (expr, labels) in cohorts.items():
@@ -189,11 +238,15 @@ def compare_scores_across_cohorts(cohorts: Mapping[str, tuple[pd.DataFrame, pd.S
         for sig, genes in signatures.items():
             sc = composite_score(expr, genes)
             r = score_auc(sc.to_numpy(), lab.to_numpy(), ci=ci, **auc_kwargs)
+            flipped = False
+            if orientation == "authors" and np.isfinite(r["auc"]) and r["auc"] < 0.5:
+                r = score_auc(-sc.to_numpy(), lab.to_numpy(), ci=ci, **auc_kwargs)
+                flipped = True
             rows.append({"cohort": name, "signature": sig, **r,
                          "n_genes_used": len(sc.attrs["genes_used"]),
-                         "genes_missing": ",".join(sc.attrs["genes_missing"])})
+                         "genes_missing": ",".join(sc.attrs["genes_missing"]), "flipped": flipped})
     cols = ["cohort", "signature", "auc", "ci_low", "ci_high", "se", "n_nonresponders",
-            "n_responders", "n_genes_used", "genes_missing", "ci_method"]
+            "n_responders", "n_genes_used", "genes_missing", "ci_method", "flipped"]
     return pd.DataFrame(rows)[cols]
 
 
