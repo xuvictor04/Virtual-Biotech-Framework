@@ -184,8 +184,12 @@ def test_trial_level_features_and_genetic_flags():
 def test_run_association_suite():
     df = _sim(n=200)
     res = S.run_association_suite(df, ["tau"], ["y"], ["ae"], n_perm=10, covariates=["gen"])
-    assert list(res.model) == ["logistic", "logistic_adjusted", "beta"]
-    assert {"p_fdr", "p_perm", "estimate", "ci_low", "ci_high", "n"} <= set(res.columns)
+    # with covariates the AE model is the adjusted beta regression (no unadjusted beta row)
+    assert list(res.model) == ["logistic", "logistic_adjusted", "beta_adjusted"]
+    assert {"p_fdr", "p_perm", "estimate", "ci_low", "ci_high", "n", "engine"} <= set(res.columns)
+    assert set(res.engine) == {"statsmodels"}
+    plain = S.run_association_suite(df, ["tau"], ["y"], ["ae"], n_perm=0)
+    assert list(plain.model) == ["logistic", "beta"]
     assert (res.p_fdr >= res.p - 1e-15).all()
 
 
@@ -252,3 +256,167 @@ def test_build_outcomes():
     assert out.loc["N1", "start_year"] == 2010
     assert out.loc["N2", "ae_serious_any_pct"] == 5.0
     assert "N6" in out.index and out.loc["N6", "phase_num"] == 4
+    assert "negative" in out.loc["N2", "stop_categories"]
+
+
+# ---------------------------------------------------------------------------
+# P7: adjusted models, FDR families, contrasts, replication, Phase I scope
+# ---------------------------------------------------------------------------
+
+
+def _confounded(n=3000, seed=0):
+    """Genetic evidence drives both tau and AE%; tau itself has no effect on AE."""
+    rng = np.random.default_rng(seed)
+    gen = rng.binomial(1, 0.4, n)
+    tau = 0.8 * gen + rng.normal(0, 0.5, n)
+    ae = 100 / (1 + np.exp(-(-2.0 + 1.0 * gen + rng.normal(0, 0.3, n))))
+    y = rng.binomial(1, 1 / (1 + np.exp(-(0.8 * gen - 0.3))), n)
+    return pd.DataFrame({"tau": tau, "gen": gen, "ae": ae, "y": y, "y2": rng.binomial(1, 0.4, n)})
+
+
+def test_adjusted_beta_is_adjusted():
+    df = _confounded()
+    unadj = S.run_association_suite(df, ["tau"], [], ["ae"], n_perm=0).set_index("model")
+    adj = S.run_association_suite(df, ["tau"], [], ["ae"], n_perm=0, covariates=["gen"]).set_index("model")
+    assert unadj.loc["beta", "estimate"] > 0.15  # confounded association
+    assert "beta" not in adj.index
+    assert abs(adj.loc["beta_adjusted", "estimate"]) < 0.03  # adjustment removes it
+    direct = S.beta_regression(df, "tau", "ae", covariates=["gen"])
+    assert adj.loc["beta_adjusted", "estimate"] == pytest.approx(direct["coef"])
+
+
+def test_fdr_family_after_filtering():
+    from statsmodels.stats.multitest import multipletests
+
+    df = _confounded(n=600)
+    full = S.run_association_suite(df, ["tau"], ["y", "y2"], [], n_perm=0, covariates=["gen"])
+    fam = S.refdr(full.query("model != 'logistic'"))
+    assert len(fam) == 2
+    np.testing.assert_allclose(fam["p_fdr"], multipletests(fam["p"], method="fdr_bh")[1])
+    only = S.run_association_suite(df, ["tau"], ["y", "y2"], [], n_perm=0, covariates=["gen"],
+                                   include_unadjusted=False)
+    assert list(only.model) == ["logistic_adjusted"] * 2
+    np.testing.assert_allclose(only["p_fdr"], fam["p_fdr"])
+
+
+def test_therapeutic_area_union():
+    assert S.combine_therapeutic_areas(["onc|imm", "cv", None, "imm"]) == "cv|imm|onc"
+    assert S.combine_therapeutic_areas([["b", "a"], ["c"]]) == "a|b|c"
+    assert S.combine_therapeutic_areas([None]) == "unknown"
+
+
+def test_relative_ae_difference_definitions():
+    df = pd.DataFrame({"spec": [1, 1, 0, 0],
+                       "ae1": [1.0, 1.0, 2.0, 2.0],     # -50% per organ
+                       "ae2": [np.nan, 9.0, 10.0, np.nan]})  # -10% per organ
+    r = S.relative_ae_difference(df, "spec", ["ae1", "ae2"], with_beta=True)
+    assert r["mean_of_per_organ"]["relative_difference"] == pytest.approx(-0.3)
+    assert r["paper_comparison"] == "mean_of_per_organ"
+    # pooled row mean: specific (1 + 5)/2 = 3, broad (6 + 2)/2 = 4 -> -25%
+    assert r["pooled_row_mean"]["relative_difference"] == pytest.approx(-0.25)
+    assert r["overall"]["relative_difference"] == pytest.approx(-0.25)
+    assert "exp_beta_pooled" in r and "definition" in r["exp_beta_pooled"]
+
+
+def test_genetic_evidence_replication():
+    df = _confounded(n=1500).rename(columns={"gen": "genetic_evidence"})
+    rng = np.random.default_rng(2)
+    df["status"] = rng.choice(["Completed", "Terminated"], len(df), p=[0.7, 0.3])
+    df["stop_categories"] = np.where(df["status"] == "Terminated",
+                                     rng.choice(["negative", "business_administrative"], len(df)), None)
+    rep = S.genetic_evidence_replication(df, ["y", "y2"], ["ae"])
+    r = rep.set_index("outcome")
+    assert r.loc["y", "estimate"] > 1.5 and r.loc["y", "p"] < 1e-6  # OR for the flag
+    assert r.loc["ae", "model"] == "beta" and r.loc["ae", "estimate"] > 0.5
+    assert {"stopped:negative", "stopped:business_administrative"} <= set(r.index)
+    assert (rep["analysis"] == "genetic_evidence_replication").all() and rep["p_fdr"].notna().all()
+
+
+def test_bimodality_kurtosis_variants():
+    rng = np.random.default_rng(0)
+    x = rng.gamma(2.0, size=300)
+    exc = F.bimodality_coefficient(x)
+    pea = F.bimodality_coefficient(x, kurtosis="pearson")
+    g1, g2 = sstats.skew(x, bias=False), sstats.kurtosis(x, bias=False)
+    corr = 3 * 299**2 / (298 * 297)
+    assert pea == pytest.approx((g1**2 + 1) / (g2 + 3 + corr)) and pea < exc
+    biased = F.bimodality_coefficient(x, bias_correction=False)
+    b1, b2 = sstats.skew(x), sstats.kurtosis(x)
+    assert biased == pytest.approx((b1**2 + 1) / (b2 + corr))
+    bc, _ = F._bc_columns(sp.csr_matrix(x.reshape(-1, 1)), "pearson", False)
+    assert bc[0] == pytest.approx((b1**2 + 1) / (b2 + 3 + corr))
+    with pytest.raises(ValueError):
+        F.bimodality_coefficient(x, kurtosis="fisher")
+    adata, _, _ = _fake_adata()
+    a = F.compute_gene_features(adata, kurtosis="pearson")
+    assert a.attrs["bimodality_kurtosis"] == "pearson" and a.attrs["n_tissues_with_tau"] == 2
+    assert a.attrs["kept_by_tissue"]["B"] == {"n_cells": 55, "n_celltypes": 3, "n_celltypes_kept": 2}
+
+
+def test_feature_input_detection():
+    adata, dense, obs = _fake_adata()
+    assert F.detect_gene_id_column(adata) == "ensembl_id"
+    ens = FakeAnnData(adata.X, obs, pd.DataFrame(index=["ENSG0001", "ENSG0002", "ENSG0003", "ENSG0004"]))
+    assert F.detect_gene_id_column(ens) is None
+    none = FakeAnnData(adata.X, obs, pd.DataFrame(index=["A", "B", "C", "D"]))
+    with pytest.raises(KeyError):
+        F.detect_gene_id_column(none)
+    counts = sp.csr_matrix(np.random.default_rng(0).poisson(3, size=(50, 4)).astype(float))
+    assert F.looks_like_counts(counts) and not F.looks_like_counts(sp.csr_matrix(np.log1p(counts.toarray())))
+    # normalize=True equals normalising first
+    raw = FakeAnnData(counts, pd.DataFrame({"tissue": ["A"] * 50, "cell_ontology_class": ["x"] * 25 + ["y"] * 25}),
+                      pd.DataFrame(index=["G0", "G1", "G2", "G3"]))
+    lib = counts.toarray().sum(1, keepdims=True)
+    normed = FakeAnnData(sp.csr_matrix(np.log1p(counts.toarray() / lib * 1e4)), raw.obs, raw.var)
+    a = F.compute_gene_features(raw, normalize=True)
+    b = F.compute_gene_features(normed)
+    np.testing.assert_allclose(a["tau"], b["tau"], rtol=1e-10)
+
+
+def test_phase1_status_scope():
+    from vbt.case_studies.trial_outcomes.phase1 import phase1_progression
+
+    m = pd.DataFrame({
+        "nct_id": ["P1", "P2", "P3", "Q1"], "drugId": ["D"] * 4, "diseaseId": ["E"] * 4,
+        "phase": [1.0, 1.0, 1.0, 2.0], "status": ["Completed", "Recruiting", "Terminated", "Completed"],
+        "trial_date": ["2010-01-01", "2010-01-01", "2010-01-01", "2012-01-01"]})
+    assert list(phase1_progression(m).nct_id) == ["P1"]
+    assert len(phase1_progression(m, statuses=None)) == 3
+    assert list(phase1_progression(m, statuses=None, universe={"P2"}).nct_id) == ["P2"]
+
+
+def test_phase1_released_scope_11412():
+    import os
+    from pathlib import Path
+
+    up = Path(os.environ.get("VBT_UPSTREAM", "third_party/TheVirtualBiotech")) / "datasets" / "clinical_trials"
+    if not (up / "chembl_clinical_nct_data.parquet").exists():
+        pytest.skip("upstream clinical-trial data not available")
+    from vbt.case_studies.trial_outcomes.phase1 import phase1_progression
+
+    res = phase1_progression(pd.read_parquet(up / "chembl_clinical_nct_data.parquet"))
+    assert len(res) == 11412
+    released = pd.read_csv(up / "clinical_trial_labels_reconciled.csv")
+    rel = released[(released.phase == 1.0) & released.phase2_progression.notna()]
+    assert set(res.nct_id) == set(rel.nct_id)
+
+
+def test_agreement_applicability():
+    from vbt.case_studies.trial_outcomes.validation import agreement_report
+
+    pred = pd.DataFrame({"nct_id": list("ABCDE"),
+                         "primary_endpoint_result": ["POSITIVE", "NEGATIVE", "POSITIVE", "NEGATIVE", "POSITIVE"],
+                         "ae_serious_cardiac_pct": [1.0, 2.0, 3.0, np.nan, 5.0]})
+    ref = pd.DataFrame({"nct_id": list("ABCDE"),
+                        "status": ["Completed", "Completed", "Terminated", "Completed", "Withdrawn"],
+                        "primary_endpoint_result": ["POSITIVE", "POSITIVE", "NEGATIVE", "NOT_APPLICABLE",
+                                                    "POSITIVE"],
+                        "ae_serious_cardiac_pct": [1.2, np.nan, 3.0, np.nan, 9.0]})
+    rep = agreement_report(pred, ref).set_index("field")
+    p = rep.loc["primary_endpoint_result"]
+    assert p["n_applicable"] == 2 and p["n_agree"] == 1  # C, E stopped; D not applicable
+    assert p["n_excluded_stopped"] == 2 and p["n_excluded_not_applicable"] == 1
+    inc = agreement_report(pred, ref, exclude_stopped=False).set_index("field")
+    assert inc.loc["primary_endpoint_result", "n_applicable"] == 4
+    ae = rep.loc["serious_ae_rates"]
+    assert ae["n_applicable"] == 3 and ae["n_agree"] == 2 and ae["n_excluded_no_exact_statistics"] == 2

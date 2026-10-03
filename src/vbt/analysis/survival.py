@@ -7,6 +7,12 @@ patients restricted to complete covariates (age, AJCC stage dichotomised as
 advanced III/IV vs early I/II, sex); top vs bottom expression quartile
 compared with a multivariable Cox proportional-hazards model for OS, PFS, DSS
 and DFS endpoints.
+
+The paper stratifies one complete-case cohort (477 LUAD patients) once and
+fits every endpoint on those fixed high/low groups:
+:func:`quartile_cox_all_endpoints` (``quartile_scope='cohort'``, default).
+``quartile_scope='endpoint'`` recomputes quartiles on each endpoint's own
+complete cases (high/low membership then differs between OS and DFS).
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ __all__ = [
     "parse_status",
     "prepare_tcga_clinical",
     "quartile_cox",
+    "quartile_cox_all_endpoints",
     "fetch_cbioportal_expression_and_clinical",
 ]
 
@@ -141,7 +148,12 @@ def quartile_cox(df: pd.DataFrame, expr_col: str, time_col: str, event_col: str,
     lo = (dat[expr_col] <= q_lo) & ~hi
     dat = dat[hi | lo].copy()
     dat["high"] = (dat[expr_col] >= q_hi).astype(float)
-    # drop covariates constant in the analysed set (would make the model singular)
+    # covariates constant in the analysed set are dropped (would make the model singular)
+    return _fit_groups(dat, time_col, event_col, covariates, engine)
+
+
+def _fit_groups(dat: pd.DataFrame, time_col: str, event_col: str, covariates: list[str], engine: str) -> dict:
+    """Cox fit of ``event ~ high + covariates`` on rows already labelled ``high`` (1/0)."""
     xcols = ["high"] + [c for c in covariates if dat[c].nunique() > 1]
     if engine == "auto":
         engine = "lifelines" if has_module("lifelines") else "statsmodels"
@@ -158,6 +170,67 @@ def quartile_cox(df: pd.DataFrame, expr_col: str, time_col: str, event_col: str,
         "n_high": int(dat["high"].sum()), "n_low": int((1 - dat["high"]).sum()),
         "covariates": [c for c in xcols if c != "high"], "engine": engine,
     }
+
+
+def quartile_cox_all_endpoints(df: pd.DataFrame, expr_col: str = "expr",
+                               endpoints: Sequence[str] = ENDPOINTS,
+                               covariates: Sequence[str] = ("age", "stage_advanced", "sex"),
+                               top: float = 0.75, bottom: float = 0.25, engine: str = "auto",
+                               quartile_scope: str = "cohort") -> pd.DataFrame:
+    """Top- vs bottom-quartile Cox models for every endpoint on fixed groups.
+
+    ``quartile_scope='cohort'`` (paper): restrict once to patients with
+    complete ``covariates`` and expression (the cohort; paper: 477 LUAD
+    patients), compute the quartiles once, and fit each endpoint
+    (``<ep>_time`` / ``<ep>_event`` columns from :func:`prepare_tcga_clinical`)
+    on the cohort's high/low patients that have that endpoint recorded.
+    ``'endpoint'`` recomputes the quartiles on each endpoint's complete cases
+    (as :func:`quartile_cox`). Returns one row per endpoint with ``endpoint,
+    hr, ci_low, ci_high, p, coef, se, n, n_events, n_high, n_low, n_cohort,
+    q_low, q_high, quartile_scope, engine`` (``error`` when a fit fails).
+    """
+    if quartile_scope not in ("cohort", "endpoint"):
+        raise ValueError("quartile_scope must be 'cohort' or 'endpoint'")
+    covariates = list(covariates)
+    base = df.copy()
+    for c in [expr_col, *covariates]:
+        base[c] = pd.to_numeric(base[c], errors="coerce")
+    cohort = base.dropna(subset=[expr_col, *covariates])
+    q_hi, q_lo = cohort[expr_col].quantile(top), cohort[expr_col].quantile(bottom)
+    rows = []
+    for ep in endpoints:
+        tcol, ecol = f"{ep.lower()}_time", f"{ep.lower()}_event"
+        row: dict = {"endpoint": ep, "n_cohort": int(len(cohort)), "quartile_scope": quartile_scope}
+        if tcol not in cohort.columns or ecol not in cohort.columns:
+            rows.append({**row, "error": f"missing {tcol}/{ecol}"})
+            continue
+        try:
+            if quartile_scope == "endpoint":
+                r = quartile_cox(cohort, expr_col, tcol, ecol, covariates, top, bottom, engine)
+                sub = cohort[[expr_col, tcol, ecol]].apply(pd.to_numeric, errors="coerce").dropna()
+                r.update(q_high=float(sub[expr_col].quantile(top)), q_low=float(sub[expr_col].quantile(bottom)))
+            else:
+                d = cohort[[expr_col, tcol, ecol, *covariates]].apply(pd.to_numeric, errors="coerce")
+                d = d.dropna(subset=[tcol, ecol])
+                d = d[d[tcol] > 0] if (d[tcol] <= 0).any() else d
+                hi = d[expr_col] >= q_hi
+                lo = (d[expr_col] <= q_lo) & ~hi
+                d = d[hi | lo].copy()
+                d["high"] = (d[expr_col] >= q_hi).astype(float)
+                r = _fit_groups(d, tcol, ecol, covariates, engine)
+                r.update(q_high=float(q_hi), q_low=float(q_lo))
+        except Exception as exc:  # noqa: BLE001 - report per endpoint
+            rows.append({**row, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        r.pop("covariates", None)
+        rows.append({**row, **r})
+    cols = ["endpoint", "hr", "ci_low", "ci_high", "p", "coef", "se", "n", "n_events", "n_high", "n_low",
+            "n_cohort", "q_low", "q_high", "quartile_scope", "engine", "error"]
+    out = pd.DataFrame(rows)
+    for c in cols:
+        if c not in out.columns:
+            out[c] = np.nan
+    return out[cols]
 
 
 _ENTREZ = {"CD276": 80381, "OSMR": 9180}

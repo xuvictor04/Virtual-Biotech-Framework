@@ -10,9 +10,16 @@ knowledge_cutoff_note: >
   may know this, so treat the ADC nomination as leakage-prone unless the model's cutoff
   precedes August 2025.
 
-# User turns. The first is verbatim from the paper; later turns are the kind of
-# lightweight steering the paper describes (answering clarifications, asking for
-# follow-ups after each iteration). Edit freely.
+# Verbatim user turns (`--turns-source paper`). The main text quotes only the initial
+# query; the full transcript is Supplementary Text V. Put it (a YAML list, or {turns: [...]})
+# at paper_turns_file to replay it verbatim; it replaces paper_turns when present.
+paper_turns:
+  - "Evaluate the therapeutic candidacy of B7-H3 as a target in lung cancer."
+paper_turns_file: data/supplementary/b7h3_supplementary_text_V.yaml
+
+# Synthetic user turns (default, `--turns-source synthetic`). The first is verbatim from
+# the paper; later turns are the kind of lightweight steering the paper describes
+# (answering clarifications, asking for follow-ups after each iteration). Edit freely.
 turns:
   - "Evaluate the therapeutic candidacy of B7-H3 as a target in lung cancer."
   - >
@@ -43,6 +50,55 @@ expected_findings:
     text: "In TCGA LUAD, top- vs bottom-quartile B7-H3 expression associates with worse survival in an adjusted Cox model (paper: OS HR 1.62, DFS HR 2.06)."
   - id: modality_adc
     text: "Surface localization plus stromal/TME overexpression and lack of chemical binders leads to nominating an antibody-drug conjugate; small molecules/PROTACs de-prioritized."
+
+# The paper's reported numbers, checked deterministically by `vbt scenario score`
+# (closest number in matching claims.json texts / artifact columns; tolerance absolute or "N%").
+# Cost is scored separately as run cost / paper_cost_usd ($50).
+expected_values:
+  - id: fibroblast_log2fc_sclc
+    description: "B7-H3 pseudobulk log2FC in SCLC fibroblasts vs normal lung (Fig. 4C)"
+    value: 2.13
+    tolerance: 0.3
+    source: claims
+    pattern: "(SCLC|small[- ]cell).*fibroblast|fibroblast.*(SCLC|small[- ]cell)"
+  - id: fibroblast_log2fc_luad
+    description: "B7-H3 pseudobulk log2FC in LUAD fibroblasts vs normal lung (Fig. 4C)"
+    value: 1.79
+    tolerance: 0.3
+    source: claims
+    pattern: "(LUAD|adenocarcinoma).*fibroblast|fibroblast.*(LUAD|adenocarcinoma)"
+  - id: lr_interactions_sclc
+    description: "Significant ligand-receptor interactions, B7-H3-high vs low fibroblasts, SCLC"
+    value: 180
+    tolerance: "15%"
+    source: claims
+    pattern: "interaction.*(SCLC|small[- ]cell)|(SCLC|small[- ]cell).*interaction"
+  - id: lr_interactions_luad
+    description: "Significant ligand-receptor interactions, B7-H3-high vs low fibroblasts, LUAD"
+    value: 226
+    tolerance: "15%"
+    source: claims
+    pattern: "interaction.*(LUAD|adenocarcinoma)|(LUAD|adenocarcinoma).*interaction"
+  - id: os_hr
+    description: "TCGA LUAD overall survival HR, top vs bottom B7-H3 quartile (adjusted Cox)"
+    value: 1.62
+    tolerance: 0.25
+    source: claims
+    pattern: "overall survival|\\bOS\\b"
+  - id: dfs_hr
+    description: "TCGA LUAD disease-free survival HR, top vs bottom B7-H3 quartile (adjusted Cox)"
+    value: 2.06
+    tolerance: 0.35
+    source: claims
+    pattern: "disease[- ]free|\\bDFS\\b"
+  - id: os_hr_table
+    description: "Same OS HR read from the run's survival table (vbt.analysis.survival output)"
+    value: 1.62
+    tolerance: 0.25
+    source: artifact
+    pattern: "work/**/*surviv*.csv"
+    column: hr
+    query: "endpoint == 'OS'"
 
 reference_data:
   - "CELLxGENE Census: SCLC atlas (62,341 cells, 9 donors), LUAD atlas (337,002 cells, 69 donors), healthy lung (86,478 cells, 26 donors)"

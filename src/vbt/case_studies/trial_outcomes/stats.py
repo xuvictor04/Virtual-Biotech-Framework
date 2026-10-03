@@ -24,7 +24,14 @@ Science 2026), plus the outcome derivation from the released trial labels:
   :func:`relative_ae_difference` — the "cell-type-specific vs broadly
   expressed" contrasts (paper: τ threshold ≈ 0.69; specific-target trials
   48% more likely to reach Phase IV, 32% lower serious-AE rates).
-* :func:`run_association_suite` — tidy table across features × outcomes.
+* :func:`run_association_suite` — tidy table across features × outcomes
+  (covariate-adjusted logistic *and* beta models when covariates are given;
+  :func:`refdr` recomputes BH within a filtered family).
+* :func:`genetic_evidence_replication` — Razuvayevskaya-style replication
+  (fig. S2): outcomes and AE rates on the genetic-evidence flag.
+
+Every model row records the ``engine`` that fitted it (statsmodels, or R
+``betareg``/``lme4``/``glmmTMB`` via rpy2 when requested and installed).
 
 ``rpy2`` is optional and imported lazily; nothing here crashes without it.
 """
@@ -55,6 +62,9 @@ __all__ = [
     "build_outcomes",
     "phase_to_numeric",
     "smithson_verkuilen",
+    "refdr",
+    "genetic_evidence_replication",
+    "combine_therapeutic_areas",
 ]
 
 _Z = 1.959963984540054  # standard-normal 97.5% quantile
@@ -225,7 +235,7 @@ def adjusted_logistic(
         p = float(res.pvalues[feature])
     except Exception as exc:  # noqa: BLE001 - report instead of crashing a suite
         return _nan_result(n, f"{type(exc).__name__}: {exc}")
-    return dict(
+    return dict(engine="statsmodels",
         odds_ratio=float(np.exp(beta)),
         ci_low=float(np.exp(beta - _Z * se)),
         ci_high=float(np.exp(beta + _Z * se)),
@@ -258,6 +268,9 @@ def beta_regression(
     feature: str,
     outcome_pct: str,
     covariates: Sequence[str] = (),
+    *,
+    engine: str = "statsmodels",
+    standardize: bool = True,
 ) -> dict:
     """Beta regression of an AE percentage on the z-scored feature.
 
@@ -266,23 +279,56 @@ def beta_regression(
     y' = (y(n − 1) + 0.5)/n, and modelled with a logit-link beta regression
     (``statsmodels.othermod.betareg.BetaModel``).  Returns ``coef`` (log-odds
     change of the mean proportion per 1 SD), ``ci_low``/``ci_high`` (95%
-    Wald), ``p``, ``n``, ``se`` and ``exp_coef`` (odds-ratio scale).
-    """
-    import statsmodels.api as sm
-    from statsmodels.othermod.betareg import BetaModel
+    Wald), ``p``, ``n``, ``se``, ``exp_coef`` (odds-ratio scale) and
+    ``engine``.
 
+    ``engine``: ``"statsmodels"`` (default), ``"betareg"`` (R ``betareg`` via
+    rpy2, the paper's engine) or ``"auto"`` (betareg when rpy2 and the R
+    package are installed, else statsmodels). ``standardize=False`` keeps the
+    feature on its own scale (e.g. a 0/1 flag: ``exp_coef`` is then the odds
+    ratio of the mean proportion between the two groups).
+    """
+    if engine not in ("statsmodels", "betareg", "auto"):
+        raise ValueError("engine must be 'statsmodels', 'betareg' or 'auto'")
     covariates = list(covariates)
     d = df[[feature, outcome_pct, *covariates]].dropna()
     n = len(d)
     base = dict(coef=np.nan, ci_low=np.nan, ci_high=np.nan, p=np.nan, n=int(n),
-                se=np.nan, exp_coef=np.nan)
+                se=np.nan, exp_coef=np.nan, engine=engine)
+    use_r = engine == "betareg" or (engine == "auto" and _rpy2_available(["betareg"]))
+    if engine == "betareg" and not _rpy2_available(["betareg"]):
+        base["error"] = "rpy2 or the R package betareg is not installed (pip install 'vbt-harness[r]')"
+        return base
+    if use_r:
+        try:
+            dd = d.copy()
+            dd[feature] = _zscore(dd[feature].astype(float)) if standardize else dd[feature].astype(float)
+            dd[outcome_pct] = smithson_verkuilen(np.clip(dd[outcome_pct].astype(float).to_numpy() / 100.0, 0, 1), n)
+            safe, _rhs, rhs_r, _rand = _prep_mixed_fixed(dd, feature, outcome_pct, covariates)
+            import rpy2.robjects as ro  # type: ignore
+
+            ro.r("suppressPackageStartupMessages(library(betareg))")
+            beta, se, p = _r_fit(safe, "y_out ~ " + " + ".join(rhs_r), "betareg({formula}, data=vbt_df)",
+                                 "summary(vbt_fit)$coefficients$mean")
+            base.update(coef=beta, se=se, p=p, ci_low=beta - _Z * se, ci_high=beta + _Z * se,
+                        exp_coef=float(np.exp(beta)), engine="R:betareg")
+            return base
+        except Exception as exc:  # noqa: BLE001
+            if engine == "betareg":
+                base["error"] = f"betareg failed: {type(exc).__name__}: {exc}"
+                return base
+            base["note"] = f"betareg failed, statsmodels used: {exc}"
+    import statsmodels.api as sm
+    from statsmodels.othermod.betareg import BetaModel
+
+    base["engine"] = "statsmodels"
     try:
         if n < 5:
             raise ValueError("insufficient data")
         y = np.clip(d[outcome_pct].astype(float).to_numpy() / 100.0, 0.0, 1.0)
         y = smithson_verkuilen(y, n)
-        X = pd.concat([_zscore(d[feature].astype(float)).rename(feature),
-                       _design(d, covariates)], axis=1)
+        xf = _zscore(d[feature].astype(float)) if standardize else d[feature].astype(float)
+        X = pd.concat([xf.rename(feature), _design(d, covariates)], axis=1)
         X = sm.add_constant(X, has_constant="add")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -418,6 +464,24 @@ def _prep_mixed(df, feature, outcome, fixed, random, outcome_transform=None):
     rhs_r = [t for t, (c, _k) in zip(rhs_r[1:], fixed_terms) if safe[names[c]].nunique() > 1]
     rand_safe = [names[c] for c in random if safe[names[c]].nunique() > 1]
     return safe, ["x_feat", *rhs], ["x_feat", *rhs_r], rand_safe
+
+
+def _prep_mixed_fixed(d: pd.DataFrame, feature: str, outcome: str, covariates: Sequence[str]):
+    """Formula-safe frame for a fixed-effects-only R model (feature already transformed)."""
+    covariates = list(covariates)
+    dd = d[[feature, outcome, *covariates]].copy()
+    terms = []
+    for c in covariates:
+        if pd.api.types.is_numeric_dtype(dd[c]) or pd.api.types.is_bool_dtype(dd[c]):
+            dd[c] = dd[c].astype(float)
+            terms.append((c, "num"))
+        else:
+            dd[c] = dd[c].astype(str)
+            terms.append((c, "cat"))
+    safe, names = _safe_frame(dd, feature, outcome, covariates, [])
+    rhs_r = ["x_feat"] + [names[c] if k == "num" else f"factor({names[c]})" for c, k in terms
+                          if safe[names[c]].nunique() > 1]
+    return safe, rhs_r, rhs_r, []
 
 
 def _r_fit(safe: pd.DataFrame, formula: str, call: str, coef_expr: str) -> tuple[float, float, float]:
@@ -685,14 +749,28 @@ def relative_likelihood(df: pd.DataFrame, binary_col: str, outcome: str) -> dict
     )
 
 
-def relative_ae_difference(df: pd.DataFrame, binary_col: str, ae_cols: Sequence[str]) -> dict:
+def relative_ae_difference(df: pd.DataFrame, binary_col: str, ae_cols: Sequence[str],
+                           *, with_beta: bool = False) -> dict:
     """Relative difference in serious-AE rates, specific vs broad targets.
 
     Paper Results: trials with cell-type-specific targets showed ~32% lower
-    serious-AE rates.  For each AE column: mean in specific and broad trials,
-    ``relative_difference`` = mean_specific / mean_broad − 1 (negative =
-    lower in specific), and a Mann–Whitney U p-value.  ``overall`` uses the
-    per-trial mean across the available ``ae_cols``.
+    serious-AE rates "on average". The phrase is ambiguous, so three clearly
+    labelled definitions are reported:
+
+    * ``mean_of_per_organ`` — the mean over organ systems of the per-organ
+      relative differences (mean_specific / mean_broad − 1 per AE column);
+      the natural reading of "on average" and the value compared with −0.32
+      (``paper_comparison``);
+    * ``pooled_row_mean`` (alias ``overall``, kept for compatibility) — the
+      per-trial mean of whichever AE columns are non-missing, then the
+      relative difference of those means (mixes organs with different
+      baselines across trials);
+    * ``exp_beta_pooled`` (``with_beta=True``) — exp(coefficient) of a beta
+      regression of the pooled row-mean on the 0/1 group: an odds-ratio of
+      the mean proportion, *not* a relative difference.
+
+    ``per_outcome`` holds, per AE column, both means, ``relative_difference``,
+    counts and a Mann–Whitney U p-value.
     """
     from scipy.stats import mannwhitneyu
 
@@ -714,8 +792,39 @@ def relative_ae_difference(df: pd.DataFrame, binary_col: str, ae_cols: Sequence[
     ae_cols = list(ae_cols)
     g = df[binary_col]
     per = {c: one(df[c], g) for c in ae_cols}
-    overall = one(df[ae_cols].astype(float).mean(axis=1, skipna=True), g) if ae_cols else {}
-    return dict(per_outcome=per, overall=overall)
+    pooled = df[ae_cols].astype(float).mean(axis=1, skipna=True) if ae_cols else None
+    overall = one(pooled, g) if ae_cols else {}
+    rels = [v["relative_difference"] for v in per.values() if np.isfinite(v["relative_difference"])]
+    mean_per_organ = dict(relative_difference=float(np.mean(rels)) if rels else float("nan"),
+                          n_organs=len(rels),
+                          definition="mean over AE columns of (mean_specific / mean_broad - 1)")
+    out = dict(per_outcome=per, overall=overall,
+               pooled_row_mean={**overall, "definition": "relative difference of per-trial means over the "
+                                                         "available AE columns"},
+               mean_of_per_organ=mean_per_organ,
+               paper_comparison="mean_of_per_organ")
+    if with_beta and ae_cols:
+        d = pd.DataFrame({"g": g.astype(float), "y": pooled})
+        r = beta_regression(d, "g", "y", standardize=False)
+        out["exp_beta_pooled"] = dict(exp_coef=r.get("exp_coef"), coef=r.get("coef"), p=r.get("p"), n=r.get("n"),
+                                      engine=r.get("engine"),
+                                      definition="exp(beta) of a beta regression of the pooled row-mean on the "
+                                                 "0/1 group (odds-ratio scale of the mean proportion)")
+    return out
+
+
+def refdr(table: pd.DataFrame) -> pd.DataFrame:
+    """Recompute ``p_fdr`` / ``p_perm_fdr`` (BH) over exactly the rows of ``table``.
+
+    Use after filtering a suite table to the family actually reported, e.g.
+    ``refdr(t.query("model != 'logistic'"))`` for the adjusted analyses.
+    """
+    t = table.copy()
+    if "p" in t.columns:
+        t["p_fdr"] = benjamini_hochberg(t["p"]) if len(t) else []
+    if "p_perm" in t.columns:
+        t["p_perm_fdr"] = benjamini_hochberg(t["p_perm"]) if len(t) else []
+    return t
 
 
 def run_association_suite(
@@ -726,48 +835,174 @@ def run_association_suite(
     n_perm: int = 1000,
     covariates: Sequence[str] | None = None,
     seed: int = 0,
+    *,
+    include_unadjusted: bool = True,
+    beta_engine: str = "statsmodels",
 ) -> pd.DataFrame:
     """Run the paper's feature × outcome association grid into a tidy table.
 
     For each feature and binary outcome: univariate logistic (``model =
     "logistic"``; estimate = OR per SD) and, when ``covariates`` is given,
-    the adjusted logistic (``"logistic_adjusted"``).  For each AE percentage
+    the adjusted logistic (``"logistic_adjusted"``). For each AE percentage
     outcome: beta regression (``"beta"``; estimate = logit-scale coefficient
-    per SD).  Univariate models get a permutation p-value when ``n_perm > 0``.
+    per SD) — or, when ``covariates`` is given, the covariate-adjusted beta
+    regression (``"beta_adjusted"``) *instead* (the unadjusted beta row is
+    emitted only without covariates). Univariate models get a permutation
+    p-value when ``n_perm > 0``. ``include_unadjusted=False`` drops the
+    unadjusted logistic rows when covariates are given, so the table is
+    exactly the adjusted family.
 
     Columns: ``feature, outcome, model, estimate, ci_low, ci_high, p, p_perm,
-    p_perm_raw, n, p_fdr, p_perm_fdr`` — FDR (Benjamini–Hochberg) is applied
-    across the whole suite, separately to parametric and permutation p.
+    p_perm_raw, n, engine, p_fdr, p_perm_fdr`` — FDR (Benjamini–Hochberg) is
+    applied across the returned rows, separately to parametric and permutation
+    p. After filtering rows, call :func:`refdr` to correct over the family
+    actually reported.
     """
     rows = []
     covariates = list(covariates) if covariates else []
     for f in features:
         for o in binary_outcomes:
-            r = univariate_logistic(df, f, o)
-            perm = permutation_test(df, f, o, "logistic", n_perm, seed) if n_perm > 0 else {}
-            rows.append(dict(feature=f, outcome=o, model="logistic", estimate=r["odds_ratio"],
-                             ci_low=r["ci_low"], ci_high=r["ci_high"], p=r["p"],
-                             p_perm=perm.get("p_perm", np.nan),
-                             p_perm_raw=perm.get("p_perm_raw", np.nan), n=r["n"]))
+            if include_unadjusted or not covariates:
+                r = univariate_logistic(df, f, o)
+                perm = permutation_test(df, f, o, "logistic", n_perm, seed) if n_perm > 0 else {}
+                rows.append(dict(feature=f, outcome=o, model="logistic", estimate=r["odds_ratio"],
+                                 ci_low=r["ci_low"], ci_high=r["ci_high"], p=r["p"],
+                                 p_perm=perm.get("p_perm", np.nan),
+                                 p_perm_raw=perm.get("p_perm_raw", np.nan), n=r["n"], engine="statsmodels"))
             if covariates:
                 r = adjusted_logistic(df, f, o, covariates)
                 rows.append(dict(feature=f, outcome=o, model="logistic_adjusted",
                                  estimate=r["odds_ratio"], ci_low=r["ci_low"],
                                  ci_high=r["ci_high"], p=r["p"], p_perm=np.nan,
-                                 p_perm_raw=np.nan, n=r["n"]))
+                                 p_perm_raw=np.nan, n=r["n"], engine="statsmodels"))
         for o in ae_outcomes:
-            r = beta_regression(df, f, o)
+            if covariates:
+                r = beta_regression(df, f, o, covariates=covariates, engine=beta_engine)
+                rows.append(dict(feature=f, outcome=o, model="beta_adjusted", estimate=r["coef"],
+                                 ci_low=r["ci_low"], ci_high=r["ci_high"], p=r["p"], p_perm=np.nan,
+                                 p_perm_raw=np.nan, n=r["n"], engine=r.get("engine")))
+                continue
+            r = beta_regression(df, f, o, engine=beta_engine)
             perm = permutation_test(df, f, o, "beta", n_perm, seed) if n_perm > 0 else {}
             rows.append(dict(feature=f, outcome=o, model="beta", estimate=r["coef"],
                              ci_low=r["ci_low"], ci_high=r["ci_high"], p=r["p"],
                              p_perm=perm.get("p_perm", np.nan),
-                             p_perm_raw=perm.get("p_perm_raw", np.nan), n=r["n"]))
+                             p_perm_raw=perm.get("p_perm_raw", np.nan), n=r["n"], engine=r.get("engine")))
     cols = ["feature", "outcome", "model", "estimate", "ci_low", "ci_high", "p", "p_perm",
-            "p_perm_raw", "n"]
+            "p_perm_raw", "n", "engine"]
     out = pd.DataFrame(rows, columns=cols)
+    return refdr(out)
+
+
+# ---------------------------------------------------------------------------
+# Genetic-evidence replication (Razuvayevskaya et al.; paper fig. S2)
+# ---------------------------------------------------------------------------
+
+
+def _flag_logistic(d: pd.DataFrame, flag: str, outcome: str) -> dict:
+    import statsmodels.api as sm
+
+    d = d[[flag, outcome]].dropna()
+    n = len(d)
+    try:
+        y = _binary(d[outcome]).astype(float).to_numpy()
+        x = d[flag].astype(float)
+        if n < 5 or x.nunique() < 2 or len(np.unique(y)) < 2:
+            raise ValueError("insufficient data or a single class")
+        X = sm.add_constant(x.rename(flag).to_frame(), has_constant="add")
+        res = _fit_logit(y, X)
+        b = float(res.params[flag])
+        se = float(res.bse[flag])
+        p = float(res.pvalues[flag])
+    except Exception as exc:  # noqa: BLE001
+        return _nan_result(n, f"{type(exc).__name__}: {exc}")
+    return dict(odds_ratio=float(np.exp(b)), ci_low=float(np.exp(b - _Z * se)),
+                ci_high=float(np.exp(b + _Z * se)), p=p, n=int(n), beta=b, se=se,
+                n_flagged=int(d[flag].astype(float).sum()))
+
+
+def _split_categories(v) -> list[str]:
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return []
+    if isinstance(v, (list, tuple, np.ndarray)):
+        items = [str(x) for x in v]
+    else:
+        items = re.split(r"[|,;]", re.sub(r"[\[\]'\"]", "", str(v)))
+    return [i.strip() for i in items if i.strip() and i.strip().lower() not in ("nan", "none")]
+
+
+def genetic_evidence_replication(
+    df: pd.DataFrame,
+    outcomes: Sequence[str],
+    ae_cols: Sequence[str] = (),
+    *,
+    flag: str = "genetic_evidence",
+    stop_col: str | None = "stop_categories",
+    status_col: str = "status",
+    min_events: int = 5,
+) -> pd.DataFrame:
+    """Replicate Razuvayevskaya et al. (Nat Genet 2024) on this dataset (fig. S2).
+
+    * each binary outcome ~ genetic-evidence flag (binomial GLM; OR with Wald CI);
+    * each AE percentage ~ flag (beta regression; ``estimate`` = logit-scale
+      coefficient, ``exp_coef`` its odds-ratio scale);
+    * optionally, per stop-reason category (``stop_col``, pipe/list values):
+      trials stopped for that category (1) vs completed trials (0), on the
+      flag — Razuvayevskaya-style stop-category ORs.
+
+    BH FDR across all returned rows. Columns: ``analysis, outcome, model,
+    estimate, ci_low, ci_high, p, n, n_flagged, engine, p_fdr``.
+    """
+    if flag not in df.columns:
+        raise KeyError(f"{flag!r} not in the dataset (pass genetic pairs or OPEN_TARGETS_DATA_PATH)")
+    rows = []
+    for o in outcomes:
+        if o not in df.columns:
+            continue
+        r = _flag_logistic(df, flag, o)
+        rows.append(dict(outcome=o, model="logistic", estimate=r["odds_ratio"], ci_low=r["ci_low"],
+                         ci_high=r["ci_high"], p=r["p"], n=r["n"], n_flagged=r.get("n_flagged"),
+                         engine="statsmodels"))
+    for o in ae_cols:
+        if o not in df.columns:
+            continue
+        r = beta_regression(df, flag, o, standardize=False)
+        rows.append(dict(outcome=o, model="beta", estimate=r["coef"], ci_low=r["ci_low"], ci_high=r["ci_high"],
+                         p=r["p"], n=r["n"], exp_coef=r.get("exp_coef"), engine=r.get("engine")))
+    if stop_col and stop_col in df.columns and status_col in df.columns:
+        st = df[status_col].astype("string").str.strip().str.lower()
+        cats = df[stop_col].map(_split_categories)
+        completed = st.isin(_COMPLETED).fillna(False).to_numpy(dtype=bool)
+        stopped = st.isin(_STOPPED).fillna(False).to_numpy(dtype=bool)
+        all_cats = sorted({c for cs, s_ in zip(cats, stopped) if s_ for c in cs})
+        for c in all_cats:
+            has = np.array([c in cs for cs in cats], dtype=bool)
+            y = np.where(stopped & has, 1.0, np.where(completed, 0.0, np.nan))
+            if np.nansum(y) < min_events:
+                continue
+            d = pd.DataFrame({flag: df[flag].to_numpy(), "y": y})
+            r = _flag_logistic(d, flag, "y")
+            rows.append(dict(outcome=f"stopped:{c}", model="logistic_stop_category", estimate=r["odds_ratio"],
+                             ci_low=r["ci_low"], ci_high=r["ci_high"], p=r["p"], n=r["n"],
+                             n_flagged=r.get("n_flagged"), engine="statsmodels"))
+    out = pd.DataFrame(rows, columns=["outcome", "model", "estimate", "ci_low", "ci_high", "p", "n", "n_flagged",
+                                      "exp_coef", "engine"])
+    out.insert(0, "analysis", "genetic_evidence_replication")
+    out["feature"] = flag
     out["p_fdr"] = benjamini_hochberg(out["p"]) if len(out) else []
-    out["p_perm_fdr"] = benjamini_hochberg(out["p_perm"]) if len(out) else []
     return out
+
+
+def combine_therapeutic_areas(values: Iterable) -> str:
+    """A trial's therapeutic-area combination: the sorted union of the therapeutic
+    areas of *all* its diseases (each value a list or a pipe-joined string)."""
+    areas: set[str] = set()
+    for v in values:
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            continue
+        items = list(v) if isinstance(v, (list, tuple, np.ndarray)) else str(v).split("|")
+        areas |= {str(x).strip() for x in items if str(x).strip() and str(x).strip() not in ("none", "nan")}
+    return "|".join(sorted(areas)) if areas else "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -921,6 +1156,7 @@ def build_outcomes(labels: pd.DataFrame, mapping: pd.DataFrame) -> pd.DataFrame:
     saf = np.array([_has_safety(t) for t in texts], dtype=bool)
     stp = stopped.to_numpy()
     cmp_ = completed.to_numpy()
+    out["stop_categories"] = texts  # lower-cased category text (for stop-category analyses)
     out["stopped_negative"] = np.where(stp & neg, 1.0, np.where(cmp_, 0.0, np.nan))
     out["stopped_safety"] = np.where(stp & saf, 1.0, np.where(cmp_, 0.0, np.nan))
 

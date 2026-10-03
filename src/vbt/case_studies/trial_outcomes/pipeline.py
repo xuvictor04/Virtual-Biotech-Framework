@@ -26,6 +26,9 @@ from .phase1 import phase1_progression
 FEATURES = ("tau", "bimodality")
 BINARY_OUTCOMES = ("primary_success", "secondary_success", "phase1_to_2", "ever_phase4",
                    "stopped_early", "stopped_negative", "stopped_safety")
+# outcomes for the genetic-evidence replication (fig. S2; Razuvayevskaya et al.)
+GENETIC_OUTCOMES = ("ever_phase_ge_2", "ever_phase_ge_3", "ever_phase4", "phase1_to_2", "stopped_early",
+                    "stopped_negative", "stopped_safety", "primary_success", "secondary_success")
 
 
 def genetic_pairs_from_open_targets(ot_path: str | Path) -> set[tuple[str, str]]:
@@ -47,13 +50,14 @@ def covariates_from_open_targets(ot_path: str | Path, mapping: pd.DataFrame) -> 
     """Per-trial drug modality and therapeutic area (for the mixed-effects models)."""
     drugs = pd.read_parquet(Path(ot_path) / "drug_molecule", columns=["id", "drugType"])
     dis = pd.read_parquet(Path(ot_path) / "disease", columns=["id", "therapeuticAreas"])
-    dis["ta"] = dis["therapeuticAreas"].map(lambda v: "|".join(sorted(v)) if v is not None and len(v) else "none")
+    dis["ta"] = dis["therapeuticAreas"].map(lambda v: "|".join(sorted(v)) if v is not None and len(v) else None)
     m = (mapping[["nct_id", "drugId", "diseaseId"]]
          .merge(drugs.rename(columns={"id": "drugId"}), on="drugId", how="left")
          .merge(dis[["id", "ta"]].rename(columns={"id": "diseaseId"}), on="diseaseId", how="left"))
     return (m.groupby("nct_id")
              .agg(modality=("drugType", lambda s: "|".join(sorted(set(s.dropna()))) or "unknown"),
-                  therapeutic_area=("ta", lambda s: sorted(set(s.dropna()))[0] if s.notna().any() else "unknown"))
+                  # the union of therapeutic areas across *all* the trial's diseases
+                  therapeutic_area=("ta", st.combine_therapeutic_areas))
              .reset_index())
 
 
@@ -69,7 +73,9 @@ def build_dataset(config: dict[str, Any], *, features_path: Path, labels: str = 
         # snapshot, and Phase I progression is algorithmic (paper Methods).
         meta = released[["nct_id", "phase", "status", "studyStopReasonCategories"]]
         lab = pred.merge(meta, on="nct_id", how="left")
-        p1 = phase1_progression(mapping)
+        # Phase I: completed trials of the released-label universe only (11,412 in the paper)
+        rel_p1 = released.loc[(released["phase"] == 1.0) & released["phase2_progression"].notna(), "nct_id"]
+        p1 = phase1_progression(mapping, statuses=("Completed",), universe=set(rel_p1))
         p1 = p1.merge(released[["nct_id", "phase", "status"]], on="nct_id", how="left")
         lab = pd.concat([lab, p1], ignore_index=True)
     outcomes = st.build_outcomes(lab, mapping)
@@ -147,16 +153,20 @@ def run_stats(config: dict[str, Any], *, features_path: Path, labels: str = "rel
     # multi-target drugs differ systematically in outcomes. Adjust for it.
     if "n_targets" in df.columns:
         df["log_n_targets"] = np.log(df["n_targets"].clip(lower=1))
-        tables.append(st.run_association_suite(df, FEATURES, outcomes, (), n_perm=0,
-                                               covariates=["log_n_targets"])
-                      .query("model != 'logistic'").assign(analysis="adjusted_n_targets"))
-    if "genetic_evidence" in df.columns:
         tables.append(st.run_association_suite(df, FEATURES, outcomes, ae_cols, n_perm=0,
-                                               covariates=["genetic_evidence"])
-                      .query("model != 'logistic'").assign(analysis="adjusted_genetic"))
+                                               covariates=["log_n_targets"], include_unadjusted=False)
+                      .assign(analysis="adjusted_n_targets"))
+    if "genetic_evidence" in df.columns:
+        # covariate-adjusted logistic AND beta models; BH over exactly this family
+        tables.append(st.run_association_suite(df, FEATURES, outcomes, ae_cols, n_perm=0,
+                                               covariates=["genetic_evidence"], include_unadjusted=False)
+                      .assign(analysis="adjusted_genetic"))
         no_gen = df[df["genetic_evidence"] == 0]
         tables.append(st.run_association_suite(no_gen, FEATURES, outcomes, ae_cols, n_perm=0)
                       .assign(analysis="no_genetic_evidence_subset"))
+        # fig. S2: Razuvayevskaya-style replication of the genetic-evidence associations
+        rep = st.genetic_evidence_replication(df, [o for o in GENETIC_OUTCOMES if o in df.columns], ae_cols)
+        tables.append(rep.drop(columns=["exp_coef"], errors="ignore"))
     if {"modality", "therapeutic_area", "start_year"} <= set(df.columns):
         rows = []
         for f in FEATURES:
@@ -164,12 +174,12 @@ def run_stats(config: dict[str, Any], *, features_path: Path, labels: str = "rel
                 r = st.mixed_effects_logistic(df, f, o, fixed=("phase_num", "start_year"))
                 rows.append(dict(feature=f, outcome=o, model=f"mixed_logistic[{r.get('engine')}]",
                                  estimate=r.get("odds_ratio"), ci_low=r.get("ci_low"),
-                                 ci_high=r.get("ci_high"), p=r.get("p"), n=r.get("n")))
+                                 ci_high=r.get("ci_high"), p=r.get("p"), n=r.get("n"), engine=r.get("engine")))
             for o in ae_cols:
                 r = st.mixed_effects_beta(df, f, o, fixed=("phase_num", "start_year"))
                 rows.append(dict(feature=f, outcome=o, model=f"mixed_beta[{r.get('engine')}]",
                                  estimate=r.get("coef"), ci_low=r.get("ci_low"), ci_high=r.get("ci_high"),
-                                 p=r.get("p"), n=r.get("n")))
+                                 p=r.get("p"), n=r.get("n"), engine=r.get("engine")))
         mixed = pd.DataFrame(rows)
         mixed["p_fdr"] = st.benjamini_hochberg(mixed["p"])
         tables.append(mixed.assign(analysis="mixed_effects"))
@@ -185,8 +195,11 @@ def run_stats(config: dict[str, Any], *, features_path: Path, labels: str = "rel
         "paper_ever_phase4_relative_increase": 0.48,
         "phase1_to_2_specific_vs_broad": st.relative_likelihood(df, "tau_specific", "phase1_to_2"),
         "paper_phase1_to_2_relative_increase": 0.40,
-        "ae_specific_vs_broad": st.relative_ae_difference(df, "tau_specific", ae_cols) if ae_cols else None,
+        "ae_specific_vs_broad": (st.relative_ae_difference(df, "tau_specific", ae_cols, with_beta=True)
+                                 if ae_cols else None),
         "paper_ae_relative_difference": -0.32,
+        "paper_ae_relative_difference_compared_with": "ae_specific_vs_broad.mean_of_per_organ",
+        "bimodality_kurtosis": df.attrs.get("bimodality_kurtosis", "see target_features.csv provenance"),
     }
     if out_dir is None:
         out_dir = Path(features_path).parent

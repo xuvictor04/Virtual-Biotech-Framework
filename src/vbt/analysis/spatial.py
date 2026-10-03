@@ -30,6 +30,7 @@ __all__ = [
     "neighbor_mean_abundance",
     "immune_neighborhood_analysis",
     "run_cell2location",
+    "abundance_to_proportions",
 ]
 
 #: Neighbour-rank rings used in the paper (1-based ranks, self excluded).
@@ -150,7 +151,7 @@ def immune_neighborhood_analysis(spots_df: pd.DataFrame, gene_col: str, immune_c
                                  sample_col: str = "sample", patient_col: str = "patient",
                                  rings: Sequence[tuple[int, int]] = DEFAULT_RINGS,
                                  include_self: bool = False, min_expressing_spots: int = 25,
-                                 expression_threshold: float = 0.0, n_boot: int = 1000,
+                                 expression_threshold: float = 0.0, n_boot: int = 10000,
                                  seed: int = 0, engine: str = "statsmodels") -> pd.DataFrame:
     """Immune neighbourhood of gene-high vs gene-low spots (Methods, "Spatial
     immune-neighbourhood analysis"; Fig. 4E/F).
@@ -168,12 +169,18 @@ def immune_neighborhood_analysis(spots_df: pd.DataFrame, gene_col: str, immune_c
     REML; Wald z p-values) or ``engine="lmerTest"`` (rpy2; Satterthwaite t-test,
     as in the paper); (4) percentage change of mean ``Y`` high vs low with a
     percentile bootstrap 95% CI resampling spots within each group
-    (``n_boot``; the paper used 10,000).
+    (``n_boot``, default 10,000 as in the paper). ``engine="auto"`` uses
+    lmerTest when rpy2 and the R package are installed, else statsmodels.
+    ``immune_cols`` are cell2location q05 abundances or row-normalised
+    proportions (:func:`abundance_to_proportions`), whichever input is chosen.
 
     Returns a tidy table with ``immune_type, ring, beta_high, se, p, fdr,
     pct_change, pct_ci_low, pct_ci_high, mean_high, mean_low, n_high, n_low,
     n_samples, n_patients, engine``; ``fdr`` is BH across all rows.
     """
+    if engine == "auto":
+        from .variance_decomposition import r_packages_available
+        engine = "lmerTest" if r_packages_available("lmerTest") else "statsmodels"
     if engine == "lmerTest" and not has_module("rpy2"):
         require("rpy2", "r")
     df = spots_df.reset_index(drop=True)
@@ -237,16 +244,32 @@ def immune_neighborhood_analysis(spots_df: pd.DataFrame, gene_col: str, immune_c
     return out
 
 
+def abundance_to_proportions(q05: pd.DataFrame) -> pd.DataFrame:
+    """Row-normalise per-spot cell-type abundances to proportions (rows sum to 1)."""
+    tot = q05.sum(axis=1)
+    return q05.div(tot.where(tot > 0), axis=0).fillna(0.0)
+
+
 def run_cell2location(adata_ref, adata_vis, labels_key: str, batch_key: str | None = None,
                       exclude_genes: Sequence[str] = ("CD276",), ref_max_epochs: int = 250,
                       spatial_max_epochs: int = 10000, n_cells_per_location: float = 8,
-                      detection_alpha: float = 20, use_gpu: bool | None = None):
+                      detection_alpha: float = 20, use_gpu: bool | None = None,
+                      vis_batch_key: str | None = "sample", filter_reference_genes: bool = True,
+                      filter_kwargs: dict | None = None) -> dict:
     """cell2location deconvolution with the paper's settings (Methods, "Spatial
     deconvolution"): negative-binomial regression reference signatures (250
     epochs), spatial mapping (10,000 epochs, ``N_cells_per_location=8``,
     ``detection_alpha=20``), the gene of interest excluded from the shared gene
     set to avoid circularity, and q05 posterior abundances returned as a
-    spots x cell-types DataFrame (also stored in ``adata_vis.obs``).
+    spots x cell-types DataFrame.
+
+    Harness settings: reference genes filtered with cell2location's standard
+    ``filter_genes`` (cell_count_cutoff=5, cell_percentage_cutoff2=0.03,
+    nonz_mean_cutoff=1.12; override with ``filter_kwargs``); the spatial model
+    uses ``vis_batch_key`` (default ``'sample'``: one batch per Visium section,
+    ignored when absent from ``adata_vis.obs``). Returns ``{"q05": abundances,
+    "proportions": row-normalised abundances}`` so the immune-neighbourhood
+    input can be either.
 
     Not unit-tested (requires ``pip install 'vbt-harness[spatial]'``).
     """
@@ -256,6 +279,13 @@ def run_cell2location(adata_ref, adata_vis, labels_key: str, batch_key: str | No
     excl = {g.upper() for g in exclude_genes}
     keep_ref = [g for g in adata_ref.var_names if g.upper() not in excl]
     adata_ref = adata_ref[:, keep_ref].copy()
+    if filter_reference_genes:
+        from cell2location.utils.filtering import filter_genes
+
+        kw = {"cell_count_cutoff": 5, "cell_percentage_cutoff2": 0.03, "nonz_mean_cutoff": 1.12}
+        kw.update(filter_kwargs or {})
+        selected = filter_genes(adata_ref, **kw)
+        adata_ref = adata_ref[:, selected].copy()
     RegressionModel.setup_anndata(adata_ref, batch_key=batch_key, labels_key=labels_key)
     ref_model = RegressionModel(adata_ref)
     train_kw = {} if use_gpu is None else {"accelerator": "gpu" if use_gpu else "cpu"}
@@ -273,7 +303,8 @@ def run_cell2location(adata_ref, adata_vis, labels_key: str, batch_key: str | No
     shared = [g for g in adata_vis.var_names if g in inf_aver.index and g.upper() not in excl]
     adata_vis = adata_vis[:, shared].copy()
     inf_aver = inf_aver.loc[shared]
-    Cell2location.setup_anndata(adata_vis, batch_key=None)
+    vb = vis_batch_key if vis_batch_key and vis_batch_key in adata_vis.obs.columns else None
+    Cell2location.setup_anndata(adata_vis, batch_key=vb)
     model = Cell2location(adata_vis, cell_state_df=inf_aver,
                           N_cells_per_location=n_cells_per_location,
                           detection_alpha=detection_alpha)
@@ -282,4 +313,4 @@ def run_cell2location(adata_ref, adata_vis, labels_key: str, batch_key: str | No
                                                                  "batch_size": model.adata.n_obs})
     q05 = pd.DataFrame(adata_vis.obsm["q05_cell_abundance_w_sf"], index=adata_vis.obs_names)
     q05.columns = [str(c).replace("q05cell_abundance_w_sf_", "") for c in q05.columns]
-    return q05
+    return {"q05": q05, "proportions": abundance_to_proportions(q05)}
