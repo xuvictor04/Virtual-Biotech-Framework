@@ -892,6 +892,46 @@ def _segments_sep(tokens: list[str]) -> list[tuple[str, list[str]]]:
     return [(s, seg) for s, seg in out if seg]
 
 
+#: Interpreters whose script argument is scanned against the network rules (bash.network: false).
+_SCRIPT_INTERPRETERS = re.compile(r"^(?:python(?:\d+(?:\.\d+)?)?|pypy3?|ipython3?|Rscript|R|node|perl|ruby|julia|"
+                                  r"bash|sh|zsh|dash|ksh|source|\.)$")
+_SCRIPT_SCAN_MAX = 2_000_000
+
+
+def _script_operand(word: str, args: list[str]) -> str | None:
+    """The script file an interpreter command runs, or None (inline code, module, stdin)."""
+    if word == "R":
+        for k, a in enumerate(args):
+            if a in ("-f", "--file") and k + 1 < len(args):
+                return args[k + 1]
+            if a.startswith("--file="):
+                return a.split("=", 1)[1]
+        return None
+    if word.startswith(("python", "pypy", "ipython")):
+        no_script, with_value = {"-c", "-m"}, {"-W", "-X", "-Q"}
+    elif word in ("node",):
+        no_script, with_value = {"-e", "--eval", "-p", "--print"}, {"-r", "--require"}
+    elif word in ("perl", "ruby"):
+        no_script, with_value = {"-e", "-E"}, set()
+    elif word in ("Rscript", "julia"):
+        no_script, with_value = {"-e", "--eval"}, {"--default-packages"}
+    else:  # shells, source, .
+        no_script, with_value = {"-c", "-s"}, {"-o", "-O"}
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a in no_script:
+            return None
+        if a == "--":
+            continue
+        if a.startswith("-"):
+            skip = a in with_value
+            continue
+        return a
+    return None
+
 def _deny(rule: _Rule) -> CommandDenied:
     return CommandDenied(f"[SECURITY] Command blocked: {rule.message.format(name=rule.name)}", rule.group, rule.name)
 
@@ -1014,6 +1054,32 @@ def check_command(command: str, policy: PathPolicy, cmd_policy: CommandPolicy, *
             if why:
                 raise CommandDenied(f"{what} is restricted to your workspace: {p} ({why})", "paths", "write")
 
+    def scan_script(word: str, cmd_tok: str, args: list[str]) -> None:
+        """bash.network: false also applies to a script file the command runs (``python fetch.py``,
+        ``Rscript x.R``, ``./fetch.sh``), not only to the command text. Still a guardrail: code the
+        script imports from elsewhere is not followed; bash.network_isolation is the OS control."""
+        cands: list[str] = []
+        if _SCRIPT_INTERPRETERS.match(word):
+            op = _script_operand(word, [_unprotect(a) for a in args])
+            if op:
+                cands.append(op)
+        if "/" in _unprotect(cmd_tok.lstrip("(")):
+            cands.append(_unprotect(cmd_tok.lstrip("(")))  # ./fetch.py run directly
+        for c in cands:
+            p = resolve_tok(c)
+            if p is None:
+                continue
+            try:
+                if not p.is_file() or p.stat().st_size > _SCRIPT_SCAN_MAX:
+                    continue
+                text = p.read_text(errors="replace")
+            except OSError:
+                continue
+            for rule in cmd_policy.network_rules:
+                if rule.rx.search(text):
+                    exc = _deny(rule)
+                    raise CommandDenied(f"{exc} (in script {c})", exc.group, exc.rule)
+
     for sep, seg in _segments_sep(tokens):
         idx, word = _command_word(seg)
         # rules again on the command word itself: /bin/kill, /usr/bin/ssh, k''ill, env /bin/kill ...
@@ -1024,6 +1090,8 @@ def check_command(command: str, policy: PathPolicy, cmd_policy: CommandPolicy, *
             if rule.rx.search(rebuilt):
                 raise _deny(rule)
         args = [x.strip("()") for x in seg[idx + 1:]] if idx >= 0 else []
+        if cmd_policy.network_rules and idx >= 0:
+            scan_script(word, seg[idx], args)
 
         # assignments (NAME=value, export NAME=value) and for-loop lists feed later expansions
         assigns = seg[:idx] if idx >= 0 else seg

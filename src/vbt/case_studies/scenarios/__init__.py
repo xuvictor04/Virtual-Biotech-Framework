@@ -104,6 +104,12 @@ def live_source_warnings(config: dict[str, Any], scenario: dict[str, Any] | None
                    "VBT_LITERATURE_MAXDATE): post-cutoff literature can leak.")
     if (config.get("bash") or {}).get("network", True):
         out.append("Bash network access is enabled (bash.network): agents can download post-cutoff data.")
+    elif (config.get("bash") or {}).get("enabled", True):
+        from ...tools.builtin import network_isolation_status
+        isolated, why = network_isolation_status(config)
+        if not isolated:
+            out.append(f"Bash runs without network isolation ({why}): bash.network: false is a pattern "
+                       "guardrail on command text and scanned scripts, not isolation.")
     return out
 
 

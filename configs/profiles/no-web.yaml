@@ -6,7 +6,14 @@
 #   VBT_LITERATURE_MAXDATE (derived from web.literature_max_date by the harness;
 #   esearch datetype=pdat + maxdate; newer records in fetch_abstracts are
 #   withheld). Unset web.literature_max_date to drop PubMed entirely.
-# - Blocks network commands in Bash (curl, wget, requests/httpx/urllib, download.file).
+# - Blocks network commands in Bash (curl, wget, requests/httpx/urllib, download.file)
+#   in the command text and in script files the command runs (python x.py,
+#   Rscript x.R, ./x.sh). That pattern block is a guardrail, NOT isolation:
+#   code imported from other files or obfuscated calls get past it. The real
+#   control is network_isolation: unshare -- every Bash command runs in a new,
+#   empty network namespace (`unshare -rn`, or bwrap --unshare-net when
+#   bash.sandbox.os: bwrap). Where unshare is unavailable, `vbt doctor` and
+#   `vbt scenario run` warn that only the pattern block applies.
 # - NOTE: ClinicalTrials.gov and cBioPortal (mcp__clinicaltrials__*) stay live and
 #   can return post-cutoff records; CELLxGENE Census is also queried live.
 web:
@@ -14,3 +21,4 @@ web:
   literature_max_date: '2025/01/31'
 bash:
   network: false
+  network_isolation: unshare

@@ -708,6 +708,29 @@ def _unshare_available() -> bool:
     return _UNSHARE_OK
 
 
+
+def network_isolation_status(config: dict[str, Any]) -> tuple[bool, str]:
+    """Whether Bash commands run without network access at the OS level, and why (not).
+
+    ``bash.network: false`` alone is a pattern block on command text and scanned
+    scripts -- a guardrail, not isolation. Isolation needs
+    ``bash.network_isolation: unshare`` with either a working ``unshare -rn`` or
+    ``bash.sandbox.os: bwrap`` (which adds ``--unshare-net``).
+    """
+    cfg = (config or {}).get("bash") or {}
+    iso = cfg.get("network_isolation")
+    os_sandbox = str(((cfg.get("sandbox") or {}).get("os")) or "none").lower()
+    if iso != "unshare":
+        return False, "bash.network_isolation is not set to 'unshare'; only the command pattern block applies"
+    if os_sandbox == "bwrap":
+        if shutil.which("bwrap"):
+            return True, "bubblewrap --unshare-net"
+        return False, "bash.sandbox.os is 'bwrap' but bubblewrap is not installed"
+    if _unshare_available():
+        return True, "unshare -rn (new network namespace)"
+    return False, ("`unshare -rn` is unavailable here (no util-linux unshare or user namespaces disabled); "
+                   "only the command pattern block applies")
+
 def bwrap_argv(pol: PathPolicy, argv: list[str], cwd: Path, *, bwrap: str = "bwrap",
                unshare_net: bool = False) -> list[str]:
     """Wrap ``argv`` in bubblewrap (``bash.sandbox.os: bwrap``).

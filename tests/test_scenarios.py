@@ -80,7 +80,9 @@ def test_scenario_cli_propagates_overrides(tmp_path, monkeypatch):
     assert seen["kw"]["turns_source"] == "paper" and seen["kw"]["turns"] == 1
 
 
-def test_live_source_warnings():
+def test_live_source_warnings(monkeypatch):
+    import vbt.tools.builtin as b
+    monkeypatch.setattr(b, "_unshare_available", lambda: True)
     scen = {"profiles": ["no-web"]}
     cfg = {"web": {"enabled": False}, "mcp_servers": {"servers": [{"name": "clinicaltrials"}, {"name": "pubmed"}]},
            "bash": {"network": True}}
@@ -88,10 +90,13 @@ def test_live_source_warnings():
     assert any("ClinicalTrials" in x for x in w) and any("PubMed" in x for x in w) and any("Bash" in x for x in w)
     cfg["web"]["literature_max_date"] = "2025/01/31"
     cfg["bash"]["network"] = False
+    assert any("network isolation" in x for x in sc.live_source_warnings(cfg, scen))  # pattern block only
+    cfg["bash"]["network_isolation"] = "unshare"
     assert len(sc.live_source_warnings(cfg, scen)) == 1
     assert sc.live_source_warnings({"web": {"enabled": True}}, {"profiles": []}) == []
     # a tool_env ceiling alone also counts: it is what the server enforces
-    cfg2 = {"web": {"enabled": False}, "mcp_servers": {"servers": [{"name": "pubmed"}]}, "bash": {"network": False},
+    cfg2 = {"web": {"enabled": False}, "mcp_servers": {"servers": [{"name": "pubmed"}]},
+            "bash": {"network": False, "network_isolation": "unshare"},
             "tool_env": {"VBT_LITERATURE_MAXDATE": "2025/01/31"}}
     assert sc.live_source_warnings(cfg2, scen) == []
 

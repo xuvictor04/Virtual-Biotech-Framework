@@ -512,6 +512,18 @@ def degraded_servers(config: dict[str, Any], results: Iterable[CheckResult]) -> 
     return out
 
 
+def check_bash_network(config: dict[str, Any]) -> CheckResult | None:
+    """With ``bash.network: false``, report whether Bash commands are actually network-isolated."""
+    bash = config.get("bash") or {}
+    if bash.get("network", True) or not bash.get("enabled", True):
+        return None
+    from .tools.builtin import network_isolation_status
+    ok, why = network_isolation_status(config)
+    return CheckResult("Bash network isolation", ok, detail=why, required=False,
+                       hint="set bash.network_isolation: unshare and run where `unshare -rn true` works (or "
+                            "bash.sandbox.os: bwrap); otherwise bash.network: false is only a pattern guardrail")
+
+
 # ---------------------------------------------------------------------------
 # vbt doctor
 # ---------------------------------------------------------------------------
@@ -551,6 +563,7 @@ def run_doctor(config: dict[str, Any], *, smoke: bool = False, analysis: bool = 
                     (up / "datasets" / "clinical_trials" / "clinical_trial_labels_reconciled.csv").exists(),
                     hint="git submodule update --init", required=False))
     add(check_mcp_commands(config))
+    add(check_bash_network(config))
     if _servers(config):
         add(check_mcp_imports(config))
     if analysis:
