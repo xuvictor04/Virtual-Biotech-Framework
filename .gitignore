@@ -3,7 +3,7 @@ __pycache__/
 .env
 runs/
 results/
-data/
+/data/
 *.egg-info/
 .pytest_cache/
 .claude/worktrees/
