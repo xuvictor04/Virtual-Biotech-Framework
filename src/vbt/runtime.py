@@ -240,6 +240,7 @@ class AgentResult:
     transcript_path: str | None = None
     unresolved_data_failures: list[dict[str, Any]] = field(default_factory=list)
     recovered_errors: int = 0
+    other_errors: int = 0
     compactions: int = 0
     retries: int = 0
     fallback_count: int = 0
@@ -811,6 +812,7 @@ class Runtime:
         summary = failures.summarize(st.calls)
         r.unresolved_data_failures = summary["unresolved_data"]
         r.recovered_errors = summary["recovered_count"]
+        r.other_errors = summary["other_error_count"]
         r.transcript_path = self._write_transcript(st)
         self._trace("agent_end", agent=r.agent, depth=st.depth, agent_run_id=st.inv, parent_run_id=st.parent,
                     status=r.status, stop=r.stop_reason, cost_usd=round(r.cost_usd, 6), model_calls=r.model_calls,
@@ -819,7 +821,7 @@ class Runtime:
                     compactions=r.compactions, retries=r.retries, fallback_count=r.fallback_count, error=r.error,
                     unresolved_data_failures=[{"tool": f.get("tool"), "error": str(f.get("error") or "")[:300]}
                                               for f in r.unresolved_data_failures],
-                    recovered_errors=r.recovered_errors)
+                    recovered_errors=r.recovered_errors, other_errors=r.other_errors)
         self.emit("agent_end", invocation_id=st.inv, agent=r.agent, depth=st.depth, status=r.status,
                   stop_reason=r.stop_reason, cost_usd=r.cost_usd, duration_s=r.duration_s,
                   model_calls=r.model_calls, tool_calls=r.tool_calls)
@@ -1263,7 +1265,7 @@ class Runtime:
             "parent_invocation_id": parent_invocation_id, "parent_agent": parent_agent, "depth": depth,
             "start_ts": None, "end_ts": None, "status": "error", "stop_reason": None, "cost_usd": 0.0,
             "duration_s": 0.0, "model_calls": 0, "tool_calls": 0, "tool_errors": [],
-            "unresolved_data_failures": [], "recovered_errors": 0, "transcript_path": None, "error": None,
+            "unresolved_data_failures": [], "recovered_errors": 0, "other_errors": 0, "transcript_path": None, "error": None,
         }
         history: list[Message] = []
         self._live[inv] = None
@@ -1312,13 +1314,15 @@ class Runtime:
                 entry.update(status=r.status, stop_reason=r.stop_reason, model_calls=r.model_calls,
                              tool_calls=r.tool_calls, tool_errors=list(r.tool_errors),
                              unresolved_data_failures=list(r.unresolved_data_failures),
-                             recovered_errors=r.recovered_errors, transcript_path=r.transcript_path, error=r.error)
+                             recovered_errors=r.recovered_errors, other_errors=r.other_errors,
+                             transcript_path=r.transcript_path, error=r.error)
             self.delegation_log.append(entry)
             self._trace("delegation_end", agent=agent_name, tool_use_id=tool_use_id, invocation_id=inv,
                         parent_invocation_id=parent_invocation_id, status=entry["status"],
                         stop_reason=entry["stop_reason"], cost_usd=entry["cost_usd"], duration_s=entry["duration_s"],
                         model_calls=entry["model_calls"], tool_calls=entry["tool_calls"],
                         n_tool_errors=len(entry["tool_errors"]), recovered_errors=entry["recovered_errors"],
+                        other_errors=entry["other_errors"],
                         unresolved_data_failures=[{"tool": f.get("tool"), "error": str(f.get("error") or "")[:300]}
                                                   for f in entry["unresolved_data_failures"]],
                         transcript_path=entry["transcript_path"], error=entry["error"])
@@ -1372,6 +1376,9 @@ class Runtime:
             out += f"\n[Unresolved data-source failures: {listed}]"
         if sub.recovered_errors:
             out += f"\n[{sub.recovered_errors} code/tool errors were encountered and recovered]"
+        if sub.other_errors:
+            out += (f"\n[{sub.other_errors} other code/tool errors (not data sources) were encountered "
+                    f"and not resolved by an identical retry]")
         return out
 
     def _task_tool(self) -> Tool:

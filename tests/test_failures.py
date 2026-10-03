@@ -59,8 +59,26 @@ def test_summarize_separates_unresolved_data_from_recovered():
     s = fl.summarize(recs)
     assert [f["tool"] for f in s["unresolved_data"]] == [TOOL]
     assert len(s["all"]) == 4
-    assert s["recovered_count"] == 3
+    assert s["recovered_count"] == 2
+    assert s["other_error_count"] == 1
     assert s["unresolved_data"][0]["tool_name"] == TOOL and s["unresolved_data"][0]["error"]
+
+
+def test_summarize_does_not_count_repeated_or_interrupted_failures_as_recovered():
+    q = {"g": "X"}
+    recs = [_rec(TOOL, q, False, "timeout"), _rec(TOOL, q, False, "timeout"), _rec(TOOL, q, False, "timeout"),
+            _rec("Bash", {"command": "a"}, False, "exit 1"), _rec("Bash", {"command": "a"}, False, "exit 1"),
+            _rec("mcp__other__x", {"t": 2}, False, "Interrupted")]
+    s = fl.summarize(recs)
+    assert len(s["all"]) == 6
+    assert [f["tool"] for f in s["unresolved_data"]] == [TOOL, "mcp__other__x"]
+    assert s["recovered_count"] == 0
+    assert s["other_error_count"] == 2
+    # A success with different input does not recover; an identical later success recovers every earlier failure.
+    s = fl.summarize(recs + [_rec(TOOL, {"g": "Y"}, True), _rec("Bash", {"command": "a"}, True)])
+    assert s["recovered_count"] == 2 and s["other_error_count"] == 0
+    assert [f["tool"] for f in s["unresolved_data"]] == [TOOL, "mcp__other__x"]
+    assert fl.summarize([])["recovered_count"] == 0
 
 
 def test_unresolved_from_trace_joins_start_input_and_spilled_inputs(tmp_path):

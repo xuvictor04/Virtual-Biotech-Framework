@@ -342,6 +342,7 @@ async def test_recovered_code_error_gives_no_data_warning(config):
     failed = [f for f in rec["tool_failures"] if f["tool"] == "Read"]
     assert failed and failed[0]["input"] == {"file_path": "missing.csv"}
     assert rec["data_source_failures"] == []
+    assert rec["recovered_errors"] == 0 and rec["other_errors"] == 1  # Read was never retried identically
     await session.close()
 
 

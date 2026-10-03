@@ -188,16 +188,30 @@ def data_failure_notice(failures: Iterable[Mapping[str, Any]]) -> str:
 
 
 def summarize(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
-    """``{unresolved_data, recovered_count, all}`` for a list of call records.
+    """``{unresolved_data, recovered_count, other_error_count, all}`` for call records.
 
     ``all`` is every failed call (audit record); ``unresolved_data`` the
-    data-source failures no identical later call resolved; ``recovered_count``
-    the other failures (code/tool errors that were retried, worked around or
-    are not evidence sources).
+    data-source failures no identical later call resolved (deduplicated by
+    call key); ``recovered_count`` the failed calls that a later successful
+    call of the same tool with identical input did resolve; and
+    ``other_error_count`` the failed non-data calls (Bash, Read, Edit, ...)
+    that were never resolved that way: routine debugging or worked-around
+    errors, which are not evidence sources but did not *recover* either.
+    Repeated unresolved data-source failures and interrupted calls count in
+    neither number.
     """
     recs = [r for r in records if isinstance(r, Mapping)]
     all_failures = [_public(r) for r in recs if r.get("is_error", True)]
     unresolved_data = [f for f in unresolved_failures(recs) if is_data_source(f["tool"])]
-    return {"unresolved_data": unresolved_data,
-            "recovered_count": max(0, len(all_failures) - len(unresolved_data)),
-            "all": all_failures}
+    succeeded_later: set[tuple[str, str]] = set()
+    recovered = other = 0
+    for rec in reversed(recs):
+        key = _key_of(rec)
+        if not rec.get("is_error", True):
+            succeeded_later.add(key)
+        elif key in succeeded_later:
+            recovered += 1
+        elif not is_data_source(_tool_of(rec)):
+            other += 1
+    return {"unresolved_data": unresolved_data, "recovered_count": recovered,
+            "other_error_count": other, "all": all_failures}

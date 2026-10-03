@@ -361,13 +361,15 @@ async def test_task_footer_separates_unresolved_data_failures_from_recovered_err
     assert not r.is_error and r.content.startswith("Report: partial.")
     assert "[Unresolved data-source failures: mcp__fake__lookup: Error: Open Targets data could not be loaded" \
         in r.content
-    assert "[1 code/tool errors were encountered and recovered]" in r.content
+    assert "recovered]" not in r.content  # "exit 3" was never retried identically
+    assert "[1 other code/tool errors (not data sources) were encountered and not resolved by an identical retry]" \
+        in r.content
     assert "Bash" not in r.content.split("Unresolved data-source failures:")[1]
     entry = rt.delegation_log[-1]
     assert [e["tool"] for e in entry["tool_errors"]] == ["Bash", "mcp__fake__lookup"]
     assert entry["tool_errors"][0]["input"] == {"command": "exit 3"}
     assert [f["tool"] for f in entry["unresolved_data_failures"]] == ["mcp__fake__lookup"]
-    assert entry["recovered_errors"] == 1
+    assert entry["recovered_errors"] == 0 and entry["other_errors"] == 1
     for k in ("start_ts", "end_ts", "status", "stop_reason", "cost_usd", "duration_s", "invocation_id",
               "tool_use_id", "description"):
         assert k in entry

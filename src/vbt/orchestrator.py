@@ -345,8 +345,7 @@ class CSOSession:
         delegs = list(rt.delegation_log[deleg0:])
         records = _failures.records_from_trace(events, run_dir=run.dir)
         summary = _failures.summarize(records)
-        data_failures = _failures.unresolved_failures(records)
-        data_failures = [f for f in data_failures if _failures.is_data_source(f["tool"])]
+        data_failures = summary["unresolved_data"]
         thinking: list[dict[str, Any]] = []
         mcp_used: list[str] = []
         compactions = 0
@@ -378,7 +377,8 @@ class CSOSession:
             "cumulative_cost_usd": round(cost, 6),
             "tool_failures": summary["all"],
             "data_source_failures": data_failures,
-            "recovered_errors": max(0, len(summary["all"]) - len(data_failures)),
+            "recovered_errors": summary["recovered_count"],
+            "other_errors": summary["other_error_count"],
             "reviewed": bool(reviewed),
             "review_rounds": int(self._ts.get("review_rounds") or 0),
             "review_skipped": bool(self._ts.get("review_skipped")),
