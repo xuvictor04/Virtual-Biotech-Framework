@@ -7,11 +7,11 @@ import pytest
 from vbt import budget
 from vbt.agents import AgentDefinition
 from vbt.budget import BudgetExceeded, CostScope, InvocationCost, open_scope
-from vbt.orchestrator import open_session
 from vbt.providers.base import ProviderError, validate_tool_pairing
 from vbt.providers.mock import ScriptedProvider, call, fail, reply, turn
 from vbt.runtime import BudgetExceeded as RuntimeBudgetExceeded
 from vbt.tools.base import Tool, schema
+from conftest import open_scripted_session
 
 
 # --------------------------------------------------------------------------- unit
@@ -85,9 +85,7 @@ def _probe(name="probe", tools=()):
 
 
 async def _session(config, provider, **limits):
-    config["orchestration"]["enforce_review"] = False
-    config.setdefault("limits", {}).update(limits)
-    return await open_session(config, provider=provider, start_mcp=False)
+    return await open_scripted_session(config, provider, **limits)
 
 
 async def test_ten_item_scopes_with_a_dollar_per_call_mock_all_succeed(config):

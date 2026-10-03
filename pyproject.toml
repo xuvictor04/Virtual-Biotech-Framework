@@ -55,8 +55,8 @@ singlecell = [
 spatial = ["cell2location>=0.1.4"]
 survival = ["lifelines>=0.29"]
 r = ["rpy2>=3.5"]
-# Read tool: images (downscaling) and PDF text.
-tools = ["pillow>=10", "pypdf>=4"]
+# Read tool: images (downscaling) and PDF text; BulkDispatch JSON Schema validation.
+tools = ["pillow>=10", "pypdf>=4", "jsonschema>=4"]
 # `vbt web` (fig. S1 interface).
 web = ["starlette>=0.37", "uvicorn>=0.29"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]

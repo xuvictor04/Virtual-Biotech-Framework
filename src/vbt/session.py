@@ -197,7 +197,7 @@ def _new_manifest(run_id: str, created: str, config: dict[str, Any]) -> dict[str
         "turns": 0, "cost_usd": 0.0, "config": config, "artifacts": {}, "harness_files": {},
         "execution": [], "research_turns": [], "interrupted_turns": [], "data_source_errors": [],
         "audit_errors": [], "misplaced_files": [], "deleted_artifacts": [], "plan": None,
-        "plan_reconciliation": None,
+        "plan_reconciliation": None, "degraded": None,
     }
 
 
@@ -367,6 +367,15 @@ class Run:
             pass
         finally:
             self._noting = False
+
+    def mark_degraded(self, servers: Mapping[str, Any], reason: str = "missing reference data") -> None:
+        """Record that the run proceeds without some servers' reference data
+        (``--allow-missing-data``): MANIFEST.degraded = {reason, servers, at}."""
+        with self._guard("mark_degraded"), self._lock:
+            servers = {str(k): str(v) for k, v in (servers or {}).items()}
+            self.manifest["degraded"] = {"reason": reason, "servers": servers, "at": _now()}
+            self.trace("run_degraded", reason=reason, servers=servers)
+            self._write_manifest()
 
     # ------------------------------------------------------------------ paths
 

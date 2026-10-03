@@ -2,7 +2,7 @@
 
 import json
 
-from vbt import cli, providers
+from vbt import cli
 from vbt.orchestrator import STATE_FILE, open_session
 from vbt.providers.base import Message, ToolCall, message_to_dict
 from vbt.providers.mock import ScriptedProvider, reply
@@ -105,12 +105,11 @@ async def test_compare_runs_artifacts_and_claims(config):
     assert (b / "replay_diff.json").exists()
 
 
-def test_cli_replay_command(config, monkeypatch, capsys, tmp_path):
+def test_cli_replay_command(config, mock_provider, capsys, tmp_path):
     import asyncio
 
     src = asyncio.run(_two_turn_run(config))
-    monkeypatch.setitem(providers._FACTORIES, "mock",
-                        lambda **o: ScriptedProvider.from_rules({"cso": [reply("r1"), reply("r2")]}))
+    mock_provider.use_each(lambda: {"cso": [reply("r1"), reply("r2")]})
     code = cli.main(["--profile", "mock", "--runs-dir", str(src.parent), "--no-mcp", "replay", src.name, "--quiet"])
     assert code == 0
     out = capsys.readouterr().out

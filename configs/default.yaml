@@ -1,12 +1,19 @@
 # Virtual Biotech harness — default configuration.
 # Override with profiles (configs/profiles/*.yaml) via `vbt --profile NAME ...`.
+#
+# Every key below also has an in-code default (consumers read it with .get, and
+# vbt.config.CODE_DEFAULTS fills the mcp/web/orchestration ones), so hand-built
+# configs and older profiles keep working. Values here match those defaults
+# unless a comment says otherwise.
 
 vars:
   upstream: ${VBT_UPSTREAM:-${vars.project_root}/third_party/TheVirtualBiotech}
-  # Interpreter used to launch the upstream FastMCP servers. Point this at the
-  # upstream conda env (`conda env create -f third_party/TheVirtualBiotech/environment.yml`)
-  # if the harness runs in a different environment.
-  mcp_python: ${VBT_MCP_PYTHON:-python3}
+  # Interpreter used to launch the upstream FastMCP servers. Defaults to the
+  # interpreter running the harness (vars.python = sys.executable). Point
+  # VBT_MCP_PYTHON at the upstream conda env
+  # (`conda env create -f third_party/TheVirtualBiotech/environment.yml`)
+  # if the servers' dependencies live elsewhere.
+  mcp_python: ${VBT_MCP_PYTHON:-${vars.python}}
 
 # ---------------------------------------------------------------- provider
 # The only provider-specific block. To switch model families, register a new
@@ -17,44 +24,96 @@ provider:
     refusal_fallback: true        # server-side fallback on safety refusals (Opus 5 / Fable 5.1)
     web_search_model: claude-sonnet-5
     prompt_caching: true
-    max_retries: 4
+    max_retries: 4                # SDK-level retries of the first HTTP response (see retry.* below)
+  # `--model` accepts a model_aliases label, a configured model id, or an id
+  # matching this pattern. In-code default: '^claude-[a-z0-9.-]+$' when name is
+  # anthropic, no check otherwise.
+  # model_pattern: '^claude-[a-z0-9.-]+$'
+
+# Labels accepted by `--model` (vbt chat/run/replay/scenario).
+model_aliases:
+  opus: claude-opus-5
+  sonnet: claude-sonnet-5
+  haiku: claude-haiku-4-5
+  paper: claude-sonnet-4-5        # the model the paper used for CSO + scientists
 
 # ---------------------------------------------------------------- model tiers
 # Agents reference a tier; the paper used Sonnet 4.5 for CSO + scientists and
 # Haiku 4.5 for Chief of Staff + Scientific Reviewer (see profiles/paper.yaml).
+# Optional per-tier keys: thinking_budget (budget thinking), context_window_tokens.
 models:
   orchestrator: {model: claude-opus-5, effort: high, max_tokens: 64000, thinking: true}
   scientist:    {model: claude-opus-5, effort: high, max_tokens: 64000, thinking: true}
   support:      {model: claude-haiku-4-5, effort: null, max_tokens: 16000, thinking: false}
   bulk:         {model: claude-opus-5, effort: medium, max_tokens: 32000, thinking: true}
 
+# Per-agent overrides on top of agents.yaml: {agent: {effort, model, max_turns, tools_add}}.
+agent_overrides: {}
+
 # ---------------------------------------------------------------- paths
 paths:
   runs_dir: runs
   prompts_dir: ${vars.upstream}/src/agents          # upstream system prompts (Supplementary Text X)
   local_prompts_dir: src/vbt/prompts
-  skills:                                           # searched in order by the Skill tool
-    - skills
-    - ${vars.upstream}/.claude/skills
+  skills:                                           # searched in order by the Skill tool;
+    - skills                                        # local skills shadow upstream ones and are
+    - ${vars.upstream}/.claude/skills               # linked into <run>/.claude/skills at start
   read_roots:                                       # read-only data agents may open
     - ${vars.upstream}/.claude/skills
     - ${vars.upstream}/datasets
+    - ${vars.upstream}/docs
     - ${OPEN_TARGETS_DATA_PATH:-}
     - ${TAHOE_DATA_PATH:-}
     - ${VBT_DATA_DIR:-data}
     - skills
+    - ${vars.python_prefix}                         # installed packages (docs, package data)
+  # Never readable, even inside a read root (wins over every allow). In-code
+  # default: <project>/.env, <project>/.git, <upstream>/.env, <upstream>/.git,
+  # ~/.ssh, ~/.aws, ~/.config/gcloud, ~/.claude/.credentials.json,
+  # ~/.claude.json, ~/.netrc. A list replaces the default; [] blocks nothing.
+  # blocked_read: [...]
 
 agents_file: configs/agents.yaml
 mcp_servers_file: configs/mcp_servers.yaml
 
 # ---------------------------------------------------------------- limits
 limits:
-  max_agent_turns: 100            # model calls per agent invocation
+  max_agent_turns: 100            # legacy: CSO cap when max_cso_turns is unset
+  max_cso_turns: 100              # model calls per CSO turn
+  max_specialist_turns: 400       # model calls per specialist invocation (agents.yaml max_turns wins)
   max_parallel_agents: 8          # concurrent Task delegations per CSO turn
   max_delegation_depth: 1         # CSO -> scientist only (scientists cannot delegate)
-  tool_output_max_chars: 40000    # longer tool outputs are saved to file and truncated
-  max_turn_cost_usd: 150          # hard stop per user turn
+  delegation_timeout_s: null      # wall-clock cap per delegation (null = none); partial text is kept
+  tool_output_max_chars: 40000    # longer tool outputs are spilled to logs/tool_outputs and truncated
+  trace_output_chars: 10000       # tool output kept inline in logs/trace.jsonl
+  trace_input_inline_chars: 16000 # tool input kept inline in the trace (longer: logs/tool_inputs)
+  max_turn_cost_usd: 150          # hard stop per user turn (budget scope 'turn')
   max_item_cost_usd: null         # per-item cap for bulk runs (null = no cap)
+
+# ---------------------------------------------------------------- provider retry (providers/retry.py)
+# Transient errors (429, 5xx, 529 overloaded, dropped streams) are retried with
+# exponential backoff + jitter; Retry-After is honoured up to max_retry_after_s.
+retry:
+  attempts: 8
+  base_delay_s: 2.0
+  max_delay_s: 60.0
+  jitter: 0.25
+  max_retry_after_s: 600.0
+
+# ---------------------------------------------------------------- context management (context.py)
+# Before each model call: above soft_ratio of the window, old tool results are
+# cleared (spilled to logs/tool_outputs/cleared); above hard_ratio, older spans
+# are summarised. One overflow recovery per provider "prompt too long" error.
+context:
+  enabled: true
+  soft_ratio: 0.7
+  hard_ratio: 0.85
+  keep_recent_calls: 6
+  min_clear_chars: 2000
+  min_clear_fraction: 0.05
+  summary_max_tokens: 4000
+  server_side: false              # Anthropic clear_tool_uses context editing instead of local clearing
+  default_window_tokens: 200000   # when the provider/model does not report one
 
 # ---------------------------------------------------------------- orchestration (Fig. 1C)
 orchestration:
@@ -69,30 +128,102 @@ orchestration:
   review_policy: research
   # Nudge the CSO once to write_plan when >=2 specialists ran without a plan.
   enforce_plan: false
+  # Preflight (credentials, reference data, MCP commands) before the session
+  # and before each turn. Skipped for the mock provider.
+  require_reference_data: true
+  # CSO tool surface: restricted (agents.yaml list) | upstream (upstream run.py
+  # parity: also Bash, Write, Edit, NotebookEdit, WebFetch, WebSearch).
+  cso_tools: restricted
+
+# ---------------------------------------------------------------- preflight (preflight.py)
+# Also set by the global flags --skip-preflight / --allow-missing-data.
+preflight:
+  skip: false                     # skip the readiness gate entirely
+  allow_missing_data: false       # start degraded (MANIFEST.degraded) instead of refusing
+
+# ---------------------------------------------------------------- MCP servers (tools/mcp_bridge.py)
+mcp:
+  start_attempts: 3               # startup attempts per server
+  start_timeout_s: 180            # per attempt (connect + initialize + list_tools)
+  start_backoff_s: 3.0            # delay before the 2nd attempt ...
+  start_backoff_factor: 1.5       # ... multiplied by this for each further attempt
+  default_timeout_s: 1800         # per tool call, unless the server sets timeout_s
+  max_restarts: 3                 # crash restarts per server per session
+  inherit_env: false              # MCP children get an allow-listed env (envpolicy), never provider keys
 
 # ---------------------------------------------------------------- bulk (Case 1 / BulkDispatch)
 bulk:
   dispatch_enabled: false         # register BulkDispatch/BulkStatus for the CSO
-  dispatch_max_budget_usd: 50
-  pilot_size: 5
-  prewarm: first_item
+  dispatch_max_budget_usd: 50     # cap on a BulkDispatch job's budget_usd
+  pilot_size: 5                   # items run (and costed) before confirm=true
+  prewarm: first_item             # run one item alone first so the rest hit the prompt cache
 
 # ---------------------------------------------------------------- tools
 bash:
   enabled: true
-  default_timeout_s: 1800
-  max_timeout_s: 14400
-  blocked_patterns:
-    - '\bpip3?\s+install\b'
-    - '\bconda\s+(install|create)\b'
-    - '\bmamba\s+install\b'
-    - '\bapt(-get)?\s+install\b'
-    - '\bnpm\s+install\b'
-    - '\bsudo\b'
+  default_timeout_s: 1800         # seconds. NB: the Bash tool's `timeout` argument is in
+  max_timeout_s: 14400            # MILLISECONDS (Claude Code convention; <1000 is read as seconds)
+  shell: /bin/bash
+  max_output_bytes: 2000000       # larger output keeps head+tail; full text in logs/tool_outputs/bash_<id>.txt
+  network: true                   # false blocks curl/wget/URLs/requests/httpx/urllib (no-web profile)
+  network_isolation: null         # 'unshare' runs commands in a new network namespace (Linux)
+  env_passthrough: []             # extra variables passed to Bash (provider keys are never passed)
+  # Extra read-only roots for Bash only. In-code default: /usr, /bin, /lib,
+  # /lib64, /etc/ssl, sys.prefix, sys.base_prefix and the MCP interpreter's prefix.
+  # system_read_roots: [...]
+  sandbox:
+    paths: true                   # every path token must pass the read/write policy
+    protect_other_workspaces: true  # agents write only under work/<agent>/ (CSO/reviewer: work/_cso/)
+  # Guardrail groups (patterns and upstream guidance messages in
+  # vbt.tools.policy.DEFAULT_GROUPS). Per group: enabled, patterns (replace),
+  # message; destructive_fs also mode (workspace_only | block) and
+  # workspace_commands. These are guardrails, not an OS sandbox.
+  block:
+    pkg_install: {enabled: true}
+    destructive_fs: {enabled: true, mode: workspace_only}
+    destructive_db: {enabled: true}
+    system: {enabled: true}
+
+read:
+  max_output_chars: 250000        # Read tool output cap (lines are streamed, never whole-file loads)
+  pdf_max_bytes: 20000000
+
+memory:
+  max_chars: 50000                # UpdateMemory cap for <run>/memory/<agent>/MEMORY.md
 
 web:
   enabled: true                   # set false to reproduce the no-web B7-H3 case study setting
   fetch_max_chars: 30000          # must stay below limits.tool_output_max_chars
+  fetch_max_bytes: 5000000        # streamed download cap per page
+  extract_with_model: true        # WebFetch with a prompt: the support tier extracts the answer
+  extract_tier: support
+  extract_max_input_chars: 150000
+  extract_max_tokens: 4000
+  allowed_domains: []             # WebSearch/WebFetch domain filters (tool arguments win)
+  blocked_domains: []
+  per_host_concurrency: 1
+  retry_after_max_s: 30           # one retry on 429, honouring Retry-After up to this
+  timeout_s: 60
+  literature_max_date: null       # 'YYYY/MM/DD': keeps PubMed with a publication ceiling (no-web)
+
+# ---------------------------------------------------------------- audit record (session.py, audit/)
+audit:
+  snapshot_after_tools: true      # re-snapshot and hash work/ after each file-writing tool call
+  capture_on_trace: true          # also trigger capture from the tool_end trace event
+  render_reports: true            # README.md + audit.html on every save
+  update_index: true              # runs/INDEX.md + INDEX.json on close
+  reasoning_excerpt_chars: 2000
+  report_verify: fast             # problems box in the reports: fast (trust mtime+size) | full | off
+
+# ---------------------------------------------------------------- web UI (vbt web)
+web_ui:
+  max_sessions: 20
+  idle_timeout_s: 28800
+  session_max_age_s: 43200
+  start_mcp: true
+  event_buffer: 10000             # events kept per session for SSE resume (Last-Event-ID)
+  login_max_failures: 10
+  login_lockout_s: 600
 
 # Environment passed to Bash and to MCP servers
 tool_env:

@@ -89,6 +89,7 @@ from vbt.agents import AgentDefinition  # noqa: E402
 from vbt.bulk import BulkItem  # noqa: E402
 from vbt.providers.base import ProviderError, StopReason  # noqa: E402
 from vbt.providers.mock import fail, turn  # noqa: E402
+from conftest import open_scripted_session
 
 
 class _Out(BaseModel):
@@ -113,8 +114,7 @@ def _paid_submit(messages):
 
 
 async def _session(config, script, **limits):
-    config["limits"].update(limits)
-    return await open_session(config, provider=ScriptedProvider(script), start_mcp=False)
+    return await open_scripted_session(config, script, enforce_review=None, **limits)
 
 
 def _recs(out):

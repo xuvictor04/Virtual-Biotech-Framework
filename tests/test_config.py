@@ -108,7 +108,9 @@ def test_in_code_defaults(config):
     assert config["mcp"]["inherit_env"] is False
     assert config["web"]["literature_max_date"] is None
     assert config["orchestration"]["cso_tools"] == "restricted"
-    assert config["orchestration"]["require_reference_data"] is True
+    # the mock profile turns the readiness gate off; the default config keeps it on
+    assert config["orchestration"]["require_reference_data"] is False
+    assert load_config([])["orchestration"]["require_reference_data"] is True
     assert config["agent_overrides"] == {}
     # YAML still wins over the in-code defaults
     cfg = load_config(["mock"], overrides={"mcp": {"max_restarts": 1}})
