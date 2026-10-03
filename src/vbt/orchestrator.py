@@ -250,8 +250,10 @@ class CSOSession:
         if pre.get("skip"):
             return
         from .preflight import require_ready
+        # Without MCP servers (--no-mcp) no reference data is read: check credentials only.
         require_ready(self.config, per_turn=True, provider=self.rt.provider,
-                      allow_missing_data=bool(pre.get("allow_missing_data")))
+                      allow_missing_data=bool(pre.get("allow_missing_data")),
+                      start_mcp=self.rt.mcp is not None)
 
     async def _turn(self, user_input: str) -> str:
         rt, run = self.rt, self.run
@@ -807,7 +809,8 @@ async def open_session(config: dict[str, Any], *, provider=None, on_event=None, 
             except Exception:  # noqa: BLE001 - fall back to the env-var check; Runtime reports the error
                 log.debug("building the provider for preflight failed", exc_info=True)
                 provider = None
-        checks = require_ready(config, provider=provider, allow_missing_data=allow_missing)
+        checks = require_ready(config, provider=provider, allow_missing_data=allow_missing,
+                               start_mcp=start_mcp)
     if resume:
         run = Run.open_existing(resume)
     else:

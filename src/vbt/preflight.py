@@ -467,23 +467,27 @@ async def smoke_mcp(config: dict[str, Any], *, log_dir: str | os.PathLike | None
 # ---------------------------------------------------------------------------
 
 def require_ready(config: dict[str, Any], *, per_turn: bool = False, provider: Any = None,
-                  allow_missing_data: bool = False) -> list[CheckResult]:
+                  allow_missing_data: bool = False, start_mcp: bool = True) -> list[CheckResult]:
     """Raise :class:`DataReadinessError` unless the session/turn can be served.
 
     Skipped (returns []) for the mock provider or when
     ``orchestration.require_reference_data`` is false. Missing credentials
     always raise; missing reference data or broken MCP commands raise unless
     ``allow_missing_data`` (the run is then degraded: the caller should mark it
-    and tell the CSO which servers lack data). Returns the check results.
+    and tell the CSO which servers lack data). With ``start_mcp=False``
+    (``--no-mcp``: no MCP server is started) only the credentials are checked,
+    since the reference data and server commands are needed only by the
+    servers. Returns the check results.
     """
     if _provider_name(config, provider) == "mock":
         return []
     if not (config.get("orchestration") or {}).get("require_reference_data", True):
         return []
     results = [check_credentials(config, provider)]
-    results += check_reference_data(config)
-    if not per_turn:
-        results += check_mcp_commands(config)
+    if start_mcp:
+        results += check_reference_data(config)
+        if not per_turn:
+            results += check_mcp_commands(config)
     failed = [r for r in results if r.required and not r.ok]
     blocking = [r for r in failed if r.kind == "credentials" or not allow_missing_data]
     if blocking:

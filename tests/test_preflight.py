@@ -92,6 +92,22 @@ def test_missing_open_targets_raises_with_fix(monkeypatch, tmp_path):
         require_ready(cfg, per_turn=True)
 
 
+def test_no_mcp_checks_credentials_only(monkeypatch, tmp_path):
+    """--no-mcp: missing reference data / broken server commands do not block or degrade."""
+    cfg = _live_config(monkeypatch, tmp_path, ANTHROPIC_API_KEY="sk-ant-test", OPEN_TARGETS_DATA_PATH="",
+                       TAHOE_DATA_PATH="")
+    with pytest.raises(DataReadinessError):
+        require_ready(cfg)
+    for per_turn in (False, True):
+        results = require_ready(cfg, per_turn=per_turn, start_mcp=False)
+        assert [r.kind for r in results] == ["credentials"] and results[0].ok
+        assert degraded_servers(cfg, results) == {}
+    # credentials still gate a --no-mcp session
+    monkeypatch.setenv("ANTHROPIC_API_KEY", " ")
+    with pytest.raises(DataReadinessError, match="ANTHROPIC_API_KEY"):
+        require_ready(cfg, start_mcp=False)
+
+
 def test_mock_and_disabled_preflight_skip(monkeypatch, config, tmp_path):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     monkeypatch.delenv("OPEN_TARGETS_DATA_PATH", raising=False)

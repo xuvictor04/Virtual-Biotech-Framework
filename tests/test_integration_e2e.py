@@ -223,7 +223,8 @@ async def test_cso_bulk_dispatch_runs_past_the_per_turn_cap(config):
 
 def _fail_ready(monkeypatch, *, session=False, per_turn=False):
     """Make vbt.preflight.require_ready fail for the session and/or per-turn check."""
-    def gate(config, *, per_turn: bool = False, provider=None, allow_missing_data: bool = False):
+    def gate(config, *, per_turn: bool = False, provider=None, allow_missing_data: bool = False,
+             start_mcp: bool = True):
         if (per_turn and gate.per_turn) or (not per_turn and gate.session):
             raise DataReadinessError(f"Not ready: OPEN_TARGETS_DATA_PATH: not set. {TURN_NOT_SENT}")
         return []
@@ -265,7 +266,7 @@ async def test_per_turn_preflight_records_a_not_sent_turn(config, monkeypatch):
 async def test_allow_missing_data_marks_the_run_degraded_and_tells_the_agents(config, monkeypatch):
     seen = {}
 
-    def gate(config, *, per_turn=False, provider=None, allow_missing_data=False):
+    def gate(config, *, per_turn=False, provider=None, allow_missing_data=False, start_mcp=True):
         assert allow_missing_data is True
         return [CheckResult("OPEN_TARGETS_DATA_PATH set and exists", False, detail="not set", kind="data")]
     monkeypatch.setattr(preflight, "require_ready", gate)
@@ -284,6 +285,21 @@ async def test_allow_missing_data_marks_the_run_degraded_and_tells_the_agents(co
     assert manifest["degraded"]["servers"] == session.rt.degraded_servers
     assert manifest["config"]["preflight"]["allow_missing_data"] is True
     assert "(reference data)" in seen["cso"]               # the CSO is told what is missing
+
+
+async def test_no_mcp_session_and_turns_skip_the_data_checks(config, monkeypatch):
+    """--no-mcp (start_mcp=False): the session and per-turn gates check credentials only."""
+    calls = []
+
+    def gate(config, *, per_turn=False, provider=None, allow_missing_data=False, start_mcp=True):
+        calls.append((per_turn, start_mcp))
+        return []
+    monkeypatch.setattr(preflight, "require_ready", gate)
+    session = await open_scripted_session(config, {"cso": [reply("ok")]})
+    assert session.rt.mcp is None
+    assert await session.ask("q") == "ok"
+    await session.close()
+    assert calls == [(False, False), (True, False)]
 
 
 def test_cli_preflight_flags_and_refusal(tmp_path, mock_provider, monkeypatch, capsys):
