@@ -54,6 +54,7 @@ limits:
   max_delegation_depth: 1         # CSO -> scientist only (scientists cannot delegate)
   tool_output_max_chars: 40000    # longer tool outputs are saved to file and truncated
   max_turn_cost_usd: 150          # hard stop per user turn
+  max_item_cost_usd: null         # per-item cap for bulk runs (null = no cap)
 
 # ---------------------------------------------------------------- orchestration (Fig. 1C)
 orchestration:
@@ -64,6 +65,17 @@ orchestration:
   # before the CSO's final synthesis of a turn with delegations.
   enforce_review: true
   max_review_rounds: 2
+  # When the reviewer is required: always | research | multi_specialist | never
+  review_policy: research
+  # Nudge the CSO once to write_plan when >=2 specialists ran without a plan.
+  enforce_plan: false
+
+# ---------------------------------------------------------------- bulk (Case 1 / BulkDispatch)
+bulk:
+  dispatch_enabled: false         # register BulkDispatch/BulkStatus for the CSO
+  dispatch_max_budget_usd: 50
+  pilot_size: 5
+  prewarm: first_item
 
 # ---------------------------------------------------------------- tools
 bash:
@@ -80,7 +92,7 @@ bash:
 
 web:
   enabled: true                   # set false to reproduce the no-web B7-H3 case study setting
-  fetch_max_chars: 60000
+  fetch_max_chars: 30000          # must stay below limits.tool_output_max_chars
 
 # Environment passed to Bash and to MCP servers
 tool_env:

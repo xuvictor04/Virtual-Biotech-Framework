@@ -321,11 +321,18 @@ class Runtime:
         self._cancel_reasons: dict[str, str] = {}
         self._system_cache: dict[str, Any] = {}
         self._known_agents: dict[str, AgentDefinition] = {}
-        self.registry.extend(builtin_tools())
+        self.registry.extend(builtin_tools(skill_roots=self.skill_roots))
         self.registry.extend(provenance_tools())
         self.registry.add(self._task_tool())
         self.registry.add(self._list_tools_tool())
         self.registry.add(query_tool_output_tool())
+        try:
+            from .bulk import bulk_settings
+            if bulk_settings(config).get("dispatch_enabled"):
+                from .bulk_dispatch import bulk_dispatch_tools
+                self.registry.extend(bulk_dispatch_tools(self))
+        except Exception:  # noqa: BLE001 - optional CSO tools must never block a runtime
+            log.exception("registering bulk dispatch tools failed")
 
     # ------------------------------------------------------------------ setup
 

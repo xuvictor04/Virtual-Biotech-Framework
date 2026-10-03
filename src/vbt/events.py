@@ -33,7 +33,8 @@ warning             message
 
 Kinds emitted by other packages: ``turn_start``, ``turn_end``,
 ``review_enforced``, ``briefing`` (CSO session); ``artifact_registered``,
-``claims_filed`` (provenance tools). The legacy kind ``tool`` (agent, tool,
+``claims_filed`` (provenance tools); ``bulk_start``, ``bulk_progress``,
+``bulk_end`` (bulk dispatch). The legacy kind ``tool`` (agent, tool,
 input) is still emitted as an alias of ``tool_start`` until every consumer
 reads ``tool_start``.
 """
@@ -80,6 +81,9 @@ EVENT_KINDS: dict[str, tuple[str, ...]] = {
     "briefing": ("text",),
     "artifact_registered": ("path", "agent"),
     "claims_filed": ("ids", "n"),
+    "bulk_start": ("job_id", "agent"),
+    "bulk_progress": ("job_id", "agent", "done", "failed", "queued", "spent_usd"),
+    "bulk_end": ("job_id", "agent"),
 }
 
 #: Old kind -> new kind it mirrors (emitted alongside the new kind).

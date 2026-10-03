@@ -678,6 +678,11 @@ async def open_session(config: dict[str, Any], *, provider=None, on_event=None, 
             if failures:
                 rt.emit("warning", message=f"MCP servers unavailable: {', '.join(sorted(failures))}")
         try:
+            from .tools.skills import materialize
+            rt.skill_hashes = materialize(run.dir, rt.skill_roots)
+        except Exception as exc:  # noqa: BLE001 - skills are optional
+            run.note_audit_error(f"skill materialize: {type(exc).__name__}: {exc}")
+        try:
             pinned = build_pinned_config(config, rt, interface=interface, profiles=profiles)
         except Exception as exc:  # noqa: BLE001 - pinning must never block a session
             log.exception("building the pinned config failed")
