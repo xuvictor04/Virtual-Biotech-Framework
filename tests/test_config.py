@@ -121,5 +121,5 @@ def test_no_web_profile(monkeypatch):
     cfg = load_config(["mock", "no-web"])
     assert cfg["web"]["enabled"] is False
     assert cfg["web"]["literature_max_date"] == "2025/01/31"
-    assert cfg["tool_env"]["VBT_LITERATURE_MAXDATE"] == "2025/01/31"
+    assert vconfig.base_tool_env(cfg)["VBT_LITERATURE_MAXDATE"] == "2025/01/31"  # derived, single source
     assert cfg["bash"]["network"] is False

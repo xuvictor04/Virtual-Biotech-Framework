@@ -87,7 +87,7 @@ servers:
     enabled: true
   - name: pubmed
     # PubMed search + abstracts via NCBI E-utilities (harness addition; see src/vbt/mcp_servers).
-    # VBT_LITERATURE_MAXDATE (from tool_env; set by the no-web profile) caps publication dates.
+    # VBT_LITERATURE_MAXDATE (derived from web.literature_max_date, e.g. the no-web profile) caps publication dates.
     command: ${vars.mcp_python}
     args: ["-E", "${vars.project_root}/src/vbt/mcp_servers/pubmed_server.py"]
     timeout_s: 1800

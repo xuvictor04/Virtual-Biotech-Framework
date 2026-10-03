@@ -2,16 +2,15 @@
 # information leakage".
 # - Removes WebSearch/WebFetch from every agent.
 # - Keeps PubMed only with a publication-date ceiling: agents lose mcp__pubmed__*
-#   unless web.literature_max_date is set, and the PubMed server enforces
-#   VBT_LITERATURE_MAXDATE (esearch datetype=pdat + maxdate; newer records in
-#   fetch_abstracts are withheld). Remove both keys to drop PubMed entirely.
+#   unless web.literature_max_date is set, and the PubMed server enforces it as
+#   VBT_LITERATURE_MAXDATE (derived from web.literature_max_date by the harness;
+#   esearch datetype=pdat + maxdate; newer records in fetch_abstracts are
+#   withheld). Unset web.literature_max_date to drop PubMed entirely.
 # - Blocks network commands in Bash (curl, wget, requests/httpx/urllib, download.file).
 # - NOTE: ClinicalTrials.gov and cBioPortal (mcp__clinicaltrials__*) stay live and
 #   can return post-cutoff records; CELLxGENE Census is also queried live.
 web:
   enabled: false
   literature_max_date: '2025/01/31'
-tool_env:
-  VBT_LITERATURE_MAXDATE: '2025/01/31'
 bash:
   network: false

@@ -794,3 +794,40 @@ async def test_tool_context_trace_carries_the_invocation_ids(config):
     ev = _trace(rt, "custom_tool_event")[0]
     assert ev["agent_run_id"] == res.invocation_id and ev["agent"] == "probe" and ev["tool_use_id"]
     await session.close()
+
+
+# --------------------------------------------------------------------------- no-tool call over tool history
+
+
+async def test_no_tool_call_over_tool_history_still_declares_tools_and_executes_nothing(config):
+    """allow_tools=False on a history with tool_use/tool_result blocks: the
+    request must still carry tool specs (the Messages API rejects tool blocks
+    without definitions), and a call the model makes anyway is not executed."""
+    provider = ScriptedProvider.from_rules({"cso": [
+        reply(call("ListTools")),          # earlier meta answer used a tool
+        reply("I can do many things."),
+        reply(call("ListTools")),          # no-tool call: model tries a tool anyway
+        reply("Clarifying questions: none."),
+    ]})
+    session = await _session(config, provider)
+    rt = session.rt
+    await rt.run_agent(rt.cso, "what can you do?", history=session.history)
+    n_before = len(_trace(rt, "tool_start"))
+    assert n_before == 1
+    res = await rt.run_agent(rt.cso, "orient", history=session.history, allow_tools=False)
+    assert res.status == "completed" and res.text == "Clarifying questions: none."
+    no_tool_calls = provider.calls[-2:]
+    assert all(c["tools"] for c in no_tool_calls), "tool specs must be declared over a tool-bearing history"
+    refused = [r for m in session.history for r in _results(m) if r.content.startswith("Not executed")]
+    assert refused and refused[-1].is_error
+    assert validate_tool_pairing(session.history) == []
+    assert len(_trace(rt, "tool_start")) == n_before
+    await session.close()
+
+
+async def test_no_tool_call_over_text_history_sends_no_tools(config):
+    provider = ScriptedProvider.from_rules({"cso": [reply("plain answer")]})
+    session = await _session(config, provider)
+    res = await session.rt.run_agent(session.rt.cso, "q", history=session.history, allow_tools=False)
+    assert res.text == "plain answer" and provider.calls[-1]["tools"] == []
+    await session.close()

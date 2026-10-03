@@ -166,6 +166,30 @@ def load_config(profiles: list[str] | None = None, overrides: dict | None = None
     return cfg
 
 
+LITERATURE_MAXDATE_ENV = "VBT_LITERATURE_MAXDATE"
+
+
+def base_tool_env(config: dict[str, Any]) -> dict[str, str]:
+    """The harness-level environment every MCP server / tool child gets.
+
+    ``config['tool_env']`` (non-empty values) plus derived settings. The PubMed
+    publication-date ceiling has a single source of truth,
+    ``web.literature_max_date``: it is what keeps PubMed in no-web runs and what
+    the agents' prompts announce, so it is always exported to the server as
+    ``VBT_LITERATURE_MAXDATE`` (overriding a disagreeing tool_env value).
+    """
+    env = {k: str(v) for k, v in (config.get("tool_env") or {}).items() if v}
+    ceiling = (config.get("web") or {}).get("literature_max_date")
+    if ceiling:
+        ceiling = str(ceiling).strip()
+        prev = env.get(LITERATURE_MAXDATE_ENV)
+        if prev and prev.strip() != ceiling:
+            log.warning("tool_env.%s=%s disagrees with web.literature_max_date=%s; using the latter",
+                        LITERATURE_MAXDATE_ENV, prev, ceiling)
+        env[LITERATURE_MAXDATE_ENV] = ceiling
+    return env
+
+
 def resolve_path(p: str | Path) -> Path:
     """Absolute, symlink-resolved path; relative paths are taken from the project root."""
     path = Path(p).expanduser()

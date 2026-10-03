@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from .config import env_files, resolve_path
+from .config import base_tool_env, env_files, resolve_path
 from .envpolicy import child_env
 
 log = logging.getLogger(__name__)
@@ -121,7 +121,7 @@ def _servers(config: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _env_value(config: dict[str, Any], key: str) -> str:
     """The value MCP servers will see: tool_env first, then the process environment."""
-    v = (config.get("tool_env") or {}).get(key)
+    v = base_tool_env(config).get(key)
     if v is None or not str(v).strip():
         v = os.environ.get(key, "")
     return str(v or "").strip()
@@ -412,7 +412,7 @@ async def smoke_mcp(config: dict[str, Any], *, log_dir: str | os.PathLike | None
     specs = [MCPServerConfig(**{k: v for k, v in s.items() if k in MCPServerConfig.__dataclass_fields__})
              for s in specs_raw]
     tmp = tempfile.mkdtemp(prefix="vbt-doctor-")
-    extra = {k: str(v) for k, v in (config.get("tool_env") or {}).items() if v}
+    extra = base_tool_env(config)
     extra.update({"VBT_RUN_DIR": tmp, "MCP_OUTPUT_DIR": str(Path(tmp) / "mcp")})
     bridge = MCPBridge(specs, extra_env=extra, log_dir=log_dir or Path(tmp) / "logs",
                        options=config.get("mcp") or {})

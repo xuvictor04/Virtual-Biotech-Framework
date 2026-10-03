@@ -342,3 +342,35 @@ def test_no_web_profile_roster():
     assert not sc.has_tool("WebSearch") and sc.has_tool("mcp__pubmed__fetch_abstracts")
     stable, _ = system_prompt_parts(sc, run_dir=Path("/tmp/r"), workspace=Path("/tmp/r/w"), config=cfg)
     assert "DISABLED" in stable and "2025/01/31" in stable
+
+
+async def test_literature_max_date_alone_reaches_the_pubmed_child_env(config, monkeypatch):
+    """Only web.literature_max_date set (no tool_env): PubMed stays on the
+    roster, so the server must still get the ceiling via VBT_LITERATURE_MAXDATE."""
+    from conftest import open_scripted_session
+    from vbt.config import LITERATURE_MAXDATE_ENV, base_tool_env
+    from vbt.tools.mcp_bridge import MCPBridge, MCPServerConfig
+
+    monkeypatch.delenv(LITERATURE_MAXDATE_ENV, raising=False)
+    config["web"].update({"enabled": False, "literature_max_date": "2025/01/31"})
+    (config.get("tool_env") or {}).pop(LITERATURE_MAXDATE_ENV, None)
+    _, agents = load_roster(config)
+    assert agents["single-cell-analyst"].has_tool("mcp__pubmed__search_pubmed")
+    assert base_tool_env(config)[LITERATURE_MAXDATE_ENV] == "2025/01/31"
+
+    session = await open_scripted_session(config, {"cso": []})
+    try:
+        env = session.rt.tool_env()
+        assert env[LITERATURE_MAXDATE_ENV] == "2025/01/31"
+        bridge = MCPBridge([], extra_env=env, log_dir=session.run.dir / "logs")
+        child = bridge.child_env(MCPServerConfig(name="pubmed", command="python"))
+        assert child[LITERATURE_MAXDATE_ENV] == "2025/01/31"
+    finally:
+        await session.close()
+
+    # the prompt's date wins over a disagreeing tool_env value
+    config.setdefault("tool_env", {})[LITERATURE_MAXDATE_ENV] = "2026/01/01"
+    assert base_tool_env(config)[LITERATURE_MAXDATE_ENV] == "2025/01/31"
+    # no web ceiling: tool_env passes through unchanged
+    config["web"]["literature_max_date"] = None
+    assert base_tool_env(config)[LITERATURE_MAXDATE_ENV] == "2026/01/01"

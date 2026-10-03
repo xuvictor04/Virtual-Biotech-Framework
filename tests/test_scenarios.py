@@ -90,6 +90,10 @@ def test_live_source_warnings():
     cfg["bash"]["network"] = False
     assert len(sc.live_source_warnings(cfg, scen)) == 1
     assert sc.live_source_warnings({"web": {"enabled": True}}, {"profiles": []}) == []
+    # a tool_env ceiling alone also counts: it is what the server enforces
+    cfg2 = {"web": {"enabled": False}, "mcp_servers": {"servers": [{"name": "pubmed"}]}, "bash": {"network": False},
+            "tool_env": {"VBT_LITERATURE_MAXDATE": "2025/01/31"}}
+    assert sc.live_source_warnings(cfg2, scen) == []
 
 
 def test_check_expected_values(tmp_path):

@@ -51,7 +51,7 @@ from typing import Any, Awaitable, Callable, Mapping
 from . import budget, failures
 from .agents import AgentDefinition, load_roster, system_prompt_parts
 from .budget import BudgetExceeded, CostScope, InvocationCost, open_scope  # noqa: F401  (re-exported)
-from .config import resolve_path
+from .config import base_tool_env, resolve_path
 from .context import ContextManager, ContextPolicy, CompactionResult, compaction_spend
 from .events import EventBus, EventCallback, preview
 from .providers import create_provider
@@ -246,6 +246,10 @@ class AgentResult:
     error: str | None = None
 
 
+def _has_tool_blocks(messages: list[Message]) -> bool:
+    return any(isinstance(b, (ToolCall, ToolResult)) for m in messages for b in m.content)
+
+
 @dataclass
 class _Loop:
     agent: AgentDefinition
@@ -269,10 +273,15 @@ class _Loop:
     last_usage: Any = None
     calls: list[dict[str, Any]] = field(default_factory=list)   # call records for failure resolution
     pending_budget: BudgetExceeded | None = None
+    # allow_tools=False over a history that already holds tool_use/tool_result
+    # blocks: the specs are still sent (the API rejects such a request without
+    # tool definitions) but no call is executed.
+    inert_tools: list[Tool] = field(default_factory=list)
+    refused_rounds: int = 0
 
     @property
     def specs(self):
-        return [t.spec for t in self.tools]
+        return [t.spec for t in (self.tools or self.inert_tools)]
 
     @property
     def has_read(self) -> bool:
@@ -355,7 +364,7 @@ class Runtime:
         return self.provider.web_search if self.provider.supports_web_search() else None
 
     def tool_env(self, ctx: ToolContext | None = None) -> dict[str, str]:
-        env = {k: str(v) for k, v in (self.config.get("tool_env") or {}).items() if v}
+        env = base_tool_env(self.config)
         env.update({"VBT_RUN_DIR": str(self.run.dir), "MCP_OUTPUT_DIR": str(self.run.mcp_output_dir)})
         if ctx is not None:
             env["VBT_AGENT"] = ctx.agent
@@ -600,6 +609,9 @@ class Runtime:
         if allow_tools:
             for t in self.tools_for(agent) + list(extra_tools or []):
                 by_name[t.name] = t
+        inert: list[Tool] = []
+        if not allow_tools and _has_tool_blocks(messages):
+            inert = self.tools_for(agent) + list(extra_tools or [])
         settings = self.context.settings_for(agent.settings(self.config))
         result = AgentResult(agent.name, "", messages, invocation_id=inv, parent_invocation_id=parent)
         if inv in self._live:
@@ -607,7 +619,8 @@ class Runtime:
         acc = InvocationCost(inv)
         st = _Loop(agent=agent, depth=depth, messages=messages, tools=list(by_name.values()), by_name=by_name,
                    settings=settings, system=system, result=result, inv=inv, parent=parent, stream_text=stream_text,
-                   after_end_turn=after_end_turn, max_turns=self.max_turns_for(agent, depth), acc=acc)
+                   after_end_turn=after_end_turn, max_turns=self.max_turns_for(agent, depth), acc=acc,
+                   inert_tools=inert)
         ids_token = _RUN_IDS.set((inv, parent))
         acc_token = budget.use_invocation(acc)
         self._trace("agent_start", agent=agent.name, depth=depth, agent_run_id=inv, parent_run_id=parent,
@@ -708,6 +721,17 @@ class Runtime:
                 r.status = r.stop_reason = "budget" if grace else "turn_limit"
                 r.text = st.report or ("[The budget ran out before a final report was written.]" if grace else
                                        "[Turn limit reached before a final report was written.]")
+                return
+            if calls and not st.by_name:
+                # Tools are disabled for this call (they are only declared so the
+                # tool blocks already in the history stay valid): answer without
+                # executing, give the model one chance to reply in text.
+                self._answer(st, calls, "tools are not available for this call; answer directly in text")
+                st.refused_rounds += 1
+                if st.refused_rounds <= 1:
+                    st.report = ""
+                    continue
+                r.status, r.text = "completed", st.report
                 return
             if calls and stop in (StopReason.TOOL_USE, StopReason.END_TURN, StopReason.PAUSE):
                 report = st.report

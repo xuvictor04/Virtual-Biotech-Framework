@@ -97,8 +97,8 @@ def live_source_warnings(config: dict[str, Any], scenario: dict[str, Any] | None
     if "clinicaltrials" in servers:
         out.append("ClinicalTrials.gov/cBioPortal (mcp__clinicaltrials__*) are live and may return post-cutoff "
                    "records; disable the server to remove them.")
-    ceiling = ((config.get("web") or {}).get("literature_max_date")
-               or (config.get("tool_env") or {}).get("VBT_LITERATURE_MAXDATE"))
+    from ...config import LITERATURE_MAXDATE_ENV, base_tool_env
+    ceiling = base_tool_env(config).get(LITERATURE_MAXDATE_ENV)  # what the PubMed server will enforce
     if "pubmed" in servers and not ceiling:
         out.append("PubMed is enabled without a publication-date ceiling (web.literature_max_date / "
                    "VBT_LITERATURE_MAXDATE): post-cutoff literature can leak.")
