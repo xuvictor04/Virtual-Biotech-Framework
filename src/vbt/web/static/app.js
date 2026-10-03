@@ -676,6 +676,9 @@
         state.tools.delete(d.tool_use_id);
         break;
       }
+      case 'draft_superseded':
+        notice('The text above is a draft, superseded' + (d.reason ? ' (' + d.reason + ' requested)' : '') + '.');
+        break;
       case 'review_enforced':
         notice('Review required: dispatching the scientific reviewer' + (d.agents ? ' for ' + [].concat(d.agents).join(', ') : '') + '.');
         break;

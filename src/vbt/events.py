@@ -32,7 +32,8 @@ warning             message
 ==================  ================================================================
 
 Kinds emitted by other packages: ``turn_start``, ``turn_end``,
-``review_enforced``, ``briefing`` (CSO session); ``artifact_registered``,
+``review_enforced``, ``draft_superseded`` (a harness nudge turned the CSO
+text streamed so far into a draft), ``briefing`` (CSO session); ``artifact_registered``,
 ``claims_filed`` (provenance tools); ``bulk_start``, ``bulk_progress``,
 ``bulk_end`` (bulk dispatch).
 
@@ -81,6 +82,7 @@ EVENT_KINDS: dict[str, tuple[str, ...]] = {
     "turn_start": ("turn", "prompt"),
     "turn_end": ("turn", "status", "reply", "cost_usd", "cumulative_usd"),
     "review_enforced": ("agents", "round"),
+    "draft_superseded": ("reason",),
     "briefing": ("text",),
     "artifact_registered": ("path", "agent"),
     "claims_filed": ("ids", "n"),

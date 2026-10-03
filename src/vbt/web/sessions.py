@@ -40,7 +40,7 @@ INTERRUPT_REASON = "interrupted by the user (Stop)"
 
 #: Event kinds forwarded without reshaping (payload sanitised only).
 PASSTHROUGH_KINDS = frozenset({
-    "briefing", "review_enforced", "compaction", "retry", "warning", "cost", "artifact_registered", "claims_filed",
+    "briefing", "review_enforced", "draft_superseded", "compaction", "retry", "warning", "cost", "artifact_registered", "claims_filed",
     "mcp_server_started", "mcp_start_failed", "mcp_crash", "mcp_restart", "mcp_timeout", "mcp_lazy_retry",
     "delegation_end", "session_resumed",
 })

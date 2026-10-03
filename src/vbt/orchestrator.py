@@ -46,6 +46,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,7 +60,7 @@ from .runtime import Runtime
 log = logging.getLogger(__name__)
 
 __all__ = ["CSOSession", "SessionBusy", "open_session", "NO_CLARIFY", "META_QUERY", "AWAITING_USER",
-           "ORIENTATION_INSTRUCTION", "REVIEW_NUDGE", "PLAN_NUDGE", "STATE_FILE"]
+           "ORIENTATION_INSTRUCTION", "REVIEW_NUDGE", "PLAN_NUDGE", "STATE_FILE", "resume_drift"]
 
 NO_CLARIFY = "NO_CLARIFICATION_NEEDED"
 META_QUERY = "META_QUERY"
@@ -92,12 +93,15 @@ REVIEW_NUDGE = """[Harness — review policy]
 You delegated analyses this turn ({agents}) but the scientific-reviewer has not evaluated
 their outputs since they finished. Before your final synthesis, dispatch `scientific-reviewer`
 with the user's question and each specialist's findings (numbers, files, limitations). If it
-flags gaps or unsupported claims, re-delegate to the relevant specialists, then synthesize."""
+flags gaps or unsupported claims, re-delegate to the relevant specialists, then give your complete
+final synthesis (with its [[claim:ID]] anchors): text written before this note is kept only as a draft."""
 
 PLAN_NUDGE = """[Harness — plan]
 You dispatched several specialists this turn ({agents}) without a recorded plan. Before your
 final synthesis, record the plan with mcp__provenance__write_plan (goal, steps, agents, real data
-dependencies) as it was actually executed; deviations are recorded, not forbidden."""
+dependencies) as it was actually executed; deviations are recorded, not forbidden. Then restate
+your complete final synthesis (with its [[claim:ID]] anchors): text written before this note is
+kept only as a draft."""
 
 SUPPORT_AGENTS = frozenset({"chief-of-staff", "scientific-reviewer"})
 REVIEWER = "scientific-reviewer"
@@ -122,6 +126,35 @@ def _strip_sentinels(text: str) -> str:
     """Remove the orientation sentinels from model text."""
     out = (text or "").replace(NO_CLARIFY, "").replace(META_QUERY, "")
     return out.strip()
+
+
+_CLAIM_ANCHOR = re.compile(r"\[\[claim:[^\]]+\]\]")
+#: A post-nudge reply shorter than this (and shorter than the draft) does not
+#: stand on its own as the turn's synthesis.
+SHORT_REPLY_CHARS = 400
+
+
+def _superseded_synthesis(drafts: list[str], final: str, last_nudge: str = "") -> str | None:
+    """The pre-nudge synthesis to keep in the recorded reply, or None.
+
+    A harness nudge (plan / review) turns everything the CSO wrote before it
+    into a draft. When the CSO's post-nudge text restates the synthesis it is
+    the reply; when it does not (it has no ``[[claim:ID]]`` anchors while a
+    draft has, or -- after a plan nudge, which does not invalidate the
+    synthesis -- it is a short acknowledgement of a longer draft), the latest
+    substantive draft is kept in front of it. After a review nudge an
+    unanchored draft is not resurrected: the review may have overturned it.
+    """
+    final = (final or "").strip()
+    anchored = [d for d in drafts if _CLAIM_ANCHOR.search(d)]
+    if anchored and not _CLAIM_ANCHOR.search(final):
+        return anchored[-1]
+    if anchored:
+        return None
+    last = drafts[-1] if drafts else ""
+    if last_nudge == "plan" and last and len(final) < SHORT_REPLY_CHARS and len(last) > len(final):
+        return last
+    return None
 
 
 def _last_assistant_text(messages: list[Message]) -> str:
@@ -385,6 +418,9 @@ class CSOSession:
             "plan_written": plan_written,
             "plan_missing": bool(len(set(specialists)) >= 2 and not plan_written),
             "plan_nudged": bool(self._ts.get("plan_nudged")),
+            "review_exempt": self._ts.get("review_exempt"),
+            "drafts": list(self._ts.get("drafts") or []),
+            "draft_kept": bool(self._ts.get("draft_kept")),
             "compactions": compactions,
             "thinking_traces": thinking,
             "subagent_traces": [{"agent": d.get("agent"), "description": d.get("description"),
@@ -630,18 +666,32 @@ class CSOSession:
         start = len(rt.delegation_log)
         ts = self._ts
 
+        def nudge(text: str, reason: str) -> str:
+            # The text streamed so far becomes a draft (runtime moves it to AgentResult.drafts).
+            ts.setdefault("nudges", []).append(reason)
+            rt.emit("draft_superseded", reason=reason)
+            return text
+
         async def check(messages: list[Message]) -> str | None:
             final = _last_assistant_text(messages).rstrip()
-            if final.endswith("?") or AWAITING_USER in final:
-                return None
             log_ = rt.delegation_log[start:]
             specs = list(dict.fromkeys(self._specialists(log_)))
+            if final.endswith("?") or AWAITING_USER in final:
+                # A question to the user (a clarification, or the upstream CSO prompt's
+                # "Would you like me to pursue any of these?") exempts the reply from the
+                # plan/review checks only when no specialist ran in this call: research
+                # output is reviewed whatever the synthesis ends with.
+                if not specs:
+                    if not ts.get("review_exempt"):
+                        ts["review_exempt"] = "awaiting_user"
+                        rt.run.trace("review_exempt", reason="awaiting_user")
+                    return None
             if enforce_plan and not ts.get("plan_nudged") and len(specs) >= 2 and not self._plan_written():
                 ts["plan_nudged"] = True
                 rt.run.trace("plan_nudge", agents=specs)
                 rt.emit("warning", message="[harness] no plan recorded for a multi-specialist turn: asking the CSO "
                                            "to record it")
-                return PLAN_NUDGE.format(agents=", ".join(specs))
+                return nudge(PLAN_NUDGE.format(agents=", ".join(specs)), "plan")
             if not enforce:
                 return None
             unreviewed = self._unreviewed(log_, policy)
@@ -657,16 +707,59 @@ class CSOSession:
             ts["review_rounds"] += 1
             rt.run.trace("review_enforced", agents=unreviewed, round=ts["review_rounds"])
             rt.emit("review_enforced", agents=unreviewed, round=ts["review_rounds"])
-            return REVIEW_NUDGE.format(agents=", ".join(unreviewed))
+            return nudge(REVIEW_NUDGE.format(agents=", ".join(unreviewed)), "review")
 
         result = await rt.run_agent(rt.cso, message, history=self.history, stream_text=True, after_end_turn=check)
         text = _strip_sentinels(result.full_text or result.text or "")
+        drafts = [d for d in (_strip_sentinels(x) for x in (result.drafts or [])) if d]
+        if drafts:
+            ts.setdefault("drafts", []).extend(drafts)
+            kept = _superseded_synthesis(drafts, text, (ts.get("nudges") or [""])[-1])
+            if kept:
+                # The CSO answered the nudge without restating its synthesis (e.g. "Plan
+                # recorded."): the pre-nudge synthesis is still the answer, keep it.
+                ts["draft_kept"] = True
+                text = (kept + "\n\n" + text).strip() if text else kept
         return text, result.status or "completed"
 
 
 # ---------------------------------------------------------------------------
 # Session factory
 # ---------------------------------------------------------------------------
+
+
+_DRIFT_ORCHESTRATION = ("review_policy", "enforce_plan", "max_review_rounds", "strategic_orientation")
+
+
+def resume_drift(pinned: Mapping[str, Any], config: Mapping[str, Any],
+                 profiles: tuple[str, ...] | list[str] = ()) -> list[str]:
+    """How the configuration a run is resumed with differs from the run's pinned one
+    (profiles, provider, per-tier models, orchestration policy)."""
+    if not isinstance(pinned, Mapping) or not pinned:
+        return []
+    out: list[str] = []
+    if "profiles" in pinned:
+        then, now = list(pinned.get("profiles") or []), list(profiles or config.get("profiles") or [])
+        if then != now:
+            out.append(f"was made with profiles {then or '(none)'}, resumed with {now or '(none)'}")
+    prov = pinned.get("provider")
+    pname = prov.get("name") if isinstance(prov, Mapping) else prov
+    cur = (config.get("provider") or {}).get("name")
+    if pname and cur and pname != cur:
+        out.append(f"provider changed: {pname} -> {cur}")
+    pm, cm = pinned.get("models") or {}, config.get("models") or {}
+    if isinstance(pm, Mapping) and isinstance(cm, Mapping):
+        for tier in sorted(set(pm) & set(cm)):
+            a = pm[tier].get("model") if isinstance(pm[tier], Mapping) else None
+            b = cm[tier].get("model") if isinstance(cm[tier], Mapping) else None
+            if a and b and a != b:
+                out.append(f"{tier} model changed: {a} -> {b}")
+    po, co = pinned.get("orchestration") or {}, config.get("orchestration") or {}
+    if isinstance(po, Mapping) and isinstance(co, Mapping):
+        for k in _DRIFT_ORCHESTRATION:
+            if k in po and k in co and po[k] != co[k]:
+                out.append(f"orchestration.{k} changed: {po[k]!r} -> {co[k]!r}")
+    return out
 
 
 def _copy_environment_spec(run) -> None:
@@ -703,6 +796,17 @@ async def open_session(config: dict[str, Any], *, provider=None, on_event=None, 
     checks: list[Any] = []
     if not pre.get("skip"):
         from .preflight import require_ready
+        if provider is None:
+            # Build the configured provider now so its own check_credentials hook
+            # (profile api_key, workload identity, ...) judges the credentials,
+            # as `vbt doctor` and the per-turn check do.
+            try:
+                from .providers import create_provider
+                provider = create_provider(config["provider"]["name"],
+                                           **(config["provider"].get("options") or {}))
+            except Exception:  # noqa: BLE001 - fall back to the env-var check; Runtime reports the error
+                log.debug("building the provider for preflight failed", exc_info=True)
+                provider = None
         checks = require_ready(config, provider=provider, allow_missing_data=allow_missing)
     if resume:
         run = Run.open_existing(resume)
@@ -714,6 +818,10 @@ async def open_session(config: dict[str, Any], *, provider=None, on_event=None, 
         })
     rt = Runtime(config, run, provider=provider, on_event=on_event)
     try:
+        if resume:
+            prev = run.config if isinstance(run.config, Mapping) else {}
+            for w in resume_drift(prev, config, profiles):
+                rt.emit("warning", message=f"resumed run {w}")
         degraded: dict[str, str] = {}
         if checks:
             from .preflight import degraded_servers

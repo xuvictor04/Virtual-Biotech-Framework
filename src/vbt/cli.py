@@ -100,12 +100,32 @@ def _profiles(args, extra_profiles: Iterable[str] = ()) -> list[str]:
     return list(dict.fromkeys(list(getattr(args, "profile", None) or []) + list(extra_profiles or [])))
 
 
-def build_config(args, extra_profiles: Iterable[str] = ()) -> dict[str, Any]:
+#: Pinned-config sections a resumed session inherits (as replay does).
+RESUME_KEYS = ("models", "web", "orchestration", "limits", "agent_overrides", "model_aliases")
+
+
+def build_config(args, extra_profiles: Iterable[str] = (), *, pinned: Mapping[str, Any] | None = None
+                 ) -> dict[str, Any]:
     """The configuration for a command: profiles (plus ``extra_profiles``) and the
     global flags (--model, --no-web, --runs-dir, --no-clarify, --skip-preflight,
     --allow-missing-data). ``config['profiles']``
-    records the profile list for pinning."""
+    records the profile list for pinning.
+
+    With ``pinned`` (a resumed run's pinned config) and no explicit
+    ``--profile``, the run's profiles, provider, models and orchestration /
+    web / limit settings are the base, so a resumed session continues on the
+    settings it was made with; explicit flags still apply on top."""
     profiles = _profiles(args, extra_profiles)
+    base: dict[str, Any] = {}
+    if pinned and not profiles:
+        profiles = [str(p) for p in (pinned.get("profiles") or [])]
+        for key in RESUME_KEYS:
+            if isinstance(pinned.get(key), Mapping) and pinned[key]:
+                base[key] = dict(pinned[key])
+        prov = pinned.get("provider")
+        pname = prov.get("name") if isinstance(prov, Mapping) else prov if isinstance(prov, str) else None
+        if pname:
+            base["provider"] = {"name": pname}  # options were redacted when pinned; profiles restore them
     overrides: dict[str, Any] = {}
     if getattr(args, "no_web", False):
         overrides["web"] = {"enabled": False}
@@ -120,7 +140,7 @@ def build_config(args, extra_profiles: Iterable[str] = ()) -> dict[str, Any]:
         pre["allow_missing_data"] = True
     if pre:
         overrides["preflight"] = pre
-    cfg = load_config(profiles, overrides)
+    cfg = load_config(profiles, deep_merge(base, overrides) if base else overrides)
     model = getattr(args, "model", None)
     if model:
         m = resolve_model(cfg, model)
@@ -368,6 +388,11 @@ class _Printer:
             from rich.panel import Panel
             self._stop_status()
             c.print(Panel(str(d.get("text") or ""), title="Chief of Staff briefing", border_style="blue"))
+        elif kind == "draft_superseded":
+            self._flush_text()
+            lead, self.blank = ("" if self.blank else "\n"), False
+            why = {"plan": "plan requested", "review": "review requested"}.get(str(d.get("reason")), "")
+            c.print(f"{lead}[dim]\\[draft, superseded{': ' + _e(why) if why else ''}][/]", highlight=False)
         elif kind == "review_enforced":
             self._flush_text()
             agents = ", ".join(d.get("agents") or [])
@@ -414,6 +439,12 @@ async def _start_session(args, config, on_event, *, interface: str, console=None
     resume = None
     if getattr(args, "resume", None):
         resume = _resolve_run(args.resume, config)
+        if not _profiles(args):
+            # Continue on the run's pinned profiles/models/policy, not today's defaults.
+            from .replay import load_pinned
+            pinned = load_pinned(resume)
+            if pinned:
+                config = build_config(args, pinned=pinned)
     session = await open_session(config, on_event=on_event, start_mcp=not getattr(args, "no_mcp", False),
                                  interface=interface, profiles=tuple(config.get("profiles") or ()), resume=resume)
     if banner and console is not None:

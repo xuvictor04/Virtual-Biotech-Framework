@@ -276,18 +276,55 @@ async def test_concurrently_finishing_reviewer_is_not_counted(config):
     await session.close()
 
 
-async def test_question_ending_reply_is_not_nudged(config):
+async def test_question_ending_synthesis_after_specialists_is_still_reviewed(config):
+    # The upstream CSO prompt ends every substantive answer with "Would you like me to
+    # pursue any of these?": that must not switch the review policy off (F1).
     config["orchestration"]["review_policy"] = "always"
     provider = ScriptedProvider.from_rules({
         "cso": [reply(call("Task", subagent_type="genomics-analyst", description="g", prompt="x")),
-                reply("Should I also look at single-cell expression?")],
+                reply("EGFR is supported.\n\nSuggested Next Steps: ... Would you like me to pursue any of these?"),
+                reply(call("Task", subagent_type="scientific-reviewer", description="r", prompt="review")),
+                reply("EGFR is supported (reviewed). Would you like me to pursue any of these?")],
         "genomics-analyst": [reply("done")],
+        "scientific-reviewer": [reply("APPROVED")],
     })
     session = await open_session(config, provider=provider, start_mcp=False)
     out = await session.ask("q")
+    assert out.endswith("pursue any of these?")
+    assert _types(session).count("review_enforced") == 1
+    rec = _turn(session)
+    assert rec["reviewed"] is True and rec["review_rounds"] == 1 and rec["review_exempt"] is None
+    await session.close()
+
+
+async def test_question_ending_plan_check_runs_after_specialists(config):
+    config["orchestration"].update(enforce_review=False, review_policy="never", enforce_plan=True)
+    provider = ScriptedProvider.from_rules({
+        "cso": [reply(call("Task", subagent_type="genomics-analyst", description="g", prompt="x"),
+                      call("Task", subagent_type="single-cell-analyst", description="s", prompt="y")),
+                reply("Synthesis. Would you like me to pursue any of these?"),
+                reply(call("mcp__provenance__write_plan", goal="EGFR", steps=[
+                    {"id": "s1", "agent": "genomics-analyst", "task": "genetics"}])),
+                reply("Synthesis restated. Would you like me to pursue any of these?")],
+        "genomics-analyst": [reply("g")], "single-cell-analyst": [reply("s")],
+    })
+    session = await open_session(config, provider=provider, start_mcp=False)
+    await session.ask("q")
+    assert "plan_nudge" in _types(session)
+    assert _turn(session)["plan_nudged"] is True
+    await session.close()
+
+
+async def test_clarification_without_specialists_is_exempt_and_recorded(config):
+    config["orchestration"]["review_policy"] = "always"
+    provider = ScriptedProvider.from_rules({"cso": [reply("Which lung cancer subtype do you mean?")]})
+    session = await open_session(config, provider=provider, start_mcp=False)
+    out = await session.ask("q")
     assert out.endswith("?")
-    assert "review_enforced" not in _types(session)
-    assert _turn(session)["reviewed"] is False
+    types = _types(session)
+    assert "review_enforced" not in types and "review_exempt" in types
+    rec = _turn(session)
+    assert rec["reviewed"] is False and rec["review_exempt"] == "awaiting_user"
     await session.close()
 
 
@@ -403,17 +440,57 @@ async def test_plan_nudge_fires_for_multi_specialist_turn_without_plan(config):
     provider = ScriptedProvider.from_rules({
         "cso": [reply(call("Task", subagent_type="genomics-analyst", description="g", prompt="x"),
                       call("Task", subagent_type="single-cell-analyst", description="s", prompt="y")),
-                reply("Synthesis."), after_nudge, reply("Final.")],
+                reply("Synthesis: EGFR [[claim:C1]]."), after_nudge, reply("Final.")],
         "genomics-analyst": [reply("g done")], "single-cell-analyst": [reply("s done")],
     })
-    session = await open_session(config, provider=provider, start_mcp=False)
+    events = []
+    session = await open_session(config, provider=provider, start_mcp=False,
+                                 on_event=lambda k, d=None, **kw: events.append(k))
     out = await session.ask("q")
-    assert out == "Final."
+    # The CSO acknowledged the plan without restating: its synthesis stays in the reply.
+    assert out == "Synthesis: EGFR [[claim:C1]].\n\nFinal."
+    assert "restate" in seen["nudge"] and "draft_superseded" in events
     assert "mcp__provenance__write_plan" in seen["nudge"]
     assert "deviations are recorded, not forbidden" in seen["nudge"]
     assert "plan_nudge" in _types(session)
     rec = _turn(session)
     assert rec["plan_nudged"] is True and rec["plan_written"] is True and rec["plan_missing"] is False
+    assert rec["drafts"] == ["Synthesis: EGFR [[claim:C1]]."] and rec["draft_kept"] is True
+    assert "Synthesis: EGFR [[claim:C1]]." in (session.run.dir / "report" / "FINAL_REPORT.md").read_text()
+    await session.close()
+
+
+async def test_plan_nudge_with_short_ack_keeps_unanchored_synthesis(config):
+    config["orchestration"].update(enforce_review=False, review_policy="never", enforce_plan=True)
+    provider = ScriptedProvider.from_rules({
+        "cso": [reply(call("Task", subagent_type="genomics-analyst", description="g", prompt="x"),
+                      call("Task", subagent_type="single-cell-analyst", description="s", prompt="y")),
+                reply("A long synthesis of genetics and expression evidence for EGFR."),
+                reply(call("mcp__provenance__write_plan", goal="EGFR", steps=[
+                    {"id": "s1", "agent": "genomics-analyst", "task": "genetics"}])),
+                reply("Plan recorded.")],
+        "genomics-analyst": [reply("g")], "single-cell-analyst": [reply("s")],
+    })
+    session = await open_session(config, provider=provider, start_mcp=False)
+    out = await session.ask("q")
+    assert out == "A long synthesis of genetics and expression evidence for EGFR.\n\nPlan recorded."
+    await session.close()
+
+
+async def test_restated_synthesis_after_nudge_is_not_duplicated(config):
+    config["orchestration"].update(review_policy="always")
+    provider = ScriptedProvider.from_rules({
+        "cso": [reply(call("Task", subagent_type="genomics-analyst", description="g", prompt="x")),
+                reply("Draft [[claim:C1]]."),
+                reply(call("Task", subagent_type="scientific-reviewer", description="r", prompt="review")),
+                reply("Reviewed synthesis [[claim:C1]].")],
+        "genomics-analyst": [reply("g")], "scientific-reviewer": [reply("APPROVED")],
+    })
+    session = await open_session(config, provider=provider, start_mcp=False)
+    out = await session.ask("q")
+    assert out == "Reviewed synthesis [[claim:C1]]."
+    rec = _turn(session)
+    assert rec["drafts"] == ["Draft [[claim:C1]]."] and rec["draft_kept"] is False
     await session.close()
 
 
@@ -446,3 +523,44 @@ async def test_turn_record_fields_state_file_and_pinned_config(config):
     assert cfg["orchestration"]["review_policy"] == "research" and cfg["interface"] == "chat"
     assert manifest["config"]["prompt_hashes"] == cfg["prompt_hashes"]
     assert (session.run.dir / "inputs" / "environment.txt").read_text().strip()
+
+
+def _readiness_config(config, monkeypatch, problem):
+    """A non-mock provider whose own check_credentials hook decides (F2)."""
+    import vbt.preflight as pf
+    import vbt.providers as providers
+
+    config["provider"] = {"name": "fakeprov", "options": {"api_key": "from-profile"}}
+    config["orchestration"]["require_reference_data"] = True
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(pf, "check_reference_data", lambda cfg: [])
+    monkeypatch.setattr(pf, "check_mcp_commands", lambda cfg: [])
+    built = {}
+
+    def create_provider(name, **opts):
+        p = ScriptedProvider.from_rules({"cso": [reply("ok")]})
+        p.name = name
+        p.check_credentials = lambda: problem
+        built["opts"] = opts
+        built["provider"] = p
+        return p
+
+    monkeypatch.setattr(providers, "create_provider", create_provider)
+    return built
+
+
+async def test_session_preflight_uses_the_configured_providers_credential_check(config, monkeypatch):
+    built = _readiness_config(config, monkeypatch, None)
+    session = await open_session(config, start_mcp=False)  # provider=None, as the CLI does
+    assert built["opts"] == {"api_key": "from-profile"}
+    assert session.rt.provider is built["provider"]
+    await session.close()
+
+
+async def test_session_preflight_reports_the_providers_own_problem(config, monkeypatch):
+    from vbt.preflight import DataReadinessError
+
+    _readiness_config(config, monkeypatch, "token expired")
+    with pytest.raises(DataReadinessError, match="token expired"):
+        await open_session(config, start_mcp=False)

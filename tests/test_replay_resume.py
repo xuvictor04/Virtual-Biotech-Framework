@@ -115,3 +115,46 @@ def test_cli_replay_command(config, mock_provider, capsys, tmp_path):
     out = capsys.readouterr().out
     assert f"Replay of {src.name}" in out and "replay_diff.json" in out and "comparison, not a reproduction" in out
     assert cli.main(["--profile", "mock", "--runs-dir", str(src.parent), "replay", "no-such-run"]) == 2
+
+
+async def test_resume_with_different_models_warns(config):
+    config["orchestration"]["enforce_review"] = False
+    config["profiles"] = ["mock"]
+    p1 = ScriptedProvider.from_rules({"cso": [reply("one")]})
+    s1 = await open_session(config, provider=p1, start_mcp=False)
+    await s1.ask("q")
+    await s1.close()
+    import copy
+    cfg2 = copy.deepcopy(config)
+    cfg2["profiles"] = []
+    cfg2["models"]["orchestrator"] = {**cfg2["models"]["orchestrator"], "model": "claude-other-model"}
+    warnings = []
+
+    def on_event(kind, d=None, **kw):
+        if kind == "warning":
+            warnings.append(dict(d or {}, **kw)["message"])
+
+    p2 = ScriptedProvider.from_rules({"cso": [reply("two")]})
+    s2 = await open_session(cfg2, provider=p2, start_mcp=False, resume=s1.run.dir, on_event=on_event)
+    await s2.close()
+    joined = "\n".join(warnings)
+    assert "orchestrator model changed" in joined and "claude-other-model" in joined
+    assert "profiles ['mock']" in joined
+
+
+def test_resume_config_defaults_to_pinned_profiles_and_models():
+    pinned = {"profiles": ["mock"], "provider": {"name": "mock"},
+              "models": {"orchestrator": {"model": "pinned-cso-model"}},
+              "orchestration": {"review_policy": "always", "enforce_plan": True}}
+    args = cli.build_parser().parse_args(["chat", "--resume", "x"])
+    cfg = cli.build_config(args, pinned=pinned)
+    assert cfg["profiles"] == ["mock"] and cfg["provider"]["name"] == "mock"
+    assert cfg["models"]["orchestrator"]["model"] == "pinned-cso-model"
+    assert cfg["orchestration"]["review_policy"] == "always" and cfg["orchestration"]["enforce_plan"] is True
+    # explicit flags still win
+    args = cli.build_parser().parse_args(["chat", "--resume", "x", "--no-clarify"])
+    assert cli.build_config(args, pinned=pinned)["orchestration"]["strategic_orientation"] is False
+    # an explicit --profile replaces the pinned settings
+    args = cli.build_parser().parse_args(["--profile", "mock", "chat", "--resume", "x"])
+    cfg = cli.build_config(args, pinned=pinned)
+    assert cfg["models"]["orchestrator"]["model"] != "pinned-cso-model"
