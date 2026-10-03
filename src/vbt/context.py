@@ -6,7 +6,8 @@ model's context window. :class:`ContextManager` keeps them inside it:
 
 1. **Tool-result clearing** (above ``soft_ratio`` of the window): the content of
    tool results older than the last ``keep_recent_calls`` model calls is
-   persisted to ``spill_dir`` (unless the harness already spilled it) and
+   persisted to ``spill_dir`` (unless the runtime's truncation note already names
+   its spill file under ``logs/tool_outputs``) and
    replaced by a stub naming the file, so the agent can re-read it on demand
    with QueryToolOutput or Read.
 2. **Summarisation** (above ``hard_ratio``, or still above ``soft_ratio`` after
@@ -72,7 +73,24 @@ SUMMARIZER_AGENT = "context-compactor"
 
 CHARS_PER_TOKEN = 4          # rough estimate used only when the provider reported no usage
 IMAGE_TOKENS = 1600          # a ~1568 px image
-_SPILLED_RE = re.compile(r"(?:[Ff]ull output (?:saved to|at)|[Ss]aved to)\s+(\S+?)(?=[;,\]\s]|$)")
+# The runtime's own truncation note (vbt.tools.base.truncation_note), appended as
+# the last thing in a truncated tool output. Only this exact phrase, naming a file
+# under ``logs/tool_outputs``, counts as "already spilled": any other "saved to
+# <file>" in a tool's output (a figure, a CSV) is the tool talking, not the harness.
+_SPILLED_RE = re.compile(r"\[Output truncated: [\d,]+ chars(?: \([^()\n]*\))?\. Full output saved to (\S+?); "
+                         r"[^\n]*\]\s*\Z")
+_SPILL_DIR_PARTS = ("logs", "tool_outputs")
+
+
+def _harness_spill_path(text: str) -> Path | None:
+    """The runtime's spill file named by ``text``'s truncation note, if any."""
+    m = _SPILLED_RE.search(text)
+    if not m:
+        return None
+    cand = Path(m.group(1))
+    parts = cand.parts
+    under = any(parts[i:i + 2] == _SPILL_DIR_PARTS for i in range(len(parts) - 2))
+    return cand if under and cand.is_file() else None
 
 SUMMARIZER_SYSTEM = """\
 You are the context-compaction step of a multi-agent drug-discovery research harness. \
@@ -241,6 +259,26 @@ class _Stats:
     notes: list[str] = field(default_factory=list)
 
 
+def _attach_spend(exc: BaseException, st: _Stats) -> None:
+    """Record on ``exc`` what a failed compaction already spent (the summariser
+    call), so the caller can charge it: see ``compaction_spend``."""
+    if st.cost or st.usage.input_tokens or st.usage.output_tokens:
+        try:
+            exc.compaction_usage = st.usage  # type: ignore[attr-defined]
+            exc.compaction_cost_usd = st.cost  # type: ignore[attr-defined]
+        except (AttributeError, TypeError):  # exceptions with __slots__
+            log.warning("compaction failed after spending $%.4f that cannot be attached to %s",
+                        st.cost, type(exc).__name__)
+
+
+def compaction_spend(exc: BaseException) -> tuple[Usage, float] | None:
+    """(usage, cost) a failed compaction spent before raising ``exc``, if any."""
+    usage = getattr(exc, "compaction_usage", None)
+    if usage is None:
+        return None
+    return usage, float(getattr(exc, "compaction_cost_usd", 0.0) or 0.0)
+
+
 # ---------------------------------------------------------------------------
 # Manager
 # ---------------------------------------------------------------------------
@@ -399,8 +437,9 @@ class ContextManager:
                 raise ProviderError("context compaction produced an invalid history: " + "; ".join(problems[:3]))
             if problems:
                 st.notes.append("history had tool-pairing problems before compaction: " + "; ".join(pre_problems[:2]))
-        except BaseException:
+        except BaseException as exc:
             messages[:] = snapshot
+            _attach_spend(exc, st)
             raise
 
         after = max(0, tokens_before - st.removed_tokens)
@@ -463,12 +502,7 @@ class ContextManager:
             p.text for p in content if isinstance(p, TextBlock))
         parts = [] if isinstance(content, str) else [p for p in content if isinstance(p, (ImagePart, DocumentPart))]
         n_chars = len(text)
-        path: Path | None = None
-        m = _SPILLED_RE.search(text)
-        if m:
-            cand = Path(m.group(1).rstrip(".;,"))
-            if cand.is_file():
-                path = cand  # the harness already saved the full output
+        path = _harness_spill_path(text)  # the runtime already saved the full output
         root = None
         if path is None:
             root = self._spill_root()
@@ -657,4 +691,5 @@ class ContextManager:
 
 
 __all__ = ["CLEARED_PREFIX", "CompactionResult", "ContextManager", "ContextPolicy", "SUMMARIZER_AGENT",
+           "compaction_spend",
            "SUMMARY_HEADER", "content_chars", "estimate_tokens"]

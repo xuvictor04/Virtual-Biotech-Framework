@@ -52,7 +52,7 @@ from . import budget, failures
 from .agents import AgentDefinition, load_roster, system_prompt_parts
 from .budget import BudgetExceeded, CostScope, InvocationCost, open_scope  # noqa: F401  (re-exported)
 from .config import resolve_path
-from .context import ContextManager, ContextPolicy, CompactionResult
+from .context import ContextManager, ContextPolicy, CompactionResult, compaction_spend
 from .events import EventBus, EventCallback, preview
 from .providers import create_provider
 from .providers.base import (
@@ -890,7 +890,10 @@ class Runtime:
         try:
             res = await self.context.maybe_compact(st.messages, last_usage=st.last_usage, settings=st.settings,
                                                    system=st.system, agent=st.agent.name)
-        except Exception as exc:  # noqa: BLE001 - compaction must never kill the agent
+        except BaseException as exc:
+            self._charge_failed_compaction(st, exc)
+            if not isinstance(exc, Exception):
+                raise
             log.warning("context compaction failed for %s: %s", st.agent.name, exc)
             self._trace("compaction_failed", agent=st.agent.name, error=f"{type(exc).__name__}: {exc}"[:500])
             return
@@ -901,12 +904,26 @@ class Runtime:
         try:
             res = await self.context.recover_overflow(st.messages, settings=st.settings, system=st.system,
                                                       agent=st.agent.name)
-        except Exception as exc:  # noqa: BLE001 - ContextOverflowError: nothing left to compact
+        except BaseException as exc:  # ContextOverflowError: nothing left to compact
+            self._charge_failed_compaction(st, exc)
+            if not isinstance(exc, Exception):
+                raise
             self._trace("context_overflow_unrecoverable", agent=st.agent.name,
                         error=f"{type(exc).__name__}: {exc}"[:500])
             return False
         self._record_compaction(st, res, overflow=True)
         return True
+
+    def _charge_failed_compaction(self, st: _Loop, exc: BaseException) -> None:
+        """Charge what a compaction spent (its summariser call) before failing:
+        the spend of failed attempts is never lost."""
+        spent = compaction_spend(exc)
+        if spent is None:
+            return
+        usage, usd = spent
+        self._charge(st.agent.name, usage, usd, label="context_compaction")
+        self._trace("compaction_failed_spend", agent=st.agent.name, usage=usage.as_dict(),
+                    cost_usd=round(usd, 6))
 
     def _record_compaction(self, st: _Loop, res: CompactionResult, *, overflow: bool) -> None:
         st.result.compactions += 1

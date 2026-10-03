@@ -750,6 +750,38 @@ async def test_real_context_manager_compacts_charges_and_traces(config):
     await session.close()
 
 
+async def test_failed_compaction_still_charges_the_summariser(config, monkeypatch):
+    import vbt.context as ctxmod
+    from vbt.providers.base import Usage
+
+    def usage(agent, messages, msg):
+        if agent == "context-compactor":
+            return Usage(input_tokens=1_000, output_tokens=100)
+        return Usage(input_tokens=180_000, output_tokens=50)
+
+    real = ctxmod.validate_tool_pairing
+
+    def flaky(messages, **kw):  # any summarised history is reported broken
+        if any(ctxmod.SUMMARY_HEADER in m.text for m in messages[:1]):
+            return ["invented pairing problem"]
+        return real(messages, **kw)
+
+    monkeypatch.setattr(ctxmod, "validate_tool_pairing", flaky)
+    provider = ScriptedProvider.from_rules({
+        "probe": [reply(call("TodoWrite", todos=[])), reply(call("TodoWrite", todos=[])),
+                  reply(call("TodoWrite", todos=[])), reply("done")],
+        "context-compactor": [reply("SUMMARY: x")] * 5,
+    }, usage_fn=usage)
+    session = await _session(config, provider)
+    rt = session.rt
+    res = await rt.run_agent(_probe(tools=["TodoWrite"]), "keep working", depth=1, history=[])
+    summariser_calls = sum(1 for c in provider.calls if c["agent"] == "context-compactor")
+    assert res.status == "completed" and res.compactions == 0 and summariser_calls >= 1
+    assert _trace(rt, "compaction_failed") and len(_trace(rt, "compaction_failed_spend")) == summariser_calls
+    assert rt.run.cost.calls_by_agent["probe"] == res.model_calls + summariser_calls
+    await session.close()
+
+
 async def test_tool_context_trace_carries_the_invocation_ids(config):
     def tracer(ctx, a):
         ctx.trace("custom_tool_event", detail="x")

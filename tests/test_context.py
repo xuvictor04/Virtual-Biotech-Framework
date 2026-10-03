@@ -27,7 +27,7 @@ from vbt.providers.base import (
     Usage,
     validate_tool_pairing,
 )
-from vbt.providers.mock import ScriptedProvider, fail, reply
+from vbt.providers.mock import ScriptedProvider, fail, reply, turn
 
 WINDOW = 100_000
 TASK = "TASK: Evaluate EGFR as a target in lung adenocarcinoma."
@@ -138,17 +138,67 @@ async def test_history_bound_thinking_is_stripped_after_the_edit(tmp_path):
 
 
 async def test_already_spilled_output_is_referenced_not_rewritten(tmp_path):
-    full = tmp_path / "work" / "_tool_outputs" / "t0.txt"
+    from vbt.tools.base import truncation_note
+    full = tmp_path / "run" / "logs" / "tool_outputs" / "t0.txt"
     full.parent.mkdir(parents=True)
     full.write_text("FULL OUTPUT " * 10_000)
     msgs = history()
-    msgs[2] = Message("user", [ToolResult("t0", "partial " * 1000 + f"\n\n[Output truncated: 120,000 chars. Full "
-                                                                  f"output saved to {full}; Read it with offset/limit.]")])
+    msgs[2] = Message("user", [ToolResult("t0", "partial " * 1000 + "\n\n"
+                                          + truncation_note(120_000, str(full), structured=False, has_read=True))])
     await manager(provider(), tmp_path).maybe_compact(msgs, last_usage=Usage(input_tokens=72_000),
                                                       settings=settings(), system="s", agent="a")
     stub = msgs[2].content[0].content
     assert stub.startswith(CLEARED_PREFIX) and f"full output at {full};" in stub
     assert not (tmp_path / "spill" / "t0.txt").exists()
+
+
+@pytest.mark.parametrize("mention", [
+    "Figure saved to {p}",
+    "Full output saved to {p}; see there.",  # not the runtime's note: no truncation header, not at the end
+    "[Output truncated: 9,000 chars (middle omitted). Full output saved to {p}; use QueryToolOutput.]",  # wrong dir
+])
+async def test_saved_to_mention_in_tool_output_is_not_taken_for_a_spill(tmp_path, mention):
+    """A tool's own 'saved to <existing file>' must not stop the cleared text being spilled."""
+    plot = tmp_path / "work" / "x" / "plot.png"
+    plot.parent.mkdir(parents=True)
+    plot.write_bytes(b"\x89PNG fake")
+    text = mention.format(p=plot) + "\n" + "mean=0.82 sd=0.11 n=412\n" * 400
+    if mention.startswith("[Output"):
+        text = "stats " * 1600 + "\n\n" + mention.format(p=plot)
+    msgs = history()
+    msgs[2] = Message("user", [ToolResult("t0", text)])
+    await manager(provider(), tmp_path).maybe_compact(msgs, last_usage=Usage(input_tokens=72_000),
+                                                      settings=settings(), system="s", agent="a")
+    stub = msgs[2].content[0].content
+    spilled = tmp_path / "spill" / "t0.txt"
+    assert stub.startswith(CLEARED_PREFIX) and f"full output at {spilled};" in stub
+    assert str(plot) not in stub.split("full output at")[1]
+    assert spilled.read_text() == text
+
+
+async def test_failed_compaction_carries_the_summariser_spend(tmp_path, monkeypatch):
+    import vbt.context as ctxmod
+    from vbt.context import compaction_spend
+    calls = {"n": 0}
+    real = ctxmod.validate_tool_pairing
+
+    def flaky(messages, **kw):
+        calls["n"] += 1
+        return real(messages, **kw) if calls["n"] == 1 else ["tool_result t9 has no matching call"]
+
+    monkeypatch.setattr(ctxmod, "validate_tool_pairing", flaky)
+    p = ScriptedProvider.from_rules({SUMMARIZER_AGENT: [turn("SUMMARY: x", usage=Usage(input_tokens=900, output_tokens=90),
+                                                                cost_usd=0.02)]},
+                                    context_window=WINDOW)
+    msgs = history()
+    before = list(msgs)
+    with pytest.raises(ProviderError) as ei:
+        await manager(p, tmp_path).maybe_compact(msgs, last_usage=Usage(input_tokens=95_000),
+                                                 settings=settings(), system="s", agent="a")
+    assert msgs == before
+    spent = compaction_spend(ei.value)
+    assert spent is not None and spent[0].input_tokens == 900 and spent[0].output_tokens == 90
+    assert spent[1] == pytest.approx(0.02)
 
 
 async def test_images_in_old_results_are_spilled_as_files(tmp_path):
