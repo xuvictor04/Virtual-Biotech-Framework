@@ -138,8 +138,12 @@ def drift_warnings(pinned: Mapping[str, Any], config: Mapping[str, Any]) -> list
 
 
 def _replay_config(pinned: Mapping[str, Any], *, model: str | None, runs_dir: str | Path | None,
-                   profiles: list[str] | None = None) -> dict[str, Any]:
-    from .config import load_config
+                   profiles: list[str] | None = None,
+                   extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The pinned run's configuration; ``profiles`` replaces the pinned profile
+    list and ``extra`` (CLI flag overrides such as ``preflight`` or ``web``) is
+    merged on top of the pinned sections."""
+    from .config import deep_merge, load_config
 
     profs = list(profiles if profiles is not None else (pinned.get("profiles") or []))
     overrides: dict[str, Any] = {}
@@ -152,6 +156,8 @@ def _replay_config(pinned: Mapping[str, Any], *, model: str | None, runs_dir: st
         overrides["provider"] = {"name": pname}  # options were redacted when pinned; profiles restore them
     if runs_dir is not None:
         overrides["paths"] = {"runs_dir": str(runs_dir)}
+    if extra:
+        overrides = deep_merge(overrides, dict(extra))
     config = load_config(profs, overrides)
     if model:
         from .cli import resolve_model
@@ -166,9 +172,13 @@ def _replay_config(pinned: Mapping[str, Any], *, model: str | None, runs_dir: st
 async def replay_run(run_dir: str | Path, *, model: str | None = None, quiet: bool = False, provider=None,
                      on_event: Callable[..., Any] | None = None, runs_dir: str | Path | None = None,
                      start_mcp: bool = True, profiles: list[str] | None = None,
-                     config: dict[str, Any] | None = None, echo: Callable[[str], None] | None = None
+                     config: dict[str, Any] | None = None, echo: Callable[[str], None] | None = None,
+                     overrides: Mapping[str, Any] | None = None
                      ) -> tuple[Path, dict[str, Any]]:
     """Replay ``run_dir``'s turns into a new run (next to it unless ``runs_dir``).
+
+    ``profiles`` replaces the pinned profile list; ``overrides`` (e.g. the CLI's
+    ``preflight`` / ``web`` flags) is merged over the pinned settings.
 
     Returns ``(new_run_dir, diff)``; the diff is also written to
     ``<new run>/replay_diff.json``. ``quiet`` suppresses progress lines.
@@ -182,7 +192,8 @@ async def replay_run(run_dir: str | Path, *, model: str | None = None, quiet: bo
     if not turns:
         raise ValueError(f"no turns recorded in {src} (inputs/query.txt and session_report.json are empty)")
     if config is None:
-        config = _replay_config(pinned, model=model, runs_dir=runs_dir or src.parent, profiles=profiles)
+        config = _replay_config(pinned, model=model, runs_dir=runs_dir or src.parent, profiles=profiles,
+                                extra=overrides)
     warnings = drift_warnings(pinned, config)
     for w in warnings:
         say(f"warning: {w}")

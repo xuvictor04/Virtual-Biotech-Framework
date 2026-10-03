@@ -158,3 +158,47 @@ def test_resume_config_defaults_to_pinned_profiles_and_models():
     args = cli.build_parser().parse_args(["--profile", "mock", "chat", "--resume", "x"])
     cfg = cli.build_config(args, pinned=pinned)
     assert cfg["models"]["orchestrator"]["model"] != "pinned-cso-model"
+
+
+def test_replay_config_merges_cli_overrides_over_pinned():
+    from vbt.replay import _replay_config
+
+    pinned = {"profiles": ["mock"], "provider": {"name": "mock"},
+              "web": {"enabled": True}, "models": {"orchestrator": {"model": "pinned-cso-model"}}}
+    cfg = _replay_config(pinned, model=None, runs_dir=None,
+                         extra={"preflight": {"skip": True, "allow_missing_data": True}, "web": {"enabled": False}})
+    assert cfg["preflight"]["skip"] is True and cfg["preflight"]["allow_missing_data"] is True
+    assert cfg["web"]["enabled"] is False
+    assert cfg["models"]["orchestrator"]["model"] == "pinned-cso-model"  # pinned settings kept
+
+
+def test_cli_replay_honours_global_flags(config, mock_provider, monkeypatch, tmp_path):
+    """--skip-preflight / --allow-missing-data / --no-web / --profile reach the replay config (F3)."""
+    import asyncio
+
+    from vbt import replay as replay_mod
+
+    src = asyncio.run(_two_turn_run(config))
+    seen = {}
+    real = replay_mod._replay_config
+
+    def spy(pinned, **kw):
+        seen["profiles"] = kw.get("profiles")
+        cfg = real(pinned, **kw)
+        seen["cfg"] = cfg
+        return cfg
+
+    monkeypatch.setattr(replay_mod, "_replay_config", spy)
+    mock_provider.use_each(lambda: {"cso": [reply("r1"), reply("r2")]})
+    code = cli.main(["--profile", "mock", "--runs-dir", str(src.parent), "--no-mcp", "--skip-preflight",
+                     "--allow-missing-data", "--no-web", "replay", src.name, "--quiet"])
+    assert code == 0
+    cfg = seen["cfg"]
+    assert cfg["preflight"]["skip"] is True and cfg["preflight"]["allow_missing_data"] is True
+    assert cfg["web"]["enabled"] is False
+    assert seen["profiles"] == ["mock"]
+    # without the flags the pinned/profile defaults stand
+    mock_provider.use_each(lambda: {"cso": [reply("r1"), reply("r2")]})
+    assert cli.main(["--profile", "mock", "--runs-dir", str(src.parent), "--no-mcp",
+                     "replay", src.name, "--quiet"]) == 0
+    assert seen["cfg"]["preflight"].get("skip") is not True

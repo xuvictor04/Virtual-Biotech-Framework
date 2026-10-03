@@ -104,6 +104,27 @@ def _profiles(args, extra_profiles: Iterable[str] = ()) -> list[str]:
 RESUME_KEYS = ("models", "web", "orchestration", "limits", "agent_overrides", "model_aliases")
 
 
+def flag_overrides(args) -> dict[str, Any]:
+    """Config overrides from the global flags (--no-web, --runs-dir, --no-clarify,
+    --skip-preflight, --allow-missing-data); --model and --profile are handled
+    by the callers."""
+    overrides: dict[str, Any] = {}
+    if getattr(args, "no_web", False):
+        overrides["web"] = {"enabled": False}
+    if getattr(args, "runs_dir", None):
+        overrides["paths"] = {"runs_dir": args.runs_dir}
+    if getattr(args, "no_clarify", False):
+        overrides["orchestration"] = {"strategic_orientation": False}
+    pre: dict[str, Any] = {}
+    if getattr(args, "skip_preflight", False):
+        pre["skip"] = True
+    if getattr(args, "allow_missing_data", False):
+        pre["allow_missing_data"] = True
+    if pre:
+        overrides["preflight"] = pre
+    return overrides
+
+
 def build_config(args, extra_profiles: Iterable[str] = (), *, pinned: Mapping[str, Any] | None = None
                  ) -> dict[str, Any]:
     """The configuration for a command: profiles (plus ``extra_profiles``) and the
@@ -126,20 +147,7 @@ def build_config(args, extra_profiles: Iterable[str] = (), *, pinned: Mapping[st
         pname = prov.get("name") if isinstance(prov, Mapping) else prov if isinstance(prov, str) else None
         if pname:
             base["provider"] = {"name": pname}  # options were redacted when pinned; profiles restore them
-    overrides: dict[str, Any] = {}
-    if getattr(args, "no_web", False):
-        overrides["web"] = {"enabled": False}
-    if getattr(args, "runs_dir", None):
-        overrides["paths"] = {"runs_dir": args.runs_dir}
-    if getattr(args, "no_clarify", False):
-        overrides["orchestration"] = {"strategic_orientation": False}
-    pre: dict[str, Any] = {}
-    if getattr(args, "skip_preflight", False):
-        pre["skip"] = True
-    if getattr(args, "allow_missing_data", False):
-        pre["allow_missing_data"] = True
-    if pre:
-        overrides["preflight"] = pre
+    overrides = flag_overrides(args)
     cfg = load_config(profiles, deep_merge(base, overrides) if base else overrides)
     model = getattr(args, "model", None)
     if model:
@@ -927,9 +935,15 @@ async def cmd_replay(args, config: dict[str, Any]) -> int:
     on_event = None
     if not args.quiet:
         _, on_event = _printer(args.verbose, show_reasoning=getattr(args, "show_reasoning", False))
+    # The replay runs on the recorded run's pinned settings; the global flags
+    # (--profile, --no-web, --skip-preflight, --allow-missing-data) apply on top.
+    overrides = flag_overrides(args)
+    overrides.pop("paths", None)  # --runs-dir is passed as runs_dir below
     new_dir, diff = await replay_run(run_dir, model=model, quiet=args.quiet, on_event=on_event,
                                      runs_dir=getattr(args, "runs_dir", None) or None,
-                                     start_mcp=not args.no_mcp)
+                                     start_mcp=not args.no_mcp,
+                                     profiles=list(getattr(args, "profile", None) or []) or None,
+                                     overrides=overrides or None)
     print(format_diff(diff))
     print(f"\nReplay run: {new_dir}\nDiff: {new_dir / DIFF_FILE}")
     return 1 if diff.get("replay_errors") else 0
