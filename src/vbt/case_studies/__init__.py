@@ -1,6 +1,8 @@
 """Case studies from the paper and their CLI entry points.
 
   vbt case1 annotate|phase1|validate|features|stats   Case study 1 (Fig. 2-3)
+  vbt case1 replicate|benchmarks                       ... against the authors' Zenodo archive
+  vbt data zenodo list|fetch|download|presets          the paper's Zenodo case-study archive
   vbt scenario list|run|score                          Case studies 2-3 (Fig. 4-5) + agentic Case 1
 """
 
@@ -70,6 +72,27 @@ def add_case_parsers(sub) -> None:
     s.add_argument("--gene-perm", type=int, default=0,
                    help="gene-label permutations: calibration null for aggregation confounding")
     s.add_argument("--out", default="results/case1/associations.csv")
+    s.add_argument("--definitions", choices=["authors", "methods"], default="authors",
+                   help="outcome definitions: the authors' archived code (default) or the Methods-text reading")
+
+    rp = cs.add_parser("replicate", help="run our Case 1 statistics on the authors' Zenodo inputs and compare "
+                       "with their result tables")
+    rp.add_argument("--zenodo-dir", help="extracted virtualbiotech_submission folder "
+                    "(default: $VBT_ZENODO_DIR or data/zenodo)")
+    rp.add_argument("--n-perm", type=int, default=1000, help="outcome permutations (0 = skip)")
+    rp.add_argument("--n-perm-beta", type=int, help="permutations for the beta (AE) models (default: --n-perm)")
+    rp.add_argument("--gene-perm", type=int, default=200, help="gene-label permutations (harness check; 0 = skip)")
+    rp.add_argument("--no-mixed", action="store_true", help="skip the GLMMs (slow without R)")
+    rp.add_argument("--no-expr", action="store_true", help="skip the 2,604 cell-type expression models")
+    rp.add_argument("--out", default="results/case1_replication")
+
+    bp = cs.add_parser("benchmarks", help="table S2: competitor annotation agreement (Biomni, Kosmos, PantheonOS)")
+    bp.add_argument("--zenodo-dir")
+    bp.add_argument("--manual", help="manual-review ground-truth CSV (nct_id, primary, secondary, ae_binary), "
+                    "if you have it (not shipped in the archive)")
+    bp.add_argument("--tdc", help="TDC/HINT trial-outcome labels (CSV/TSV with nct_id + label)")
+    bp.add_argument("--labels", help="Virtual Biotech labels CSV (default: the archive's reconciled labels)")
+    bp.add_argument("--out", default="results/case1_replication/table_s2.csv")
     c.set_defaults(handler=_case1)
 
     sc = sub.add_parser("scenario", help="scripted case-study conversations (B7-H3, OSMR, curation)")
@@ -85,6 +108,9 @@ def add_case_parsers(sub) -> None:
     g.add_argument("name")
     g.add_argument("run_dir")
     sc.set_defaults(handler=_scenario)
+
+    from ..data.zenodo import add_data_parsers
+    add_data_parsers(sub)
 
 
 # ---------------------------------------------------------------- case 1
@@ -190,11 +216,37 @@ def _case1(args, config: dict[str, Any]) -> int:
         print(f"wrote {len(df)} genes to {args.out}")
         return 0
 
+    if args.step == "replicate":
+        from ..data.zenodo import zenodo_root
+        from .trial_outcomes.replicate import replicate_case1
+
+        root = Path(args.zenodo_dir) if args.zenodo_dir else zenodo_root(config)
+        rep = replicate_case1(root, resolve_path(args.out), n_perm=args.n_perm, n_perm_beta=args.n_perm_beta,
+                              gene_perm=args.gene_perm, mixed=not args.no_mixed, expr=not args.no_expr)
+        print(rep.summary_md)
+        print(f"\nwrote {resolve_path(args.out)}/case1_replication_comparison.csv and summary")
+        return 0
+
+    if args.step == "benchmarks":
+        from ..data.zenodo import zenodo_root
+        from .trial_outcomes.benchmarks import benchmark_agreement, format_table_s2, load_benchmarks
+
+        root = Path(args.zenodo_dir) if args.zenodo_dir else zenodo_root(config)
+        data = load_benchmarks(root, labels=args.labels, manual=args.manual, tdc=args.tdc)
+        table = benchmark_agreement(data)
+        out = resolve_path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        table.to_csv(out, index=False)
+        print(format_table_s2(table, data))
+        print(f"\nwrote {out}")
+        return 0
+
     if args.step == "stats":
         from .trial_outcomes.pipeline import run_stats
         table = run_stats(config, features_path=resolve_path(args.features), labels=args.labels,
                           genetic_pairs=args.genetic_pairs, n_perm=args.n_perm, gene_perm=args.gene_perm,
-                          out_dir=resolve_path(args.out).parent)
+                          out_dir=resolve_path(args.out).parent,
+                          definitions=getattr(args, "definitions", "authors"))
         table.to_csv(resolve_path(args.out), index=False)
         print(table.to_string(index=False))
         return 0

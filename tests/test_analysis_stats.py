@@ -178,7 +178,7 @@ def test_compare_scores_across_cohorts():
         expr = expr.drop(columns=["CNTF"], errors="ignore").drop(columns=["STC1"])
         cohorts[name] = (expr, lab)
     tab = biomarker.compare_scores_across_cohorts(cohorts)
-    assert tab.shape == (6, 11)
+    assert tab.shape == (6, 12)  # P9: + "flipped" (authors orient scores post hoc)
     assert set(tab.signature) == {"gp130_axis", "OSMR_alone", "arijs_5gene"}
     g = tab.set_index(["cohort", "signature"])
     assert g.loc[("GSE12251", "gp130_axis"), "auc"] > 0.85
@@ -424,7 +424,8 @@ def test_tf_lmg_helpers():
 def test_lmg_engine_recorded():
     df = _lmg_data()
     out = vd.lmg_shares(df, "y", ["OSMR", "IL6ST"], groups="patient")
-    assert out.attrs["r2_engine"] == "statsmodels_mixedlm_np_var" and set(out.engine) == {out.attrs["r2_engine"]}
+    # P9: ML fit + R-style var (authors' lmer(REML=FALSE)); engine label changed accordingly
+    assert out.attrs["r2_engine"] == "python_lmm_ml" and set(out.engine) == {out.attrs["r2_engine"]}
     assert set(vd.lmg_shares(df, "y", ["OSMR"]).engine) == {"ols"}
     auto = vd.lmg_shares(df, "y", ["OSMR", "IL6ST"], groups="patient", r2_engine="auto")
-    assert auto.attrs["r2_engine"] in {"statsmodels_mixedlm_np_var", "R:MuMIn"}
+    assert auto.attrs["r2_engine"] in {"python_lmm_ml", "R:MuMIn"}

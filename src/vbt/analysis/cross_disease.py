@@ -29,6 +29,7 @@ import pandas as pd
 from ._utils import bh_fdr, has_module, require
 
 __all__ = ["pseudobulk_log2cp10k", "pair_with_normals", "disease_qc", "disease_vs_normal_lmm", "census_query_plan",
+           "weighted_lmm_reml", "prepare_cross_disease", "cross_disease_tests",
            "DEFAULT_PSEUDOBULK_KEYS", "r_package_available"]
 
 #: Pseudobulk keys: a donor's disease and normal cells, tissues and datasets stay separate.
@@ -424,3 +425,222 @@ def census_query_plan(gene: str | Sequence[str] = "OSMR", diseases: Sequence[str
                               keys=plan["pseudobulk_keys"], strict_carry=False)
     pb.attrs["plan"] = plan
     return pb
+
+
+# ---------------------------------------------------------------------------
+# Weighted REML LMM (python port of lmerTest::lmer(..., weights=, REML=TRUE))
+# ---------------------------------------------------------------------------
+
+
+def weighted_lmm_reml(y: np.ndarray, X: np.ndarray, groups, weights: np.ndarray, *,
+                      contrast: int = 1) -> dict:
+    """REML fit of ``y ~ X + (1|groups)`` with observation weights (residual
+    variance σ²/w_i), as ``lmerTest::lmer(..., weights=w, REML=TRUE)``.
+
+    The REML likelihood is profiled over λ = σ²_group/σ² (closed form for β
+    and σ² given λ; per-group Woodbury algebra), λ ∈ [0, ∞) including the
+    singular boundary. ``cov(β) = σ² (Xᵀ V⁻¹ X)⁻¹``. The Satterthwaite
+    degrees of freedom of coefficient ``contrast`` use the numerical Hessian
+    of the REML deviance in (σ²_group, σ²) (lmerTest's method; at the
+    boundary only σ² is free, giving n − p). Returns ``beta``, ``se``, ``t``,
+    ``df``, ``p`` (t distribution), ``var_group``, ``var_resid``,
+    ``singular`` and the full ``coef``/``cov`` arrays.
+    """
+    from scipy import optimize
+    from scipy import stats
+
+    y = np.asarray(y, float)
+    X = np.asarray(X, float)
+    w = np.asarray(weights, float)
+    n, p = X.shape
+    codes, uniq = pd.factorize(pd.Series(np.asarray(groups)).astype(str))
+    idx = [np.where(codes == g)[0] for g in range(len(uniq))]
+
+    def pieces(lam):
+        """X'V^-1X, X'V^-1y, y'V^-1y-like pieces and log|V| with V = W^-1 + lam ZZ' (unit sigma)."""
+        XtVX = np.zeros((p, p))
+        XtVy = np.zeros(p)
+        logdet = -np.sum(np.log(w))
+        for ii in idx:
+            Xg, yg, wg = X[ii], y[ii], w[ii]
+            sw = wg.sum()
+            c = lam / (1 + lam * sw)
+            wx = (Xg * wg[:, None]).sum(0)
+            wy = (wg * yg).sum()
+            XtVX += (Xg * wg[:, None]).T @ Xg - c * np.outer(wx, wx)
+            XtVy += (Xg * wg[:, None]).T @ yg - c * wx * wy
+            logdet += np.log1p(lam * sw)
+        return XtVX, XtVy, logdet
+
+    def quad(lam, beta):
+        r = y - X @ beta
+        q = 0.0
+        for ii in idx:
+            rg, wg = r[ii], w[ii]
+            q += np.sum(wg * rg * rg) - lam / (1 + lam * wg.sum()) * np.sum(wg * rg) ** 2
+        return q
+
+    def profiled(lam):
+        XtVX, XtVy, logdet = pieces(lam)
+        beta = np.linalg.solve(XtVX, XtVy)
+        s2 = quad(lam, beta) / (n - p)
+        dev = (n - p) * np.log(2 * np.pi * s2) + logdet + np.linalg.slogdet(XtVX)[1] + (n - p)
+        return dev, beta, s2, XtVX
+
+    if len(idx) >= 2:
+        # coarse grid over log(lambda) first (the profile can be multimodal), then refine
+        grid = np.linspace(-30.0, 15.0, 91)
+        devs = [profiled(np.exp(t))[0] for t in grid]
+        j = int(np.nanargmin(devs))
+        lo, hi = grid[max(j - 1, 0)], grid[min(j + 1, len(grid) - 1)]
+        best = optimize.minimize_scalar(lambda t: profiled(np.exp(t))[0], bounds=(lo, hi),
+                                        method="bounded", options={"xatol": 1e-10})
+        lam = float(np.exp(best.x))
+        if profiled(0.0)[0] <= best.fun + 1e-9:
+            lam = 0.0
+    else:
+        lam = 0.0
+    dev, beta, s2, XtVX = profiled(lam)
+    cov = s2 * np.linalg.inv(XtVX)
+    singular = lam < 1e-8
+
+    def c_var(var_g, var_e):
+        lam_ = var_g / var_e
+        XtVX_, _, _ = pieces(lam_)
+        return var_e * np.linalg.inv(XtVX_)[contrast, contrast]
+
+    def reml_dev(var_g, var_e):
+        lam_ = var_g / var_e
+        XtVX_, XtVy_, logdet_ = pieces(lam_)
+        b = np.linalg.solve(XtVX_, XtVy_)
+        q = quad(lam_, b)
+        return (n * np.log(2 * np.pi) + n * np.log(var_e) + logdet_ + q / var_e
+                + np.linalg.slogdet(XtVX_ / var_e)[1])
+
+    var_g, var_e = lam * s2, s2
+    k = float(cov[contrast, contrast])
+    if singular:
+        df = float(n - p)
+    else:
+        th = np.array([var_g, var_e])
+        h = 1e-4 * th
+        H = np.empty((2, 2))
+        f0 = reml_dev(*th)
+        for i in range(2):
+            for j in range(i, 2):
+                def f(di, dj):
+                    t = th.copy()
+                    t[i] += di
+                    t[j] += dj
+                    return reml_dev(*t)
+                if i == j:
+                    H[i, i] = (f(h[i], 0) - 2 * f0 + f(-h[i], 0)) / h[i] ** 2
+                else:
+                    H[i, j] = H[j, i] = (f(h[i], h[j]) - f(h[i], -h[j]) - f(-h[i], h[j]) + f(-h[i], -h[j])) \
+                        / (4 * h[i] * h[j])
+        A = 2 * np.linalg.inv(H)
+        g = np.array([(c_var(var_g + h[0], var_e) - c_var(var_g - h[0], var_e)) / (2 * h[0]),
+                      (c_var(var_g, var_e + h[1]) - c_var(var_g, var_e - h[1])) / (2 * h[1])])
+        denom = float(g @ A @ g)
+        df = float(2 * k ** 2 / denom) if denom > 0 else float(n - p)
+    se = float(np.sqrt(k))
+    t = float(beta[contrast] / se)
+    return dict(beta=float(beta[contrast]), se=se, t=t, df=df, p=float(2 * stats.t.sf(abs(t), df)),
+                var_group=float(var_g), var_resid=float(var_e), singular=bool(singular), coef=beta, cov=cov)
+
+
+#: The authors' cross-disease preprocessing (osmr/code/04b_cross_disease_lmm.py).
+NON_UMI_ASSAYS = frozenset({"Smart-seq2", "Smart-seq v4", "Smart-seq3", "Smart-seq", "STRT-seq", "modified STRT-seq"})
+MAX_COUNTS_PER_CELL = 50_000
+ASSAY_GROUP_MAP = {"10x 3' v1": "10x_3p", "10x 3' v2": "10x_3p", "10x 3' v3": "10x_3p",
+                   "10x 3' transcription profiling": "10x_3p", "10x gene expression flex": "10x_3p",
+                   "10x 5' v1": "10x_5p", "10x 5' v2": "10x_5p", "10x 5' transcription profiling": "10x_5p",
+                   "10x multiome": "10x_5p"}
+
+
+def prepare_cross_disease(raw: pd.DataFrame) -> pd.DataFrame:
+    """Drop non-UMI assays and pseudobulks above 50,000 counts per cell; add
+    ``log_depth`` = log10(counts per cell, clipped at 1) and ``assay_group``
+    (10x 3' / 10x 5' / other UMI) — the authors' global preprocessing of the
+    Census pseudobulks (``data/results/cross_disease_v3/disease_*.csv``)."""
+    d = raw[~raw["assay"].isin(NON_UMI_ASSAYS)].copy()
+    cpc = d["pseudobulk_total_counts"] / d["n_cells"]
+    d = d[cpc <= MAX_COUNTS_PER_CELL].copy()
+    d["log_depth"] = np.log10((d["pseudobulk_total_counts"] / d["n_cells"]).clip(lower=1))
+    d["assay_group"] = d["assay"].map(lambda a: ASSAY_GROUP_MAP.get(a, "other_umi"))
+    return d
+
+
+def cross_disease_tests(pre: pd.DataFrame, *, value: str = "mean_log2_cp10k", min_donors_per_arm: int = 5,
+                        engine: str = "auto") -> pd.DataFrame:
+    """The authors' disease-vs-normal tests (``04b_cross_disease_lmm.py``).
+
+    Per disease: donors present in both arms are removed from the normal arm;
+    diseases with < ``min_donors_per_arm`` normal donors are skipped. Per
+    cell type (except 'other'/'unknown') and gene with >= ``min_donors_per_arm``
+    donors in each arm: ``value ~ condition + log_depth [+ assay_group] +
+    (1|dataset_id)`` weighted by ``n_cells`` (``assay_group`` only when it has
+    > 1 level), REML with Satterthwaite df — :func:`weighted_lmm_reml`
+    (``engine="python"``) or lmerTest via rpy2 (``"lmerTest"``; ``"auto"``
+    picks lmerTest when installed) — or weighted ``lm`` when a single dataset
+    contributes. One global BH (``fdr_global``) over all tests.
+    """
+    if engine == "auto":
+        engine = "lmerTest" if r_package_available("lmerTest") else "python"
+    rows = []
+    for disease, dd in pre.groupby("disease_term", sort=True):
+        dis_d = set(dd.loc[dd["condition"] == "disease", "donor_id"])
+        nor_d = set(dd.loc[dd["condition"] == "normal", "donor_id"])
+        overlap = dis_d & nor_d
+        if overlap:
+            dd = dd[~((dd["condition"] == "normal") & dd["donor_id"].isin(overlap))]
+        if dd.loc[dd["condition"] == "normal", "donor_id"].nunique() < min_donors_per_arm:
+            continue
+        for ct, cd in dd.groupby("cell_type", sort=True):
+            if ct in ("other", "unknown"):
+                continue
+            for gene, g in cd.groupby("gene", sort=True):
+                nd = g.loc[g["condition"] == "disease", "donor_id"].nunique()
+                nn = g.loc[g["condition"] == "normal", "donor_id"].nunique()
+                if nd < min_donors_per_arm or nn < min_donors_per_arm:
+                    continue
+                cond = (g["condition"] == "disease").astype(float).to_numpy()
+                cols = [np.ones(len(g)), cond, g["log_depth"].to_numpy(float)]
+                ag = g["assay_group"].astype(str)
+                levels = sorted(ag.unique())
+                if len(levels) > 1:
+                    for lv in levels[1:]:
+                        cols.append((ag == lv).astype(float).to_numpy())
+                X = np.column_stack(cols)
+                n_studies = g["dataset_id"].nunique()
+                row = dict(disease_term=disease, cell_type=ct, gene=gene, n_donors_disease=int(nd),
+                           n_donors_normal=int(nn), n_studies=int(n_studies), n_overlap_removed=len(overlap),
+                           n_assay_groups=len(levels),
+                           mean_disease=float(g.loc[g["condition"] == "disease", value].mean()),
+                           mean_normal=float(g.loc[g["condition"] == "normal", value].mean()))
+                try:
+                    if n_studies >= 2 and engine == "lmerTest":
+                        rhs = "disease + log_depth" + (" + assay_group" if len(levels) > 1 else "")
+                        gg = g.assign(disease=cond)
+                        beta, se, p, method = _fit_lmertest(gg, rhs, value, "dataset_id", "n_cells")
+                        row.update(log2FC=beta, se=se, pvalue=p, method=method)
+                    elif n_studies >= 2:
+                        r = weighted_lmm_reml(g[value].to_numpy(float), X, g["dataset_id"].to_numpy(),
+                                              g["n_cells"].to_numpy(float))
+                        row.update(log2FC=r["beta"], se=r["se"], t_value=r["t"], df_satterthwaite=r["df"],
+                                   pvalue=r["p"], var_study=r["var_group"], var_resid=r["var_resid"],
+                                   singular=r["singular"], method="python_weighted_reml")
+                    else:
+                        import statsmodels.api as sm
+
+                        fit = sm.WLS(g[value].to_numpy(float), X, weights=g["n_cells"].to_numpy(float)).fit()
+                        row.update(log2FC=float(fit.params[1]), se=float(fit.bse[1]), t_value=float(fit.tvalues[1]),
+                                   df_satterthwaite=float(fit.df_resid), pvalue=float(fit.pvalues[1]),
+                                   method="lm_fallback")
+                except Exception as exc:  # noqa: BLE001
+                    row.update(method=f"failed: {type(exc).__name__}: {exc}")
+                rows.append(row)
+    out = pd.DataFrame(rows)
+    if len(out) and "pvalue" in out:
+        out["fdr_global"] = bh_fdr(out["pvalue"].to_numpy(float))
+    return out

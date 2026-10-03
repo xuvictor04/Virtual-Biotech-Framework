@@ -187,7 +187,8 @@ def test_run_association_suite():
     # with covariates the AE model is the adjusted beta regression (no unadjusted beta row)
     assert list(res.model) == ["logistic", "logistic_adjusted", "beta_adjusted"]
     assert {"p_fdr", "p_perm", "estimate", "ci_low", "ci_high", "n", "engine"} <= set(res.columns)
-    assert set(res.engine) == {"statsmodels"}
+    # logistic rows: statsmodels GLM; beta rows: R betareg or its Python port (P9: authors' engine)
+    assert set(res.engine) <= {"statsmodels", "betareg_py", "R:betareg"}
     plain = S.run_association_suite(df, ["tau"], ["y"], ["ae"], n_perm=0)
     assert list(plain.model) == ["logistic", "beta"]
     assert (res.p_fdr >= res.p - 1e-15).all()
@@ -199,11 +200,11 @@ def test_mixed_effects_fallback():
     assert r["engine"] == "statsmodels_bayes_mixed_glm_vb"
     assert r["odds_ratio"] > 1.5 and r["n"] == 300
     auto = S.mixed_effects_logistic(df, "tau", "y")  # no rpy2 -> fallback, no crash
-    assert auto["engine"] in {"lme4", "statsmodels_bayes_mixed_glm_vb"}
+    assert auto["engine"] in {"lme4", "laplace"}  # P9: Python glmer port replaces the VB fallback
     b = S.mixed_effects_beta(df, "tau", "ae", engine="statsmodels")
     assert b["engine"] == "statsmodels_betareg_fixed_dummies" and b["coef"] < 0
     b2 = S.mixed_effects_beta(df, "tau", "ae")
-    assert b2["engine"] in {"glmmTMB", "statsmodels_betareg_fixed_dummies"}
+    assert b2["engine"] in {"glmmTMB", "laplace"}  # P9: Python glmmTMB-objective port
 
 
 def test_phase_to_numeric():
@@ -238,7 +239,7 @@ def test_build_outcomes():
         "trial_date": ["2010-01-05", "2012-03-01", "2015-06-01", "2011-01-01", "2019-02-02",
                        "2020-01-01"],
     })
-    out = S.build_outcomes(labels, mapping).set_index("nct_id")
+    out = S.build_outcomes(labels, mapping, endpoint_coding="strict").set_index("nct_id")  # P9: default = authors
     assert out.loc["N1", "primary_success"] == 1 and out.loc["N2", "primary_success"] == 0
     assert np.isnan(out.loc["N3", "primary_success"])
     assert out.loc["N3", "secondary_success"] == 0

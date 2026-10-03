@@ -103,17 +103,17 @@ def score_tf_activity(adata, method: str = "mlm", regulons: pd.DataFrame | None 
     return scores
 
 
-def _lmm_statsmodels(data: pd.DataFrame):
+def _lmm_statsmodels(data: pd.DataFrame, reml: bool = False):
     import statsmodels.formula.api as smf
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         model = smf.mixedlm("y ~ x", data, groups=data["g"])
-    fit = fit_mixedlm(model)
+    fit = fit_mixedlm(model, reml=reml)
     return float(fit.params["x"]), float(fit.bse["x"]), float(fit.pvalues["x"])
 
 
-def _lmm_lmertest(data: pd.DataFrame):
+def _lmm_lmertest(data: pd.DataFrame, reml: bool = False):
     require("rpy2", "r")
     import rpy2.robjects as ro
     from rpy2.robjects import pandas2ri
@@ -123,7 +123,7 @@ def _lmm_lmertest(data: pd.DataFrame):
     importr("lmerTest")
     with localconverter(ro.default_converter + pandas2ri.converter):
         ro.globalenv["dat"] = data
-    co = ro.r('coef(summary(lmerTest::lmer(y ~ x + (1|g), data=dat, REML=TRUE)))["x", ]')
+    co = ro.r(f'coef(summary(lmerTest::lmer(y ~ x + (1|g), data=dat, REML={"TRUE" if reml else "FALSE"})))["x", ]')
     return float(co[0]), float(co[1]), float(co[4])
 
 
@@ -131,7 +131,7 @@ def tf_mixed_model_screen(activity_df: pd.DataFrame, obs: pd.DataFrame, conditio
                           sample_col: str, celltype_col: str, ref_level: str | None = None,
                           test_level: str | None = None, tfs: Sequence[str] | None = None,
                           celltypes: Sequence[str] | None = None, min_samples_per_group: int = 2,
-                          engine: str = "auto") -> pd.DataFrame:
+                          engine: str = "auto", *, reml: bool = False, min_samples: int = 4) -> pd.DataFrame:
     """Per TF x cell type LMM ``activity ~ condition + (1 | sample)`` with BH FDR
     within each cell type (Methods, "Transcription factor activity").
 
@@ -140,7 +140,10 @@ def tf_mixed_model_screen(activity_df: pd.DataFrame, obs: pd.DataFrame, conditio
     statsmodels has no Satterthwaite/Kenward-Roger df, so p-values are somewhat
     anti-conservative with few samples. ``"auto"`` picks lmerTest when rpy2 is
     installed. Cell types with fewer than ``min_samples_per_group`` samples in
-    either condition are skipped.
+    either condition, or fewer than ``min_samples`` (4) samples in total, are
+    skipped. As in the authors' ``osmr/code/01c_tf_activity_screen.py``
+    (Zenodo archive) the model is fitted by maximum likelihood
+    (``lmer(..., REML=FALSE)``; ``reml=True`` for REML).
 
     Returns ``cell_type, tf, beta, se, p, fdr, n_cells, n_samples_ref,
     n_samples_test, engine`` where ``beta`` is the mean activity difference
@@ -172,14 +175,14 @@ def tf_mixed_model_screen(activity_df: pd.DataFrame, obs: pd.DataFrame, conditio
         g = sub_obs[sample_col].astype(str).to_numpy()
         n_ref = len(set(g[x == 0]))
         n_test = len(set(g[x == 1]))
-        if min(n_ref, n_test) < min_samples_per_group:
+        if min(n_ref, n_test) < min_samples_per_group or n_ref + n_test < min_samples:
             continue
         block = []
         for tf in tfs:
             data = pd.DataFrame({"y": activity_df.loc[m, tf].to_numpy(float), "x": x, "g": g})
             data = data.dropna()
             try:
-                beta, se, p = fit(data)
+                beta, se, p = fit(data, reml=reml)
             except Exception:  # pragma: no cover - numerical failure
                 beta, se, p = np.nan, np.nan, np.nan
             block.append({"cell_type": ct, "tf": tf, "beta": beta, "se": se, "p": p,
