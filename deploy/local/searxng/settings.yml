@@ -1,0 +1,96 @@
+# SearxNG settings for the harness's WebSearch backend (web.search.backend: searxng | auto).
+# See docs/WEB_SEARCH.md.
+#
+# Mount this file read-only at /etc/searxng/settings.yml (deploy/local/docker-compose.yml does);
+# the container listens on 8080, published on the host as http://localhost:8888 (= SEARXNG_URL).
+# Only overrides are listed: everything else comes from SearxNG's own defaults
+# (use_default_settings).
+#
+# Private, local instance for one research harness:
+#   - JSON API on (search.formats includes json): the harness calls /search?format=json
+#   - bot limiter off (server.limiter: false): scripted clients are not rate-limited and no
+#     valkey/redis container is needed
+#   - safe_search 0, English results
+#   - a small engine set: general web search plus science / biomedical literature
+# Do NOT publish this instance on the internet: with the limiter off anyone who reaches it can
+# use it, and upstream engines will block your IP.
+
+use_default_settings:
+  engines:
+    # Only these engines are loaded (every name under `engines:` below must be listed here).
+    keep_only:
+      # general web
+      - duckduckgo
+      - brave
+      - wikipedia
+      - google            # disabled upstream (blocks scrapers); kept so it can be enabled below
+      - bing              # idem
+      - qwant             # idem
+      # science / biomedical literature
+      - pubmed
+      - arxiv
+      - google scholar
+      - semantic scholar
+      - openairepublications
+      - openalex
+      - crossref
+      - pdbe
+
+general:
+  instance_name: "vbt-search"
+  debug: false
+  enable_metrics: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  formats:
+    - html
+    - json
+
+server:
+  # Overridden by $SEARXNG_SECRET when set; any value other than the stock "ultrasecretkey"
+  # lets the instance start. It only signs cookies of the (unused) web UI.
+  secret_key: "vbt-local-searxng-change-me"
+  limiter: false      # $SEARXNG_LIMITER overrides it; keep it off for the harness
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+
+outgoing:
+  # Literature engines are slower than web engines; SearxNG answers when the slowest engine
+  # answers or times out. Keep the harness's web.search.timeout_s (30 s) above max_request_timeout.
+  request_timeout: 6.0
+  max_request_timeout: 15.0
+  pool_connections: 100
+  enable_http2: true
+
+engines:
+  # Wikipedia results also go to the result list (default: infobox only), so the JSON API
+  # returns them as ordinary results (gene, drug and disease pages).
+  - name: wikipedia
+    display_type: ["infobox", "list"]
+
+  # OpenAlex is disabled upstream only because it asks for an e-mail (polite pool).
+  # Uncomment mailto to join it.
+  - name: openalex
+    disabled: false
+    timeout: 6.0
+    # mailto: "you@example.org"
+
+  - name: pubmed
+    timeout: 6.0
+
+  - name: crossref
+    disabled: true      # slow (30 s timeout upstream); enable when DOI metadata matters
+
+  # Google, Bing and Qwant require JavaScript / CAPTCHAs for scrapers and are disabled upstream.
+  # Set `disabled: false` to try them from your network (failing engines are reported in the
+  # harness's WebSearch notes as "engines that did not answer").
+  - name: google
+    disabled: true
+  - name: bing
+    disabled: true
+  - name: qwant
+    disabled: true
