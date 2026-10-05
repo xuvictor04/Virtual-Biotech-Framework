@@ -60,8 +60,19 @@ def _mock(**options: Any) -> LLMProvider:
                             **kwargs)
 
 
+def _openai_compat_factory(registered_name: str) -> Callable[..., LLMProvider]:
+    def factory(**options: Any) -> LLMProvider:
+        from .openai_compat import create  # lazy: keeps `import vbt.providers` light
+        return create(registered_name, **options)
+    return factory
+
+
 register_provider("anthropic", _anthropic)
 register_provider("mock", _mock)
+# Local / self-hosted OpenAI-compatible servers (default: vLLM serving Qwen3.8).
+for _name in ("vllm", "sglang", "openai_compat", "llamacpp"):
+    register_provider(_name, _openai_compat_factory(_name))
+del _name
 
 __all__ = [
     "ContextOverflowError", "DocumentPart", "ImagePart", "LLMProvider", "Message", "ModelResponse", "ModelSettings",

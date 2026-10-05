@@ -203,11 +203,18 @@ def system_text(system: str | list[Any] | None) -> str:
 
 @dataclass
 class ToolSpec:
-    """A tool as the model sees it: name, description, JSON schema."""
+    """A tool as the model sees it: name, description, JSON schema.
+
+    ``strict=True`` asks providers that support it to constrain the call's
+    arguments to ``input_schema`` (OpenAI-compatible servers: ``"strict": true``
+    on the function, grammar-enforced by vLLM >= 0.30). Providers without
+    strict tool calling ignore it.
+    """
 
     name: str
     description: str
     input_schema: dict[str, Any]
+    strict: bool = False
 
 
 class StopReason(str, Enum):
@@ -307,6 +314,15 @@ class ProviderCapabilities:
     conversation prefix that produced them, so any client-side edit of earlier
     turns invalidates every later thinking block (the context manager then
     strips them instead of replaying them).
+
+    ``replays_reasoning``: the provider re-sends the text of earlier
+    reasoning (``ThinkingBlock``) on every request, so reasoning counts
+    against the context window; the context manager should clear old
+    reasoning together with old tool results when it compacts.
+
+    ``tool_choice``: the provider honours ``ModelSettings.extra['tool_choice']``
+    (``'auto'``, ``'required'``, ``'none'`` or ``{'name': <tool>}`` to force
+    one tool).
     """
 
     images: bool = False
@@ -314,6 +330,8 @@ class ProviderCapabilities:
     web_search: bool = False
     server_context_management: bool = False
     history_bound_thinking: bool = False
+    replays_reasoning: bool = False
+    tool_choice: bool = False
 
 
 TextCallback = Callable[[str], Union[None, Awaitable[None]]]
@@ -380,6 +398,17 @@ class LLMProvider(abc.ABC):
         Must not make network calls; used before any billable work starts.
         """
         return None
+
+    async def prepare(self) -> None:
+        """Optional readiness check before the first call (e.g. a local
+        server's health and model discovery). May raise ``ProviderError`` with
+        a fix hint. Default: nothing to do."""
+        return None
+
+    async def server_info(self) -> dict[str, Any]:
+        """Optional facts about the serving backend (engine version, served
+        models, context length) for run records. Default: ``{}``."""
+        return {}
 
     async def web_search(self, query: str, *, max_results: int = 8, allowed_domains: list[str] | None = None,
                          blocked_domains: list[str] | None = None) -> dict[str, Any]:
