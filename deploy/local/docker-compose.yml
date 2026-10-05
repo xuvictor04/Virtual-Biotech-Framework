@@ -1,0 +1,222 @@
+# Local LLM stack for the harness: a vLLM OpenAI-compatible server (one service per serving
+# profile, selected with a compose profile) and a SearxNG metasearch instance for WebSearch.
+#
+#   docker compose -f deploy/local/docker-compose.yml --profile h100 up -d      # vLLM (H100) + SearxNG
+#   docker compose -f deploy/local/docker-compose.yml up -d searxng             # SearxNG only
+#   docker compose -f deploy/local/docker-compose.yml --profile h100 logs -f vllm-h100
+#   docker compose -f deploy/local/docker-compose.yml --profile h100 down
+#
+# Compose profiles: h100, h200, rtxpro6000, 5090 (= the serving profiles of the same name in
+# configs/local_models.yaml; their `command` lists must stay identical to
+# `vbt local serve --profile NAME --docker --dry-run` - tests/test_local_ops.py checks it). Other
+# serving profiles (b200, dp, deepseek-v4, variants such as --bulk): use `vbt local serve --docker`.
+#
+# Then point the harness at it:  VBT_LLM_BASE_URL=http://localhost:8000/v1  SEARXNG_URL=http://localhost:8888
+# and run `vbt --profile local-h100 local check` (the first start downloads ~25-31 GB of weights and
+# compiles CUDA graphs: allow 10-30 minutes; `logs -f` shows progress, /health turns 200 when ready).
+#
+# Environment (shell or a .env file next to this file):
+#   VLLM_TAG      image tag: v0.31.0 needs NVIDIA driver >= 580 (CUDA 13.0); use v0.31.0-cu129 for
+#                 drivers 575-579 (`vbt local profiles --detect` prints the right one)
+#   VLLM_GPU      GPU index for the single-GPU services (default 0)
+#   VLLM_BIND     host address the API is published on (default 127.0.0.1: vLLM has no auth)
+#   VLLM_PORT     host port (default 8000)
+#   VLLM_API_KEY  require this bearer token (set the same value as VBT_LLM_API_KEY for the harness)
+#   HF_CACHE      Hugging Face cache on the host (default ~/.cache/huggingface); HF_TOKEN if needed
+#   SEARXNG_PORT  host port of SearxNG (default 8888); SEARXNG_BIND (default 127.0.0.1)
+# The SearxNG settings (deploy/local/searxng/settings.yml: JSON API on, limiter off) are described in
+# docs/WEB_SEARCH.md. Never publish either service on the internet.
+
+name: vbt-local
+
+x-vllm: &vllm
+  image: vllm/vllm-openai:${VLLM_TAG:-v0.31.0}
+  ipc: host
+  restart: unless-stopped
+  ports:
+    - "${VLLM_BIND:-127.0.0.1}:${VLLM_PORT:-8000}:8000"
+  volumes:
+    - "${HF_CACHE:-${HOME}/.cache/huggingface}:/root/.cache/huggingface"
+  environment:
+    HF_TOKEN: ${HF_TOKEN:-}
+    VLLM_API_KEY: ${VLLM_API_KEY:-}
+    VLLM_ENFORCE_STRICT_TOOL_CALLING: "1"
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["${VLLM_GPU:-0}"]
+            capabilities: [gpu]
+  healthcheck:
+    test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 40m
+  networks:
+    default:
+      aliases: [vllm]       # other containers reach the active server as http://vllm:8000/v1
+
+services:
+  vllm-h100:
+    <<: *vllm
+    profiles: ["h100"]
+    # Qwen3.8-27B FP8 on 1x H100 80GB (default local profile) (supported, smoke-test)
+    command:
+      - Qwen/Qwen3.8-27B-FP8
+      - --served-model-name
+      - qwen3.8-27b
+      - --language-model-only
+      - --max-model-len
+      - '262144'
+      - --gpu-memory-utilization
+      - '0.92'
+      - --kv-cache-dtype
+      - fp8
+      - --max-num-seqs
+      - '48'
+      - --max-num-batched-tokens
+      - '16384'
+      - --enable-prefix-caching
+      - --enable-prompt-tokens-details
+      - --reasoning-parser
+      - qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_coder
+      - --tool-strict-level
+      - function
+      - --speculative-config
+      - '{"method":"mtp","num_speculative_tokens":3}'
+      - --default-chat-template-kwargs
+      - '{"reasoning_effort":"medium"}'
+      - --host
+      - '0.0.0.0'
+      - --port
+      - '8000'
+
+  vllm-h200:
+    <<: *vllm
+    profiles: ["h200"]
+    # Qwen3.8-27B FP8 on 1x H200 141GB (BF16 KV) (supported, smoke-test)
+    command:
+      - Qwen/Qwen3.8-27B-FP8
+      - --served-model-name
+      - qwen3.8-27b
+      - --language-model-only
+      - --max-model-len
+      - '262144'
+      - --gpu-memory-utilization
+      - '0.92'
+      - --kv-cache-dtype
+      - auto
+      - --max-num-seqs
+      - '96'
+      - --max-num-batched-tokens
+      - '16384'
+      - --enable-prefix-caching
+      - --enable-prompt-tokens-details
+      - --reasoning-parser
+      - qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_coder
+      - --tool-strict-level
+      - function
+      - --speculative-config
+      - '{"method":"mtp","num_speculative_tokens":3}'
+      - --default-chat-template-kwargs
+      - '{"reasoning_effort":"medium"}'
+      - --host
+      - '0.0.0.0'
+      - --port
+      - '8000'
+
+  vllm-rtxpro6000:
+    <<: *vllm
+    profiles: ["rtxpro6000"]
+    # Qwen3.8-27B NVFP4 on 1x RTX PRO 6000 Blackwell 96GB (supported, smoke-test)
+    command:
+      - RedHatAI/Qwen3.8-27B-NVFP4
+      - --served-model-name
+      - qwen3.8-27b
+      - --language-model-only
+      - --max-model-len
+      - '262144'
+      - --gpu-memory-utilization
+      - '0.92'
+      - --kv-cache-dtype
+      - fp8
+      - --max-num-seqs
+      - '48'
+      - --max-num-batched-tokens
+      - '8192'
+      - --enable-prefix-caching
+      - --enable-prompt-tokens-details
+      - --reasoning-parser
+      - qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_coder
+      - --tool-strict-level
+      - function
+      - --speculative-config
+      - '{"method":"mtp","num_speculative_tokens":3}'
+      - --default-chat-template-kwargs
+      - '{"reasoning_effort":"medium"}'
+      - --host
+      - '0.0.0.0'
+      - --port
+      - '8000'
+
+  vllm-5090:
+    <<: *vllm
+    profiles: ["5090"]
+    # Qwen3.8-27B INT4 (W4A16) on 1x RTX 5090 32GB (development / single investigator) (supported, smoke-test)
+    command:
+      - RedHatAI/Qwen3.8-27B-INT4
+      - --tokenizer
+      - Qwen/Qwen3.8-27B
+      - --served-model-name
+      - qwen3.8-27b
+      - --language-model-only
+      - --max-model-len
+      - '131072'
+      - --gpu-memory-utilization
+      - '0.92'
+      - --kv-cache-dtype
+      - fp8
+      - --max-num-seqs
+      - '4'
+      - --max-num-batched-tokens
+      - '4096'
+      - --enable-chunked-prefill
+      - --enable-prefix-caching
+      - --enable-prompt-tokens-details
+      - --reasoning-parser
+      - qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_xml
+      - --tool-strict-level
+      - function
+      - --default-chat-template-kwargs
+      - '{"reasoning_effort":"medium"}'
+      - --host
+      - '0.0.0.0'
+      - --port
+      - '8000'
+
+  searxng:
+    image: ${SEARXNG_IMAGE:-searxng/searxng:latest}
+    restart: unless-stopped
+    ports:
+      - "${SEARXNG_BIND:-127.0.0.1}:${SEARXNG_PORT:-8888}:8080"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      SEARXNG_BASE_URL: http://localhost:${SEARXNG_PORT:-8888}/
+    logging:
+      driver: json-file
+      options: {max-size: 1m, max-file: "1"}
