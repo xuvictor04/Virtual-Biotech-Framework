@@ -14,7 +14,9 @@ service, nor `base.py` or `mock.py`, imports a vendor SDK (a test enforces this)
   `DocumentPart(data_b64=..., media_type="application/pdf", title=...)`.
   `content_text(content)` flattens parts for logs and for providers without
   vision (images render as `[image: <source>]`).
-- `ToolSpec(name, description, input_schema)` — JSON Schema, passed through from MCP.
+- `ToolSpec(name, description, input_schema, strict=False)` — JSON Schema, passed
+  through from MCP. `strict=True` asks providers that support it to constrain the
+  arguments to the schema (OpenAI-compatible servers; the Claude adapter ignores it).
 - `ModelSettings(provider, model, max_tokens, effort, thinking, temperature, extra)`.
 - System prompt: a string or a list of `SystemSegment(text, cache=False)`.
   `cache=True` marks the end of a stable prefix (the static upstream prompt);
@@ -32,7 +34,11 @@ service, nor `base.py` or `mock.py`, imports a vendor SDK (a test enforces this)
   dropped connection, error events after streaming started) and
   `ContextOverflowError` (the request does not fit the window).
 - `ProviderCapabilities(images, documents, web_search, server_context_management,
-  history_bound_thinking)` from `provider.capabilities(model=None)`.
+  history_bound_thinking, replays_reasoning, tool_choice)` from
+  `provider.capabilities(model=None)`. `replays_reasoning`: earlier reasoning text
+  is re-sent on every request (it counts against the window, so compaction should
+  clear old reasoning with old tool results); `tool_choice`: the provider honours
+  `extra["tool_choice"]`.
 - History helpers: `validate_tool_pairing(messages, allow_pending=False)` lists
   violations of the tool_use/tool_result rules vendor APIs enforce (every call
   answered by a result at the start of the next user message, no orphan or
@@ -49,10 +55,17 @@ class LLMProvider:
     def capabilities(self, model=None) -> ProviderCapabilities
     def context_window(self, model) -> int | None
     def check_credentials(self) -> str | None      # problem text, no network
+    async def prepare(self) -> None                # optional readiness check (default no-op)
+    async def server_info(self) -> dict            # optional backend facts (default {})
     async def web_search(self, query, *, max_results=8,
                          allowed_domains=None, blocked_domains=None) -> dict
     def supports_web_search(self) -> bool
 ```
+
+`prepare()` runs before the first call where a provider needs it (a local
+server's health check and model discovery) and raises `ProviderError` with a
+fix hint; `server_info()` returns facts such as the engine version and served
+models for run records.
 
 `on_text` / `on_thinking` receive streamed text and reasoning deltas; providers
 without reasoning never call `on_thinking`. `web_search` returns
@@ -64,7 +77,11 @@ and never forward any `extra` key to a vendor API. Keys in use:
 `thinking_budget` (budget-thinking models), `context_window_tokens` (overrides
 the provider's window table for compaction), `context_management` (request
 server-side context editing) and `prompt_cache` (False disables caching for a
-one-off request such as a compaction summary).
+one-off request such as a compaction summary). The OpenAI-compatible adapter
+also reads `session_key` (sticky replica routing), `tool_choice` (`'auto'`,
+`'required'`, `'none'` or `{'name': <tool>}`), `reasoning_effort` (explicit
+wire value, still mapped to what the model accepts) and `sampling` (a dict
+overriding the model family's sampling; a `None` value removes a key).
 
 ## Add a provider
 
@@ -196,6 +213,164 @@ a model id already configured in a tier, or an id matching `provider.model_patte
 (default `^claude-[a-z0-9.-]+$` for the Anthropic provider; no check for others). Anything
 else exits with code 2 and lists the aliases. The chosen models, with the effective
 thinking/effort per tier, are pinned in the run's `inputs/config.json`.
+
+## Local models (OpenAI-compatible servers)
+
+`providers/openai_compat.py` (`OpenAICompatProvider`) runs the harness on a
+self-hosted open-weight model behind an OpenAI Chat Completions API. It is
+registered as `vllm` (primary), `sglang`, `llamacpp` and `openai_compat`; the
+registered name is the provider's name, and it selects small dialect
+differences (SGLang and llama.cpp get prior reasoning back as
+`reasoning_content`, vLLM as `reasoning`). It uses only `httpx`; no SDK.
+
+The reference deployment is **Qwen3.8-27B** (Apache-2.0) on **vLLM 0.31.0** on
+one 80-96 GB GPU (`Qwen/Qwen3.8-27B-FP8` on H100/H200,
+`RedHatAI/Qwen3.8-27B-NVFP4` on RTX PRO 6000 / B200), served as
+`qwen3.8-27b` with `--reasoning-parser qwen3 --enable-auto-tool-choice
+--tool-call-parser qwen3_coder --tool-strict-level function
+--enable-prompt-tokens-details --enable-prefix-caching --language-model-only`.
+Serving profiles and commands live in `configs/local_models.yaml` and
+`vbt local serve`.
+
+```yaml
+provider:
+  name: vllm
+  options:
+    base_url: ${VBT_LLM_BASE_URL:-http://localhost:8000/v1}
+    served_model_name: qwen3.8-27b   # optional: overrides models.<tier>.model on the wire
+    family: auto                     # or qwen3_8 | qwen3_6 | qwen3 | deepseek_v4 | generic
+    read_timeout_s: 900              # max silence between streamed chunks (no total cap)
+    max_concurrency: 48              # ~ the server's --max-num-seqs
+models:
+  orchestrator: {model: qwen3.8-27b, effort: high,   thinking: true,  max_tokens: 40960, thinking_budget: 24576}
+  scientist:    {model: qwen3.8-27b, effort: medium, thinking: true,  max_tokens: 32768, thinking_budget: 8192}
+  support:      {model: qwen3.8-27b, effort: null,   thinking: false, max_tokens: 16000}
+  bulk:         {model: qwen3.8-27b, effort: medium, thinking: true,  max_tokens: 8192,  thinking_budget: 3072}
+```
+
+**Options.** `base_url` (env `VBT_LLM_BASE_URL` when unset; a bare
+`http://host:port` gets `/v1`), `base_urls` (several replicas), `model`,
+`served_model_name`, `api_key` (optional; env `VBT_LLM_API_KEY`, then
+`OPENAI_API_KEY`; never required), `family`, `timeout_s` (connect/write, 30),
+`read_timeout_s` (600), `max_concurrency`, `data_parallel_size` + `routing`
+(`header` | `urls`), `pricing` (`{input_per_mtok, cached_per_mtok,
+output_per_mtok}`, default 0), `extra_body` (merged into every request last,
+dicts one level deep), `context_window`, `vision` (default false),
+`reasoning_effort_supported` (generic family), `replay_reasoning_field`,
+`parallel_tool_calls` (true), `auto_discover` (true), `wait_ready_s` (0),
+`trust_env` (default: honour proxy variables unless every base URL is a
+loopback address), `headers`.
+
+**Model families** (`providers/families.py`, `resolve_family(model_id,
+explicit=None)`): matched from the served name, the tier model or the served
+model's `root` path (from `/v1/models`).
+
+| family | models | reasoning control | thinking budget | sampling (thinking / plain) |
+|---|---|---|---|---|
+| `qwen3_8` | Qwen3.8-* | top-level `reasoning_effort`: low→`low`, medium→`medium`, high/xhigh/max→`xhigh`; thinking off or no effort → `none` (+ `chat_template_kwargs.enable_thinking=false`) | `thinking_token_budget` | T 1.0, top_p 0.95, top_k 20, min_p 0, presence 0, rep 1.0 / T 0.7, top_p 0.8, top_k 20, min_p 0, presence 1.5 |
+| `qwen3_6` | Qwen3.5-*, Qwen3.6-* | `chat_template_kwargs {enable_thinking, preserve_thinking: true}` (no effort levels) | yes | T 1.0, top_p 0.95, top_k 20, presence 1.5 / T 0.7, top_p 0.8, presence 1.5 |
+| `qwen3` | Qwen3-* (2025, e.g. Qwen3-0.6B for CPU smoke tests) | `chat_template_kwargs.enable_thinking` | yes | T 0.6, top_p 0.95, top_k 20 / T 0.7, top_p 0.8, top_k 20 |
+| `deepseek_v4` | DeepSeek-V4-Flash | `reasoning_effort` none/low/high/max (medium→low, xhigh→high) + `chat_template_kwargs.thinking` | no | T 1.0, top_p 0.95 |
+| `generic` | anything else | nothing (or standard low/medium/high with `reasoning_effort_supported`) | no | server defaults |
+
+`high`, `max` and `minimal` are never sent to Qwen3.8: its chat template raises
+("Unexpected reasoning effort", HTTP 400). Keep an agent's effort fixed: `xhigh`
+and `low` add a line at the top of the system prompt, so switching invalidates
+the prefix cache (`medium`↔`none` does not). `thinking_token_budget` is
+`models.<tier>.thinking_budget`, else `min(max_tokens // 2, 16384)`, always below
+`max_tokens` (which includes reasoning tokens). Sampling is sent explicitly on
+every request (vLLM otherwise applies `generation_config.json` defaults);
+`extra["sampling"]` overrides it, `ModelSettings.temperature` overrides the
+temperature, and `top_k <= 0` is never sent.
+
+**Request encoding.**
+- One `system` message at index 0 (all `SystemSegment`s joined; put volatile
+  segments last). Harness reminders are user text, never mid-conversation
+  system messages.
+- Assistant turns: `content` (or `null` with only tool calls), `tool_calls`
+  with JSON-object `arguments` strings, and the turn's reasoning in `reasoning`
+  — only reasoning this provider (or the same family through another
+  OpenAI-compatible name) produced; Anthropic thinking and `OpaqueBlock`s are
+  dropped. The Qwen3.8 template keeps `preserve_thinking` at its default (true),
+  so the prompt stays append-only and prefix-cache friendly.
+- A harness user message becomes `role: tool` messages in the order of the
+  preceding assistant's tool calls (the template pairs them by position, not by
+  id), then a separate `user` message with any remaining text. Tool content is a
+  string (`content_text`); error results are prefixed `Error:` when they are not
+  already. Images become `[image: <source>]` text, or, with `vision: true`,
+  `image_url` data URIs in that user message (never inside tool messages); PDFs
+  become a `[document: <title>]` placeholder.
+- A conversation without any user message raises `ProviderError` (the template
+  would raise "No user query found").
+- Tools: `{type: function, function: {name, description, parameters, strict?}}`.
+  Names outside `^[A-Za-z0-9_-]{1,64}$` get a stable alias (sanitised prefix +
+  `_` + 8 hex of SHA-1) that is mapped back on decode. `tool_choice` comes from
+  `extra["tool_choice"]` (`{'name': 'submit_result'}` forces one tool), else
+  `auto`; `parallel_tool_calls: true`.
+- `max_tokens` is clamped to the known window minus a rough prompt estimate
+  (chars / 4) and never below 1024 tokens (the server then reports a real
+  overflow). `stream: true` with `stream_options.include_usage`.
+- Session affinity: `extra["session_key"]` (else `agent_name`) is hashed
+  (SHA-1, stable across processes) to pick one of `base_urls`, and with
+  `data_parallel_size > 1` and `routing: header` to send
+  `X-data-parallel-rank: <hash % N>`, so each agent keeps hitting the same
+  replica's prefix cache.
+
+**Response decoding.** SSE chunks (keep-alive comments ignored, `data: [DONE]`
+ends the stream; servers that ignore `stream` and answer JSON are handled too):
+`delta.reasoning` (vLLM) or `delta.reasoning_content` (SGLang, llama.cpp) →
+`on_thinking` and a `ThinkingBlock(provider=<name>, native={"field", "family"})`;
+`delta.content` → `on_text`; `delta.tool_calls` accumulated by `index` (id and
+name on the first chunk, argument fragments appended). Arguments that are not a
+JSON object become `ToolCall(input={}, native={"invalid_arguments": raw,
+"error": ...})`, so the runtime can ask the model to re-issue the call. If the
+server returned no `tool_calls` but the text holds `<tool_call>{json}</tool_call>`
+or Qwen XML `<tool_call><function=name><parameter=k>v</parameter>...` blocks
+(server started without a tool-call parser) they are extracted (parameter values
+typed by the tool schema) and a warning is logged once; `<think>...</think>` in
+the content is split off the same way. Stop reasons: any tool calls → `tool_use`;
+`stop` → `end_turn`; `length` → `max_tokens`, or `context_exceeded` when
+prompt + completion reached the window or `max_tokens` had been cut to fit it;
+`content_filter` → `refusal`. Usage: `cache_read = prompt_tokens_details.
+cached_tokens` (needs `--enable-prompt-tokens-details`), `input = prompt_tokens
+- cached`, `cache_write = 0`; cost is 0 unless `pricing` is set, so budget local
+runs in tokens.
+
+**Context window.** `context_window(model)` is the `context_window` option, else
+`max_model_len` from `GET /v1/models` (read once before the first call, or by
+`prepare()`), else None (the context manager then uses its default). An
+overflow (vLLM HTTP 400 "This model's maximum context length is L tokens ... your
+prompt contains N input tokens", SGLang "is longer than the model's context
+length" / "exceeds the model's maximum context length", llama.cpp
+`exceed_context_size_error`) is retried once inside `complete()` with
+`max_tokens = L - N - 256` when `L - N >= 2048`; otherwise it raises
+`ContextOverflowError` and the context manager compacts. A learned `L` is
+remembered.
+
+**Errors.** Connection errors (with a "is the inference server running? `vbt
+local serve ...`" hint), timeouts, dropped streams, error events mid-stream,
+`finish_reason: abort`, HTTP 408/409/425/429/500/502/503/504/529 →
+`RetryableProviderError` (honouring `Retry-After`). 404 → `ProviderError` listing
+the served models; 401/403 → `ProviderError` naming `VBT_LLM_API_KEY`; template
+exceptions ("Unexpected reasoning effort", "System message must be at the
+beginning", "No user query found") are reported as adapter bugs; other 4xx →
+`ProviderError`. If a server's request validation rejects the top-level
+`reasoning_effort` field itself (a stricter enum than vLLM's), the request is
+re-sent once with the equivalent `chat_template_kwargs.reasoning_effort` form,
+and that form is kept for the provider's lifetime (`none` is never put in the
+kwargs; thinking off is `enable_thinking: false`).
+
+**Readiness and introspection.** `check_credentials()` only checks that a
+base URL is configured (no network). `prepare(models=None, wait_s=None)` polls
+`GET /health` (up to `wait_ready_s`), reads `/v1/models` and fails with the list
+of served names if a requested model is missing. `server_info()` returns
+`{provider, base_urls, family, served_model_name, models, max_model_len,
+version}` and never raises; `list_models()` and `health()` are also available.
+`max_concurrency` caps in-flight requests client-side (vLLM queues excess
+requests rather than returning 429). Capabilities: `images` = `vision`,
+`documents`, `web_search` and `server_context_management` false,
+`replays_reasoning` and `tool_choice` true. There is no provider-native web
+search; use a search backend (`vbt.tools.search_backends`).
 
 ## The Claude adapter (`anthropic_provider.py`)
 
