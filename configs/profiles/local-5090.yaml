@@ -1,0 +1,56 @@
+# Local Qwen3.8-27B (Red Hat INT4 / W4A16) on ONE 32 GB card (RTX 5090): development and
+# single-investigator use, NOT a 10-specialists-at-128K machine.
+#
+#   vbt local serve --profile 5090            # or: docker compose -f deploy/local/docker-compose.yml --profile 5090 up -d
+#   vbt --profile local-5090 local check
+#
+# Serving profile `5090` in configs/local_models.yaml: --max-model-len 131072, FP8 KV (calibrated
+# scales), --max-num-seqs 4, no MTP, ~360K KV tokens (~2.7 x 128K or ~5 x 64K contexts).
+# Lower effort than the 80 GB profiles (P3 tier mapping): the reasoning budget is essential here,
+# because a runaway reasoning trace would starve the tiny KV pool. Bulk runs with thinking off,
+# a strict submit_result and a forced tool_choice on the final turn.
+
+provider:
+  name: vllm
+  options:
+    base_url: ${VBT_LLM_BASE_URL:-http://localhost:8000/v1}
+    served_model_name: qwen3.8-27b
+    family: qwen3_8
+    read_timeout_s: 900
+    max_concurrency: 4            # = --max-num-seqs
+    data_parallel_size: 1
+    pricing: null
+
+model_aliases:
+  qwen: qwen3.8-27b
+
+models:
+  orchestrator: {model: qwen3.8-27b, effort: medium, thinking: true, max_tokens: 16384, thinking_budget: 8192,
+                 context_window_tokens: 131072}
+  scientist:    {model: qwen3.8-27b, effort: medium, thinking: true, max_tokens: 16384, thinking_budget: 4096,
+                 context_window_tokens: 131072}
+  support:      {model: qwen3.8-27b, effort: null, thinking: false, max_tokens: 8192,
+                 context_window_tokens: 131072}
+  bulk:         {model: qwen3.8-27b, effort: null, thinking: false, max_tokens: 6144,
+                 context_window_tokens: 131072}
+
+limits:
+  max_parallel_agents: 3          # CSO + 3 specialists ~ --max-num-seqs 4; more would only queue
+  max_turn_tokens: 2000000        # token budgets; USD caps stay but local runs cost 0 USD
+  max_item_tokens: 200000
+  max_turn_cost_usd: 150
+  max_item_cost_usd: null
+
+bulk:
+  default_concurrency: 4          # = --max-num-seqs (8 with `vbt local serve --profile 5090 --bulk`)
+
+web:
+  search:
+    backend: auto
+    searxng_url: ${SEARXNG_URL:-http://localhost:8888}
+
+# Verifier-corrected P3: compaction from ~65K (soft) and ~81K (hard) of 131,072.
+context:
+  default_window_tokens: 131072
+  soft_ratio: 0.5
+  hard_ratio: 0.62

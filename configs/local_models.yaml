@@ -1,0 +1,647 @@
+# Serving profiles for running the harness on a LOCAL open-weight model (vLLM).
+#
+# Decision (local-LLM research digest, 2026-10-05; every value below uses the
+# VERIFIER-CORRECTED profile where it differs from the first draft):
+#   model   Qwen3.8-27B (Apache-2.0; dense 27.8B hybrid: 48 Gated-DeltaNet + 16 full-attention
+#           layers, 262,144-token native context, MTP head; served text-only)
+#   engine  vLLM 0.31.0 OpenAI-compatible server (fallback 0.30.0 without --tool-strict-level)
+#   target  ONE 80-96 GB NVIDIA GPU (h100 / h200 / rtxpro6000 / b200); 32 GB cards (5090) for
+#           development; multi-GPU scale-out (dp) and a multi-GPU max-quality model (deepseek-v4).
+#
+# Read by vbt.local.profiles (`vbt local profiles | serve | check | bench`), by
+# deploy/local/serve_vllm.sh and, by hand, for deploy/local/docker-compose.yml (whose vllm-*
+# services must keep the same arguments; tests/test_local_ops.py checks that).
+#
+# Layout of one profile
+#   title, digest_profile        human name; the digest profile it implements (P1..P5)
+#   hardware                     gpu_count, gpus (text), arch, vram_gib_min, name_patterns
+#                                (regexes matched against nvidia-smi GPU names, case-insensitive),
+#                                driver_min (oldest NVIDIA driver that can run the engine)
+#   hf_id, tokenizer             checkpoint (pinned official repo ids only; many forks exist)
+#   alternatives                 other checkpoints for the same card, each with its own
+#                                verification status (`vbt local serve --hf-id ...`)
+#   served_model_name, family    the name the harness requests and its dialect
+#                                (vbt.providers.families: qwen3_8 | qwen3_6 | deepseek_v4 | ...)
+#   engine                       name, min_version, fallback_version, recipe_image
+#   docker                       image + tag chosen by NVIDIA driver version (first match wins)
+#   vllm_args                    the `vllm serve <hf_id>` arguments, one per item: "--flag" (bare)
+#                                or {"--flag": value}; mappings/lists are rendered as compact JSON.
+#                                --host/--port are added by the renderer (`--host/--port` options).
+#   context_tokens, kv_cache_dtype, max_num_seqs, mtp
+#                                summary of the arguments (validated against vllm_args)
+#   env                          extra environment for the server process / container
+#   capacity                     expected KV capacity (estimates: read the real "GPU KV cache size"
+#                                line in the vLLM startup log)
+#   variants                     named modifications (`--variant NAME`; `--bulk` = `--variant bulk`):
+#                                remove: [flags], set: {flag: value | null (bare flag)} (replaces in
+#                                place, else appends), plus summary overrides (hf_id,
+#                                served_model_name, family, tokenizer, env, context_tokens,
+#                                kv_cache_dtype, max_num_seqs, mtp)
+#   harness                      matching harness config profile (configs/profiles/<name>.yaml) and
+#                                client sizing (max_concurrency ~ max_num_seqs)
+#   vision                       false: served with --language-model-only (images become text)
+#   verification                 "recipe-verified" (vLLM recipe ran this checkpoint on this card) or
+#                                "supported, smoke-test" (expected to work; run `vbt local check`)
+#   caveats                      known risks
+
+schema_version: 1
+
+defaults:
+  engine: {name: vllm, min_version: 0.31.0, fallback_version: 0.30.0}
+  docker:
+    image: vllm/vllm-openai
+    # vllm/vllm-openai:v0.31.0 is built on CUDA 13.0.3 (driver >= 580); the -cu129 build runs on
+    # drivers 575-579. Older drivers cannot run vLLM 0.31.
+    tags:
+      - {min_driver: '580', tag: v0.31.0, cuda: '13.0'}
+      - {min_driver: '575', tag: v0.31.0-cu129, cuda: '12.9'}
+    fallback_tags:   # --engine-version 0.30.0
+      - {min_driver: '580', tag: v0.30.0, cuda: '13.0'}
+      - {min_driver: '575', tag: v0.30.0-cu129, cuda: '12.9'}
+  # Flags that older engines do not have: dropped (with a note) when --engine-version is lower.
+  flag_min_versions:
+    --tool-strict-level: 0.31.0
+  env:
+    # Already vLLM's default; set explicitly so an inherited 0 cannot switch off the strict
+    # tool-call grammar that --tool-strict-level / strict:true rely on.
+    VLLM_ENFORCE_STRICT_TOOL_CALLING: '1'
+  host: 127.0.0.1   # bare metal; the recipes use 0.0.0.0 (all interfaces, no auth): pass --host
+  port: 8000
+  container_port: 8000
+  vision: false
+
+profiles:
+  # ---------------------------------------------------------------- P1 Hopper, one GPU
+  h100:
+    title: Qwen3.8-27B FP8 on 1x H100 80GB (default local profile)
+    digest_profile: P1-hopper-1gpu-primary
+    hardware:
+      gpu_count: 1
+      gpus: 1x NVIDIA H100 80GB (SXM / PCIe / NVL) or H800; Hopper sm90
+      arch: [sm90]
+      vram_gib_min: 75
+      name_patterns: ['\bH100\b', '\bH800\b', '\bGH200\b']
+      driver_min: '575'
+    hf_id: Qwen/Qwen3.8-27B-FP8          # official W8A8 block-FP8, 30.9 GB, no KV scales
+    alternatives: []
+    served_model_name: qwen3.8-27b
+    family: qwen3_8
+    vllm_args:
+      - --served-model-name: qwen3.8-27b
+      - --language-model-only
+      - --max-model-len: 262144
+      - --gpu-memory-utilization: 0.92
+      - --kv-cache-dtype: fp8
+      - --max-num-seqs: 48
+      - --max-num-batched-tokens: 16384
+      - --enable-prefix-caching
+      - --enable-prompt-tokens-details
+      - --reasoning-parser: qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser: qwen3_coder
+      - --tool-strict-level: function
+      - --speculative-config: {method: mtp, num_speculative_tokens: 3}
+      - --default-chat-template-kwargs: {reasoning_effort: medium}
+    context_tokens: 262144
+    kv_cache_dtype: fp8
+    max_num_seqs: 48
+    mtp: {method: mtp, num_speculative_tokens: 3}
+    env: {}
+    capacity:
+      kv_pool: ~40 GiB at 0.92 utilisation (~840 blocks of 1568 tokens)
+      kv_tokens: ~1.2M FP8 tokens (startup log)
+      concurrent: ~8.5 x 128K, ~15 x 64K, ~23 x 32K, ~32 x 16K (~50 x 16K without MTP)
+      max_resident_seqs: ~52 with MTP-3 (each running sequence pins 2+k Gated-DeltaNet state copies
+        of ~0.154 GB = 0.77 GB/seq with k=3, 0.62 GB k=2, 0.31 GB without MTP) -> --max-num-seqs 48
+    variants:
+      bulk:
+        description: Bulk-annotation-only server (hundreds of short agents) - no MTP, 64K context,
+          128 sequences (realistic resident ~50-70 at 8-16K contexts). Prefix caching stays on
+          (shared 8-15K system prompt; hits at 1568-token boundaries with FP8 KV).
+        remove: [--speculative-config]
+        set: {--max-model-len: 65536, --max-num-seqs: 128}
+        context_tokens: 65536
+        max_num_seqs: 128
+        mtp: null
+      mtp2:
+        description: Many concurrent long agents - MTP depth 2 (GDN pin 0.62 GB/seq, max resident
+          ~64 instead of ~52); check acceptance via vllm:spec_decode_num_{accepted,draft}_tokens_total.
+        set: {--speculative-config: {method: mtp, num_speculative_tokens: 2}, --max-num-seqs: 64}
+        max_num_seqs: 64
+        mtp: {method: mtp, num_speculative_tokens: 2}
+    harness: {profile: local-h100, max_concurrency: 48, bulk_concurrency: 32}
+    vision: false
+    verification: supported, smoke-test
+    verification_detail: The vLLM recipe lists H100/H200 as 'supported' (not 'verified') for the
+      FP8 checkpoint; it is verified in SGLang on H200. Smoke-test tool calling, MTP acceptance and
+      the prefix-cache hit rate (`vbt local check`) before production runs.
+    caveats:
+      - Uncalibrated FP8 KV cache (the official FP8 checkpoint ships no k/v scales; vLLM warns). A
+        community MRCR test lost ~0.1 at ~220K with FP8 KV. Calibrate (HF discussion
+        Qwen3.8-27B-FP8 no. 10) or use h200 with BF16 KV when long-context retrieval matters most.
+      - Driver >= 580 for vllm/vllm-openai:v0.31.0 (CUDA 13.0.3); 575-579 -> v0.31.0-cu129.
+      - vLLM 0.30.0 fallback drops --tool-strict-level (per-tool strict:true and forced
+        tool_choice stay grammar-enforced) but lacks the hybrid prefix-cache fixes (vLLM PRs
+        58368, 59175 and 59146); accept lower cache hit rates or drop MTP there.
+      - transformers is pinned by vLLM 0.31.0 (>=5.10.4,<5.18.0); never upgrade it separately.
+      - If --tool-strict-level function misbehaves, use --tool-strict-level auto and keep
+        strict:true on submit_result.
+
+  h200:
+    title: Qwen3.8-27B FP8 on 1x H200 141GB (BF16 KV)
+    digest_profile: P1-hopper-1gpu-primary (H200 variant)
+    hardware:
+      gpu_count: 1
+      gpus: 1x NVIDIA H200 141GB (or GH200 144GB); Hopper sm90
+      arch: [sm90]
+      vram_gib_min: 130
+      name_patterns: ['\bH200\b', '\bGH200\b']
+      driver_min: '575'
+    hf_id: Qwen/Qwen3.8-27B-FP8
+    alternatives: []
+    served_model_name: qwen3.8-27b
+    family: qwen3_8
+    vllm_args:
+      - --served-model-name: qwen3.8-27b
+      - --language-model-only
+      - --max-model-len: 262144
+      - --gpu-memory-utilization: 0.92
+      - --kv-cache-dtype: auto
+      - --max-num-seqs: 96
+      - --max-num-batched-tokens: 16384
+      - --enable-prefix-caching
+      - --enable-prompt-tokens-details
+      - --reasoning-parser: qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser: qwen3_coder
+      - --tool-strict-level: function
+      - --speculative-config: {method: mtp, num_speculative_tokens: 3}
+      - --default-chat-template-kwargs: {reasoning_effort: medium}
+    context_tokens: 262144
+    kv_cache_dtype: auto
+    max_num_seqs: 96
+    mtp: {method: mtp, num_speculative_tokens: 3}
+    env: {}
+    capacity:
+      kv_pool: ~97 GiB at 0.92 utilisation (~2000 blocks of 784 tokens, BF16 KV)
+      kv_tokens: ~1.5M BF16 tokens
+      concurrent: ~11 x 128K, ~56 x 16K
+      max_resident_seqs: ~125
+    variants:
+      bulk:
+        description: Bulk-annotation-only server - no MTP, 64K context, 256 sequences.
+        remove: [--speculative-config]
+        set: {--max-model-len: 65536, --max-num-seqs: 256}
+        context_tokens: 65536
+        max_num_seqs: 256
+        mtp: null
+      fp8kv:
+        description: FP8 KV cache on H200 (~2.9M tokens, ~20 x 128K) if the uncalibrated-FP8-KV
+          long-context risk is acceptable (the vLLM recipe uses FP8 KV on every verified config).
+        set: {--kv-cache-dtype: fp8}
+        kv_cache_dtype: fp8
+    harness: {profile: local-h200, max_concurrency: 96, bulk_concurrency: 64}
+    vision: false
+    verification: supported, smoke-test
+    verification_detail: vLLM recipe 'supported' for H200 FP8; SGLang-verified on H200.
+    caveats:
+      - BF16 KV is kept on purpose (FP8 KV lost ~0.1 on multi-needle retrieval at ~220K).
+      - Driver >= 580 for vllm/vllm-openai:v0.31.0; 575-579 -> v0.31.0-cu129.
+      - vLLM 0.30.0 fallback drops --tool-strict-level and lacks the hybrid prefix-cache fixes.
+
+  # ---------------------------------------------------------------- P2 Blackwell, one GPU
+  rtxpro6000:
+    title: Qwen3.8-27B NVFP4 on 1x RTX PRO 6000 Blackwell 96GB
+    digest_profile: P2-blackwell-1gpu-primary
+    hardware:
+      gpu_count: 1
+      gpus: 1x NVIDIA RTX PRO 6000 Blackwell (Workstation / Server / Max-Q) 96 GB; sm120
+      arch: [sm120]
+      vram_gib_min: 90
+      name_patterns: ['RTX\s+PRO\s+6000']
+      driver_min: '575'
+    hf_id: RedHatAI/Qwen3.8-27B-NVFP4    # v2.0, 24.7 GB, calibrated static FP8 KV scales
+    alternatives:
+      - hf_id: nvidia/Qwen3.8-27B-NVFP4
+        verification: recipe-verified
+        note: Recipe-verified on RTX PRO 6000 (vLLM 0.26.1rc1, --max-num-seqs 8, MTP 5). NVFP4
+          lm_head, no KV scales (keep --kv-cache-dtype fp8 explicit). First fallback.
+      - hf_id: unsloth/Qwen3.8-27B-NVFP4
+        verification: recipe-verified
+        note: Same compressed-tensors scheme as Red Hat incl. static FP8 KV scales;
+          recipe-verified on sm120 (2x RTX 5090). Second fallback.
+      - hf_id: Qwen/Qwen3.8-27B-FP8
+        verification: supported, smoke-test
+        note: Fidelity option (block FP8 via CUTLASS on sm120, ~27.9 GiB language-only).
+    served_model_name: qwen3.8-27b
+    family: qwen3_8
+    vllm_args:
+      - --served-model-name: qwen3.8-27b
+      - --language-model-only
+      - --max-model-len: 262144
+      - --gpu-memory-utilization: 0.92
+      - --kv-cache-dtype: fp8
+      - --max-num-seqs: 48
+      - --max-num-batched-tokens: 8192
+      - --enable-prefix-caching
+      - --enable-prompt-tokens-details
+      - --reasoning-parser: qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser: qwen3_coder
+      - --tool-strict-level: function
+      - --speculative-config: {method: mtp, num_speculative_tokens: 3}
+      - --default-chat-template-kwargs: {reasoning_effort: medium}
+    context_tokens: 262144
+    kv_cache_dtype: fp8
+    max_num_seqs: 48
+    mtp: {method: mtp, num_speculative_tokens: 3}
+    env: {}
+    capacity:
+      kv_pool: ~60 GiB at 0.92 utilisation (~22 GiB weights, language-only)
+      kv_tokens: ~1.85M FP8 tokens
+      concurrent: ~7 x 262K or ~13 x 128K with MTP-3
+      max_resident_seqs: GDN state ~0.73 GiB/seq with MTP-3, ~0.29 GiB without; short bulk agents
+        top out at ~55-65 with MTP and ~90-130 without
+    variants:
+      bulk:
+        description: Bulk-annotation-only server - same flags without MTP, 128 sequences.
+        remove: [--speculative-config]
+        set: {--max-num-seqs: 128}
+        max_num_seqs: 128
+        mtp: null
+      workstation:
+        description: Workstation card that also drives a display - 0.90 GPU memory utilisation.
+        set: {--gpu-memory-utilization: 0.90}
+    harness: {profile: local-rtxpro6000, max_concurrency: 48, bulk_concurrency: 32}
+    vision: false
+    verification: supported, smoke-test
+    verification_detail: Red Hat evaluated its NVFP4 build on B200, not sm120; the identical
+      compressed-tensors scheme (unsloth) and the nvidia build are recipe-verified on sm120.
+      Smoke-test tool calls, MTP acceptance (/metrics) and a 200K-token retrieval; fall back to
+      nvidia/Qwen3.8-27B-NVFP4, then unsloth/Qwen3.8-27B-NVFP4.
+    caveats:
+      - Do not use MXFP4 builds (no sm120 verification; NVFP4 is the native format).
+      - NVFP4 here is W4A4 only in the MLPs of layers 0-55; expect <= ~1.4x GEMM throughput over
+        FP8 (~1.25x in bandwidth-bound decode), not 2x.
+      - NVFP4 on Blackwell needs CUDA >= 12.8; driver >= 575 for cu129, >= 580 for the default
+        v0.31.0 image (cu130).
+      - DSpark drafter (RedHatAI/Qwen3.8-27B-speculator.dspark) caps the card near 30 concurrent
+        (~1.5 GiB GDN state per request); only for low-concurrency agentic phases.
+
+  b200:
+    title: Qwen3.8-27B NVFP4 on 1x B200 180GB / B300
+    digest_profile: P2-blackwell-1gpu-primary (B200 variant)
+    hardware:
+      gpu_count: 1
+      gpus: 1x NVIDIA B200 180 GB or B300 288 GB (sm100 / sm103)
+      arch: [sm100, sm103]
+      vram_gib_min: 170
+      name_patterns: ['\bG?B200\b', '\bG?B300\b']
+      driver_min: '575'
+    hf_id: RedHatAI/Qwen3.8-27B-NVFP4
+    alternatives:
+      - hf_id: Qwen/Qwen3.8-27B
+        verification: supported, smoke-test
+        note: Maximum fidelity - BF16 weights with BF16 KV (variant bf16).
+      - hf_id: nvidia/Qwen3.8-27B-NVFP4
+        verification: supported, smoke-test
+        note: Fallback NVFP4 build (no KV scales; keep --kv-cache-dtype fp8).
+    served_model_name: qwen3.8-27b
+    family: qwen3_8
+    vllm_args:
+      - --served-model-name: qwen3.8-27b
+      - --language-model-only
+      - --max-model-len: 262144
+      - --gpu-memory-utilization: 0.92
+      - --kv-cache-dtype: fp8
+      - --max-num-seqs: 128
+      - --max-num-batched-tokens: 8192
+      - --enable-prefix-caching
+      - --enable-prompt-tokens-details
+      - --reasoning-parser: qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser: qwen3_coder
+      - --tool-strict-level: function
+      - --speculative-config: {method: mtp, num_speculative_tokens: 3}
+      - --default-chat-template-kwargs: {reasoning_effort: medium}
+    context_tokens: 262144
+    kv_cache_dtype: fp8
+    max_num_seqs: 128
+    mtp: {method: mtp, num_speculative_tokens: 3}
+    env: {}
+    capacity:
+      kv_pool: ~140 GiB at 0.92 utilisation (estimate)
+      concurrent: agentic --max-num-seqs 128 with MTP-3; bulk 256 without speculative decoding
+    variants:
+      bulk:
+        description: Bulk-annotation-only server - no speculative decoding, 256 sequences.
+        remove: [--speculative-config]
+        set: {--max-num-seqs: 256}
+        max_num_seqs: 256
+        mtp: null
+      bf16:
+        description: Maximum fidelity - BF16 Qwen/Qwen3.8-27B with BF16 KV (scored better than FP8
+          KV on MRCR at ~220K, HF discussion no. 182).
+        hf_id: Qwen/Qwen3.8-27B
+        set: {--kv-cache-dtype: auto}
+        kv_cache_dtype: auto
+    harness: {profile: local-h200, max_concurrency: 96, bulk_concurrency: 64}
+    vision: false
+    verification: supported, smoke-test
+    verification_detail: Red Hat's NVFP4 evals ran on 1x B200 (vendor claims); the vLLM recipe
+      verified GB300. Smoke-test before production runs.
+    caveats:
+      - Harness profile local-h200 sizes the client for 96 concurrent requests; raise
+        provider.options.max_concurrency to 128 to use the whole server.
+
+  # ---------------------------------------------------------------- P3 32 GB consumer card
+  '5090':
+    title: Qwen3.8-27B INT4 (W4A16) on 1x RTX 5090 32GB (development / single investigator)
+    digest_profile: P3-consumer-32gb
+    hardware:
+      gpu_count: 1
+      gpus: 1x 32 GB card; RTX 5090 (Blackwell sm120, ~31.4 GiB free). W4A16 Marlin also runs on
+        Ada; on Ampere use variant ampere (BF16 KV).
+      arch: [sm120, sm89, sm86, sm80]
+      vram_gib_min: 30
+      name_patterns: ['RTX\s+5090']
+      driver_min: '575'
+    hf_id: RedHatAI/Qwen3.8-27B-INT4     # 19.45 GB, calibrated FP8 KV scales; legacy tokenizer regex
+    tokenizer: Qwen/Qwen3.8-27B
+    alternatives:
+      - hf_id: nvidia/Qwen3.8-27B-NVFP4
+        verification: supported, smoke-test
+        note: 21.9 GB mixed NVFP4/FP8, no KV scales; SGLang-measured on a 5090, not vLLM-verified
+          there. Same flags give ~9.5-10 GiB of KV.
+    served_model_name: qwen3.8-27b
+    family: qwen3_8
+    vllm_args:
+      - --tokenizer: Qwen/Qwen3.8-27B
+      - --served-model-name: qwen3.8-27b
+      - --language-model-only
+      - --max-model-len: 131072
+      - --gpu-memory-utilization: 0.92
+      - --kv-cache-dtype: fp8
+      - --max-num-seqs: 4
+      - --max-num-batched-tokens: 4096
+      - --enable-chunked-prefill
+      - --enable-prefix-caching
+      - --enable-prompt-tokens-details
+      - --reasoning-parser: qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser: qwen3_xml
+      - --tool-strict-level: function
+      - --default-chat-template-kwargs: {reasoning_effort: medium}
+    context_tokens: 131072
+    kv_cache_dtype: fp8
+    max_num_seqs: 4
+    mtp: null
+    env: {}
+    capacity:
+      kv_pool: ~11.8-12.2 GiB at 0.92 utilisation (~390K raw FP8 tokens)
+      kv_tokens: startup log ~360-370K tokens
+      concurrent: ~2.7 x 128K or ~5 x 64K; each running sequence also pins ~294 MiB of GDN state
+      note: Not a machine for 10 specialists at 128K each - cap the harness at 3-4 agents.
+    variants:
+      bulk:
+        description: Bulk-only server on the same INT4 model - 64K context, 8 sequences (estimate
+          from ~5 x 64K capacity; bulk contexts are short). Thinking off in the harness tier.
+        set: {--max-model-len: 65536, --max-num-seqs: 8}
+        context_tokens: 65536
+        max_num_seqs: 8
+      bulk-moe:
+        description: Bulk throughput on a 32 GB Blackwell card - serve Qwen3.6-35B-A3B NVFP4
+          instead (3B active, ~10 KiB/token FP8 KV, ~28-35 concurrent 8-12K requests;
+          recipe-verified 5090 flags). Different model and family (qwen3_6, effort tiers collapse to
+          thinking on/off); point the harness bulk tier at served name qwen3.6-35b-a3b.
+        hf_id: nvidia/Qwen3.6-35B-A3B-NVFP4
+        tokenizer: null
+        served_model_name: qwen3.6-35b-a3b
+        family: qwen3_6
+        env: {VLLM_HAS_FLASHINFER_CUBIN: '1'}
+        remove: [--tokenizer]
+        set:
+          --served-model-name: qwen3.6-35b-a3b
+          --quantization: modelopt_fp4
+          --block-size: 128
+          --moe-backend: marlin
+          --attention-backend: flashinfer
+          --attention-config: {use_trtllm_attention: true}
+          --gpu-memory-utilization: 0.85
+          --max-model-len: 65536
+          --max-num-seqs: 32
+          --max-num-batched-tokens: 8192
+          --async-scheduling: null
+          --skip-mm-profiling: null
+          --tool-call-parser: qwen3_coder
+          # Qwen3.6 templates default preserve_thinking to FALSE (prefix-cache misses).
+          --default-chat-template-kwargs: {preserve_thinking: true}
+        context_tokens: 65536
+        max_num_seqs: 32
+      mtp:
+        description: Faster single-user latency - MTP depth 3 (~0.8 GiB weights plus ~0.43 GiB GDN
+          state per running sequence; KV pool falls to ~9.5 GiB).
+        set: {--speculative-config: {method: mtp, num_speculative_tokens: 3}}
+        mtp: {method: mtp, num_speculative_tokens: 3}
+      eager:
+        description: Startup OOMs during CUDA-graph capture - run eagerly.
+        set: {--enforce-eager: null}
+      ampere:
+        description: Ampere cards (no FP8 KV) - BF16 KV cache (64 KiB/token).
+        set: {--kv-cache-dtype: bfloat16}
+        kv_cache_dtype: bfloat16
+    harness: {profile: local-5090, max_concurrency: 4, bulk_concurrency: 4}
+    vision: false
+    verification: supported, smoke-test
+    verification_detail: RedHatAI/Qwen3.8-27B-INT4 is the vLLM recipe's 'int4' variant but not
+      5090-verified by the recipe.
+    caveats:
+      - Lower the harness ContextManager ratios (soft 0.50 / hard 0.62, i.e. ~65K / ~81K of
+        131,072) - configs/profiles/local-5090.yaml does.
+      - The digest's corrected P3 command uses --tool-call-parser qwen3_xml (same Qwen XML call
+        format as qwen3_coder, streaming XML parser); if strict tool calls misbehave, try
+        qwen3_coder.
+      - If startup OOMs in CUDA-graph capture, use variant eager (--enforce-eager).
+      - Do not run a separate `pip install -U transformers`; use what vLLM resolves.
+      - llama.cpp / Ollama work for single-user chat but cannot force a named tool_choice; bulk
+        mode needs vLLM.
+
+  # ---------------------------------------------------------------- P4 multi-GPU scale-out
+  dp:
+    title: Qwen3.8-27B BF16, data-parallel replicas on 2-8 GPUs (H200 / B200)
+    digest_profile: P4-multi-gpu-scale-out
+    hardware:
+      gpu_count: 4
+      gpus: 2-8x H200 141GB / B200 180GB (BF16). H100 nodes - variant h100; RTX PRO 6000 - variant
+        rtxpro6000.
+      arch: [sm90, sm100, sm103, sm120]
+      vram_gib_min: 90
+      name_patterns: ['\bH200\b', '\bG?B200\b', '\bG?B300\b']
+      driver_min: '575'
+    hf_id: Qwen/Qwen3.8-27B
+    alternatives:
+      - hf_id: Qwen/Qwen3.8-27B-FP8
+        verification: supported, smoke-test
+        note: H100 80GB nodes (variant h100) or RTX PRO 6000 when bulk concurrency matters.
+    served_model_name: qwen3.8-27b
+    family: qwen3_8
+    vllm_args:
+      - --served-model-name: qwen3.8-27b
+      - --language-model-only
+      - --data-parallel-size: 4
+      - --max-model-len: 262144
+      - --gpu-memory-utilization: 0.92
+      - --kv-cache-dtype: auto
+      - --max-num-seqs: 64
+      - --max-num-batched-tokens: 16384
+      - --enable-chunked-prefill
+      - --enable-prefix-caching
+      - --enable-prompt-tokens-details
+      - --reasoning-parser: qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser: qwen3_coder
+      - --tool-strict-level: function
+      - --speculative-config: {method: mtp, num_speculative_tokens: 3}
+      - --default-chat-template-kwargs: {reasoning_effort: medium}
+    context_tokens: 262144
+    kv_cache_dtype: auto
+    max_num_seqs: 64            # per data-parallel rank
+    data_parallel_size: 4       # = GPU count (`--data-parallel N`)
+    mtp: {method: mtp, num_speculative_tokens: 3}
+    env: {}
+    capacity:
+      h200: ~74 GiB pool per GPU; ~37-40 concurrent at 20K tokens, ~10 at 100K, ~4 at 262K
+      b200: ~110 GiB pool per GPU; ~55-58 at 20K, ~15 at 100K
+      rtxpro6000: ~33 GiB pool per GPU; ~17 at 20K, ~4-5 at 100K, ~2 at 262K
+      note: BF16 KV 68 KiB/token incl. the MTP layer, ~0.58 GiB GDN state per running sequence
+        with MTP-3; shared prefixes save attention KV but not the per-sequence GDN state.
+    variants:
+      bulk:
+        description: Bulk-only replicas - no MTP (each running request holds 1+k GDN slots), 64K
+          context, 128 sequences per rank (estimate).
+        remove: [--speculative-config]
+        set: {--max-model-len: 65536, --max-num-seqs: 128}
+        context_tokens: 65536
+        max_num_seqs: 128
+        mtp: null
+      h100:
+        description: H100 80GB nodes - the P1 FP8 checkpoint with FP8 KV (BF16 weights leave only
+          ~16-19 GiB KV on 80 GB).
+        hf_id: Qwen/Qwen3.8-27B-FP8
+        set: {--kv-cache-dtype: fp8, --max-num-seqs: 48}
+        kv_cache_dtype: fp8
+        max_num_seqs: 48
+      b200:
+        description: B200 nodes - 96 sequences per rank.
+        set: {--max-num-seqs: 96}
+        max_num_seqs: 96
+      rtxpro6000:
+        description: RTX PRO 6000 nodes in BF16 - ~31-34 GiB KV per GPU, 24 sequences per rank.
+        set: {--max-num-seqs: 24}
+        max_num_seqs: 24
+    harness: {profile: local-dp, max_concurrency: 256, bulk_concurrency: 128}
+    vision: false
+    verification: supported, smoke-test
+    verification_detail: Same model and adapter as P1; Red Hat benchmarked TP1 x DP4 on B200.
+      Prefix caching is per replica and vLLM's DP balancer is not prefix-aware - the harness pins
+      each agent session with the X-data-parallel-rank header (provider data_parallel_size).
+    caveats:
+      - --max-num-seqs applies per data-parallel rank.
+      - Alternative without --data-parallel-size - one server per GPU (CUDA_VISIBLE_DEVICES=i,
+        --port 800i) and provider.options.base_urls + routing urls (or vllm-router with
+        consistent_hash).
+      - In v0.31.0 every DP engine starts from the same RNG state (fix 59788 not released); pass a
+        per-request seed for replicate sampling of identical prompts.
+      - TP must divide 24 attention heads (1, 2, 4, 8); TP is unnecessary for a 27B model.
+
+  # ---------------------------------------------------------------- P5 multi-GPU max quality
+  deepseek-v4:
+    title: DeepSeek-V4-Flash-0731 on 4x H200 / 4x B200 (DP4 + expert parallel)
+    digest_profile: P5-multi-gpu-max-quality
+    hardware:
+      gpu_count: 4
+      gpus: 4x H200 141GB or 4x B200/B300 (DP4+EP; ~49 GB weights per GPU). 2x H200/B200 (TP2+EP,
+        ~83.5 GB per GPU) is unverified; 8x RTX PRO 6000 - variant rtxpro6000x8.
+      arch: [sm90, sm100, sm103]
+      vram_gib_min: 130
+      name_patterns: ['\bH200\b', '\bG?B200\b', '\bG?B300\b']
+      driver_min: '575'
+    hf_id: deepseek-ai/DeepSeek-V4-Flash-0731   # MIT, 284B total / 13B active, 166.9 GB
+    alternatives: []
+    served_model_name: dsv4-flash
+    family: deepseek_v4
+    engine: {name: vllm, min_version: 0.31.0, fallback_version: 0.28.0, recipe_image: vllm/vllm-openai:v0.28.0}
+    docker:
+      fallback_tags:   # --engine-version 0.28.0 (the recipe image; no --tool-strict-level)
+        - {min_driver: '575', tag: v0.28.0}
+    vllm_args:
+      - --served-model-name: dsv4-flash
+      - --trust-remote-code
+      - --data-parallel-size: 4
+      - --enable-expert-parallel
+      - --compilation-config: {cudagraph_mode: FULL_AND_PIECEWISE, custom_ops: [all]}
+      - --kv-cache-dtype: fp8
+      - --block-size: 256
+      - --max-model-len: 393216
+      - --gpu-memory-utilization: 0.90
+      - --enable-prefix-caching
+      - --enable-prompt-tokens-details
+      - --tokenizer-mode: deepseek_v4
+      - --enable-auto-tool-choice
+      - --tool-call-parser: deepseek_v4
+      - --reasoning-parser: deepseek_v4
+      - --reasoning-config: {reasoning_parser: deepseek_v4, reasoning_start_str: '', reasoning_end_str: ''}
+      - --tool-strict-level: function
+      - --default-chat-template-kwargs: {reasoning_effort: high}
+      - --override-generation-config: {temperature: 1.0, top_p: 0.95}
+    context_tokens: 393216
+    kv_cache_dtype: fp8
+    max_num_seqs: null          # engine default
+    data_parallel_size: 4
+    mtp: null
+    env: {}
+    capacity:
+      note: KV is ~3.5 KB/token, so KV headroom is large on H200. Replayed reasoning grows
+        contexts fast (interleaved thinking with tools) - compact earlier.
+    variants:
+      b200:
+        description: B200/B300 kernels.
+        set: {--moe-backend: deep_gemm_mega_moe, --attention-config.indexer_kv_dtype: mxfp4}
+      rtxpro6000x8:
+        description: 8x RTX PRO 6000 (sm120) - TP8 + EP.
+        remove: [--data-parallel-size]
+        set: {--tensor-parallel-size: 8, --attention-config.indexer_kv_dtype: fp8, --moe-backend: auto}
+        data_parallel_size: 1
+      tp2:
+        description: 2-GPU minimum (unverified) - TP2 + EP.
+        remove: [--data-parallel-size]
+        set: {--tensor-parallel-size: 2}
+        data_parallel_size: 1
+      tep:
+        description: TP4 + EP - one shared prefix cache instead of four DP ranks (no sticky routing
+          needed).
+        remove: [--data-parallel-size]
+        set: {--tensor-parallel-size: 4}
+        data_parallel_size: 1
+      dspark:
+        description: Low-concurrency latency - DSpark speculative decoding (the recipe uses
+          probabilistic sampling; the model card uses greedy).
+        set: {--speculative-config: {method: dspark, num_speculative_tokens: 7, draft_sample_method: probabilistic}}
+        mtp: {method: dspark, num_speculative_tokens: 7}
+    harness: {profile: local-deepseek-v4, max_concurrency: 128, bulk_concurrency: 64}
+    vision: false
+    verification: recipe-verified
+    verification_detail: The vLLM recipe (image v0.28.0) is verified on H200, B200, GB200, B300,
+      GB300 and 8x RTX PRO 6000; v0.31.0 (needed for --tool-strict-level) and the 2-GPU layout are
+      not - smoke-test them.
+    caveats:
+      - Different effort vocabulary (none/low/high/max; vLLM maps medium->low and xhigh->high);
+        the harness family deepseek_v4 handles it. 'max' needs max_tokens >= 128K and the
+        393,216-token window.
+      - Use only the deepseek_v4 parser and tokenizer names (deepseek_v41 drops 0731's calls).
+      - Send the SAME tools array on every request of a session (omitting tools strips earlier
+        reasoning; changing them invalidates the prefix cache).
+      - With DP > 1 the harness must pin sessions with X-data-parallel-rank (local-deepseek-v4
+        sets data_parallel_size 4), or use variant tep.
+      - Avoid 8x H100 on vLLM 0.27.0 (startup regression, vLLM issue 52065); prefer H200/B200.
+      - vLLM 0.28-0.30 - remove --tool-strict-level (`--engine-version 0.28.0` does).

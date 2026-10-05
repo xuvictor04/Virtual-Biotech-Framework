@@ -1,0 +1,54 @@
+# Local Qwen3.8-27B (FP8 weights, BF16 KV) on ONE H200 141GB, served by vLLM 0.31.
+# Also the harness side of serving profile `b200` (raise max_concurrency to 128 there).
+#
+#   vbt local serve --profile h200            # or: docker compose -f deploy/local/docker-compose.yml --profile h200 up -d
+#   vbt --profile local-h200 local check
+#
+# Serving profile `h200` in configs/local_models.yaml: --max-model-len 262144, BF16 KV
+# (better long-context retrieval than uncalibrated FP8 KV), --max-num-seqs 96, MTP-3,
+# ~1.5M KV tokens (~11 x 128K contexts). See local-h100.yaml for the tier mapping notes.
+
+provider:
+  name: vllm
+  options:
+    base_url: ${VBT_LLM_BASE_URL:-http://localhost:8000/v1}
+    served_model_name: qwen3.8-27b
+    family: qwen3_8
+    read_timeout_s: 900
+    max_concurrency: 96           # = --max-num-seqs
+    data_parallel_size: 1
+    pricing: null
+
+model_aliases:
+  qwen: qwen3.8-27b
+
+models:
+  orchestrator: {model: qwen3.8-27b, effort: xhigh, thinking: true, max_tokens: 40960, thinking_budget: 24576,
+                 context_window_tokens: 262144}
+  scientist:    {model: qwen3.8-27b, effort: medium, thinking: true, max_tokens: 32768, thinking_budget: 8192,
+                 context_window_tokens: 262144}
+  support:      {model: qwen3.8-27b, effort: null, thinking: false, max_tokens: 16000,
+                 context_window_tokens: 262144}
+  bulk:         {model: qwen3.8-27b, effort: medium, thinking: true, max_tokens: 8192, thinking_budget: 3072,
+                 context_window_tokens: 262144}
+
+limits:
+  max_parallel_agents: 10         # the CSO's fan-out to ~10 specialists runs at once
+  max_turn_tokens: 4000000        # token budgets; USD caps stay but local runs cost 0 USD
+  max_item_tokens: 400000
+  max_turn_cost_usd: 150
+  max_item_cost_usd: null
+
+bulk:
+  default_concurrency: 64         # bulk-only server (`--bulk`, 256 seqs): --concurrency 192
+
+web:
+  search:
+    backend: auto
+    searxng_url: ${SEARXNG_URL:-http://localhost:8888}
+
+# soft ~157K, hard ~197K of 262,144 (replayed reasoning grows specialist contexts fast).
+context:
+  default_window_tokens: 262144
+  soft_ratio: 0.6
+  hard_ratio: 0.75

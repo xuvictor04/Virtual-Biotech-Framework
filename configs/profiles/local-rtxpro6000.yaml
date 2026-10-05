@@ -1,0 +1,54 @@
+# Local Qwen3.8-27B (Red Hat NVFP4, calibrated FP8 KV) on ONE RTX PRO 6000 Blackwell 96GB, vLLM 0.31.
+#
+#   vbt local serve --profile rtxpro6000      # or: docker compose -f deploy/local/docker-compose.yml --profile rtxpro6000 up -d
+#   vbt --profile local-rtxpro6000 local check
+#
+# Serving profile `rtxpro6000` in configs/local_models.yaml: --max-model-len 262144, FP8 KV,
+# --max-num-seqs 48, MTP-3, ~1.85M KV tokens (~13 x 128K contexts). Fallback checkpoints:
+# `vbt local serve --profile rtxpro6000 --hf-id nvidia/Qwen3.8-27B-NVFP4`. See local-h100.yaml for
+# the tier mapping notes.
+
+provider:
+  name: vllm
+  options:
+    base_url: ${VBT_LLM_BASE_URL:-http://localhost:8000/v1}
+    served_model_name: qwen3.8-27b
+    family: qwen3_8
+    read_timeout_s: 900
+    max_concurrency: 48           # = --max-num-seqs
+    data_parallel_size: 1
+    pricing: null
+
+model_aliases:
+  qwen: qwen3.8-27b
+
+models:
+  orchestrator: {model: qwen3.8-27b, effort: xhigh, thinking: true, max_tokens: 40960, thinking_budget: 24576,
+                 context_window_tokens: 262144}
+  scientist:    {model: qwen3.8-27b, effort: medium, thinking: true, max_tokens: 32768, thinking_budget: 8192,
+                 context_window_tokens: 262144}
+  support:      {model: qwen3.8-27b, effort: null, thinking: false, max_tokens: 16000,
+                 context_window_tokens: 262144}
+  bulk:         {model: qwen3.8-27b, effort: medium, thinking: true, max_tokens: 8192, thinking_budget: 3072,
+                 context_window_tokens: 262144}
+
+limits:
+  max_parallel_agents: 10
+  max_turn_tokens: 4000000        # token budgets; USD caps stay but local runs cost 0 USD
+  max_item_tokens: 400000
+  max_turn_cost_usd: 150
+  max_item_cost_usd: null
+
+bulk:
+  default_concurrency: 32         # bulk-only server (`--bulk`, 128 seqs, no MTP): --concurrency 96
+
+web:
+  search:
+    backend: auto
+    searxng_url: ${SEARXNG_URL:-http://localhost:8888}
+
+# The digest suggests reasoning compaction past ~150K on this card: soft ~157K, hard ~197K.
+context:
+  default_window_tokens: 262144
+  soft_ratio: 0.6
+  hard_ratio: 0.75

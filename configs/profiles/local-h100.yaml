@@ -1,0 +1,66 @@
+# Local Qwen3.8-27B (FP8) on ONE H100 80GB, served by vLLM 0.31 - the default local setup.
+#
+#   vbt local serve --profile h100            # or: docker compose -f deploy/local/docker-compose.yml --profile h100 up -d
+#   vbt --profile local-h100 local check      # capability probe against the running server
+#   vbt --profile local-h100 chat
+#
+# Serving profile `h100` in configs/local_models.yaml: --max-model-len 262144, FP8 KV,
+# --max-num-seqs 48, MTP-3, ~1.2M KV tokens (~8.5 x 128K contexts). Layered on
+# configs/default.yaml like every profile.
+#
+# One model on one GPU: the tiers differ only in per-request fields. Effort stays FIXED per
+# agent (xhigh/low prepend a system-prompt line, so switching would invalidate that agent's
+# prefix cache; medium <-> none does not). Harness effort maps to Qwen3.8 as
+# low->low, medium->medium, high/xhigh/max->xhigh, thinking off -> none (never 'high'/'max').
+# thinking_budget is sent as thinking_token_budget (hard reasoning cap; max_tokens includes it).
+
+provider:
+  name: vllm
+  options:
+    base_url: ${VBT_LLM_BASE_URL:-http://localhost:8000/v1}
+    served_model_name: qwen3.8-27b
+    family: qwen3_8
+    read_timeout_s: 900           # max silence between streamed chunks (xhigh turns think long)
+    max_concurrency: 48           # = --max-num-seqs; vLLM queues the rest instead of returning 429
+    data_parallel_size: 1
+    pricing: null                 # 0 USD; set {input_per_mtok, cached_per_mtok, output_per_mtok} to amortise GPU cost
+
+model_aliases:
+  qwen: qwen3.8-27b
+
+models:
+  orchestrator: {model: qwen3.8-27b, effort: xhigh, thinking: true, max_tokens: 40960, thinking_budget: 24576,
+                 context_window_tokens: 262144}
+  scientist:    {model: qwen3.8-27b, effort: medium, thinking: true, max_tokens: 32768, thinking_budget: 8192,
+                 context_window_tokens: 262144}
+  support:      {model: qwen3.8-27b, effort: null, thinking: false, max_tokens: 16000,
+                 context_window_tokens: 262144}
+  bulk:         {model: qwen3.8-27b, effort: medium, thinking: true, max_tokens: 8192, thinking_budget: 3072,
+                 context_window_tokens: 262144}
+
+limits:
+  max_parallel_agents: 8          # CSO + 8 specialists fit the KV pool at typical context sizes
+  # Token budgets (a scope stops when EITHER its token or its USD limit is hit). Local runs cost
+  # 0 USD, so the USD caps below never trigger unless provider.options.pricing is set.
+  max_turn_tokens: 4000000        # per user turn (CSO + every delegation)
+  max_item_tokens: 400000         # per bulk item
+  max_turn_cost_usd: 150
+  max_item_cost_usd: null
+
+bulk:
+  default_concurrency: 32         # leaves room for interactive agents; a bulk-only server
+                                  # (`vbt local serve --profile h100 --bulk`, 128 seqs) can take --concurrency 96
+
+web:
+  search:
+    backend: auto                 # no provider-native search locally: SearxNG (deploy/local/docker-compose.yml)
+    searxng_url: ${SEARXNG_URL:-http://localhost:8888}
+
+# Compaction triggers earlier than the 200K-window defaults: the template replays every past
+# reasoning block (append-only, cache friendly), so specialist loops grow fast, and ~9
+# concurrent agents share ~1.2M KV tokens. soft ~144K (clear old tool results + old reasoning),
+# hard ~183K (summarise).
+context:
+  default_window_tokens: 262144
+  soft_ratio: 0.55
+  hard_ratio: 0.7

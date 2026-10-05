@@ -1,0 +1,67 @@
+# Claude (Anthropic API) instead of the local model: the harness defaults before the switch to a
+# local Qwen3.8 server. `vbt --profile claude ...` restores them (provider, model aliases, model
+# tiers, context policy and budgets); `--profile paper` pins the paper's Claude Sonnet/Haiku 4.5.
+# Needs ANTHROPIC_API_KEY and `pip install 'vbt-harness[anthropic]'`.
+#
+# Profiles are deep-merged onto configs/default.yaml, so keys that the local default sets and
+# Claude must not inherit are reset to null here (null = unset for every consumer):
+#   - provider.options of the OpenAI-compatible adapter - above all base_url, which the
+#     Anthropic SDK would otherwise send its requests to;
+#   - per-tier thinking_budget / context_window_tokens (Claude 4.6+ thinks adaptively and the
+#     window comes from the adapter's model table);
+#   - the token budgets of the local profiles (USD budgets apply to Claude).
+
+provider:
+  name: anthropic
+  options:
+    refusal_fallback: true        # server-side fallback on safety refusals (Opus 5 / Fable 5.1)
+    web_search_model: claude-sonnet-5
+    prompt_caching: true
+    max_retries: 4                # SDK-level retries of the first HTTP response (see retry.* in default.yaml)
+    # local-provider options (reset; api_key null = the SDK reads ANTHROPIC_API_KEY)
+    base_url: null
+    api_key: null
+    model: null
+    timeout_s: null
+    served_model_name: null
+    family: null
+    read_timeout_s: null
+    max_concurrency: null
+    data_parallel_size: null
+    routing: null
+    base_urls: null
+    pricing: null
+    extra_body: null
+  model_pattern: null             # in-code default for anthropic: '^claude-[a-z0-9.-]+$'
+
+model_aliases:
+  opus: claude-opus-5
+  sonnet: claude-sonnet-5
+  haiku: claude-haiku-4-5
+  paper: claude-sonnet-4-5        # the model the paper used for CSO + scientists
+
+models:
+  orchestrator: {model: claude-opus-5, effort: high, max_tokens: 64000, thinking: true,
+                 thinking_budget: null, context_window_tokens: null}
+  scientist:    {model: claude-opus-5, effort: high, max_tokens: 64000, thinking: true,
+                 thinking_budget: null, context_window_tokens: null}
+  support:      {model: claude-haiku-4-5, effort: null, max_tokens: 16000, thinking: false,
+                 thinking_budget: null, context_window_tokens: null}
+  bulk:         {model: claude-opus-5, effort: medium, max_tokens: 32000, thinking: true,
+                 thinking_budget: null, context_window_tokens: null}
+
+limits:
+  max_parallel_agents: 8
+  max_turn_cost_usd: 150
+  max_item_cost_usd: null
+  max_turn_tokens: null
+  max_item_tokens: null
+
+context:
+  soft_ratio: 0.7
+  hard_ratio: 0.85
+  default_window_tokens: 200000
+
+web:
+  search:
+    backend: auto                 # auto = Anthropic's native web search for this provider

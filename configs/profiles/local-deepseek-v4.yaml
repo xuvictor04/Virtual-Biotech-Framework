@@ -1,0 +1,56 @@
+# Local DeepSeek-V4-Flash-0731 (MIT; 284B total / 13B active) on 4x H200 or 4x B200
+# (vLLM 0.31, DP4 + expert parallel) - the multi-GPU maximum-quality option.
+#
+#   vbt local serve --profile deepseek-v4      # B200/B300: --variant b200
+#   vbt --profile local-deepseek-v4 local check
+#
+# Family deepseek_v4 has its own effort vocabulary (none/low/high/max): the adapter maps the
+# harness's medium->low and xhigh->high, sends thinking off as 'none', and uses T=1.0, top_p=0.95.
+# There is no thinking_token_budget here; reasoning is bounded by max_tokens ('max' effort needs
+# >= 128K max_tokens and the 393,216-token window, so it is not used by default).
+# With --data-parallel-size 4 every agent session is pinned to one rank (X-data-parallel-rank).
+# Send the same tools on every request of a session (the harness does): omitting tools strips
+# earlier reasoning and changing them invalidates the prefix cache.
+
+provider:
+  name: vllm
+  options:
+    base_url: ${VBT_LLM_BASE_URL:-http://localhost:8000/v1}
+    served_model_name: dsv4-flash
+    family: deepseek_v4
+    read_timeout_s: 900
+    max_concurrency: 128
+    data_parallel_size: 4         # = --data-parallel-size (1 with variant tep / tp2 / rtxpro6000x8)
+    routing: header
+    pricing: null
+
+model_aliases:
+  dsv4: dsv4-flash
+
+models:
+  orchestrator: {model: dsv4-flash, effort: high, thinking: true, max_tokens: 65536, context_window_tokens: 393216}
+  scientist:    {model: dsv4-flash, effort: high, thinking: true, max_tokens: 65536, context_window_tokens: 393216}
+  support:      {model: dsv4-flash, effort: null, thinking: false, max_tokens: 16000, context_window_tokens: 393216}
+  bulk:         {model: dsv4-flash, effort: low, thinking: true, max_tokens: 16384, context_window_tokens: 393216}
+
+limits:
+  max_parallel_agents: 16
+  max_turn_tokens: 8000000        # token budgets; USD caps stay but local runs cost 0 USD
+  max_item_tokens: 400000
+  max_turn_cost_usd: 150
+  max_item_cost_usd: null
+
+bulk:
+  default_concurrency: 64
+
+web:
+  search:
+    backend: auto
+    searxng_url: ${SEARXNG_URL:-http://localhost:8888}
+
+# Interleaved thinking keeps every earlier reasoning block in context: compact earlier
+# (soft ~197K, hard ~256K of 393,216).
+context:
+  default_window_tokens: 393216
+  soft_ratio: 0.5
+  hard_ratio: 0.65
