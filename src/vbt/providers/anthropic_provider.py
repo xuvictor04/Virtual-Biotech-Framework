@@ -113,7 +113,7 @@ CLEAR_TOOL_USES_EDIT = "clear_tool_uses_20250919"
 # ModelSettings.extra keys this adapter consumes locally; nothing in ``extra``
 # is ever forwarded to the API.
 LOCAL_EXTRA_KEYS = frozenset({"agent_name", "context_window_tokens", "thinking_budget", "context_management",
-                              "prompt_cache"})
+                              "prompt_cache", "session_key"})  # session_key: replica routing of local servers
 
 _STOP_MAP = {
     "end_turn": StopReason.END_TURN,

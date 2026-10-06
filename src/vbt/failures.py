@@ -11,6 +11,9 @@ and ``session_audit.data_failure_notice``):
   (``mcp__*``, excluding the in-process ``mcp__provenance__*`` record tools) and
   the web tools. Recovered Bash, Read or Edit errors are routine debugging and
   never trigger the user-facing warning.
+* A call the harness rejected before running it (arguments that were not valid
+  JSON or did not match the tool's schema) carries ``model_error``: it is a
+  model error, never a data-source failure, whichever tool it named.
 
 Record shape (what ``Runtime`` collects and ``unresolved_from_trace`` builds)::
 
@@ -58,6 +61,12 @@ def is_data_source(tool: str | None) -> bool:
     if tool.startswith(_EXCLUDED_PREFIXES):
         return False
     return tool.startswith("mcp__") or tool in WEB_TOOLS
+
+
+def _data_failure(rec: Mapping[str, Any]) -> bool:
+    """A failed call of a data source that the tool itself reported (not a
+    harness-rejected call: ``model_error``)."""
+    return is_data_source(_tool_of(rec)) and not rec.get("model_error")
 
 
 def _tool_of(rec: Mapping[str, Any]) -> str:
@@ -160,6 +169,8 @@ def records_from_trace(events: Iterable[Mapping[str, Any]], *, run_dir: str | Pa
                                "is_error": is_error, "agent": who}
         if key is not None:
             rec["_key"] = key
+        if ev.get("model_error"):
+            rec["model_error"] = ev["model_error"]
         if is_error:
             rec["error"] = str(ev.get("error") or ev.get("output") or ev.get("tool_response") or "Tool failed")[:2000]
         out.append(rec)
@@ -175,13 +186,13 @@ def unresolved_from_trace(events: Iterable[Mapping[str, Any]], *, run_dir: str |
     """
     failures = unresolved_failures(records_from_trace(events, run_dir=run_dir, agent=agent))
     if data_only:
-        failures = [f for f in failures if is_data_source(f["tool"])]
+        failures = [f for f in failures if _data_failure(f)]
     return failures
 
 
 def data_failure_notice(failures: Iterable[Mapping[str, Any]]) -> str:
     """The upstream end-of-turn warning for unresolved data-source failures ('' if none)."""
-    names = [_tool_of(f) for f in failures if isinstance(f, Mapping) and is_data_source(_tool_of(f))]
+    names = [_tool_of(f) for f in failures if isinstance(f, Mapping) and _data_failure(f)]
     if not names:
         return ""
     return NOTICE_TEMPLATE.format(names=", ".join(dict.fromkeys(names)))
@@ -202,7 +213,7 @@ def summarize(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """
     recs = [r for r in records if isinstance(r, Mapping)]
     all_failures = [_public(r) for r in recs if r.get("is_error", True)]
-    unresolved_data = [f for f in unresolved_failures(recs) if is_data_source(f["tool"])]
+    unresolved_data = [f for f in unresolved_failures(recs) if _data_failure(f)]
     succeeded_later: set[tuple[str, str]] = set()
     recovered = other = 0
     for rec in reversed(recs):
@@ -211,7 +222,7 @@ def summarize(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             succeeded_later.add(key)
         elif key in succeeded_later:
             recovered += 1
-        elif not is_data_source(_tool_of(rec)):
+        elif not _data_failure(rec):
             other += 1
     return {"unresolved_data": unresolved_data, "recovered_count": recovered,
             "other_error_count": other, "all": all_failures}

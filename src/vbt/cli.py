@@ -3,7 +3,14 @@
 Sessions: ``vbt chat | run | replay | tools``; records: ``vbt verify | list |
 index | export | audit | show`` (``vbt.audit.cli``); ``vbt doctor``
 (``vbt.preflight``); ``vbt web`` (``vbt.web``); ``vbt bulk``; case studies
-``vbt case1 | scenario | data`` (``vbt.case_studies``).
+``vbt case1 | scenario | data`` (``vbt.case_studies``); the local inference
+server ``vbt local profiles | serve | check | bench`` (``vbt.local``).
+
+The default model is local (vLLM serving Qwen3.8-27B, ``configs/default.yaml``);
+``--profile claude`` / ``--profile paper`` use the Anthropic API. A session
+refuses to start when the model server is not ready
+(``vbt.preflight.ProviderNotReadyError``, exit code 2). With a local model the
+cost lines lead with token counts (0 USD unless ``provider.options.pricing``).
 
 * ``vbt chat`` -- interactive CSO session. Ctrl+C during a turn interrupts that
   turn (recorded as ``interrupted``; the session stays usable); Ctrl+C at the
@@ -20,7 +27,8 @@ index | export | audit | show`` (``vbt.audit.cli``); ``vbt doctor``
   ``preflight.skip`` / ``preflight.allow_missing_data``: the readiness gate run
   before a session and before every turn (``vbt.preflight.require_ready``).
 * ``--model`` accepts a ``model_aliases`` label, a configured model id, or an id
-  matching ``provider.model_pattern``.
+  matching ``provider.model_pattern`` (default: Claude ids for anthropic, any
+  served model name for vllm / sglang / openai_compat / llamacpp).
 """
 
 from __future__ import annotations
@@ -66,10 +74,15 @@ class ModelResolutionError(ValueError):
 
 
 def _model_pattern(config: Mapping[str, Any]) -> str | None:
+    """``provider.model_pattern``, else the provider's default: Claude ids for
+    anthropic, any served model name for local servers (vllm, sglang, ...), no
+    check otherwise (``vbt.pinning.default_model_pattern``)."""
+    from .pinning import default_model_pattern
+
     prov = config.get("provider") or {}
     if prov.get("model_pattern"):
         return str(prov["model_pattern"])
-    return DEFAULT_MODEL_PATTERN if prov.get("name") == "anthropic" else None
+    return default_model_pattern(prov.get("name"))
 
 
 def resolve_model(config: Mapping[str, Any], value: str | None) -> str | None:
@@ -147,6 +160,10 @@ def build_config(args, extra_profiles: Iterable[str] = (), *, pinned: Mapping[st
         pname = prov.get("name") if isinstance(prov, Mapping) else prov if isinstance(prov, str) else None
         if pname:
             base["provider"] = {"name": pname}  # options were redacted when pinned; profiles restore them
+            if pname == "anthropic" and not any(p in ("claude", "paper") for p in profiles):
+                # a run made before the default switched to the local model: the claude profile
+                # restores its provider options (and resets the local server's, e.g. base_url)
+                profiles = ["claude", *profiles]
     overrides = flag_overrides(args)
     cfg = load_config(profiles, deep_merge(base, overrides) if base else overrides)
     model = getattr(args, "model", None)
@@ -485,7 +502,12 @@ def _after_turn(console, session) -> None:
         return
     bits = [f"turn {rec.get('turn')}: {rec.get('status')}"]
     try:
-        bits.append(f"cost ${float(rec.get('cost_usd') or 0):.2f} (total ${session.run.cost.total_usd:.2f})")
+        tok = rec.get("tokens") if isinstance(rec.get("tokens"), Mapping) else {}
+        turn_tokens = {"total": tok.get("total"), "cached": tok.get("cache_read_tokens"),
+                       "output": tok.get("output_tokens")}
+        total = _ledger_tokens(session.run.cost)
+        bits.append(f"cost {_spend(rec.get('cost_usd'), turn_tokens)} "
+                    f"(total {_spend(session.run.cost.total_usd, total)})")
     except (TypeError, ValueError):
         pass
     console.print(f"\n[dim]({'; '.join(bits)})[/]")
@@ -524,10 +546,14 @@ def _summary(console, session) -> None:
             table.add_row(str(t.get("turn")), str(t.get("status")), ", ".join(t.get("agents") or []) or "-",
                           str(len(t.get("claims_filed") or [])), cost)
         console.print(table)
+    from .budget import format_tokens
+
     c = session.run.cost.report()
-    console.print(f"\n[bold]Session cost:[/] ${c['total_usd']:.2f}")
+    console.print(f"\n[bold]Session cost:[/] {_spend(c['total_usd'], _ledger_tokens(session.run.cost))}")
     for a, d in c["agents"].items():
-        console.print(f"  {a:30s} ${d['usd']:.2f}  ({d['model_calls']} calls)")
+        tokens = sum(int(d.get(k) or 0) for k in ("input_tokens", "cache_read_tokens", "cache_write_tokens",
+                                                   "output_tokens"))
+        console.print(f"  {a:30s} ${d['usd']:.2f}  {format_tokens(tokens):>8s} tokens  ({d['model_calls']} calls)")
 
 
 def _print_claims(console, run_dir: Path) -> None:
@@ -838,7 +864,39 @@ def _run_summary(session) -> dict[str, Any]:
             "turns": [{"turn": t.get("turn"), "status": t.get("status")} for t in run.turns],
             "artifacts_by_kind": dict(sorted(kinds.items())), "specialists": specialists,
             "claims": len(claims), "cost_usd": round(run.cost.total_usd, 6),
+            "tokens": _ledger_tokens(run.cost),
             "reports": [str(p) for p in _report_paths(run.dir)]}
+
+
+def _ledger_tokens(ledger: Any) -> dict[str, int]:
+    """Token totals of a run's cost ledger: input (uncached), cached, output, total."""
+    out = {"input": 0, "cached": 0, "output": 0}
+    try:
+        for u in (ledger.by_agent or {}).values():
+            out["input"] += int(u.input_tokens + u.cache_write_tokens)
+            out["cached"] += int(u.cache_read_tokens)
+            out["output"] += int(u.output_tokens)
+    except Exception:  # noqa: BLE001 - a display number
+        pass
+    out["total"] = out["input"] + out["cached"] + out["output"]
+    return out
+
+
+def _spend(usd: Any, tokens: Mapping[str, Any] | None) -> str:
+    """``$1.23`` when the run cost money; with a local model (0 USD) the token
+    counts lead: ``1.23M tokens (0.98M cached, 45.6K output), $0.00``."""
+    from .budget import format_tokens
+
+    try:
+        usd = float(usd or 0.0)
+    except (TypeError, ValueError):
+        usd = 0.0
+    t = dict(tokens or {})
+    if not t.get("total"):
+        return f"${usd:.2f}"
+    tok = (f"{format_tokens(t.get('total'))} tokens ({format_tokens(t.get('cached'))} cached, "
+           f"{format_tokens(t.get('output'))} output)")
+    return f"{tok}, ${usd:.2f}" if not usd else f"${usd:.2f}, {tok}"
 
 
 async def cmd_run(args, config: dict[str, Any] | None = None) -> int:
@@ -914,7 +972,7 @@ async def cmd_run(args, config: dict[str, Any] | None = None) -> int:
 
 def _print_run_summary(console, s: Mapping[str, Any]) -> None:
     console.print(f"\n[bold]Run {s['run_id']}[/]: status {s.get('status')}, verify {s.get('verify')}, "
-                  f"cost ${float(s.get('cost_usd') or 0):.2f}", highlight=False)
+                  f"cost {_spend(s.get('cost_usd'), s.get('tokens'))}", highlight=False)
     for t in s.get("turns") or []:
         style = "" if t.get("status") == "completed" else "yellow"
         console.print(f"  turn {t.get('turn')}: {t.get('status')}", style=style or None, highlight=False)
@@ -1024,6 +1082,7 @@ def build_parser() -> argparse.ArgumentParser:
     from .audit.cli import add_audit_parsers
     from .bulk import add_bulk_parser
     from .case_studies import add_case_parsers
+    from .local import add_local_parsers
     from .preflight import add_doctor_parser
     from .web import add_web_parser
     add_audit_parsers(sub)      # verify, list, index, export, audit, show
@@ -1031,6 +1090,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_web_parser(sub)         # web [--host] [--port] [--no-auth]
     add_bulk_parser(sub)
     add_case_parsers(sub)       # case1, scenario, data (P9)
+    add_local_parsers(sub)      # local profiles | serve | check | bench (local inference server)
     return p
 
 
@@ -1044,19 +1104,25 @@ def main(argv: list[str] | None = None) -> int:
     except ModelResolutionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    if args.cmd in ("chat", "run", "tools", "replay"):
-        fn = {"chat": cmd_chat, "run": cmd_run, "tools": cmd_tools, "replay": cmd_replay}[args.cmd]
-        from .preflight import DataReadinessError
-        try:
-            return asyncio.run(fn(args, config))
-        except RunResolutionError as exc:  # --resume / replay run argument
-            print(f"error: {exc}", file=sys.stderr)
-            return 2
-        except DataReadinessError as exc:  # session preflight: nothing was sent to the model
-            print(f"error: {exc}\nRun `vbt doctor` for details; --allow-missing-data starts a degraded run, "
-                  "--skip-preflight skips the check.", file=sys.stderr)
-            return 2
-    return args.handler(args, config)
+    from .preflight import DataReadinessError, ProviderNotReadyError
+    try:
+        if args.cmd in ("chat", "run", "tools", "replay"):
+            fn = {"chat": cmd_chat, "run": cmd_run, "tools": cmd_tools, "replay": cmd_replay}[args.cmd]
+            try:
+                return asyncio.run(fn(args, config))
+            except RunResolutionError as exc:  # --resume / replay run argument
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+        return args.handler(args, config)
+    except ProviderNotReadyError as exc:  # the model server: nothing was sent to the model
+        print(f"error: {exc}\nStart the model server (`vbt local serve`, deploy/local/README.md) or point "
+              "provider.options.base_url / VBT_LLM_BASE_URL at it; `vbt doctor --smoke` and `vbt local check` "
+              "test it. `--profile claude` uses the Anthropic API instead.", file=sys.stderr)
+        return 2
+    except DataReadinessError as exc:  # session preflight: nothing was sent to the model
+        print(f"error: {exc}\nRun `vbt doctor` for details; --allow-missing-data starts a degraded run, "
+              "--skip-preflight skips the check.", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

@@ -21,12 +21,20 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 __all__ = ["build_pinned_config", "git_info", "prompt_hashes", "package_versions", "installed_distributions",
-           "PINNED_PACKAGES", "PIN_SCHEMA"]
+           "PINNED_PACKAGES", "PIN_SCHEMA", "default_model_pattern", "CLAUDE_MODEL_PATTERN", "SERVED_MODEL_PATTERN",
+           "LOCAL_PROVIDER_NAMES"]
 
 PIN_SCHEMA = 1
 
-PINNED_PACKAGES = ("anthropic", "mcp", "fastmcp", "pydantic", "numpy", "pandas", "scanpy", "anndata",
-                   "statsmodels", "rpy2")
+#: ``--model`` ids accepted for the anthropic provider (when ``provider.model_pattern`` is unset).
+CLAUDE_MODEL_PATTERN = r"^claude-[a-z0-9.-]+$"
+#: Served model names of local OpenAI-compatible servers: a served name, an HF repo id or a file name.
+SERVED_MODEL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:@+/-]{0,199}$"
+#: Providers that talk to a local OpenAI-compatible server (any served model name is accepted).
+LOCAL_PROVIDER_NAMES = frozenset({"vllm", "sglang", "openai_compat", "llamacpp"})
+
+PINNED_PACKAGES = ("anthropic", "httpx", "mcp", "fastmcp", "pydantic", "jsonschema", "numpy", "pandas", "scanpy",
+                   "anndata", "statsmodels", "rpy2")
 
 _SECRET_KEY = re.compile(r"(key|token|secret|password|auth)", re.IGNORECASE)
 
@@ -194,12 +202,27 @@ def _bash_summary(config: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def default_model_pattern(provider_name: str | None) -> str | None:
+    """The ``--model`` check when ``provider.model_pattern`` is unset: Claude ids for
+    ``anthropic``; any served-model-like name for local OpenAI-compatible servers
+    (``qwen3.8-27b``, ``Qwen/Qwen3.8-27B-FP8``, ``model.gguf``); None (no check)
+    for other providers."""
+    if provider_name == "anthropic":
+        return CLAUDE_MODEL_PATTERN
+    if provider_name in LOCAL_PROVIDER_NAMES:
+        return SERVED_MODEL_PATTERN
+    return None
+
+
 def build_pinned_config(config: Mapping[str, Any], runtime: Any, *, interface: str = "chat",
-                        profiles: Iterable[str] = ()) -> dict[str, Any]:
-    """The pinned configuration of a session (see the module docstring)."""
+                        profiles: Iterable[str] = (), server: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The pinned configuration of a session (see the module docstring).
+
+    ``server``: the provider's ``server_info()`` (local servers: engine version,
+    served models and roots, ``max_model_len``), pinned as ``provider.server``."""
     provider = dict(config.get("provider") or {})
     pname = provider.get("name")
-    pattern = provider.get("model_pattern") or (r"^claude-[a-z0-9.-]+$" if pname == "anthropic" else None)
+    pattern = provider.get("model_pattern") or default_model_pattern(pname)
     models = {k: dict(v) for k, v in (config.get("models") or {}).items() if isinstance(v, Mapping)}
     orch = dict(config.get("orchestration") or {})
     orch.setdefault("review_policy", "research")
@@ -250,6 +273,8 @@ def build_pinned_config(config: Mapping[str, Any], runtime: Any, *, interface: s
                         "platform": platform.platform(), "packages": package_versions()},
         "prompt_hashes": prompt_hashes(config),
     }
+    if server:
+        pinned["provider"]["server"] = _redact(dict(server))
     skill_hashes = getattr(runtime, "skill_hashes", None)
     if skill_hashes is not None:
         try:

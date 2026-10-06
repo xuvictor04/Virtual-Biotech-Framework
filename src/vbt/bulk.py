@@ -5,27 +5,38 @@ ID — each using its full context window on a single trial and returning JSON
 validated against a Pydantic schema (Methods, "Benefits of multi-agent
 architecture"). ``BulkRunner`` generalises that pattern:
 
-* one fresh agent per item (isolated context), bounded concurrency;
+* one fresh agent per item (isolated context), bounded concurrency
+  (``concurrency``, default ``bulk.default_concurrency``);
 * a terminal ``submit_result`` tool whose input schema *is* the Pydantic model,
-  so any provider with tool calling returns structured output; validation
-  errors go back to the agent to fix, and a successful submit ends the item
-  with no further model call;
+  so any provider with tool calling returns structured output; it is declared
+  ``strict`` (grammar-constrained arguments on vLLM); validation errors go back
+  to the agent to fix, and a successful submit ends the item with no further
+  model call;
+* the agent's final allowed call is a forced ``submit_result`` call, and an
+  agent that ends without submitting is continued ONCE in the same
+  conversation with a harness nudge and a forced ``submit_result``
+  (``tool_choice`` where the provider supports it) instead of re-running the
+  item from scratch (record field ``continued``); fresh re-runs (``retries``)
+  are kept for errors;
 * results appended to JSONL as they finish (crash-safe, resumable: finished
   IDs are skipped on restart).
 
 Budgets (``vbt.budget`` cost scopes)
 ------------------------------------
-The whole run is one ``bulk`` scope (limit ``budget_usd``); each item runs in
-its own ``item:<id>`` scope (limit ``limits.max_item_cost_usd``). The bulk
-scope is *detached* from any enclosing CSO ``turn`` scope, so the per-turn cap
-(``limits.max_turn_cost_usd``) never limits a bulk run; its spend is charged
-to the enclosing scope afterwards for accounting only.
+The whole run is one ``bulk`` scope (limits ``budget_usd`` and
+``budget_tokens``); each item runs in its own ``item:<id>`` scope (limits
+``limits.max_item_cost_usd`` and ``limits.max_item_tokens``); either limit stops
+a scope. Local models cost 0 USD, so their bulk runs are budgeted in tokens.
+The bulk scope is *detached* from any enclosing CSO ``turn`` scope, so the
+per-turn caps never limit a bulk run; its spend is charged to the enclosing
+scope afterwards for accounting only.
 
 * An item's cost is its scope's spend: every attempt (including failed ones)
-  and tool-side costs such as web-search fees.
+  and tool-side costs such as web-search fees; ``budget_tokens`` likewise.
 * ``BudgetExceeded`` of the item scope fails that item (no retry).
 * ``BudgetExceeded`` of the bulk scope (or the bulk spend reaching
-  ``budget_usd``) stops the run; items that never ran are not written.
+  ``budget_usd`` / ``budget_tokens``) stops the run; items that never ran are
+  not written.
 * A non-retryable :class:`~vbt.providers.base.ProviderError` (authentication,
   permission, unknown model, bad request) is batch-fatal: the run stops, the
   summary is written with ``fatal_error`` and the error is re-raised. Transient
@@ -52,24 +63,34 @@ from pydantic import BaseModel, ValidationError
 
 from . import budget as _budget
 from .agents import AgentDefinition
-from .budget import BudgetExceeded, CostScope
-from .providers.base import ContextOverflowError, ProviderError, RetryableProviderError
+from .budget import BudgetExceeded, CostScope, format_tokens
+from .providers.base import ContextOverflowError, Message, ProviderError, RetryableProviderError
 from .runtime import Runtime
 from .tools.base import Tool, ToolContext, ToolFailure, inline_refs
 
 __all__ = ["BulkItem", "BulkStats", "BulkRunner", "BULK_DEFAULTS", "bulk_settings", "max_item_cost",
-           "is_fatal_provider_error", "load_results", "add_bulk_parser"]
+           "max_item_tokens", "default_concurrency", "is_fatal_provider_error", "load_results", "add_bulk_parser",
+           "SUBMIT_NUDGE"]
 
-#: In-code defaults for the ``bulk:`` config section.
+#: In-code defaults for the ``bulk:`` config section. Also read (with in-code
+#: defaults): ``default_concurrency`` (:data:`DEFAULT_CONCURRENCY`; concurrent
+#: items when a caller does not say: vbt bulk, case1 annotate) and
+#: ``dispatch_max_budget_tokens`` (cap on BulkDispatch budget_tokens; None = no cap).
 BULK_DEFAULTS: dict[str, Any] = {
     "dispatch_enabled": False,        # register BulkDispatch/BulkStatus for the CSO
     "dispatch_max_budget_usd": 50.0,  # upper bound on BulkDispatch budget_usd
     "pilot_size": 5,                  # items run by an unconfirmed BulkDispatch
     "prewarm": "first_item",          # 'first_item' | 'none'
 }
+DEFAULT_CONCURRENCY = 32
 
 SUBMIT_TOOL = "submit_result"
 SUBMIT_REPLY = "Result recorded."
+SUBMIT_NUDGE = (f"[Harness] You ended without calling {SUBMIT_TOOL}. Call {SUBMIT_TOOL} now with your final "
+                "structured result, filled from the evidence you gathered (use the schema's unknown/null values "
+                "where the evidence is missing).")
+#: Agent statuses after which a missing submit is worth one continued, forced call.
+_CONTINUABLE = ("completed", "turn_limit")
 
 
 def bulk_settings(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -79,14 +100,33 @@ def bulk_settings(config: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
-def max_item_cost(config: dict[str, Any] | None) -> float | None:
-    """``limits.max_item_cost_usd`` (default None = unlimited)."""
-    v = ((config or {}).get("limits") or {}).get("max_item_cost_usd")
+def _positive(v: Any) -> float | None:
     try:
         v = float(v) if v not in (None, "") else None
     except (TypeError, ValueError):
         return None
     return v if v and v > 0 else None
+
+
+def max_item_cost(config: dict[str, Any] | None) -> float | None:
+    """``limits.max_item_cost_usd`` (default None = unlimited)."""
+    return _positive(((config or {}).get("limits") or {}).get("max_item_cost_usd"))
+
+
+def max_item_tokens(config: dict[str, Any] | None) -> float | None:
+    """``limits.max_item_tokens`` (default None = unlimited)."""
+    return _positive(((config or {}).get("limits") or {}).get("max_item_tokens"))
+
+
+max_item_tokens_cfg = max_item_tokens  # BulkRunner's keyword argument shadows the function name
+
+
+def default_concurrency(config: dict[str, Any] | None) -> int:
+    """``bulk.default_concurrency`` (default :data:`DEFAULT_CONCURRENCY`)."""
+    try:
+        return max(1, int(bulk_settings(config).get("default_concurrency") or DEFAULT_CONCURRENCY))
+    except (TypeError, ValueError):
+        return DEFAULT_CONCURRENCY
 
 
 def is_fatal_provider_error(exc: BaseException) -> bool:
@@ -129,31 +169,47 @@ class BulkStats:
     fallbacks: int = 0
     refused_items: list[str] = field(default_factory=list)
     started: float = field(default_factory=time.time)
+    tokens: list[float] = field(default_factory=list)     # budget tokens of every written item
+    ok_tokens: list[float] = field(default_factory=list)  # successful items only
+    continued: int = 0                                    # items continued once to submit
+    continued_ok: int = 0                                 # ... that then submitted
 
     def add(self, rec: dict[str, Any]) -> None:
         c = float(rec.get("cost_usd") or 0.0)
+        t = float(rec.get("budget_tokens") or 0.0)
         self.costs.append(c)
+        self.tokens.append(t)
         if rec.get("ok"):
             self.done += 1
             self.ok_costs.append(c)
+            self.ok_tokens.append(t)
         else:
             self.failed += 1
         self.refusals += int(rec.get("refusals") or 0)
         self.fallbacks += int(rec.get("fallbacks") or 0)
         if rec.get("refusals"):
             self.refused_items.append(str(rec.get("id")))
+        if rec.get("continued"):
+            self.continued += 1
+            self.continued_ok += int(bool(rec.get("ok")))
 
     def summary(self) -> dict[str, Any]:
         """Medians/p90 over successful items (the paper's per-trial metric) and over
-        all written items, separately."""
+        all written items, separately; in USD and in budget tokens."""
         el = time.time() - self.started
         ok = _cost_block(self.ok_costs)
+        med_tok = statistics.median(self.ok_tokens) if self.ok_tokens else None
+        p90_tok = _quantile(self.ok_tokens, 0.9)
         return {
             "completed": self.done, "failed": self.failed, "skipped_existing": self.skipped,
             "total_cost_usd": round(sum(self.costs), 4),
             "median_cost_usd": None if ok["median_usd"] is None else round(ok["median_usd"], 4),
             "p90_cost_usd": None if ok["p90_usd"] is None else round(ok["p90_usd"], 4),
             "cost_successful": ok, "cost_all": _cost_block(self.costs),
+            "total_tokens": round(sum(self.tokens)),
+            "median_tokens": None if med_tok is None else round(med_tok),
+            "p90_tokens": None if p90_tok is None else round(p90_tok),
+            "continued": self.continued, "continued_submitted": self.continued_ok,
             "refusals": self.refusals, "fallbacks": self.fallbacks, "refused_items": self.refused_items[:50],
             "elapsed_s": round(el, 1),
             "items_per_hour": round(3600 * (self.done + self.failed) / el, 1) if el > 0 else None,
@@ -174,7 +230,7 @@ def _submit_tool(model: type[BaseModel], sink: dict[str, Any]) -> Tool:
     return Tool(SUBMIT_TOOL,
                 "Submit your final structured result (validated against the required schema). "
                 "Call exactly once, when all fields are filled from evidence; this ends your task.",
-                schema, handler, source="bulk", terminal=True)
+                schema, handler, source="bulk", terminal=True, strict=True)
 
 
 class _Fatal(Exception):
@@ -188,20 +244,25 @@ _DEFAULT = object()
 
 class BulkRunner:
     def __init__(self, runtime: Runtime, agent: AgentDefinition, output_model: type[BaseModel],
-                 out_path: Path, *, concurrency: int = 32, retries: int = 1,
+                 out_path: Path, *, concurrency: int | None = None, retries: int = 1,
                  budget_usd: float | None = None, max_item_cost_usd: Any = _DEFAULT,
                  prewarm: str | None = None, on_progress: Callable[[BulkStats], None] | None = None,
                  detach: bool = True, account_to_parent: bool = True, job_id: str | None = None,
-                 stop_event: asyncio.Event | None = None):
+                 stop_event: asyncio.Event | None = None, budget_tokens: float | None = None,
+                 max_item_tokens: Any = _DEFAULT, continue_unsubmitted: bool = True):
         self.rt = runtime
         self.agent = agent
         self.model = output_model
         self.out_path = Path(out_path)
-        self.concurrency = max(1, int(concurrency))
+        self.concurrency = max(1, int(concurrency)) if concurrency else default_concurrency(runtime.config)
         self.retries = max(0, int(retries))
         self.budget_usd = float(budget_usd) if budget_usd else None
+        self.budget_tokens = float(budget_tokens) if budget_tokens else None
         self.max_item_cost_usd = (max_item_cost(runtime.config) if max_item_cost_usd is _DEFAULT
                                   else max_item_cost_usd)
+        self.max_item_tokens = (max_item_tokens_cfg(runtime.config) if max_item_tokens is _DEFAULT
+                                else max_item_tokens)
+        self.continue_unsubmitted = bool(continue_unsubmitted)
         self.prewarm = prewarm if prewarm is not None else bulk_settings(runtime.config)["prewarm"]
         self.on_progress = on_progress
         self.detach = detach
@@ -233,23 +294,64 @@ class BulkRunner:
 
     def _bulk_exhausted(self) -> bool:
         s = self.scope
-        return bool(self.budget_usd and s is not None and s.spent >= self.budget_usd)
+        if s is None:
+            return False
+        return bool((self.budget_usd and s.spent >= self.budget_usd)
+                    or (self.budget_tokens and s.tokens >= self.budget_tokens))
 
     # ------------------------------------------------------------------ one item
+
+    async def _attempt(self, item: BulkItem, sink: dict[str, Any], key: str, counts: dict[str, Any]):
+        """One attempt: the agent run, plus (when it ended without submitting) one
+        continuation of the same conversation with a forced ``submit_result``.
+        ``counts`` accumulates model calls / fallbacks / refusals even when the
+        continuation raises."""
+        history: list[Message] = []
+        submit = _submit_tool(self.model, sink)
+
+        def tally(r: Any) -> None:
+            counts["model_calls"] += r.model_calls
+            counts["fallbacks"] += int(getattr(r, "fallback_count", 0) or 0)
+            if getattr(r, "status", "") == "refusal":
+                counts["refusals"] += 1
+
+        res = await self.rt.run_agent(self.agent, item.prompt, history=history, depth=1, extra_tools=[submit],
+                                      description=f"bulk item {item.id}", force_tool=SUBMIT_TOOL, session_key=key)
+        tally(res)
+        if "result" in sink or not self.continue_unsubmitted or getattr(res, "status", "") not in _CONTINUABLE:
+            return res
+        counts["continued"] = True
+        self.rt.run.trace("bulk_continue", item=item.id, agent=self.agent.name, status=res.status)
+        res = await self.rt.run_agent(self.agent, SUBMIT_NUDGE, history=history, depth=1, extra_tools=[submit],
+                                      description=f"bulk item {item.id} (submit)", force_tool=SUBMIT_TOOL,
+                                      max_turns=0, session_key=key)
+        tally(res)
+        return res
 
     async def _one(self, item: BulkItem) -> dict[str, Any] | None:
         """Run one item. Returns its record, or None when it never ran (bulk budget)."""
         t0 = time.time()
         last_err, status = "", "error"
-        attempts = model_calls = fallbacks = refusals = 0
-        with self.rt.cost_scope(f"item:{item.id}", self.max_item_cost_usd) as iscope:
+        attempts = 0
+        counts: dict[str, Any] = {"model_calls": 0, "fallbacks": 0, "refusals": 0, "continued": False}
+        with self.rt.cost_scope(f"item:{item.id}", self.max_item_cost_usd,
+                                limit_tokens=self.max_item_tokens) as iscope:
+
+            def record(ok: bool, **fields: Any) -> dict[str, Any]:
+                rec = {"id": item.id, "ok": ok, **fields, "cost_usd": round(iscope.spent, 6),
+                       "budget_tokens": round(iscope.tokens), "model_calls": counts["model_calls"],
+                       "attempts": attempts, "fallbacks": counts["fallbacks"], "refusals": counts["refusals"],
+                       "elapsed_s": round(time.time() - t0, 2), "meta": item.meta}
+                if counts["continued"]:
+                    rec["continued"] = True
+                return rec
+
             for attempt in range(self.retries + 1):
                 attempts = attempt + 1
                 sink: dict[str, Any] = {}
+                key = f"bulk:{self.job_id or self.agent.name}:{item.id}:{attempt}"
                 try:
-                    res = await self.rt.run_agent(self.agent, item.prompt, depth=1,
-                                                  extra_tools=[_submit_tool(self.model, sink)],
-                                                  description=f"bulk item {item.id}")
+                    res = await self._attempt(item, sink, key, counts)
                 except BudgetExceeded as exc:
                     sc = exc.scope
                     if sc is iscope or (sc is not None and sc.name.startswith("item:")):
@@ -258,7 +360,7 @@ class BulkRunner:
                     # bulk (or an outer) scope: stop the batch
                     self.budget_stop = True
                     self.stop.set()
-                    if iscope.spent <= 0 and attempt == 0:
+                    if iscope.spent <= 0 and iscope.tokens <= 0 and attempt == 0:
                         return None
                     status, last_err = "bulk_budget", f"BudgetExceeded: {exc}"
                     break
@@ -272,22 +374,15 @@ class BulkRunner:
                 except Exception as exc:  # noqa: BLE001 - one bad item must not stop the batch
                     status, last_err = "error", f"{type(exc).__name__}: {exc}"
                     continue
-                model_calls += res.model_calls
-                fallbacks += int(getattr(res, "fallback_count", 0) or 0)
-                if getattr(res, "status", "") == "refusal":
-                    refusals += 1
                 if "result" in sink:
-                    return {"id": item.id, "ok": True, "result": sink["result"], "cost_usd": round(iscope.spent, 6),
-                            "model_calls": model_calls, "attempts": attempts, "status": "ok",
-                            "agent_status": res.status, "fallbacks": fallbacks, "refusals": refusals,
-                            "elapsed_s": round(time.time() - t0, 2), "meta": item.meta}
+                    return record(True, result=sink["result"], status="ok", agent_status=res.status)
                 status = getattr(res, "status", "completed") or "completed"
                 last_err = f"agent finished ({status}) without {SUBMIT_TOOL}: {(res.text or '')[:300]}"
-                if status == "refusal":
-                    break  # a refusal is not worth a paid retry
-        return {"id": item.id, "ok": False, "error": last_err, "status": status, "cost_usd": round(iscope.spent, 6),
-                "model_calls": model_calls, "attempts": attempts, "fallbacks": fallbacks, "refusals": refusals,
-                "elapsed_s": round(time.time() - t0, 2), "meta": item.meta}
+                if status == "refusal" or counts["continued"]:
+                    # a refusal is not worth a paid retry; an agent that ignored a forced submit in its own
+                    # conversation is not re-run from scratch
+                    break
+            return record(False, error=last_err, status=status)
 
     async def _process(self, item: BulkItem) -> None:
         try:
@@ -303,8 +398,9 @@ class BulkRunner:
             with open(self.out_path, "a") as fh:
                 fh.write(json.dumps(rec, default=str) + "\n")
             self.stats.add(rec)
-            self.records.append({k: rec.get(k) for k in ("id", "ok", "status", "cost_usd", "attempts",
-                                                         "model_calls", "fallbacks", "refusals", "error")})
+            self.records.append({k: rec.get(k) for k in ("id", "ok", "status", "cost_usd", "budget_tokens",
+                                                         "attempts", "model_calls", "fallbacks", "refusals",
+                                                         "continued", "error")})
             if self.on_progress:
                 try:
                     self.on_progress(self.stats)
@@ -312,7 +408,8 @@ class BulkRunner:
                     pass
             self.rt.emit("bulk_progress", job_id=self.job_id, agent=self.agent.name,
                          done=self.stats.done, failed=self.stats.failed, queued=self.queued,
-                         spent_usd=round(self.scope.spent, 6) if self.scope else None)
+                         spent_usd=round(self.scope.spent, 6) if self.scope else None,
+                         spent_tokens=round(self.scope.tokens) if self.scope else None)
             if self._bulk_exhausted():
                 self.budget_stop = True
                 self.stop.set()
@@ -339,7 +436,7 @@ class BulkRunner:
         outer = _budget.current_scope()
         _budget.set_scope(None if self.detach else outer)
         try:
-            with self.rt.cost_scope("bulk", self.budget_usd) as bscope:
+            with self.rt.cost_scope("bulk", self.budget_usd, limit_tokens=self.budget_tokens) as bscope:
                 self.scope = bscope
 
                 async def worker() -> None:
@@ -364,7 +461,8 @@ class BulkRunner:
         finally:
             _budget.set_scope(outer)
             if self.detach and self.account_to_parent and outer is not None and self.scope is not None:
-                outer.charge(self.scope.spent)  # accounting only: the turn cap never stopped this run
+                # accounting only: the turn caps never stopped this run
+                outer.charge(self.scope.spent, self.scope.tokens)
 
         after = ledger.by_agent.get(self.agent.name)
         after = after.as_dict() if after is not None else {}
@@ -373,7 +471,11 @@ class BulkRunner:
         prompt_tokens = delta["input_tokens"] + delta["cache_read_tokens"] + delta["cache_write_tokens"]
         summary = {**self.stats.summary(), "queued": n, "budget_usd": self.budget_usd,
                    "budget_spent": round(self.scope.spent, 6) if self.scope else 0.0,
+                   "budget_tokens": self.budget_tokens,
+                   "budget_tokens_spent": round(self.scope.tokens) if self.scope else 0,
                    "budget_stop": self.budget_stop, "max_item_cost_usd": self.max_item_cost_usd,
+                   "max_item_tokens": self.max_item_tokens, "concurrency": self.concurrency,
+                   "input_tokens": delta["input_tokens"], "output_tokens": delta["output_tokens"],
                    "prewarm": self.prewarm if prewarmed else "none",
                    "cache_read_tokens": delta["cache_read_tokens"], "cache_write_tokens": delta["cache_write_tokens"],
                    "cache_hit_rate": round(delta["cache_read_tokens"] / prompt_tokens, 4) if prompt_tokens else None,
@@ -418,11 +520,38 @@ def add_bulk_parser(sub) -> None:
     p.add_argument("--agent", required=True, help="agent name from configs/agents.yaml")
     p.add_argument("--schema", required=True, help="dotted path to a Pydantic model, e.g. pkg.mod:Model")
     p.add_argument("--out", required=True)
-    p.add_argument("--concurrency", type=int, default=32)
-    p.add_argument("--budget", type=float, help="stop the bulk run when its spend reaches this many USD")
-    p.add_argument("--max-item-cost", type=float, help="per-item cost cap in USD (limits.max_item_cost_usd)")
+    add_budget_arguments(p)
     p.add_argument("--prewarm", choices=["first_item", "none"])
     p.set_defaults(handler=_cli)
+
+
+def add_budget_arguments(p, *, what: str = "item") -> None:
+    """``--concurrency``, ``--budget``, ``--budget-tokens``, ``--max-item-cost`` and
+    ``--max-item-tokens`` (shared by ``vbt bulk`` and ``vbt case1 annotate``)."""
+    p.add_argument("--concurrency", type=int, default=None,
+                   help="concurrent agents (default: bulk.default_concurrency, 32; size it to the server's "
+                        "--max-num-seqs for a local model)")
+    p.add_argument("--budget", type=float, help="stop the bulk run when its spend reaches this many USD "
+                   "(the per-turn caps never apply to bulk runs)")
+    p.add_argument("--budget-tokens", type=float,
+                   help="stop the bulk run when it has used this many tokens (input + output, cached input "
+                        "at limits.cached_token_weight); local models cost 0 USD, so budget them in tokens")
+    p.add_argument("--max-item-cost", type=float, help=f"per-{what} cost cap in USD (limits.max_item_cost_usd)")
+    p.add_argument("--max-item-tokens", type=float, help=f"per-{what} token cap (limits.max_item_tokens)")
+
+
+def budget_kwargs(args) -> dict[str, Any]:
+    """BulkRunner keyword arguments from :func:`add_budget_arguments` options."""
+    kw: dict[str, Any] = {}
+    if getattr(args, "max_item_cost", None):
+        kw["max_item_cost_usd"] = args.max_item_cost
+    if getattr(args, "max_item_tokens", None):
+        kw["max_item_tokens"] = args.max_item_tokens
+    if getattr(args, "budget_tokens", None):
+        kw["budget_tokens"] = args.budget_tokens
+    if getattr(args, "concurrency", None):
+        kw["concurrency"] = args.concurrency
+    return kw
 
 
 def _cli(args, config) -> int:
@@ -439,12 +568,9 @@ def _cli(args, config) -> int:
     async def main() -> int:
         session = await open_session(config, start_mcp=not args.no_mcp)
         try:
-            kw: dict[str, Any] = {}
-            if getattr(args, "max_item_cost", None):
-                kw["max_item_cost_usd"] = args.max_item_cost
             runner = BulkRunner(session.rt, session.rt.agents[args.agent], model, Path(args.out),
-                                concurrency=args.concurrency, budget_usd=args.budget,
-                                prewarm=getattr(args, "prewarm", None), **kw)
+                                budget_usd=args.budget, prewarm=getattr(args, "prewarm", None),
+                                **budget_kwargs(args))
             try:
                 print(json.dumps(await runner.run(items), indent=2))
             except ProviderError as exc:

@@ -237,11 +237,16 @@ def _examples() -> list[dict[str, Any]]:
 
 
 def _model_pattern(config: Mapping[str, Any]) -> str | None:
+    """``provider.model_pattern``, else the provider's default: Claude ids for
+    anthropic, any served model name for local servers (vllm, sglang, ...);
+    None (aliases and configured models only) otherwise."""
+    from ..pinning import default_model_pattern
+
     prov = (config or {}).get("provider") or {}
     pat = prov.get("model_pattern")
     if pat:
         return str(pat)
-    return r"^claude-[a-z0-9.\-]+$" if prov.get("name") == "anthropic" else None
+    return default_model_pattern(prov.get("name"))
 
 
 def resolve_model(config: Mapping[str, Any], value: str | None) -> str | None:

@@ -31,8 +31,8 @@ models:
                  context_window_tokens: 131072}
   support:      {model: qwen3.8-27b, effort: null, thinking: false, max_tokens: 8192,
                  context_window_tokens: 131072}
-  bulk:         {model: qwen3.8-27b, effort: null, thinking: false, max_tokens: 6144,
-                 context_window_tokens: 131072}
+  bulk:         {model: qwen3.8-27b, effort: null, thinking: false, max_tokens: 6144, thinking_budget: null,
+                 context_window_tokens: 131072}  # null resets default.yaml's bulk budget (thinking is off)
 
 limits:
   max_parallel_agents: 3          # CSO + 3 specialists ~ --max-num-seqs 4; more would only queue

@@ -2,6 +2,13 @@
 # "All agents operate using Claude Sonnet 4.5, except for the Chief of Staff
 #  and Scientific Reviewer, which use Claude Haiku 4.5."
 #
+# Provider. The harness default is a local open-weight model (configs/default.yaml,
+# vLLM + Qwen3.8); this profile reproduces the paper's Claude setup, so it sets
+# the Anthropic provider explicitly (ANTHROPIC_API_KEY, `pip install
+# 'vbt-harness[anthropic]'`) and resets the local server's options to null (null
+# = unset), so none of them reaches the Anthropic SDK. It is self-contained:
+# `--profile paper` alone is enough (`--profile claude --profile paper` also works).
+#
 # Thinking. Sonnet 4.5 and Haiku 4.5 predate adaptive thinking and the effort
 # parameter (effort is rejected on both), so thinking is a fixed token budget.
 # Upstream's CSO asked the Agent SDK for adaptive thinking at effort "xhigh";
@@ -26,15 +33,60 @@
 #
 # Context window: Sonnet 4.5 runs with its standard 200K window (the 1M-token
 # beta was not used upstream); the harness compacts history against it.
+provider:
+  name: anthropic
+  options:
+    refusal_fallback: true
+    web_search_model: claude-sonnet-4-5
+    prompt_caching: true
+    max_retries: 4
+    # options of the local OpenAI-compatible adapter (reset; api_key null = the SDK reads ANTHROPIC_API_KEY)
+    base_url: null
+    api_key: null
+    model: null
+    timeout_s: null
+    served_model_name: null
+    family: null
+    read_timeout_s: null
+    max_concurrency: null
+    data_parallel_size: null
+    routing: null
+    base_urls: null
+    pricing: null
+    extra_body: null
+  model_pattern: null             # in-code default for anthropic: '^claude-[a-z0-9.-]+$'
+
+model_aliases:
+  opus: claude-opus-5
+  sonnet: claude-sonnet-5
+  haiku: claude-haiku-4-5
+  paper: claude-sonnet-4-5
+
 models:
   orchestrator: {model: claude-sonnet-4-5, effort: null, max_tokens: 64000, thinking: true,
                  thinking_budget: 32000, context_window_tokens: 200000}
   scientist:    {model: claude-sonnet-4-5, effort: null, max_tokens: 64000, thinking: true,
                  thinking_budget: 16000, context_window_tokens: 200000}
   support:      {model: claude-haiku-4-5, effort: null, max_tokens: 16000, thinking: false,
-                 context_window_tokens: 200000}
+                 thinking_budget: null, context_window_tokens: 200000}
   bulk:         {model: claude-sonnet-4-5, effort: null, max_tokens: 32000, thinking: true,
                  thinking_budget: 8000, context_window_tokens: 200000}
-provider:
-  options:
-    web_search_model: claude-sonnet-4-5
+
+# Claude is budgeted in USD (max_turn_cost_usd / max_item_cost_usd of default.yaml); the local
+# model's token budgets do not apply.
+limits:
+  max_turn_tokens: null
+  max_item_tokens: null
+
+# The Claude-era context policy (the local default compacts earlier).
+context:
+  soft_ratio: 0.7
+  hard_ratio: 0.85
+  default_window_tokens: 200000
+
+bulk:
+  default_concurrency: 64         # the paper-era `vbt case1 annotate` default
+
+web:
+  search:
+    backend: auto                 # auto = Anthropic's native web search

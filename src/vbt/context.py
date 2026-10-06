@@ -27,6 +27,12 @@ Thinking blocks: blocks inside a summarised span are dropped. For providers
 whose thinking blocks are bound to the exact conversation prefix
 (``ProviderCapabilities.history_bound_thinking``), every thinking block after the
 first edited message is stripped as well, since replaying it would be rejected.
+For providers that re-send earlier reasoning as text on every request
+(``ProviderCapabilities.replays_reasoning``: local OpenAI-compatible servers,
+whose chat template keeps all past reasoning), the clearing pass also empties
+the reasoning of assistant turns older than ``keep_recent_calls`` (text ``""``,
+``native['cleared_by_harness']``), in the same pass as the tool results, so the
+prompt cache misses once per compaction rather than on every turn.
 
 No vendor SDK imports here.
 """
@@ -166,6 +172,7 @@ class CompactionResult:
     spill_paths: list[str] = field(default_factory=list)
     model: str | None = None
     note: str = ""
+    thinking_cleared: int = 0           # reasoning blocks emptied (replays_reasoning providers)
 
     def as_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -252,6 +259,7 @@ class _Stats:
     cleared: int = 0
     summarized: int = 0
     thinking_dropped: int = 0
+    thinking_cleared: int = 0
     paths: list[str] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
     cost: float = 0.0
@@ -390,10 +398,13 @@ class ContextManager:
         first_edit: int | None = None
         keep = 1 if aggressive else max(0, pol.keep_recent_calls)
         min_chars = min(pol.min_clear_chars, 500) if aggressive else pol.min_clear_chars
+        # providers that replay reasoning text: old reasoning is cleared with old tool results
+        thinking = bool(self._capabilities(settings.model).replays_reasoning)
 
         def clear(keep_recent: int, label: str) -> None:
             nonlocal first_edit
-            e = self._clear_tool_results(messages, keep_recent=keep_recent, min_chars=min_chars, stats=st)
+            e = self._clear_tool_results(messages, keep_recent=keep_recent, min_chars=min_chars, stats=st,
+                                         clear_thinking=thinking)
             if e is not None:
                 steps.append(label)
                 first_edit = e if first_edit is None else min(first_edit, e)
@@ -403,7 +414,7 @@ class ContextManager:
             #    window (every edit restarts the prompt cache from the edited message)
             probe = _Stats()
             clearable = self._clear_tool_results(list(messages), keep_recent=keep, min_chars=min_chars,
-                                                 stats=probe, dry_run=True) is not None
+                                                 stats=probe, dry_run=True, clear_thinking=thinking) is not None
             cleared_now = clearable and (aggressive or probe.removed_tokens >= pol.min_clear_fraction * window)
             if cleared_now:
                 clear(keep, "clear_tool_results")
@@ -446,7 +457,8 @@ class ContextManager:
         return CompactionResult(
             strategy="+".join(steps), tokens_before=int(tokens_before), tokens_after_estimate=int(after),
             usage=st.usage, cost_usd=st.cost, cleared_results=st.cleared, summarized_messages=st.summarized,
-            thinking_dropped=st.thinking_dropped, spill_paths=st.paths, model=st.model, note="; ".join(st.notes))
+            thinking_dropped=st.thinking_dropped, spill_paths=st.paths, model=st.model, note="; ".join(st.notes),
+            thinking_cleared=st.thinking_cleared)
 
     # ------------------------------------------------------------------ clearing
 
@@ -461,10 +473,27 @@ class ContextManager:
     def _is_cleared(content: Any) -> bool:
         return isinstance(content, str) and content.startswith(CLEARED_PREFIX)
 
+    @staticmethod
+    def _clear_thinking(m: Message, stats: _Stats) -> Message | None:
+        """``m`` with the text of its reasoning blocks emptied (None if it had none)."""
+        new_blocks: list[Any] = []
+        changed = False
+        for b in m.content:
+            if isinstance(b, ThinkingBlock) and b.text:
+                stats.removed_tokens += len(b.text) // CHARS_PER_TOKEN
+                stats.thinking_cleared += 1
+                native = {**(b.native or {}), "cleared_by_harness": True, "cleared_chars": len(b.text)}
+                new_blocks.append(ThinkingBlock("", b.provider, native=native))
+                changed = True
+            else:
+                new_blocks.append(b)
+        return Message(m.role, new_blocks) if changed else None
+
     def _clear_tool_results(self, messages: list[Message], *, keep_recent: int, min_chars: int, stats: _Stats,
-                            dry_run: bool = False) -> int | None:
-        """Replace old tool-result content with stubs. Returns the index of the
-        first edited message (None if nothing qualified)."""
+                            dry_run: bool = False, clear_thinking: bool = False) -> int | None:
+        """Replace old tool-result content with stubs (and, with
+        ``clear_thinking``, empty the reasoning of old assistant turns). Returns
+        the index of the first edited message (None if nothing qualified)."""
         assistants = [i for i, m in enumerate(messages) if m.role == "assistant"]
         if keep_recent > 0:
             if len(assistants) <= keep_recent:
@@ -475,6 +504,13 @@ class ContextManager:
         first: int | None = None
         for i in range(boundary):
             m = messages[i]
+            if m.role == "assistant":
+                if clear_thinking:
+                    cleared = self._clear_thinking(m, stats)
+                    if cleared is not None:
+                        messages[i] = cleared
+                        first = i if first is None else first
+                continue
             if m.role != "user" or not any(isinstance(b, ToolResult) for b in m.content):
                 continue
             new_blocks: list[Any] = []

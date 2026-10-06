@@ -27,11 +27,17 @@ provider:
 model_aliases:
   dsv4: dsv4-flash
 
+# thinking_budget: null - no thinking_token_budget for this family (and it resets the budgets of
+# configs/default.yaml, which profiles are deep-merged onto).
 models:
-  orchestrator: {model: dsv4-flash, effort: high, thinking: true, max_tokens: 65536, context_window_tokens: 393216}
-  scientist:    {model: dsv4-flash, effort: high, thinking: true, max_tokens: 65536, context_window_tokens: 393216}
-  support:      {model: dsv4-flash, effort: null, thinking: false, max_tokens: 16000, context_window_tokens: 393216}
-  bulk:         {model: dsv4-flash, effort: low, thinking: true, max_tokens: 16384, context_window_tokens: 393216}
+  orchestrator: {model: dsv4-flash, effort: high, thinking: true, max_tokens: 65536, context_window_tokens: 393216,
+                 thinking_budget: null}
+  scientist:    {model: dsv4-flash, effort: high, thinking: true, max_tokens: 65536, context_window_tokens: 393216,
+                 thinking_budget: null}
+  support:      {model: dsv4-flash, effort: null, thinking: false, max_tokens: 16000, context_window_tokens: 393216,
+                 thinking_budget: null}
+  bulk:         {model: dsv4-flash, effort: low, thinking: true, max_tokens: 16384, context_window_tokens: 393216,
+                 thinking_budget: null}
 
 limits:
   max_parallel_agents: 16

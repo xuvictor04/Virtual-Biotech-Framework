@@ -28,8 +28,25 @@ Config (``limits:``; in-code defaults): ``max_cso_turns`` (``max_agent_turns`` o
 100), ``max_specialist_turns`` (400; an agent's own ``max_turns`` wins),
 ``delegation_timeout_s`` (None), ``trace_output_chars`` (10000),
 ``trace_input_inline_chars`` (16000), ``tool_output_max_chars`` (40000),
-``max_turn_cost_usd`` (cap of the ``turn`` scope). ``retry:`` and ``context:``
-sections configure ``RetryPolicy`` and ``ContextPolicy``.
+``max_turn_cost_usd`` / ``max_turn_tokens`` (caps of the ``turn`` scope; either
+one stops it), ``cached_token_weight`` (0.1: weight of cached input tokens in
+token budgets). ``retry:`` and ``context:`` sections configure ``RetryPolicy``
+and ``ContextPolicy``.
+
+Model-facing guards (local open-weight models need them more than Claude):
+
+* every request carries ``extra['session_key']`` (the invocation id; the CSO's
+  is stable for the whole session) so a data-parallel server keeps an agent on
+  one replica and its prefix cache;
+* tool calls whose arguments were not valid JSON
+  (``ToolCall.native['invalid_arguments']``) or miss required properties / have
+  wrong top-level types are not run: the model gets an error result asking it to
+  re-issue the call (recorded as a model error, never a data-source failure);
+* an empty reply (no text, no tool call) right after tool results gets one
+  harness nudge per invocation;
+* ``run_agent(force_tool=...)`` makes the final allowed call a forced call of
+  that tool (``extra['tool_choice']`` when the provider supports it); the final
+  no-tool call (turn limit, budget grace) sends ``tool_choice 'none'``.
 """
 
 from __future__ import annotations
@@ -62,6 +79,7 @@ from .providers.base import (
     LLMProvider,
     Message,
     ModelResponse,
+    ModelSettings,
     StopReason,
     SystemSegment,
     TextBlock,
@@ -99,12 +117,22 @@ __all__ = ["Runtime", "AgentResult", "BudgetExceeded", "repair_history", "AGENT_
 AGENT_STATUSES = ("completed", "turn_limit", "refusal", "context_exceeded", "timeout", "cancelled", "budget", "error")
 
 TURN_LIMIT_MSG = "[Harness] You have reached the turn limit. Do not call tools; write your final report now."
+FORCE_TOOL_MSG = ("[Harness] You have reached the turn limit. Call {tool} now with your final result; no other tool "
+                  "will run.")
 BUDGET_GRACE_MSG = ("[Harness] The turn budget is exhausted. Do not call tools; write your final synthesis from the "
                     "evidence gathered so far and state what is missing.")
 CONTINUE_MSG = "[Harness] Your response hit the output limit. Continue exactly where you stopped, concisely."
+EMPTY_REPLY_MSG = ("[Harness] Your last reply was empty. Continue: call the next tool or write your final report.")
 TRUNCATED_INPUT_MSG = "Tool input was truncated at max_tokens; retry with a shorter input."
+INVALID_JSON_MSG = ("Your arguments for {tool} were not valid JSON ({error}). Re-issue the call with a single JSON "
+                    "object matching the schema.")
+INVALID_ARGS_MSG = ("Your arguments for {tool} do not match its schema: {problems}. Re-issue the call with a single "
+                    "JSON object matching the schema.")
 AUDIT_NOTE = ("[Harness] Audit recording failed for this call: {msg}. Report incomplete evidence and do not invent "
               "citations.")
+
+#: Harness tools declared ``strict`` (schema-constrained arguments where the provider supports it).
+STRICT_TOOLS = frozenset({"mcp__provenance__record_claims"})
 
 #: Run-relative prefixes that resolve against the run directory, not the agent workspace.
 RUN_PREFIXES = ("work", "inputs", "evidence", "report", "logs", ".claude")
@@ -141,6 +169,132 @@ def _last_assistant_text(messages: list[Message]) -> str:
         if m.role == "assistant" and m.text:
             return m.text
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Tool-argument checks (before a tool runs)
+# ---------------------------------------------------------------------------
+
+_JSON_TYPE_NAMES = ("string", "integer", "number", "boolean", "array", "object", "null")
+
+
+def _json_type_of(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, (list, tuple)):
+        return "array"
+    if isinstance(value, Mapping):
+        return "object"
+    return type(value).__name__
+
+
+def _type_matches(value: Any, t: str) -> bool:
+    if t == "string":
+        return isinstance(value, str)
+    if t == "integer":
+        return (isinstance(value, int) and not isinstance(value, bool)) or \
+            (isinstance(value, float) and value.is_integer())
+    if t == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if t == "boolean":
+        return isinstance(value, bool)
+    if t == "array":
+        return isinstance(value, (list, tuple))
+    if t == "object":
+        return isinstance(value, Mapping)
+    if t == "null":
+        return value is None
+    return True  # unknown type keyword: do not judge
+
+
+def _declared_types(prop: Any) -> list[str] | None:
+    """The top-level JSON types a property schema declares, or None when it
+    declares none (anyOf/oneOf/$ref/...: not checked here)."""
+    if not isinstance(prop, Mapping):
+        return None
+    t = prop.get("type")
+    types = [t] if isinstance(t, str) else list(t) if isinstance(t, list) else []
+    types = [x for x in types if isinstance(x, str) and x in _JSON_TYPE_NAMES]
+    return types or None
+
+
+def _reduced_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Top-level ``required`` and per-property ``type`` of a tool's input schema:
+    the part the harness enforces (the tool and the server check the rest)."""
+    props = schema.get("properties") if isinstance(schema.get("properties"), Mapping) else {}
+    required = [str(r) for r in (schema.get("required") or []) if isinstance(r, str)]
+    out_props: dict[str, Any] = {}
+    for name, prop in props.items():
+        types = _declared_types(prop)
+        if types:
+            if str(name) not in required and "null" not in types:
+                types = types + ["null"]   # models often send null for an omitted optional argument
+            out_props[str(name)] = {"type": types if len(types) > 1 else types[0]}
+    return {"type": "object", "required": required, "properties": out_props}
+
+
+def _jsonschema_problems(reduced: dict[str, Any], args: Mapping[str, Any]) -> list[str] | None:
+    """Problems found by ``jsonschema`` (None when it is not installed)."""
+    try:
+        import jsonschema  # optional (vbt-harness[tools])
+    except ImportError:
+        return None
+    try:
+        validator_cls = jsonschema.validators.validator_for(reduced)
+        validator = validator_cls(reduced)
+        out = []
+        for e in sorted(validator.iter_errors(dict(args)), key=lambda e: list(e.path)):
+            where = ".".join(str(p) for p in e.path)
+            if e.validator == "required":
+                out.append(e.message.replace("is a required property", "is required"))
+            elif e.validator == "type" and where:
+                out.append(f"{where!r} must be {_type_phrase(e.validator_value)}, got "
+                           f"{_json_type_of(e.instance)}")
+            else:
+                out.append(f"{where + ': ' if where else ''}{e.message}")
+        return out
+    except Exception:  # noqa: BLE001 - a validator problem must never block a tool call
+        log.debug("jsonschema validation failed", exc_info=True)
+        return None
+
+
+def _type_phrase(types: Any) -> str:
+    ts = [t for t in ([types] if isinstance(types, str) else list(types or [])) if t != "null"] or ["null"]
+    return " or ".join(ts)
+
+
+def tool_argument_problems(schema: Mapping[str, Any] | None, args: Any) -> list[str]:
+    """Missing required properties and wrong top-level JSON types of ``args``
+    against a tool's input ``schema`` ([] when fine or when the schema declares
+    nothing checkable). Uses ``jsonschema`` when installed, else a minimal
+    required/type check with the same scope. Nested values are not checked
+    (the tool and, for strict tools, the server's grammar do that)."""
+    if not isinstance(schema, Mapping):
+        return []
+    if not isinstance(args, Mapping):
+        return [f"arguments must be a JSON object, got {_json_type_of(args)}"]
+    if schema.get("type") not in (None, "object"):
+        return []
+    reduced = _reduced_schema(schema)
+    found = _jsonschema_problems(reduced, args)
+    if found is not None:
+        return found
+    problems = [f"{r!r} is required" for r in reduced["required"] if r not in args]
+    for name, prop in reduced["properties"].items():
+        if name not in args:
+            continue
+        types = prop["type"] if isinstance(prop["type"], list) else [prop["type"]]
+        if not any(_type_matches(args[name], t) for t in types):
+            problems.append(f"{name!r} must be {_type_phrase(types)}, got {_json_type_of(args[name])}")
+    return problems
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +399,8 @@ class AgentResult:
     retries: int = 0
     fallback_count: int = 0
     error: str | None = None
+    tokens: float = 0.0              # budget tokens of this invocation's own model calls (vbt.budget)
+    nudges: list[str] = field(default_factory=list)   # harness nudges sent (empty_reply, ...)
 
 
 def _has_tool_blocks(messages: list[Message]) -> bool:
@@ -279,6 +435,10 @@ class _Loop:
     # tool definitions) but no call is executed.
     inert_tools: list[Tool] = field(default_factory=list)
     refused_rounds: int = 0
+    force_tool: str | None = None      # forced on the final allowed call (run_agent(force_tool=...))
+    task_given: bool = False           # run_agent got a task message (it is the instruction of call 1)
+    empty_nudged: bool = False         # the empty-reply nudge was sent (once per invocation)
+    call_mode: str | None = None       # None | 'force' | 'none': tool_choice of the next call
 
     @property
     def specs(self):
@@ -299,8 +459,10 @@ class Runtime:
                  on_event: EventCallback | None = None):
         self.config = config
         self.run = run
-        self.provider = provider or create_provider(config["provider"]["name"],
-                                                    **(config["provider"].get("options") or {}))
+        # null options are unset (a profile switching provider resets the other adapter's options to null)
+        self.provider = provider or create_provider(
+            config["provider"]["name"],
+            **{k: v for k, v in (config["provider"].get("options") or {}).items() if v is not None})
         self.bus = EventBus()
         self.on_event = on_event
         if on_event is not None:
@@ -317,6 +479,8 @@ class Runtime:
         self.delegation_timeout_s = float(timeout) if timeout not in (None, "", 0) else None
         self._parallel = asyncio.Semaphore(int(limits.get("max_parallel_agents", 8)))
         self.turn_budget_usd = float(limits.get("max_turn_cost_usd") or 0) or None
+        self.turn_budget_tokens = float(limits.get("max_turn_tokens") or 0) or None
+        self.cached_token_weight = budget.cached_token_weight(config)
         paths = config.get("paths") or {}
         self.read_roots = [Path(resolve_path(p)).resolve() for p in paths.get("read_roots", []) if p]
         self.skill_roots = [Path(resolve_path(p)).resolve() for p in paths.get("skills", []) if p]
@@ -338,7 +502,10 @@ class Runtime:
         self._known_agents: dict[str, AgentDefinition] = {}
         self.registry.extend(builtin_tools(skill_roots=self.skill_roots))
         self._materialize_skills()
-        self.registry.extend(provenance_tools())
+        for t in provenance_tools():
+            if t.name in STRICT_TOOLS:
+                t.strict = True
+            self.registry.add(t)
         self.registry.add(self._task_tool())
         self.registry.add(self._list_tools_tool())
         self.registry.add(query_tool_output_tool())
@@ -362,7 +529,22 @@ class Runtime:
 
     @property
     def search_backend(self):
-        return self.provider.web_search if self.provider.supports_web_search() else None
+        """The WebSearch backend (``web.search``: provider-native, SearxNG, Brave or
+        None); resolved on every call (cheap, no network)."""
+        from .tools.search_backends import resolve_search_backend
+        return resolve_search_backend(self.config, self.provider)
+
+    def supports_tool_choice(self, model: str | None = None) -> bool:
+        """The provider honours ``extra['tool_choice']`` (forced / disabled tool calls)."""
+        try:
+            return bool(getattr(self.provider.capabilities(model), "tool_choice", False))
+        except TypeError:  # providers written against capabilities() without a model argument
+            try:
+                return bool(getattr(self.provider.capabilities(), "tool_choice", False))
+            except Exception:  # noqa: BLE001
+                return False
+        except Exception:  # noqa: BLE001
+            return False
 
     def tool_env(self, ctx: ToolContext | None = None) -> dict[str, str]:
         env = base_tool_env(self.config)
@@ -485,6 +667,23 @@ class Runtime:
             return int(limits.get("max_cso_turns") or limits.get("max_agent_turns") or 100)
         return int(limits.get("max_specialist_turns") or 400)
 
+    def _agent_settings(self, agent: AgentDefinition, depth: int, inv: str,
+                        session_key: str | None = None) -> ModelSettings:
+        """The agent's tier settings (tier extras such as thinking_budget passed
+        through unchanged) plus ``extra['session_key']`` for sticky routing: the
+        invocation id, or for the depth-0 agent (the CSO, whose conversation spans
+        every turn) one key per run and agent."""
+        s = self.context.settings_for(agent.settings(self.config))
+        extra = dict(s.extra or {})
+        if not extra.get("session_key"):
+            if session_key:
+                extra["session_key"] = str(session_key)
+            elif depth == 0:
+                extra["session_key"] = f"{getattr(self.run, 'run_id', '') or 'run'}:{agent.name}"
+            else:
+                extra["session_key"] = inv
+        return dataclasses.replace(s, extra=extra)
+
     def _system_for(self, agent: AgentDefinition, workspace: Path) -> list[SystemSegment]:
         """[stable (cached), volatile] system prompt. The delegating agent's (CSO's)
         prompt is built once per Runtime; others once per invocation."""
@@ -501,12 +700,12 @@ class Runtime:
 
     # ------------------------------------------------------------------ budget and cost
 
-    def cost_scope(self, name: str, limit: float | None = None):
+    def cost_scope(self, name: str, limit: float | None = None, *, limit_tokens: float | None = None):
         """Context manager opening a budget scope nested in the current one::
 
-            with rt.cost_scope("turn", limits.max_turn_cost_usd): ...
+            with rt.cost_scope("turn", limits.max_turn_cost_usd, limit_tokens=limits.max_turn_tokens): ...
         """
-        return open_scope(name, limit)
+        return open_scope(name, limit, limit_tokens=limit_tokens)
 
     def begin_turn(self) -> CostScope:
         """Compat shim: open (or reset) a ``turn`` scope in the current context."""
@@ -514,8 +713,10 @@ class Runtime:
         if cur is not None and cur.meta.get("compat_turn"):
             cur.reset()
             cur.limit_usd = self.turn_budget_usd
+            cur.limit_tokens = self.turn_budget_tokens
             return cur
-        scope = CostScope("turn", self.turn_budget_usd, parent=cur, meta={"compat_turn": True})
+        scope = CostScope("turn", self.turn_budget_usd, parent=cur, meta={"compat_turn": True},
+                          limit_tokens=self.turn_budget_tokens)
         budget.set_scope(scope)
         return scope
 
@@ -527,23 +728,35 @@ class Runtime:
         """Charge a cost now: run ledger, every enclosing scope, the invocation accumulator.
 
         ``usage`` given: a model call (``run.cost.add``); otherwise a tool-side
-        cost (``run.cost.add_extra(agent=, usd=, label=)``).
+        cost (``run.cost.add_extra(agent=, usd=, label=)``). A model call also
+        charges its budget tokens (``budget.usage_tokens``) to every scope, so
+        token limits work when the provider costs 0 USD.
         """
         try:
             usd = float(usd or 0.0)
         except (TypeError, ValueError):
             usd = 0.0
         cost = self.run.cost
+        tokens = 0.0
         if usage is not None:
             cost.add(agent, usage, usd)
+            tokens = budget.usage_tokens(usage, self.cached_token_weight)
         elif usd:
             cost.add_extra(agent=agent, usd=usd, label=label)
-        budget.charge(usd)
+        budget.charge(usd, tokens)
         acc = budget.current_invocation()
         if acc is not None:
-            acc.add(usd, model_call=usage is not None)
+            acc.add(usd, model_call=usage is not None, tokens=tokens)
         if usd or usage is not None:
-            self.emit("cost", total_usd=round(cost.total_usd, 6))
+            self.emit("cost", total_usd=round(cost.total_usd, 6), total_tokens=self.total_tokens())
+
+    def total_tokens(self) -> int:
+        """Input (incl. cached) + output tokens of every model call of the run so far."""
+        try:
+            return int(sum(u.input_tokens + u.cache_read_tokens + u.cache_write_tokens + u.output_tokens
+                           for u in self.run.cost.by_agent.values()))
+        except Exception:  # noqa: BLE001 - a display number
+            return 0
 
     # ------------------------------------------------------------------ history
 
@@ -587,12 +800,24 @@ class Runtime:
         parent_invocation_id: str | None = None,
         description: str = "",
         tool_use_id: str | None = None,
+        force_tool: str | None = None,
+        max_turns: int | None = None,
+        session_key: str | None = None,
     ) -> AgentResult:
         """Run ``agent`` until it answers without tool calls (or a stop condition).
 
         ``history`` is extended in place and stays valid on every exit path.
         ``after_end_turn`` may return a harness message that re-opens the loop
         (used to enforce review); text before it moves to ``drafts``.
+
+        ``force_tool``: on the final allowed call (after ``max_turns`` model calls)
+        the agent is told to call this tool, the call is forced with
+        ``extra['tool_choice']`` when the provider supports it, and the tool runs
+        (a terminal tool then completes the invocation). ``max_turns`` overrides
+        the agent's cap (0: the first call is the final one, e.g. a bulk agent
+        continued once to submit its result). ``session_key`` pins the requests to
+        one server replica (default: the invocation id; the depth-0 agent's key
+        is stable for the session).
         """
         t0 = time.time()
         if agent.name not in self.agents and agent is not self.cso:
@@ -613,15 +838,17 @@ class Runtime:
         inert: list[Tool] = []
         if not allow_tools and _has_tool_blocks(messages):
             inert = self.tools_for(agent) + list(extra_tools or [])
-        settings = self.context.settings_for(agent.settings(self.config))
+        settings = self._agent_settings(agent, depth, inv, session_key)
         result = AgentResult(agent.name, "", messages, invocation_id=inv, parent_invocation_id=parent)
         if inv in self._live:
             self._live[inv] = result
         acc = InvocationCost(inv)
+        cap = self.max_turns_for(agent, depth) if max_turns is None else max(0, int(max_turns))
         st = _Loop(agent=agent, depth=depth, messages=messages, tools=list(by_name.values()), by_name=by_name,
                    settings=settings, system=system, result=result, inv=inv, parent=parent, stream_text=stream_text,
-                   after_end_turn=after_end_turn, max_turns=self.max_turns_for(agent, depth), acc=acc,
-                   inert_tools=inert)
+                   after_end_turn=after_end_turn, max_turns=cap, acc=acc, inert_tools=inert,
+                   force_tool=force_tool if force_tool and force_tool in by_name else None,
+                   task_given=task is not None)
         ids_token = _RUN_IDS.set((inv, parent))
         acc_token = budget.use_invocation(acc)
         self._trace("agent_start", agent=agent.name, depth=depth, agent_run_id=inv, parent_run_id=parent,
@@ -682,8 +909,18 @@ class Runtime:
                 else:
                     raise exc
             final_call = grace or st.turns >= st.max_turns
+            forced = bool(final_call and not grace and st.force_tool)
             if final_call and not grace:
-                st.messages.append(Message.user(TURN_LIMIT_MSG))
+                if not forced:
+                    st.messages.append(Message.user(TURN_LIMIT_MSG))
+                elif not (st.turns == 0 and st.task_given):  # else the caller's task is this call's instruction
+                    st.messages.append(Message.user(FORCE_TOOL_MSG.format(tool=st.force_tool)))
+            if forced:
+                st.call_mode = "force"
+            elif final_call or (st.inert_tools and not st.by_name):
+                st.call_mode = "none"   # no tool may run on this call
+            else:
+                st.call_mode = None
 
             # ---- keep the context inside the window, then call the model
             await self._maybe_compact(st)
@@ -717,7 +954,13 @@ class Runtime:
                 r.text = (st.report + "\n\n" + note).strip()
                 return
             if final_call:
-                if calls:
+                if forced and calls:
+                    terminal = await self._tool_round(st, calls, only=st.force_tool,
+                                                      reason=f"turn limit reached; only {st.force_tool} runs")
+                    if terminal:
+                        r.status, r.stop_reason, r.text = "completed", "terminal_tool", st.report
+                        return
+                elif calls:
                     self._answer(st, calls, "budget exhausted" if grace else "turn limit reached")
                 r.status = r.stop_reason = "budget" if grace else "turn_limit"
                 r.text = st.report or ("[The budget ran out before a final report was written.]" if grace else
@@ -764,6 +1007,15 @@ class Runtime:
                 r.status, r.error = "error", f"provider stop {stop.value}: {resp.stop_detail or ''}".strip()
                 r.text = st.report
                 return
+            if (stop is StopReason.END_TURN and not st.empty_nudged and not resp.message.text.strip()
+                    and self._follows_tool_results(st.messages)):
+                # An empty reply right after tool results (seen with local models): nudge once;
+                # a second empty reply is accepted as the final answer.
+                st.empty_nudged = True
+                r.nudges.append("empty_reply")
+                self._trace("empty_reply_nudge", agent=st.agent.name, turns=st.turns)
+                st.messages.append(Message.user(EMPTY_REPLY_MSG))
+                continue
             r.text = st.report
             if st.after_end_turn is not None:
                 nudge = await st.after_end_turn(st.messages)
@@ -790,6 +1042,11 @@ class Runtime:
             st.report = text
 
     @staticmethod
+    def _follows_tool_results(messages: list[Message]) -> bool:
+        """The last message (a reply) directly follows a user message with tool results."""
+        return len(messages) >= 2 and messages[-2].role == "user" and bool(messages[-2].tool_results)
+
+    @staticmethod
     def _answer(st: _Loop, calls: list[ToolCall], reason: str) -> None:
         st.messages.append(Message("user", [ToolResult(c.id, f"Not executed: {reason}.", True) for c in calls]))
 
@@ -808,6 +1065,7 @@ class Runtime:
         if failure is not None and not r.text:
             r.text = st.report or (st.segments[-1] if st.segments else "")
         r.cost_usd = st.acc.usd
+        r.tokens = st.acc.tokens
         r.duration_s = round(time.time() - t0, 1)
         summary = failures.summarize(st.calls)
         r.unresolved_data_failures = summary["unresolved_data"]
@@ -815,7 +1073,8 @@ class Runtime:
         r.other_errors = summary["other_error_count"]
         r.transcript_path = self._write_transcript(st)
         self._trace("agent_end", agent=r.agent, depth=st.depth, agent_run_id=st.inv, parent_run_id=st.parent,
-                    status=r.status, stop=r.stop_reason, cost_usd=round(r.cost_usd, 6), model_calls=r.model_calls,
+                    status=r.status, stop=r.stop_reason, cost_usd=round(r.cost_usd, 6),
+                    budget_tokens=round(r.tokens, 1), nudges=list(r.nudges), model_calls=r.model_calls,
                     tool_calls=r.tool_calls, duration_s=r.duration_s, text=r.text[:20000],
                     full_text_chars=len(r.full_text), drafts=len(r.drafts), transcript_path=r.transcript_path,
                     compactions=r.compactions, retries=r.retries, fallback_count=r.fallback_count, error=r.error,
@@ -839,6 +1098,18 @@ class Runtime:
         return self.run.rel(path)
 
     # ------------------------------------------------------------------ model calls
+
+    def _call_settings(self, st: _Loop) -> ModelSettings:
+        """``st.settings`` plus the ``tool_choice`` of this call when the provider
+        honours it: ``{'name': force_tool}`` on a forced final call, ``'none'`` on a
+        call where no tool may run (turn limit, budget grace, inert tools)."""
+        mode = st.call_mode
+        if mode is None or not st.specs or "tool_choice" in (st.settings.extra or {}):
+            return st.settings
+        if not self.supports_tool_choice(st.settings.model):
+            return st.settings
+        choice: Any = {"name": st.force_tool} if mode == "force" and st.force_tool else "none"
+        return dataclasses.replace(st.settings, extra={**(st.settings.extra or {}), "tool_choice": choice})
 
     def _ensure_valid(self, st: _Loop) -> None:
         problems = validate_tool_pairing(st.messages)
@@ -876,8 +1147,8 @@ class Runtime:
 
             try:
                 resp = await complete_with_retry(self.provider, policy=self.retry_policy, on_retry=on_retry,
-                                                 settings=st.settings, system=st.system, messages=st.messages,
-                                                 tools=st.specs, **kwargs)
+                                                 settings=self._call_settings(st), system=st.system,
+                                                 messages=st.messages, tools=st.specs, **kwargs)
             except ContextOverflowError as exc:
                 self._trace("context_overflow", agent=st.agent.name, error=str(exc)[:500], recovered=not overflowed)
                 if overflowed or not await self._recover_overflow(st):
@@ -963,13 +1234,21 @@ class Runtime:
 
     # ------------------------------------------------------------------ tools
 
-    async def _tool_round(self, st: _Loop, calls: list[ToolCall]) -> bool:
+    async def _tool_round(self, st: _Loop, calls: list[ToolCall], *, only: str | None = None,
+                          reason: str = "") -> bool:
         """Run ``calls`` in parallel; returns True when a terminal tool succeeded.
+
+        ``only``: run just the calls of that tool; the others are answered
+        ``Not executed: <reason>`` (a forced final call).
 
         On any exception (including cancellation and BudgetExceeded) the pending
         siblings are cancelled and awaited, every call is answered, and the
         exception propagates."""
-        tasks = [asyncio.ensure_future(self._execute(c, st)) for c in calls]
+        async def skip(c: ToolCall) -> ToolResult:
+            return ToolResult(c.id, f"Not executed: {reason or 'not allowed on this call'}.", True)
+
+        tasks = [asyncio.ensure_future(self._execute(c, st) if only is None or c.name == only else skip(c))
+                 for c in calls]
         for t in tasks:
             self._track(t)
         try:
@@ -990,7 +1269,8 @@ class Runtime:
                 self._append_round(st, calls, tasks, reason)
             raise
         results = self._append_round(st, calls, tasks, None)
-        st.result.delegations += [c.input.get("subagent_type", "?") for c in calls if c.name == "Task"]
+        st.result.delegations += [c.input.get("subagent_type", "?") for c in calls
+                                  if c.name == "Task" and (only is None or only == "Task")]
         return any(not res.is_error and st.by_name.get(c.name) is not None and st.by_name[c.name].terminal
                    for c, res in zip(calls, results))
 
@@ -1153,9 +1433,14 @@ class Runtime:
         t0 = time.time()
         raw: Any = None
         parts: list[Any] | None = None  # multimodal result (text + image/document parts)
+        model_error: str | None = None  # the harness rejected the call before running it
         try:
+            rejected = self._argument_problem(call, tool) if tool is not None else None
             if tool is None:
                 content, err = f"Tool {call.name!r} is not available to {agent.name}.", True
+            elif rejected is not None:
+                model_error, content = rejected
+                err = True
             else:
                 ctx = ToolContext(agent=agent.name, run=self.run, runtime=self, tool_call_id=call.id, depth=st.depth,
                                   invocation_id=st.inv)
@@ -1193,6 +1478,8 @@ class Runtime:
         end: dict[str, Any] = {"agent": agent.name, "tool": call.name, "tool_use_id": call.id, "is_error": err,
                                "duration_s": duration, "output": content[: self.trace_output_chars],
                                "output_chars": len(content)}
+        if model_error:
+            end["model_error"] = model_error
         if spill is not None:
             end["output_path"] = self.run.rel(spill)
         if call.name.startswith("mcp__") and not err:
@@ -1217,11 +1504,34 @@ class Runtime:
         rec = {"tool": call.name, "input": call.input, "is_error": err, "tool_use_id": call.id, "agent": agent.name}
         if err:
             rec["error"] = content[:2000]
-            st.result.tool_errors.append({"tool": call.name, "input": preview(call.input, 2000),
-                                          "error": content[:500], "tool_use_id": call.id})
+            entry = {"tool": call.name, "input": preview(call.input, 2000), "error": content[:500],
+                     "tool_use_id": call.id}
+            if model_error:
+                rec["model_error"] = entry["model_error"] = model_error
+            st.result.tool_errors.append(entry)
         st.calls.append(rec)
         st.result.tool_calls += 1
         return ToolResult(call.id, parts if parts is not None else model_text, err)
+
+    @staticmethod
+    def _argument_problem(call: ToolCall, tool: Tool) -> tuple[str, str] | None:
+        """``(kind, message)`` when the call must not run: its arguments were not
+        valid JSON (the provider kept them raw in ``native['invalid_arguments']``)
+        or miss required properties / have wrong top-level types for the tool's
+        schema. None when the call may run."""
+        native = call.native if isinstance(call.native, Mapping) else {}
+        if "invalid_arguments" in native:
+            error = str(native.get("error") or "unparseable arguments")[:300]
+            return "invalid_arguments", INVALID_JSON_MSG.format(tool=call.name, error=error)
+        try:
+            problems = tool_argument_problems(tool.input_schema, call.input)
+        except Exception:  # noqa: BLE001 - a checker bug must never block a tool call
+            log.debug("argument check failed for %s", call.name, exc_info=True)
+            return None
+        if problems:
+            listed = "; ".join(problems[:8]) + (f"; ... ({len(problems) - 8} more)" if len(problems) > 8 else "")
+            return "schema_mismatch", INVALID_ARGS_MSG.format(tool=call.name, problems=listed)
+        return None
 
     def _supported_parts(self, agent: AgentDefinition, raw: list[Any]) -> list[Any] | None:
         """Keep the image/document parts the agent's model accepts; unsupported
@@ -1266,6 +1576,7 @@ class Runtime:
             "start_ts": None, "end_ts": None, "status": "error", "stop_reason": None, "cost_usd": 0.0,
             "duration_s": 0.0, "model_calls": 0, "tool_calls": 0, "tool_errors": [],
             "unresolved_data_failures": [], "recovered_errors": 0, "other_errors": 0, "transcript_path": None, "error": None,
+            "budget_tokens": 0.0,
         }
         history: list[Message] = []
         self._live[inv] = None
@@ -1309,7 +1620,8 @@ class Runtime:
             r = result
             entry.update(
                 end_ts=end, ts=end, duration_s=round(end - (entry["start_ts"] or t_req), 1),
-                cost_usd=round(scope.spent if scope is not None else (r.cost_usd if r else 0.0), 6))
+                cost_usd=round(scope.spent if scope is not None else (r.cost_usd if r else 0.0), 6),
+                budget_tokens=round(scope.tokens if scope is not None else (r.tokens if r else 0.0), 1))
             if r is not None:
                 entry.update(status=r.status, stop_reason=r.stop_reason, model_calls=r.model_calls,
                              tool_calls=r.tool_calls, tool_errors=list(r.tool_errors),
@@ -1368,7 +1680,10 @@ class Runtime:
 
     def _footer(self, name: str, sub: AgentResult) -> str:
         stop = f" ({sub.stop_reason})" if sub.stop_reason not in (None, "", "end_turn", sub.status) else ""
-        out = (f"[{name} finished: {sub.model_calls} model calls, {sub.tool_calls} tool calls, ${sub.cost_usd:.2f}, "
+        spend = f"${sub.cost_usd:.2f}"
+        if sub.tokens and not sub.cost_usd:   # local models: 0 USD, the token count is the cost
+            spend = f"{budget.format_tokens(sub.tokens)} tokens"
+        out = (f"[{name} finished: {sub.model_calls} model calls, {sub.tool_calls} tool calls, {spend}, "
                f"{sub.duration_s}s, status {sub.status}{stop}. Workspace: {self.workspace_for(name)}]")
         if sub.unresolved_data_failures:
             listed = "; ".join(f"{f.get('tool')}: {str(f.get('error') or '')[:160]}"
