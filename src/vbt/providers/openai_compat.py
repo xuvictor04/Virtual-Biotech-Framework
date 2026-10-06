@@ -1180,6 +1180,19 @@ class OpenAICompatProvider(LLMProvider):
                 return False
         return True
 
+    async def reachable(self, timeout_s: float = 3.0) -> list[tuple[str, str | None]]:
+        """``(server, problem)`` per configured server: one bounded ``GET /health``
+        (``vbt doctor`` without ``--smoke``). ``problem`` is None when the server
+        answered at all (any HTTP status), else why it could not be reached."""
+        out: list[tuple[str, str | None]] = []
+        for _, root in self._bases:
+            try:
+                await self._get(root + "/health", timeout=timeout_s)
+                out.append((redact_url(root), None))
+            except httpx.TransportError as exc:
+                out.append((redact_url(root), f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__))
+        return out
+
     async def server_info(self) -> dict[str, Any]:
         """Engine version, served models and context length (never raises)."""
         info: dict[str, Any] = {"provider": self.name, "base_urls": [redact_url(u) for u in self.api_bases],

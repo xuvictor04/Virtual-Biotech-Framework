@@ -856,8 +856,22 @@ def test_doctor_smoke_checks_the_model_server(fake, tmp_path, monkeypatch):
     lines.clear()
     run_doctor(cfg, smoke=False, out=lines.append)
     text = "\n".join(lines)
-    assert "[ok] vllm credentials" in text and "not contacted" in text
+    assert "[ok] vllm credentials" in text
+    assert f"[ok] vllm model server: responding at {fake.url}" in text and "vbt doctor --smoke" in text
     assert "web search backend" in text
+
+
+def test_doctor_reports_a_down_server_without_smoke(tmp_path, monkeypatch):
+    """Plain `vbt doctor`: one bounded /health probe says the server is not running (optional check)."""
+    from vbt.preflight import run_doctor
+
+    _clear_env(monkeypatch)
+    cfg = _local_config(tmp_path, "http://127.0.0.1:9/v1")
+    lines: list[str] = []
+    run_doctor(cfg, smoke=False, out=lines.append)
+    text = "\n".join(lines)
+    assert "[--] vllm model server: not running: nothing answers at http://127.0.0.1:9" in text
+    assert "vbt local serve" in text and "model server ready" not in text
 
 
 def test_doctor_smoke_reports_a_down_server(tmp_path, monkeypatch):

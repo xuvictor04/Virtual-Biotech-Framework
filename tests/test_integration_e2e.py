@@ -351,6 +351,11 @@ def test_cli_registers_package_subcommands():
     assert args.handler is preflight._doctor_handler
     args = p.parse_args(["verify", "latest", "--rerun"])
     assert args.rerun and callable(args.handler)
+    # --no-mcp is global, and also accepted after the session subcommands
+    for argv in (["tools", "--no-mcp"], ["--no-mcp", "tools"], ["run", "q", "--no-mcp"], ["chat", "--no-mcp"],
+                 ["replay", "latest", "--no-mcp"]):
+        assert p.parse_args(argv).no_mcp is True, argv
+    assert p.parse_args(["tools"]).no_mcp is False
 
 
 @pytest.mark.skipif(importlib.util.find_spec("starlette") is None or importlib.util.find_spec("httpx") is None,

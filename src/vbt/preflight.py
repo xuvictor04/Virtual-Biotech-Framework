@@ -11,7 +11,8 @@ Two entry points:
   installation report, including the MCP interpreter's imports, a live smoke
   call per MCP server (fails on any tool error) and the Python/R analysis
   stack. For local model servers (``vllm``, ``sglang``, ...) the credentials
-  check is offline (a base URL is configured); ``--smoke`` also runs
+  check is offline (a base URL is configured) and one bounded ``GET /health``
+  says whether the server is running at all; ``--smoke`` also runs
   ``provider.prepare()`` (``/health``, the configured models are served) and
   compares the server's ``max_model_len`` with the configured context windows,
   and runs one query through the WebSearch backend.
@@ -624,6 +625,40 @@ SERVE_HINT = ("start the inference server (`vbt local serve --profile <h100|h200
               "and check provider.options.base_url / VBT_LLM_BASE_URL; `vbt local check` probes its capabilities")
 
 
+def check_server_reachable(config: dict[str, Any], provider: Any, *, timeout_s: float = 3.0) -> CheckResult:
+    """``vbt doctor`` without ``--smoke``: is the local model server up at all? One
+    bounded ``GET /health`` per server; optional (never fails the doctor), the
+    full readiness check is ``--smoke`` / ``vbt local check``."""
+    label = f"{_provider_name(config, provider)} model server"
+    full = "`vbt doctor --smoke` or `vbt local check` checks served models and context window"
+    probe = getattr(provider, "reachable", None)
+    if probe is None:
+        return CheckResult(label, True, required=False, kind="model",
+                           detail="not contacted (run `vbt doctor --smoke` or `vbt local check`)")
+
+    async def run() -> list[tuple[str, str | None]]:
+        try:
+            return await asyncio.wait_for(probe(timeout_s=timeout_s), timeout_s * 4 + 2)
+        finally:
+            try:
+                await provider.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+
+    try:
+        servers = asyncio.run(run())
+    except Exception as exc:  # noqa: BLE001 - a probe failure is reported, never raised
+        return CheckResult(label, False, required=False, kind="model",
+                           detail=f"could not be checked ({type(exc).__name__}: {exc})"[:1500], hint=SERVE_HINT)
+    down = [(u, why) for u, why in servers if why]
+    if down:
+        where = "; ".join(f"nothing answers at {u} ({why})" for u, why in down)
+        return CheckResult(label, False, required=False, kind="model",
+                           detail=f"not running: {where}"[:1500], hint=SERVE_HINT)
+    return CheckResult(label, True, required=False, kind="model",
+                       detail=f"responding at {', '.join(u for u, _ in servers)} ({full})")
+
+
 async def check_model_server(config: dict[str, Any], provider: Any) -> list[CheckResult]:
     """``vbt doctor --smoke`` for providers with a readiness hook (local servers):
     ``provider.prepare()`` (/health, served models) and the server's
@@ -748,8 +783,7 @@ def run_doctor(config: dict[str, Any], *, smoke: bool = False, analysis: bool = 
                             hint="fix provider.options in the config (docs/PROVIDERS.md)", kind="credentials"))
     add(check_credentials(config, provider))
     if provider is not None and has_prepare(provider) and not smoke:
-        add(CheckResult(f"{_provider_name(config, provider)} model server", True, required=False, kind="model",
-                        detail="not contacted (run `vbt doctor --smoke` or `vbt local check`)"))
+        add(check_server_reachable(config, provider))
     add(check_search(config, provider))
     add(check_reference_data(config))
     add(CheckResult("upstream clinical-trial labels present",
@@ -802,7 +836,7 @@ def add_doctor_parser(sub: Any) -> Any:
 __all__ = [
     "CheckResult", "DataReadinessError", "LOCAL_PROVIDERS", "ProviderNotReadyError", "TURN_NOT_SENT",
     "add_doctor_parser", "check_analysis_stack", "check_credentials", "check_mcp_commands", "check_mcp_imports",
-    "check_model_server", "check_reference_data", "check_search", "configured_models", "configured_window",
-    "degraded_servers", "has_prepare", "prepare_provider", "provider_server_info", "require_ready", "run_doctor",
+    "check_model_server", "check_reference_data", "check_search", "check_server_reachable", "configured_models",
+    "configured_window", "degraded_servers", "has_prepare", "prepare_provider", "provider_server_info", "require_ready", "run_doctor",
     "smoke_mcp", "smoke_search", "upstream_doctor",
 ]

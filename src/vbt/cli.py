@@ -1051,7 +1051,16 @@ async def cmd_tools(args, config: dict[str, Any] | None = None) -> int:
 
 # ---------------------------------------------------------------- entry point
 
+def _add_no_mcp(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Also accept the global ``--no-mcp`` after the subcommand (``vbt tools --no-mcp``);
+    SUPPRESS keeps the global flag's value when it is not repeated here."""
+    p.add_argument("--no-mcp", action="store_true", default=argparse.SUPPRESS,
+                   help="do not start MCP data servers (same as the global flag)")
+    return p
+
+
 def _add_session_flags(p: argparse.ArgumentParser) -> None:
+    _add_no_mcp(p)
     p.add_argument("--resume", metavar="RUN", help="continue a recorded session (run id, prefix, path or 'latest')")
     p.add_argument("--show-reasoning", action="store_true",
                    help="print the CSO's reasoning (dim); with -v also the specialists'")
@@ -1088,7 +1097,8 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("run", help="run id, prefix, path or 'latest'")
     rp.add_argument("-q", "--quiet", action="store_true")
     rp.add_argument("--model", dest="replay_model", help="replay with a different model (alias or id)")
-    sub.add_parser("tools", help="list agents and their resolved tools")
+    _add_no_mcp(rp)
+    _add_no_mcp(sub.add_parser("tools", help="list agents and their resolved tools"))
 
     from .audit.cli import add_audit_parsers
     from .bulk import add_bulk_parser
