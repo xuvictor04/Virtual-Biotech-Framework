@@ -9,8 +9,8 @@ pinned as the `third_party/TheVirtualBiotech` submodule.
 
 | Paper | Harness | Notes |
 |---|---|---|
-| Claude Agent SDK (parent spawns child agents with isolated contexts, MCP, persistent sessions) | `src/vbt/runtime.py` (`Runtime.run_agent`, `Task` tool), `src/vbt/orchestrator.py` | Own agent loop so any provider works; `Task` calls in one response run in parallel. |
-| Model: Sonnet 4.5 (CSO + scientists), Haiku 4.5 (Chief of Staff, Reviewer) | `configs/profiles/paper.yaml`; tiers in `configs/default.yaml` | The default config runs a local open-weight model (Qwen3.8-27B on vLLM, `deploy/local/README.md`); `--profile claude` uses current Claude models and `--profile paper` pins the paper's. |
+| Claude Agent SDK (parent spawns child agents with isolated contexts, MCP, persistent sessions) | `src/vbt/runtime.py` (`Runtime.run_agent`, `Task` tool), `src/vbt/orchestrator.py`, `src/vbt/providers/` | Own agent loop so any provider works (`vllm` by default, `anthropic`, `sglang`, `llamacpp`, `openai_compat`, `mock`; [PROVIDERS.md](PROVIDERS.md)); `Task` calls in one response run in parallel. |
+| Model: Sonnet 4.5 (CSO + scientists), Haiku 4.5 (Chief of Staff, Reviewer) | Tiers in `configs/default.yaml` (`orchestrator`, `scientist`, `support`, `bulk`); `configs/profiles/paper.yaml`; local server: `configs/local_models.yaml`, `src/vbt/providers/openai_compat.py` | The default is a local open-weight model, Qwen3.8-27B on vLLM 0.31 on one 80-96 GB GPU ([LOCAL_LLM.md](LOCAL_LLM.md)). One model serves every tier, and the tiers differ in reasoning effort and a hard reasoning budget: CSO `xhigh` (24,576 tokens), scientists `medium` (8,192), Chief of Staff and Reviewer (support tier) with thinking off, bulk annotators `medium` (3,072). `--profile paper` pins the paper's Sonnet 4.5 / Haiku 4.5, and `--profile claude` uses current Claude models. Runs on the local model are a separate configuration, not a replication of the paper. |
 | Virtual CSO — orchestrates, never touches data | `configs/agents.yaml: cso` (tools: Task, provenance, read-only file tools; BulkDispatch when enabled) | Upstream CSO prompt + `src/vbt/prompts/cso_harness_addendum.md` (review policy, plan, claim filing, restricted tools). `orchestration.cso_tools: upstream` gives the upstream CSO tool set. |
 | 8 scientist agents in 4 divisions + Chief of Staff + Scientific Reviewer | `configs/agents.yaml` | Prompts are the upstream originals (Supplementary Text X), followed by per-agent addenda and role-aware harness rules (`src/vbt/agents.py: system_prompt_parts`). Tool lists are checked against the upstream registry (`tests/test_roster.py`). |
 | Strategic orientation: CoS briefing ∥ CSO clarification interview (Fig. 1C) | `CSOSession._orientation` | Run concurrently on turn 1. |
@@ -25,6 +25,7 @@ pinned as the `third_party/TheVirtualBiotech` submodule.
 | Reproducibility (harness addition) | `src/vbt/pinning.py`, `src/vbt/replay.py` | `inputs/config.json` pins models, effective thinking, per-agent tools and prompt hashes, commits and package versions; `--resume` continues a session, `vbt replay` re-runs its turns and diffs the result. |
 | Readiness before billable calls (harness addition) | `src/vbt/preflight.py`, `vbt doctor` | Session and per-turn checks of credentials and reference data; `--allow-missing-data` runs degraded and tells the agents which servers lack data. |
 | Persistent agent memory (Agent SDK `memory='project'`) | `memory/<agent>/MEMORY.md` injected into later delegations of the same role; `UpdateMemory` tool | Per run. |
+| Web search (the Agent SDK's `WebSearch`, run server-side by Claude) | `WebSearch` tool, `src/vbt/tools/search_backends.py` | Pluggable backend ([WEB_SEARCH.md](WEB_SEARCH.md)): Claude's native search with the Anthropic provider; a self-hosted SearxNG for the local model (`deploy/local/docker-compose.yml`), or the Brave Search API. |
 | Case study 2 "without web search to prevent information leakage" | `configs/profiles/no-web.yaml` | Removes WebSearch/WebFetch; PubMed limited to a publication-date ceiling; Bash network commands blocked. ClinicalTrials.gov/cBioPortal remain live. |
 
 ## Case study 1 — target prioritization (Fig. 2-3)
@@ -32,7 +33,7 @@ pinned as the `third_party/TheVirtualBiotech` submodule.
 | Paper step | Harness |
 |---|---|
 | Clinical trialist proposes outcome fields, evidence hierarchy, source tracking | `vbt scenario run trial_curation` (agentic design step) |
-| 37,075 agents, one per NCT ID, 3-tier cascade, Pydantic JSON | `vbt case1 annotate` → `bulk.BulkRunner` + `trial_outcomes/schema.py` + `annotator_prompt.md` |
+| 37,075 agents, one per NCT ID, 3-tier cascade, Pydantic JSON | `vbt case1 annotate` → `bulk.BulkRunner` + `trial_outcomes/schema.py` + `annotator_prompt.md` (the `submit_result` tool is `strict`, so a local server constrains its arguments to the schema, and an agent that has not submitted by its last allowed call is forced to; budgeted with `--budget-tokens` on the local model) |
 | Phase I success = progression to Phase II (algorithmic) | `vbt case1 phase1` (`trial_outcomes/phase1.py`; reproduces 99.8% of released labels) |
 | Manual review (50 Ph II + 50 Ph III) and TDC agreement | `vbt case1 validate` (`--sample-manual`, `--ref tdc:<csv>`) |
 | τ specificity and bimodality coefficient on Tabula Sapiens | `vbt case1 features` (`trial_outcomes/features.py`) |

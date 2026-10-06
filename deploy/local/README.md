@@ -4,7 +4,8 @@ The harness talks to a local **vLLM 0.31** server through its OpenAI-compatible 
 `vllm`). The default model is **Qwen3.8-27B** (Apache-2.0) on **one 80-96 GB NVIDIA GPU**. Other
 hardware has its own serving profile. Every profile is defined in
 [`configs/local_models.yaml`](../../configs/local_models.yaml), and the harness settings that go
-with it are in `configs/profiles/local-*.yaml`.
+with it are in `configs/profiles/local-*.yaml`. Why this model was chosen, what each GPU class can
+hold, and how to validate a deployment: [docs/LOCAL_LLM.md](../../docs/LOCAL_LLM.md).
 
 | File | Purpose |
 |---|---|

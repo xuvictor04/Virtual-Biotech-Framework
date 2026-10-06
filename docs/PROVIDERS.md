@@ -6,6 +6,19 @@ servers, orchestration, bulk runs and case studies use the neutral types in
 (transient-error retry) and `context.py` (context-window management). Neither
 service, nor `base.py` or `mock.py`, imports a vendor SDK (a test enforces this).
 
+## Registered providers
+
+`provider.name` in the config selects one (`providers/__init__.py`):
+
+| Name | Backend | Used by | Status |
+|---|---|---|---|
+| `vllm` (default) | vLLM's OpenAI-compatible server (`openai_compat.py`) | `configs/default.yaml` and `configs/profiles/local-*.yaml`: Qwen3.8-27B on vLLM 0.31 ([LOCAL_LLM.md](LOCAL_LLM.md)), or DeepSeek-V4-Flash on 4 GPUs | Offline tests; live on CPU against vLLM 0.30 with Qwen3.5-0.8B ([LOCAL_LLM_VERIFICATION.md](LOCAL_LLM_VERIFICATION.md)); not yet on a GPU |
+| `sglang` | SGLang's OpenAI-compatible server (same adapter; prior reasoning goes back as `reasoning_content`) | your own profile | Offline tests only |
+| `llamacpp` | llama.cpp `llama-server` (same adapter; window from `meta.n_ctx`) | your own profile | Live on CPU with a Q8_0 GGUF; it ignores `thinking_token_budget` (set the server's `--reasoning-budget`) and did not enforce `tool_choice: required` |
+| `openai_compat` | any other OpenAI Chat Completions server (same adapter) | your own profile | The model family is matched from the served name; unknown models get the `generic` family |
+| `anthropic` | Anthropic Messages API (`anthropic_provider.py`; `pip install 'vbt-harness[anthropic]'`, `ANTHROPIC_API_KEY`) | `--profile claude` (current Claude models), `--profile paper` (Sonnet/Haiku 4.5) | Offline tests against a fake Messages API; not yet run live |
+| `mock` | scripted responses, no network (`mock.py`) | `--profile mock`, the test suite | |
+
 ## Neutral types
 
 - `Message(role, content=[TextBlock | ThinkingBlock | ToolCall | ToolResult | OpaqueBlock])`
@@ -120,7 +133,10 @@ models:
 Requirements on the model: reliable parallel tool calling and long contexts
 (the CSO accumulates a multi-turn conversation; scientists read large tool
 outputs, which the harness truncates to `limits.tool_output_max_chars` and the
-context manager clears once they age).
+context manager clears once they age). Bulk runs also need tool calls that the server can
+constrain to a JSON Schema (`strict` tools, a forced `tool_choice`).
+[LOCAL_LLM.md](LOCAL_LLM.md) compares 16 open-weight model families against these
+requirements.
 
 ## Transient-error retry (`providers/retry.py`)
 
@@ -244,12 +260,13 @@ differences (SGLang and llama.cpp get prior reasoning back as
 
 The reference deployment is **Qwen3.8-27B** (Apache-2.0) on **vLLM 0.31.0** on
 one 80-96 GB GPU (`Qwen/Qwen3.8-27B-FP8` on H100/H200,
-`RedHatAI/Qwen3.8-27B-NVFP4` on RTX PRO 6000 / B200), served as
-`qwen3.8-27b` with `--reasoning-parser qwen3 --enable-auto-tool-choice
---tool-call-parser qwen3_coder --tool-strict-level function
---enable-prompt-tokens-details --enable-prefix-caching --language-model-only`.
+`RedHatAI/Qwen3.8-27B-NVFP4` on RTX PRO 6000 / B200; `RedHatAI/Qwen3.8-27B-INT4`
+on a 32 GB card), served as `qwen3.8-27b` with `--reasoning-parser qwen3
+--enable-auto-tool-choice --tool-call-parser qwen3_coder --tool-strict-level function
+--enable-prompt-tokens-details --enable-prefix-caching --language-model-only` (the 32 GB
+profile uses `qwen3_xml`, a streaming parser for the same XML call format).
 Serving profiles and commands live in `configs/local_models.yaml` and
-`vbt local serve`.
+`vbt local serve`. Why this model and which GPUs: [LOCAL_LLM.md](LOCAL_LLM.md).
 
 ```yaml
 provider:
@@ -261,7 +278,7 @@ provider:
     read_timeout_s: 900              # max silence between streamed chunks (no total cap)
     max_concurrency: 48              # ~ the server's --max-num-seqs
 models:
-  orchestrator: {model: qwen3.8-27b, effort: high,   thinking: true,  max_tokens: 40960, thinking_budget: 24576}
+  orchestrator: {model: qwen3.8-27b, effort: xhigh,  thinking: true,  max_tokens: 40960, thinking_budget: 24576}
   scientist:    {model: qwen3.8-27b, effort: medium, thinking: true,  max_tokens: 32768, thinking_budget: 8192}
   support:      {model: qwen3.8-27b, effort: null,   thinking: false, max_tokens: 16000}
   bulk:         {model: qwen3.8-27b, effort: medium, thinking: true,  max_tokens: 8192,  thinking_budget: 3072}

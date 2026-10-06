@@ -9,12 +9,13 @@ selection and clinical development.
 - **Faithful:** the agent system prompts, skills and FastMCP data servers are the
   authors' originals. They are pinned as a git submodule
   ([harrisongzhang/TheVirtualBiotech](https://github.com/harrisongzhang/TheVirtualBiotech), MIT license).
-- **Swappable model provider:** the harness runs its own agent loop behind a small
-  `LLMProvider` interface. The default is a **local open-weight model**, Qwen3.8-27B served
-  by vLLM 0.31 on one 80-96 GB NVIDIA GPU ([deploy/local/README.md](deploy/local/README.md));
-  `--profile claude` uses Claude through the Anthropic API instead, and `--profile paper`
-  pins the paper's Claude Sonnet/Haiku 4.5 setup. Supporting another vendor means writing
-  one adapter (see [docs/PROVIDERS.md](docs/PROVIDERS.md)).
+- **Local model by default, Claude optional:** the harness runs its own agent loop behind a
+  small `LLMProvider` interface. The default is a **local open-weight model**, Qwen3.8-27B
+  served by vLLM 0.31 on one 80-96 GB NVIDIA GPU. [docs/LOCAL_LLM.md](docs/LOCAL_LLM.md)
+  explains why this model, which GPUs work, and how to set it up. `--profile claude` uses Claude
+  through the Anthropic API instead, and `--profile paper` pins the paper's Claude Sonnet/Haiku
+  4.5 setup. Supporting another vendor means writing one adapter (see
+  [docs/PROVIDERS.md](docs/PROVIDERS.md)).
 - **Reproducible:** includes the paper's three case studies, a bulk runner that assigns
   one agent per trial, statistics code, reference re-implementations of the expert-reviewed
   analyses, and an audit record for every run.
@@ -34,18 +35,22 @@ part of it is mapped to its module in [docs/PAPER_TO_CODE.md](docs/PAPER_TO_CODE
                   │      ▼
                   │   Scientific Reviewer ── gaps? ──► CSO re-delegates (enforced by the harness)
                   └──◄ synthesis + claim→evidence records (runs/<id>/)
+
+  every agent's model call ──► LLMProvider ─┬─► vLLM 0.31, OpenAI API: Qwen3.8-27B on one GPU (default)
+                                            └─► Anthropic API: Claude (--profile claude | paper)
 ```
 
 | Layer | Module |
 |---|---|
-| Provider interface, Claude adapter, scripted mock | `src/vbt/providers/` |
+| Provider interface; OpenAI-compatible local adapter (vLLM, SGLang, llama.cpp; Qwen3.8, Qwen3.5/3.6, Qwen3 and DeepSeek-V4 dialects); Claude adapter; scripted mock | `src/vbt/providers/` (`openai_compat.py`, `families.py`, `anthropic_provider.py`, `mock.py`) |
+| Local model server: serving profiles per GPU, `vbt local profiles / serve / check / bench`, Docker Compose with SearxNG | `src/vbt/local/`, `configs/local_models.yaml`, `configs/profiles/local-*.yaml`, `deploy/local/` |
 | Transient-error retry (429/5xx/overloaded, Retry-After) | `src/vbt/providers/retry.py` |
 | Context-window management (tool-result clearing, summarisation, overflow recovery) | `src/vbt/context.py` |
 | Agent loop, delegation (`Task`), budget scopes, events, trace | `src/vbt/runtime.py`, `budget.py`, `events.py`, `failures.py` |
 | CSO session: orientation, review policy, plan nudge, interruption, resume | `src/vbt/orchestrator.py` |
 | Pinned run configuration, replay | `src/vbt/pinning.py`, `src/vbt/replay.py` |
 | Readiness checks (`vbt doctor`, preflight before sessions and turns) | `src/vbt/preflight.py` |
-| Tools: Claude-Code-compatible built-ins, path/Bash policy, MCP bridge, skills, web, provenance | `src/vbt/tools/` |
+| Tools: Claude-Code-compatible built-ins, path/Bash policy, MCP bridge, skills, web (WebSearch backends: SearxNG, Brave, provider-native), provenance | `src/vbt/tools/` |
 | Audit record (MANIFEST, claims, provenance, README.md/audit.html, run index, export, verify) | `src/vbt/session.py`, `src/vbt/audit/`, `src/vbt/verify.py` |
 | Browser UI (fig. S1) | `src/vbt/web/` |
 | Agent roster, tool allowlists, model tiers | `configs/agents.yaml`, `configs/default.yaml` |
@@ -55,38 +60,59 @@ part of it is mapped to its module in [docs/PAPER_TO_CODE.md](docs/PAPER_TO_CODE
 
 ## Setup
 
+**What you need.** The default model runs on your own hardware:
+- **One NVIDIA GPU with 80-96 GB or more**: H100 80GB, H200 141GB, RTX PRO 6000 Blackwell
+  96GB, or B200/B300. Linux x86_64, NVIDIA driver 575 or newer (580 or newer for the default
+  `vllm/vllm-openai:v0.31.0` image), Docker with the NVIDIA Container Toolkit (or a separate
+  Python environment for vLLM), at least 128 GB of RAM and 500 GB of NVMe.
+- A 32 GB card (RTX 5090) runs a reduced development profile (about 3 parallel specialists,
+  128K context). Several GPUs run data-parallel replicas or the larger DeepSeek-V4-Flash model.
+- The harness itself needs no GPU. It can run on the GPU host or on any machine that reaches
+  the server (for example through an SSH tunnel).
+- No suitable GPU: use Claude (`--profile claude`, an Anthropic API key), or the scripted
+  `mock` provider for offline dry runs.
+
+[docs/LOCAL_LLM.md](docs/LOCAL_LLM.md) has the per-GPU profiles, their expected capacity and
+the full setup; [deploy/local/README.md](deploy/local/README.md) is the operations reference.
+
 ```bash
 git clone --recursive <this repo> && cd Virtual-Biotech-Framework
 # or, in an existing clone:
 git submodule update --init
 
-# Supported: one conda env for the harness, the MCP data servers and agents' Bash
-# (Python + R statistics stack: scanpy, LIANA, decoupler, PyDESeq2, gseapy, lme4,
-# lmerTest, glmmTMB, betareg, MuMIn, rpy2, CELLxGENE Census, FastMCP).
+# 1. The harness. Supported: one conda env for the harness, the MCP data servers and agents'
+#    Bash (Python + R statistics stack: scanpy, LIANA, decoupler, PyDESeq2, gseapy, lme4,
+#    lmerTest, glmmTMB, betareg, MuMIn, rpy2, CELLxGENE Census, FastMCP).
 conda env create -f environment.yml && conda activate vbt-harness
-pip install -e ".[web,tools,dev]"       # add `anthropic` to use Claude (--profile claude / paper)
-
+pip install -e ".[web,tools,dev]"
 # pip only (no R): `all` covers the providers, every MCP server's imports, the
 # analysis/single-cell/survival stacks and the web UI; `full` adds rpy2 and Cell2Location.
-pip install -e ".[all]"
+#   pip install -e ".[all]"
 
+# 2. Configuration and reference data.
 cp .env.example .env    # set OPEN_TARGETS_DATA_PATH (and VBT_LLM_BASE_URL if vLLM runs elsewhere)
 python third_party/TheVirtualBiotech/tools/download_open_targets.py /data/open_targets --workers 8
 
-# The default model server: Qwen3.8-27B on vLLM 0.31 (one 80-96 GB GPU) + SearxNG for WebSearch.
-vbt local profiles --detect                                            # pick a serving profile
-docker compose -f deploy/local/docker-compose.yml --profile h100 up -d # or: vbt local serve --profile h100
+# 3. The model server: Qwen3.8-27B on vLLM 0.31, plus SearxNG for WebSearch.
+vbt local profiles --detect                                            # recommends a serving profile
+docker compose -f deploy/local/docker-compose.yml --profile h100 up -d # or bare metal: vbt local serve --profile h100
+#   first start: downloads ~25-31 GB of weights and compiles CUDA graphs (10-30 minutes)
+
+# 4. Checks.
 vbt local check         # capability probe of the running server (tools, strict schema, reasoning, ...)
 vbt doctor --smoke      # server /health + served model, data, MCP imports, one live call per MCP server
-vbt --profile mock run "hello"   # offline dry run: scripted provider, no MCP, no cost
 vbt doctor --analysis   # also the Python/R analysis stack agents use from Bash
+vbt --profile mock run "hello"   # offline dry run: scripted provider, no MCP, no model server
 
-# Claude instead of the local model: ANTHROPIC_API_KEY in .env, the `anthropic` extra, and
+# Optional: Claude instead of the local model. ANTHROPIC_API_KEY in .env, then
+pip install -e ".[anthropic]"
 vbt --profile claude doctor --smoke     # (or --profile paper for the paper's Sonnet/Haiku 4.5)
 ```
 
-See [deploy/local/README.md](deploy/local/README.md) for the other GPUs (H200, RTX PRO 6000,
-B200, RTX 5090, multi-GPU data parallel, DeepSeek-V4-Flash) and their harness profiles.
+Without `--profile`, the harness uses `configs/default.yaml`, which matches the `h100` serving
+profile. On other hardware, pass the harness profile that matches the server:
+`--profile local-h200` (H200; also B200), `local-rtxpro6000`, `local-5090`, `local-dp` or
+`local-deepseek-v4`.
 
 **Environment variables.** `.env` is read first, then `third_party/TheVirtualBiotech/.env`
 (the file the upstream README tells you to edit); exported variables win over both. A
@@ -122,19 +148,28 @@ MCP interpreter's imports (`--smoke`: one cheap call per server, failing on any 
 ## Usage
 
 ```bash
-vbt chat                                   # interactive CSO session (recommended)
+vbt chat                                   # interactive CSO session on the local model (recommended)
 vbt run "Evaluate PCSK9 as a target for lowering LDL cholesterol."   # headless; one arg per turn
 vbt run -f turns.txt --events ndjson       # one turn per line ('#' comments); JSON event stream
+vbt --profile local-h200 chat              # the harness profile matching your serving profile
+vbt --profile claude chat                  # Claude through the Anthropic API instead
 vbt --profile paper chat                   # the paper's models (Sonnet 4.5 + Haiku 4.5)
-vbt --model sonnet chat                    # a model_aliases label or a model id for CSO/scientists/bulk
+vbt --profile claude --model sonnet chat   # a model_aliases label or a model id for CSO/scientists/bulk
 vbt --no-web chat                          # no web search (information-leakage control)
 vbt web                                    # browser UI (fig. S1); needs VBT_WEB_PASSWORD or --no-auth on localhost
 vbt tools                                  # each agent's resolved tool list
 vbt doctor [--smoke] [--analysis]          # installation, credentials, reference data, MCP servers
+vbt local profiles | serve | check | bench # the local model server (docs/LOCAL_LLM.md)
 ```
 
 Global flags (before the subcommand): `--profile NAME` (repeatable), `--model`, `--no-web`,
-`--no-mcp`, `--runs-dir`, `--skip-preflight`, `--allow-missing-data`, `-v`.
+`--no-mcp`, `--runs-dir`, `--skip-preflight`, `--allow-missing-data`, `-v`. The `--model`
+aliases depend on the profile: the local default has `qwen`; `--profile claude` and
+`--profile paper` have `opus`, `sonnet`, `haiku` and `paper`.
+
+**Budgets.** A local model costs 0 USD, so its runs are budgeted in tokens
+(`limits.max_turn_tokens`, `limits.max_item_tokens`; cached prompt tokens count at 0.1). The USD
+caps apply to Claude, or to a local model when `provider.options.pricing` sets a price.
 
 **Interactive sessions.** `vbt chat` streams the CSO's answer with claim anchors replaced by
 numbered footnotes, shows a live line of running specialists (`-v`: every tool call;
@@ -197,8 +232,9 @@ interrupts the running turn. Limits are under `web_ui` in `configs/default.yaml`
 
 ```bash
 vbt scenario run trial_curation            # agentic: CSO + clinical trialist design the curation protocol
-vbt case1 annotate --sample 200 --budget 60   # one clinical-trialist agent per NCT ID (resumable)
-vbt case1 annotate                         # all Phase II/III trials (paper: 37,075 trials, ~$0.23 median each)
+vbt case1 annotate --sample 200 --budget-tokens 40000000   # one clinical-trialist agent per NCT ID (resumable)
+vbt --profile claude case1 annotate --sample 200 --budget 60   # with Claude: a USD budget
+vbt case1 annotate --budget-tokens <N>    # all Phase II/III trials (paper: 37,075 trials, ~$0.23 median each on Claude)
 vbt case1 phase1                           # algorithmic Phase I→II labels (99.8% match to released labels)
 vbt case1 validate --ref released          # or --sample-manual 50, or --ref tdc:<tdc.csv>
 vbt case1 features --h5ad TabulaSapiens.h5ad
@@ -215,10 +251,11 @@ dispatching the trial annotation): items from a CSV/TSV/parquet/JSONL file in th
 optional pandas query) or an id list, a prompt template, the trialist's protocol and a JSON
 Schema. An unconfirmed call runs a pilot (`bulk.pilot_size` items) and returns the results
 with a cost/time projection; `confirm: true` runs the rest in the background
-(`work/<agent>/results/bulk/<job_id>.jsonl`, progress events, `BulkStatus`). A job's
-`budget_usd` (at most `bulk.dispatch_max_budget_usd`) is its own budget scope, so it is not
-stopped by the per-turn cap (`limits.max_turn_cost_usd`); `limits.max_item_cost_usd` caps each
-item.
+(`work/<agent>/results/bulk/<job_id>.jsonl`, progress events, `BulkStatus`). A job's budget is
+its own budget scope, so it is not stopped by the per-turn cap: `budget_tokens` for the local
+model (required there, at most `bulk.dispatch_max_budget_tokens`, 20M), or `budget_usd` for
+Claude (at most `bulk.dispatch_max_budget_usd`). `limits.max_item_tokens` /
+`limits.max_item_cost_usd` cap each item.
 
 ### Case studies 2 and 3
 
@@ -250,11 +287,14 @@ vbt case1 replicate                        # re-run the Case 1 statistics on the
 - `configs/default.yaml`:
   - `provider`: which model backend to use (default `vllm`: the local Qwen3.8-27B server at
     `$VBT_LLM_BASE_URL`; `--profile claude` / `--profile paper` switch to `anthropic`).
-  - `models`: model tiers `orchestrator`, `scientist`, `support` and `bulk`.
+  - `models`: model tiers `orchestrator`, `scientist`, `support` and `bulk`. With the local
+    model all four use `qwen3.8-27b` and differ in reasoning effort (`xhigh`, `medium`, off,
+    `medium`) and `thinking_budget` (the hard reasoning cap sent as `thinking_token_budget`).
   - `paths`: prompts, skills and read-only data roots.
   - `model_aliases`: labels accepted by `--model` (`provider.model_pattern` validates ids).
   - `limits`: CSO/specialist turn caps, parallelism, delegation timeout, output truncation,
-    trace sizes, per-turn and per-bulk-item budgets.
+    trace sizes, per-turn and per-bulk-item budgets (in tokens and in USD; either one stops a
+    scope).
   - `retry`: transient provider errors (attempts, exponential backoff with jitter,
     Retry-After ceiling).
   - `context`: context-window management (clearing old tool results above `soft_ratio` of the
@@ -264,7 +304,8 @@ vbt case1 replicate                        # re-run the Case 1 statistics on the
     (`restricted` (default) or `upstream`) and `require_reference_data`.
   - `preflight`: `skip`, `allow_missing_data` (also the global flags).
   - `mcp`: server start attempts/timeouts, crash restarts, default call timeout.
-  - `bulk`: CSO `BulkDispatch` (enabled, budget cap, pilot size, prewarm).
+  - `bulk`: CSO `BulkDispatch` (enabled, budget caps, pilot size, prewarm) and the default
+    bulk concurrency.
   - `bash`, `read`, `memory` and `web`: tool policies (sandbox paths, guardrail groups,
     network, output caps, WebFetch extraction, domain filters).
   - `audit` and `web_ui`: the run record and the browser UI.
@@ -281,10 +322,21 @@ vbt case1 replicate                        # re-run the Case 1 statistics on the
   3600 s, others 1800 s), `max_concurrency`, `env_passthrough`. The bridge retries failed starts,
   restarts crashed servers and retries the call once, and writes server stderr to a per-server
   log (`logs/mcp/<name>.log` in the run).
-- Profiles in `configs/profiles/` are layered in order: `paper`, `no-web`, `mock`, or your own.
-  `no-web` removes WebSearch/WebFetch, keeps PubMed only below a publication-date ceiling
-  (`web.literature_max_date`), and blocks network commands in Bash; ClinicalTrials.gov and
-  cBioPortal stay live.
+- `configs/local_models.yaml`: the serving profiles for the local model server (`h100`, `h200`,
+  `rtxpro6000`, `b200`, `5090`, `dp`, `deepseek-v4`): checkpoint, `vllm serve` arguments,
+  variants, Docker tags, expected capacity and caveats. `vbt local serve` renders them, and
+  `deploy/local/docker-compose.yml` mirrors them.
+- Profiles in `configs/profiles/` are layered in order (`--profile A --profile B`):
+  - `local-h100` (the same values as `default.yaml`), `local-h200`, `local-rtxpro6000`,
+    `local-5090`, `local-dp`, `local-deepseek-v4`: the harness side of each serving profile
+    (tier efforts and reasoning budgets, concurrency, token budgets, context policy);
+  - `claude` (current Claude models) and `paper` (the paper's Claude Sonnet/Haiku 4.5): the
+    Anthropic provider, with USD budgets and the Claude context policy; `upstream-web` (the
+    upstream web app's effort levels, on top of `claude` or `paper`);
+  - `no-web` removes WebSearch/WebFetch, keeps PubMed only below a publication-date ceiling
+    (`web.literature_max_date`), and blocks network commands in Bash; ClinicalTrials.gov and
+    cBioPortal stay live;
+  - `mock`: the scripted offline provider, no MCP servers.
 
 System prompts are assembled as a stable, cacheable prefix (upstream prompt, addenda,
 role-aware harness rules, CSO addendum) followed by a short volatile Session block (date,
@@ -293,7 +345,11 @@ run paths, skill and data roots, unavailable servers, agent memory).
 ## Tests
 
 ```bash
-python -m pytest -q      # offline: scripted provider, synthetic data, no API calls
+python -m pytest -q      # offline: scripted provider, fake inference servers, synthetic data, no API calls
+
+# live probes of the local adapter against a running server (skipped unless the URL is set)
+VBT_LIVE_LOCAL_URL=http://localhost:8000/v1 VBT_LIVE_LOCAL_MODEL=qwen3.8-27b \
+  VBT_LIVE_LOCAL_HARNESS=1 python -m pytest -v tests/test_live_local.py
 ```
 
 ## Differences from the reference implementation
@@ -301,6 +357,13 @@ python -m pytest -q      # offline: scripted provider, synthetic data, no API ca
 - **Own agent loop.** The paper and upstream repo use the Claude Agent SDK. This harness
   reimplements that tool surface (Read, Write, Edit, Glob, Grep, Bash, Skill, TodoWrite,
   WebSearch, WebFetch, Task) on its own loop, so the original prompts run on any provider.
+- **Model.** The paper ran every agent on Claude: Sonnet 4.5, and Haiku 4.5 for the Chief of
+  Staff and the Scientific Reviewer. This harness defaults to a local open-weight model,
+  Qwen3.8-27B, with one model for every tier (the tiers differ in reasoning effort and budget).
+  Runs on it are a different configuration, not a replication: `--profile paper` reproduces
+  the published model setup. The local default also budgets runs in tokens (the model costs
+  0 USD), searches the web through SearxNG instead of Claude's server-side search, and serves
+  the model text-only, so images in tool results reach it as text placeholders.
 - **Provenance tools.** The upstream provenance MCP server is replaced by native tools with
   the same names.
 - **Tool surface.** Agent tool lists match the upstream registry except where
@@ -343,9 +406,29 @@ python -m pytest -q      # offline: scripted provider, synthetic data, no API ca
 
 ## Status and known gaps
 
+- **Local model (the default path): not yet run on a GPU.** The OpenAI-compatible adapter, the
+  model-family dialects, the serving profiles and the `vbt local` commands have offline tests
+  against fake servers. The adapter was also run against real inference engines on CPU: vLLM
+  0.30.0's CPU build and llama.cpp, serving the tiny Qwen3.5-0.8B from the same model family
+  ([docs/LOCAL_LLM_VERIFICATION.md](docs/LOCAL_LLM_VERIFICATION.md)). Every Qwen3.8 request
+  field passed vLLM's validation; single, parallel, strict-schema and forced tool calls,
+  streamed reasoning, context-overflow recovery and one full CSO turn with a delegation worked;
+  five adapter bugs were found and fixed. Not exercised yet: vLLM 0.31.0, Qwen3.8-27B itself
+  (its chat template, answer quality, reasoning loops), the GPU kernels (FP8, NVFP4, INT4, FP8
+  KV cache, MTP), 262K-token contexts and data-parallel routing. The runtime paths added when
+  the local model became the default (the forced final `submit_result`, `tool_choice: none` on
+  final calls, the empty-reply nudge, token budgets) have offline tests only. The capacity
+  numbers in the serving profiles are estimates from the model's geometry and the vLLM source.
+- **Model quality is unvalidated for this domain.** No biomedical benchmark exists for
+  Qwen3.8-27B (or for any model that was considered), and the case studies have not been run
+  on it. Its bulk throughput (a dense 27B model; the paper annotated 37,075 trials) is
+  unmeasured. [docs/LOCAL_LLM.md](docs/LOCAL_LLM.md#5-validation-plan-and-open-risks) has the
+  validation plan and the open risks (KV-cache precision, a vLLM release from the day of the
+  decision, throughput).
 - The offline test suite covers the agent loop, delegation, review enforcement, bulk runs, Case 1
   statistics and the pure-Python parts of every reference analysis. It uses a scripted provider,
-  synthetic data, and a fake Messages API for the Claude streaming path.
+  synthetic data, fake OpenAI-compatible servers for the local adapter and a fake Messages API
+  for the Claude streaming path.
 - End-to-end integration tests (`tests/test_integration_e2e.py`) drive the CLI entry point and
   `open_session` with the scripted provider: a multi-turn research run with parallel
   delegations, an enforced review and filed claims that `vbt verify` reports COMPLETE, with
@@ -365,8 +448,8 @@ python -m pytest -q      # offline: scripted provider, synthetic data, no API ca
   data: they start, and the data tools fail the smoke test as expected.
 - Not yet exercised end to end: live Claude runs, the Open Targets–backed MCP tools, and the
   wrappers around optional heavy dependencies (PyDESeq2, LIANA, decoupler, lifelines,
-  Cell2Location, CELLxGENE Census, rpy2/lme4/glmmTMB). The build environment had no API key
-  and no network access to the data sources.
+  Cell2Location, CELLxGENE Census, rpy2/lme4/glmmTMB). The build environment had no GPU, no
+  API key and no network access to the data sources.
 - Case 1 calibration (harness addition): the paper takes the minimum feature value across a
   drug's targets, which makes the trial-level feature depend on the number of targets.
   - With *random* gene features, the null odds ratios are about 1.08–1.20, not 1.0.
