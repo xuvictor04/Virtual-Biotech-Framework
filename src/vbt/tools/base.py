@@ -114,7 +114,9 @@ class Tool:
     ``terminal``: a successful call ends the agent's loop without another model
     call (e.g. a bulk ``submit_result``). ``blocking``: the handler is
     synchronous and may block (file walks, hashing, parsing); it runs in a
-    worker thread so parallel agents keep streaming.
+    worker thread so parallel agents keep streaming. ``strict``: ask providers
+    that support it to constrain the arguments to ``input_schema``
+    (``ToolSpec.strict``; grammar-enforced by vLLM), for schema-heavy tools.
     """
 
     name: str
@@ -125,10 +127,11 @@ class Tool:
     tags: set[str] = field(default_factory=set)
     terminal: bool = False
     blocking: bool = False
+    strict: bool = False
 
     @property
     def spec(self) -> ToolSpec:
-        return ToolSpec(self.name, self.description, self.input_schema)
+        return ToolSpec(self.name, self.description, self.input_schema, strict=bool(self.strict))
 
     async def __call__(self, ctx: ToolContext, args: dict[str, Any]) -> Any:
         if self.blocking and not inspect.iscoroutinefunction(self.handler):

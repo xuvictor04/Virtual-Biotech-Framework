@@ -153,7 +153,7 @@ def trial_prompt(row: pd.Series) -> str:
     )
 
 
-async def annotate(runtime: Runtime, trials: pd.DataFrame, out_path: Path, *, concurrency: int = 64,
+async def annotate(runtime: Runtime, trials: pd.DataFrame, out_path: Path, *, concurrency: int | None = None,
                    budget_usd: float | None = None, on_progress=None, protocol: str | None = None,
                    schema: type[BaseModel] | None = None, **runner_kw: Any) -> dict[str, Any]:
     """Bulk annotation; raises a non-retryable ProviderError (with ``.bulk_summary``)

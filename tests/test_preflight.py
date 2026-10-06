@@ -33,7 +33,8 @@ def _live_config(monkeypatch, tmp_path, **env):
             monkeypatch.delenv(k, raising=False)
         else:
             monkeypatch.setenv(k, v)
-    cfg = load_config([], overrides={"paths": {"runs_dir": str(tmp_path / "runs")}})
+    # the default is a local model now; these checks exercise the Anthropic key handling
+    cfg = load_config(["claude"], overrides={"paths": {"runs_dir": str(tmp_path / "runs")}})
     assert cfg["provider"]["name"] == "anthropic"
     return cfg
 

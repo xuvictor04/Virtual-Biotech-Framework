@@ -10,7 +10,14 @@ Two entry points:
 * :func:`run_doctor` (``vbt doctor [--smoke] [--analysis]``) -- the full
   installation report, including the MCP interpreter's imports, a live smoke
   call per MCP server (fails on any tool error) and the Python/R analysis
-  stack.
+  stack. For local model servers (``vllm``, ``sglang``, ...) the credentials
+  check is offline (a base URL is configured); ``--smoke`` also runs
+  ``provider.prepare()`` (``/health``, the configured models are served) and
+  compares the server's ``max_model_len`` with the configured context windows,
+  and runs one query through the WebSearch backend.
+* :func:`prepare_provider` / :func:`provider_server_info` -- used by
+  ``open_session``: the model server's readiness check before a run starts
+  (:class:`ProviderNotReadyError`) and its facts for the pinned config.
 
 The Open Targets check reuses the upstream ``tools/doctor.py::reference_files``
 (layout, truncated files, partial downloads, download manifest).
@@ -90,6 +97,106 @@ class DataReadinessError(RuntimeError):
     def __init__(self, message: str, results: list["CheckResult"] | None = None):
         super().__init__(message)
         self.results = results or []
+
+
+class ProviderNotReadyError(DataReadinessError):
+    """The model server is not ready (``provider.prepare()`` failed): not reachable,
+    unhealthy, or the configured model is not served. Raised by ``open_session``
+    before a run directory exists; the message carries the provider's fix hint."""
+
+
+#: Provider names served by an OpenAI-compatible inference server (vbt.providers.openai_compat).
+LOCAL_PROVIDERS = frozenset({"vllm", "sglang", "openai_compat", "llamacpp"})
+
+
+def provider_options(config: dict[str, Any]) -> dict[str, Any]:
+    """``provider.options`` without null values: profiles are deep-merged, so a
+    profile that switches provider (``--profile claude`` over the local default)
+    resets the other adapter's options to null, and null means "not set"."""
+    opts = (config.get("provider") or {}).get("options") or {}
+    return {k: v for k, v in opts.items() if v is not None}
+
+
+def create_configured_provider(config: dict[str, Any]) -> Any:
+    """The configured provider (``provider.name`` + non-null ``provider.options``)."""
+    from .providers import create_provider
+    return create_provider(config["provider"]["name"], **provider_options(config))
+
+
+def has_prepare(provider: Any) -> bool:
+    """The provider overrides ``LLMProvider.prepare`` (a real readiness check)."""
+    if provider is None:
+        return False
+    try:
+        from .providers.base import LLMProvider
+        fn = getattr(type(provider), "prepare", None)
+        return fn is not None and fn is not LLMProvider.prepare
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def configured_models(config: dict[str, Any]) -> list[str]:
+    """Every model id the tiers and agent overrides name (what the server must serve)."""
+    out: list[str] = []
+    for t in (config.get("models") or {}).values():
+        if isinstance(t, dict) and t.get("model"):
+            out.append(str(t["model"]))
+    for o in (config.get("agent_overrides") or {}).values():
+        if isinstance(o, dict) and o.get("model"):
+            out.append(str(o["model"]))
+    return list(dict.fromkeys(out))
+
+
+def configured_window(config: dict[str, Any]) -> int | None:
+    """The largest ``models.<tier>.context_window_tokens`` (None when no tier sets one)."""
+    wins = []
+    for t in (config.get("models") or {}).values():
+        if isinstance(t, dict):
+            try:
+                if t.get("context_window_tokens"):
+                    wins.append(int(t["context_window_tokens"]))
+            except (TypeError, ValueError):
+                continue
+    return max(wins) if wins else None
+
+
+async def prepare_provider(provider: Any, config: dict[str, Any], *, wait_s: float | None = None) -> None:
+    """``await provider.prepare()`` (with the configured models when the provider
+    takes them). Raises :class:`ProviderNotReadyError` with the provider's text on
+    a ``ProviderError``; providers without a real ``prepare`` are a no-op."""
+    if not has_prepare(provider):
+        return
+    import inspect
+
+    from .providers.base import ProviderError
+    kwargs: dict[str, Any] = {}
+    try:
+        params = inspect.signature(provider.prepare).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "models" in params:
+        kwargs["models"] = configured_models(config) or None
+    if wait_s is not None and "wait_s" in params:
+        kwargs["wait_s"] = wait_s
+    try:
+        await provider.prepare(**kwargs)
+    except ProviderError as exc:
+        name = getattr(provider, "name", None) or (config.get("provider") or {}).get("name")
+        raise ProviderNotReadyError(f"model server not ready ({name}): {exc}") from exc
+
+
+async def provider_server_info(provider: Any, *, timeout: float = 45.0) -> dict[str, Any]:
+    """``provider.server_info()`` bounded by ``timeout``; ``{}`` on any failure."""
+    fn = getattr(provider, "server_info", None)
+    if not callable(fn):
+        return {}
+    try:
+        info = await asyncio.wait_for(fn(), timeout)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - informational only
+        return {"error": f"{type(exc).__name__}: {exc}"[:500]}
+    return dict(info) if isinstance(info, dict) else {}
 
 
 @dataclass
@@ -512,6 +619,86 @@ def degraded_servers(config: dict[str, Any], results: Iterable[CheckResult]) -> 
     return out
 
 
+SERVE_HINT = ("start the inference server (`vbt local serve --profile <h100|h200|rtxpro6000|5090>` or "
+              "`docker compose -f deploy/local/docker-compose.yml --profile h100 up -d`; deploy/local/README.md) "
+              "and check provider.options.base_url / VBT_LLM_BASE_URL; `vbt local check` probes its capabilities")
+
+
+async def check_model_server(config: dict[str, Any], provider: Any) -> list[CheckResult]:
+    """``vbt doctor --smoke`` for providers with a readiness hook (local servers):
+    ``provider.prepare()`` (/health, served models) and the server's
+    ``max_model_len`` against the configured context windows."""
+    if not has_prepare(provider):
+        return []
+    name = _provider_name(config, provider)
+    try:
+        await prepare_provider(provider, config)
+    except ProviderNotReadyError as exc:
+        return [CheckResult(f"{name} model server ready", False, detail=str(exc)[:1500], hint=SERVE_HINT,
+                            kind="model")]
+    info = await provider_server_info(provider)
+    served = [str(m.get("id")) for m in info.get("models") or [] if isinstance(m, dict)]
+    bits = [f"serves {', '.join(served) or '(none listed)'}"]
+    if info.get("version"):
+        bits.append(f"version {info['version']}")
+    if info.get("family"):
+        bits.append(f"family {info['family']}")
+    out = [CheckResult(f"{name} model server ready", True, detail="; ".join(bits), kind="model")]
+    window, mml = configured_window(config), info.get("max_model_len")
+    if window and mml:
+        ok = int(mml) >= int(window)
+        out.append(CheckResult(
+            "model context window", ok, required=False, kind="model",
+            detail=f"server max_model_len {int(mml):,}; configured context_window_tokens {int(window):,}",
+            hint=(f"lower models.<tier>.context_window_tokens to {int(mml)} (and context.default_window_tokens), "
+                  f"or serve with --max-model-len {int(window)}")))
+    elif not mml:
+        out.append(CheckResult("model context window", True, required=False, kind="model",
+                               detail="the server does not report max_model_len; the configured window is used"))
+    return out
+
+
+def check_search(config: dict[str, Any], provider: Any) -> CheckResult | None:
+    """Which WebSearch backend the run will use (no network, no secrets)."""
+    if not (config.get("web") or {}).get("enabled", True):
+        return None
+    try:
+        from .tools.search_backends import describe_search_backend
+        d = describe_search_backend(config, provider)
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult("web search backend", False, required=False, detail=f"{type(exc).__name__}: {exc}",
+                           kind="general")
+    if d.get("problem"):
+        return CheckResult("web search backend", False, required=False, detail=str(d["problem"]),
+                           hint="see docs/WEB_SEARCH.md", kind="general")
+    if not d.get("backend"):
+        return CheckResult("web search backend", False, required=False, detail=str(d.get("reason") or "none"),
+                           hint="start SearxNG (`docker compose -f deploy/local/docker-compose.yml up -d searxng`) "
+                                "and set SEARXNG_URL, or set BRAVE_SEARCH_API_KEY (docs/WEB_SEARCH.md)",
+                           kind="general")
+    where = f" at {d['url']}" if d.get("url") and d.get("backend") == "searxng" else ""
+    return CheckResult("web search backend", True, required=False, kind="general",
+                       detail=f"{d['backend']}{where} ({d.get('reason') or 'configured'})")
+
+
+async def smoke_search(config: dict[str, Any], provider: Any) -> CheckResult | None:
+    """One live query through the WebSearch backend (``vbt doctor --smoke``)."""
+    if not (config.get("web") or {}).get("enabled", True):
+        return None
+    try:
+        from .tools.search_backends import check_search_backend
+        r = await check_search_backend(config, provider)
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult("web search query", False, required=False, detail=f"{type(exc).__name__}: {exc}",
+                           kind="general")
+    if r.get("backend") is None:
+        return None  # check_search already reported why
+    detail = (f"{r['backend']}: {r.get('n_results', 0)} results in {r.get('elapsed_s')}s" if r.get("ok")
+              else f"{r['backend']}: {r.get('error')}")
+    return CheckResult("web search query", bool(r.get("ok")), required=False, detail=str(detail)[:1500],
+                       hint="see docs/WEB_SEARCH.md", kind="general")
+
+
 def check_bash_network(config: dict[str, Any]) -> CheckResult | None:
     """With ``bash.network: false``, report whether Bash commands are actually network-isolated."""
     bash = config.get("bash") or {}
@@ -553,11 +740,17 @@ def run_doctor(config: dict[str, Any], *, smoke: bool = False, analysis: bool = 
     except Exception as exc:  # noqa: BLE001
         add(CheckResult("agent roster loads", False, detail=str(exc)))
     try:
-        from .providers import create_provider
-        provider = create_provider(config["provider"]["name"], **(config["provider"].get("options") or {}))
-    except Exception:  # noqa: BLE001 - fall back to the env-var check
+        provider = create_configured_provider(config)
+    except Exception as exc:  # noqa: BLE001 - fall back to the env-var check
         provider = None
+        if _provider_name(config) in LOCAL_PROVIDERS:
+            add(CheckResult(f"{_provider_name(config)} provider options", False, detail=f"{type(exc).__name__}: {exc}",
+                            hint="fix provider.options in the config (docs/PROVIDERS.md)", kind="credentials"))
     add(check_credentials(config, provider))
+    if provider is not None and has_prepare(provider) and not smoke:
+        add(CheckResult(f"{_provider_name(config, provider)} model server", True, required=False, kind="model",
+                        detail="not contacted (run `vbt doctor --smoke` or `vbt local check`)"))
+    add(check_search(config, provider))
     add(check_reference_data(config))
     add(CheckResult("upstream clinical-trial labels present",
                     (up / "datasets" / "clinical_trials" / "clinical_trial_labels_reconciled.csv").exists(),
@@ -569,6 +762,16 @@ def run_doctor(config: dict[str, Any], *, smoke: bool = False, analysis: bool = 
     if analysis:
         add(check_analysis_stack(config))
     if smoke:
+        if provider is not None:
+            async def live() -> list[CheckResult | None]:
+                try:
+                    return [*await check_model_server(config, provider), await smoke_search(config, provider)]
+                finally:
+                    try:
+                        await provider.aclose()
+                    except Exception:  # noqa: BLE001
+                        pass
+            add([r for r in asyncio.run(live()) if r is not None])
         if _servers(config):
             add(asyncio.run(smoke_mcp(config)))
         else:
@@ -587,7 +790,9 @@ def add_doctor_parser(sub: Any) -> Any:
     """Register ``vbt doctor`` on an argparse subparsers object."""
     d = sub.add_parser("doctor", help="check installation, credentials, reference data and MCP servers")
     d.add_argument("--smoke", action="store_true",
-                   help="also start every MCP server and make one cheap call each (fails on tool errors)")
+                   help="also contact the model server (local providers: /health, served models, max_model_len), "
+                        "run one web search, and start every MCP server with one cheap call each "
+                        "(fails on tool errors)")
     d.add_argument("--analysis", action="store_true",
                    help="also check the Python/R analysis stack (scanpy, pydeseq2, rpy2, lme4, glmmTMB, ...)")
     d.set_defaults(handler=_doctor_handler)
@@ -595,7 +800,9 @@ def add_doctor_parser(sub: Any) -> Any:
 
 
 __all__ = [
-    "CheckResult", "DataReadinessError", "TURN_NOT_SENT", "add_doctor_parser", "check_analysis_stack",
-    "check_credentials", "check_mcp_commands", "check_mcp_imports", "check_reference_data",
-    "degraded_servers", "require_ready", "run_doctor", "smoke_mcp", "upstream_doctor",
+    "CheckResult", "DataReadinessError", "LOCAL_PROVIDERS", "ProviderNotReadyError", "TURN_NOT_SENT",
+    "add_doctor_parser", "check_analysis_stack", "check_credentials", "check_mcp_commands", "check_mcp_imports",
+    "check_model_server", "check_reference_data", "check_search", "configured_models", "configured_window",
+    "degraded_servers", "has_prepare", "prepare_provider", "provider_server_info", "require_ready", "run_doctor",
+    "smoke_mcp", "smoke_search", "upstream_doctor",
 ]

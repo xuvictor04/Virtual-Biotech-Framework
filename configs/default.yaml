@@ -16,36 +16,55 @@ vars:
   mcp_python: ${VBT_MCP_PYTHON:-${vars.python}}
 
 # ---------------------------------------------------------------- provider
-# The only provider-specific block. To switch model families, register a new
-# adapter in src/vbt/providers and change `name` (and the model IDs below).
+# The only provider-specific block. Default: a LOCAL open-weight model,
+# Qwen3.8-27B (FP8) served by vLLM 0.31 on one 80 GB-class GPU (the values of
+# profiles/local-h100.yaml). Start the server first:
+#   vbt local serve --profile h100        # or: docker compose -f deploy/local/docker-compose.yml --profile h100 up -d
+#   vbt local check                       # capability probe; `vbt doctor --smoke` checks /health + served model
+# Other GPUs: --profile local-h200 | local-rtxpro6000 | local-5090 | local-dp | local-deepseek-v4.
+# Claude (Anthropic API) instead: --profile claude (the previous defaults), or
+# --profile paper for the paper's Claude Sonnet/Haiku 4.5 setup.
+# Options of the OpenAI-compatible adapter (vbt.providers.openai_compat, docs/PROVIDERS.md):
+# base_url(s), served_model_name, family, api_key (VBT_LLM_API_KEY), timeout_s, read_timeout_s,
+# max_concurrency, data_parallel_size, routing, pricing, extra_body, context_window, vision, ...
 provider:
-  name: anthropic
+  name: vllm
   options:
-    refusal_fallback: true        # server-side fallback on safety refusals (Opus 5 / Fable 5.1)
-    web_search_model: claude-sonnet-5
-    prompt_caching: true
-    max_retries: 4                # SDK-level retries of the first HTTP response (see retry.* below)
+    base_url: ${VBT_LLM_BASE_URL:-http://localhost:8000/v1}
+    served_model_name: qwen3.8-27b
+    family: qwen3_8
+    read_timeout_s: 900           # max silence between streamed chunks (xhigh turns think long)
+    max_concurrency: 48           # = --max-num-seqs; vLLM queues the rest instead of returning 429
+    data_parallel_size: 1
+    pricing: null                 # 0 USD; set {input_per_mtok, cached_per_mtok, output_per_mtok} to amortise GPU cost
   # `--model` accepts a model_aliases label, a configured model id, or an id
-  # matching this pattern. In-code default: '^claude-[a-z0-9.-]+$' when name is
-  # anthropic, no check otherwise.
-  # model_pattern: '^claude-[a-z0-9.-]+$'
+  # matching this pattern. In-code default: '^claude-[a-z0-9.-]+$' for anthropic,
+  # any served-model-like name for vllm/sglang/openai_compat/llamacpp, no check otherwise.
+  # model_pattern: '^[A-Za-z0-9][A-Za-z0-9._:@+/-]*$'
 
 # Labels accepted by `--model` (vbt chat/run/replay/scenario).
 model_aliases:
-  opus: claude-opus-5
-  sonnet: claude-sonnet-5
-  haiku: claude-haiku-4-5
-  paper: claude-sonnet-4-5        # the model the paper used for CSO + scientists
+  qwen: qwen3.8-27b
 
 # ---------------------------------------------------------------- model tiers
-# Agents reference a tier; the paper used Sonnet 4.5 for CSO + scientists and
-# Haiku 4.5 for Chief of Staff + Scientific Reviewer (see profiles/paper.yaml).
-# Optional per-tier keys: thinking_budget (budget thinking), context_window_tokens.
+# Agents reference a tier. One model on one GPU: the tiers differ only in
+# per-request fields, and effort stays FIXED per agent (xhigh/low prepend a
+# system-prompt line, so switching would invalidate that agent's prefix cache).
+# Harness effort -> Qwen3.8: low->low, medium->medium, high/xhigh/max->xhigh,
+# thinking off -> none (never 'high'/'max'). thinking_budget is sent as
+# thinking_token_budget (a hard reasoning cap; max_tokens includes it).
+# Optional per-tier keys: thinking_budget, context_window_tokens.
+# (The paper used Claude Sonnet 4.5 for CSO + scientists and Haiku 4.5 for Chief
+# of Staff + Scientific Reviewer: see profiles/paper.yaml.)
 models:
-  orchestrator: {model: claude-opus-5, effort: high, max_tokens: 64000, thinking: true}
-  scientist:    {model: claude-opus-5, effort: high, max_tokens: 64000, thinking: true}
-  support:      {model: claude-haiku-4-5, effort: null, max_tokens: 16000, thinking: false}
-  bulk:         {model: claude-opus-5, effort: medium, max_tokens: 32000, thinking: true}
+  orchestrator: {model: qwen3.8-27b, effort: xhigh, thinking: true, max_tokens: 40960, thinking_budget: 24576,
+                 context_window_tokens: 262144}
+  scientist:    {model: qwen3.8-27b, effort: medium, thinking: true, max_tokens: 32768, thinking_budget: 8192,
+                 context_window_tokens: 262144}
+  support:      {model: qwen3.8-27b, effort: null, thinking: false, max_tokens: 16000,
+                 context_window_tokens: 262144}
+  bulk:         {model: qwen3.8-27b, effort: medium, thinking: true, max_tokens: 8192, thinking_budget: 3072,
+                 context_window_tokens: 262144}
 
 # Per-agent overrides on top of agents.yaml: {agent: {effort, model, max_turns, tools_add}}.
 agent_overrides: {}
@@ -81,12 +100,18 @@ limits:
   max_agent_turns: 100            # legacy: CSO cap when max_cso_turns is unset
   max_cso_turns: 100              # model calls per CSO turn
   max_specialist_turns: 400       # model calls per specialist invocation (agents.yaml max_turns wins)
-  max_parallel_agents: 8          # concurrent Task delegations per CSO turn
+  max_parallel_agents: 8          # concurrent Task delegations per CSO turn (CSO + 8 fit the H100 KV pool)
   max_delegation_depth: 1         # CSO -> scientist only (scientists cannot delegate)
   delegation_timeout_s: null      # wall-clock cap per delegation (null = none); partial text is kept
   tool_output_max_chars: 40000    # longer tool outputs are spilled to logs/tool_outputs and truncated
   trace_output_chars: 10000       # tool output kept inline in logs/trace.jsonl
   trace_input_inline_chars: 16000 # tool input kept inline in the trace (longer: logs/tool_inputs)
+  # Budgets: a scope stops when EITHER its token or its USD limit is hit (null = no limit). A local
+  # model costs 0 USD (unless provider.options.pricing is set), so its budgets are in tokens:
+  # input + output, with cached (prefix-cache) input counted at cached_token_weight.
+  max_turn_tokens: 4000000        # per user turn (CSO + every delegation; budget scope 'turn')
+  max_item_tokens: 400000         # per bulk item
+  cached_token_weight: 0.1
   max_turn_cost_usd: 150          # hard stop per user turn (budget scope 'turn')
   max_item_cost_usd: null         # per-item cap for bulk runs (null = no cap)
 
@@ -102,18 +127,23 @@ retry:
 
 # ---------------------------------------------------------------- context management (context.py)
 # Before each model call: above soft_ratio of the window, old tool results are
-# cleared (spilled to logs/tool_outputs/cleared); above hard_ratio, older spans
-# are summarised. One overflow recovery per provider "prompt too long" error.
+# cleared (spilled to logs/tool_outputs/cleared) - for the local model also the
+# reasoning of old turns, which its chat template replays; above hard_ratio,
+# older spans are summarised. One overflow recovery per provider "prompt too
+# long" error. The local default compacts earlier than the Claude defaults
+# (0.7 / 0.85 of 200K): every past reasoning block is replayed (append-only,
+# cache friendly), specialist loops grow fast, and ~9 concurrent agents share
+# ~1.2M KV tokens. soft ~144K, hard ~183K of 262K.
 context:
   enabled: true
-  soft_ratio: 0.7
-  hard_ratio: 0.85
+  soft_ratio: 0.55
+  hard_ratio: 0.7
   keep_recent_calls: 6
   min_clear_chars: 2000
   min_clear_fraction: 0.05
   summary_max_tokens: 4000
   server_side: false              # Anthropic clear_tool_uses context editing instead of local clearing
-  default_window_tokens: 200000   # when the provider/model does not report one
+  default_window_tokens: 262144   # when neither the tier, the provider nor the server (/v1/models) reports one
 
 # ---------------------------------------------------------------- orchestration (Fig. 1C)
 orchestration:
@@ -155,8 +185,12 @@ mcp:
 bulk:
   dispatch_enabled: false         # register BulkDispatch/BulkStatus for the CSO
   dispatch_max_budget_usd: 50     # cap on a BulkDispatch job's budget_usd
+  dispatch_max_budget_tokens: null  # cap on a BulkDispatch job's budget_tokens (null = no cap)
   pilot_size: 5                   # items run (and costed) before confirm=true
   prewarm: first_item             # run one item alone first so the rest hit the prompt cache
+  default_concurrency: 32         # vbt bulk / case1 annotate without --concurrency; leaves room for
+                                  # interactive agents. A bulk-only server (`vbt local serve --profile h100
+                                  # --bulk`, 128 seqs) can take --concurrency 96
 
 # ---------------------------------------------------------------- tools
 bash:
@@ -211,6 +245,13 @@ web:
   retry_after_max_s: 30           # one retry on 429, honouring Retry-After up to this
   timeout_s: 60
   literature_max_date: null       # 'YYYY/MM/DD': keeps PubMed with a publication ceiling (no-web)
+  # WebSearch backend (vbt.tools.search_backends, docs/WEB_SEARCH.md): auto = the provider's native
+  # search (Claude), else SearxNG (searxng_url / SEARXNG_URL), else Brave (BRAVE_SEARCH_API_KEY),
+  # else none. The local model has no native search: start SearxNG with
+  #   docker compose -f deploy/local/docker-compose.yml up -d searxng
+  search:
+    backend: auto                 # auto | searxng | brave | provider | none
+    searxng_url: ${SEARXNG_URL:-http://localhost:8888}
 
 # ---------------------------------------------------------------- audit record (session.py, audit/)
 audit:

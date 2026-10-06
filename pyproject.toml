@@ -19,7 +19,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The default model is a LOCAL open-weight model (Qwen3.8-27B) behind an OpenAI-compatible server;
+# the harness talks to it with httpx (a base dependency), so the base install needs no vendor SDK.
+# Claude (`--profile claude` / `--profile paper`) needs the Anthropic SDK:
 anthropic = ["anthropic>=1.0"]
+# The inference server (vLLM >= 0.31, or SGLang / llama.cpp) runs separately - in its own
+# environment or the vllm/vllm-openai docker image (`vbt local serve`, deploy/local/README.md) -
+# because it pins its own torch/CUDA/transformers stack. Installing vllm into the harness env is
+# not supported; this extra is intentionally empty and exists only as that pointer.
+serve = []
 # Everything the MCP data servers import (upstream FastMCP servers + the PubMed server).
 # fastmcp: upstream pins 3.2.0; 4.x is tested with the harness bridge.
 mcp = [

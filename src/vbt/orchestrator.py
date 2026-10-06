@@ -34,11 +34,17 @@ credentials, reference data or MCP commands are missing (unless
 ``preflight.allow_missing_data`` the run proceeds degraded (MANIFEST.degraded)
 and every agent is told which servers lack data. Each turn re-checks
 credentials and data before any model call; a failing check records the turn
-as ``not_sent`` ("This turn has not been sent to the model").
+as ``not_sent`` ("This turn has not been sent to the model"). A provider with a
+readiness hook (local inference servers) is ``prepare()``-d once before the run
+is created: an unreachable server or an unserved model raises
+``vbt.preflight.ProviderNotReadyError`` with the provider's fix hint. The
+server's facts (``server_info()``: engine version, served models,
+``max_model_len``) are pinned as ``provider.server``.
 
 Config (in-code defaults): ``orchestration.review_policy`` (``research``),
 ``orchestration.enforce_plan`` (false), ``orchestration.max_review_rounds`` (2),
-``orchestration.strategic_orientation`` (true), ``limits.max_turn_cost_usd``.
+``orchestration.strategic_orientation`` (true), ``limits.max_turn_cost_usd`` and
+``limits.max_turn_tokens`` (the ``turn`` scope stops at either).
 """
 
 from __future__ import annotations
@@ -292,8 +298,10 @@ class CSOSession:
         limits = self.config.get("limits") or {}
         turn_limit = limits.get("max_turn_cost_usd")
         turn_limit = float(turn_limit) if turn_limit not in (None, "", 0) else None
+        turn_tokens = limits.get("max_turn_tokens")
+        turn_tokens = float(turn_tokens) if turn_tokens not in (None, "", 0) else None
         try:
-            with rt.cost_scope("turn", turn_limit):
+            with rt.cost_scope("turn", turn_limit, limit_tokens=turn_tokens):
                 reply, cso_status = await self._dispatch(user_input)
             status = "completed" if cso_status == "completed" else f"incomplete: {cso_status}"
             if status != "completed":
@@ -384,8 +392,16 @@ class CSOSession:
         thinking: list[dict[str, Any]] = []
         mcp_used: list[str] = []
         compactions = 0
+        tokens = {"input_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0, "output_tokens": 0}
         for ev in events:
             kind = ev.get("type")
+            if kind in ("model_call", "compaction"):
+                usage = ev.get("usage") if isinstance(ev.get("usage"), Mapping) else {}
+                for k in tokens:
+                    try:
+                        tokens[k] += int(usage.get(k) or 0)
+                    except (TypeError, ValueError):
+                        pass
             if kind == "model_call" and ev.get("agent") == "cso":
                 for t in ev.get("thinking") or []:
                     if t:
@@ -410,6 +426,7 @@ class CSOSession:
                             for d in delegs],
             "cost_usd": round(cost - cost0, 6),
             "cumulative_cost_usd": round(cost, 6),
+            "tokens": {**tokens, "total": sum(tokens.values())},   # every model call of the turn (all agents)
             "tool_failures": summary["all"],
             "data_source_failures": data_failures,
             "recovered_errors": summary["recovered_count"],
@@ -803,14 +820,25 @@ async def open_session(config: dict[str, Any], *, provider=None, on_event=None, 
             # (profile api_key, workload identity, ...) judges the credentials,
             # as `vbt doctor` and the per-turn check do.
             try:
-                from .providers import create_provider
-                provider = create_provider(config["provider"]["name"],
-                                           **(config["provider"].get("options") or {}))
+                from .preflight import create_configured_provider
+                provider = create_configured_provider(config)
             except Exception:  # noqa: BLE001 - fall back to the env-var check; Runtime reports the error
                 log.debug("building the provider for preflight failed", exc_info=True)
                 provider = None
         checks = require_ready(config, provider=provider, allow_missing_data=allow_missing,
                                start_mcp=start_mcp)
+        # The model server's own readiness (local servers: /health, the configured
+        # models are served); ProviderNotReadyError before any run directory exists.
+        from .preflight import prepare_provider
+        try:
+            await prepare_provider(provider, config)
+        except BaseException:
+            if provider is not None:
+                try:
+                    await provider.aclose()
+                except Exception:  # noqa: BLE001
+                    pass
+            raise
     if resume:
         run = Run.open_existing(resume)
     else:
@@ -840,8 +868,10 @@ async def open_session(config: dict[str, Any], *, provider=None, on_event=None, 
             failures = await rt.start_mcp()
             if failures:
                 rt.emit("warning", message=f"MCP servers unavailable: {', '.join(sorted(failures))}")
+        from .preflight import provider_server_info
+        server = await provider_server_info(rt.provider)  # engine version, served models, max_model_len
         try:
-            pinned = build_pinned_config(config, rt, interface=interface, profiles=profiles)
+            pinned = build_pinned_config(config, rt, interface=interface, profiles=profiles, server=server)
         except Exception as exc:  # noqa: BLE001 - pinning must never block a session
             log.exception("building the pinned config failed")
             pinned = {"provider": {"name": config["provider"]["name"]}, "models": config.get("models"),

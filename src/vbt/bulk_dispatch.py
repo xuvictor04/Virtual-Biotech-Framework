@@ -19,7 +19,10 @@ These tools let the CSO do the same from conversation:
     With ``confirm: true`` (after a pilot of the same job) the full run starts
     as a background task writing ``work/<subagent>/results/bulk/<job_id>.jsonl``
     (pilot items are reused, not rerun) and the tool returns the job id and paths.
-    ``budget_usd`` is required and capped by ``bulk.dispatch_max_budget_usd``.
+    ``budget_usd`` (capped by ``bulk.dispatch_max_budget_usd``) and/or
+    ``budget_tokens`` (capped by ``bulk.dispatch_max_budget_tokens``, if set) is
+    required; local models cost 0 USD, so their jobs are budgeted in tokens. Both
+    cap the job's cumulative spend (every pilot and full run).
 
 ``BulkStatus``
     Progress of a job (done/failed/queued, spend) and its summary when finished.
@@ -199,8 +202,8 @@ class BulkJob:
     out_path: Path
     summary_path: Path
     n_items: int
-    budget_usd: float
-    state: str = "pending"            # pending | piloted | running | completed | stopped | failed | cancelled
+    budget_usd: float | None
+    state: str = "pending"           # pending | piloted | running | completed | stopped | failed | cancelled
     runner: BulkRunner | None = None
     task: asyncio.Task | None = None
     pilot: dict[str, Any] | None = None
@@ -211,21 +214,30 @@ class BulkJob:
     #: run in progress, if any, is added by :meth:`total_spent`). Persisted in
     #: ``summary_path`` so a resumed job cannot reset it.
     spent_usd: float = 0.0
+    budget_tokens: float | None = None
+    spent_tokens: float = 0.0         # cumulative budget tokens, like spent_usd
 
     def total_spent(self) -> float:
         r = self.runner
         live = r.scope.spent if (self.state == "running" and r is not None and r.scope is not None) else 0.0
         return self.spent_usd + live
 
+    def total_tokens(self) -> float:
+        r = self.runner
+        live = r.scope.tokens if (self.state == "running" and r is not None and r.scope is not None) else 0.0
+        return self.spent_tokens + live
+
     def status(self) -> dict[str, Any]:
         out: dict[str, Any] = {"job_id": self.job_id, "state": self.state, "agent": self.agent,
                                "n_items": self.n_items, "budget_usd": self.budget_usd,
                                "spent_usd": round(self.total_spent(), 6),
+                               "budget_tokens": self.budget_tokens, "spent_tokens": round(self.total_tokens()),
                                "results_path": str(self.out_path), "summary_path": str(self.summary_path)}
         r = self.runner
         if r is not None:
             out["progress"] = {"done": r.stats.done, "failed": r.stats.failed, "skipped_existing": r.stats.skipped,
                                "queued": r.queued, "spent_usd": round(r.scope.spent, 4) if r.scope else 0.0,
+                               "spent_tokens": round(r.scope.tokens) if r.scope else 0,
                                "elapsed_s": round(time.time() - self.started, 1)}
         if self.summary is not None:
             out["summary"] = self.summary
@@ -243,13 +255,27 @@ class BulkJob:
         """Fold a finished pilot/full run's spend into the job total."""
         if runner.scope is not None:
             self.spent_usd += float(runner.scope.spent or 0.0)
+            self.spent_tokens += float(runner.scope.tokens or 0.0)
 
 
-def _persisted_spend(summary_path: Path) -> float:
+def _persisted_spend(summary_path: Path, key: str = "spent_usd") -> float:
     try:
-        return float(json.loads(summary_path.read_text()).get("spent_usd") or 0.0)
+        return float(json.loads(summary_path.read_text()).get(key) or 0.0)
     except Exception:  # noqa: BLE001 - missing or unreadable summary: nothing spent yet
         return 0.0
+
+
+def _positive_number(value: Any, name: str) -> float | None:
+    """None when absent; a positive float, else ToolFailure."""
+    if value in (None, ""):
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise ToolFailure(f"{name} must be a positive number") from None
+    if v <= 0:
+        raise ToolFailure(f"{name} must be positive")
+    return v
 
 
 def _jobs(runtime: Any) -> dict[str, BulkJob]:
@@ -304,14 +330,18 @@ _DISPATCH_SCHEMA: dict[str, Any] = {
         "schema": {"type": "string",
                    "description": "Output schema: a registered name (trial_annotation) or a JSON Schema file."},
         "concurrency": {"type": "integer", "description": "Parallel agents (default 16)."},
-        "budget_usd": {"type": "number", "description": "Required spend cap for this job (pilot included)."},
+        "budget_usd": {"type": "number", "description": "Spend cap in USD for this job (pilot included); this "
+                                                        "or budget_tokens is required."},
+        "budget_tokens": {"type": "number",
+                          "description": "Token cap for this job (pilot included; input + output tokens, cached "
+                                         "input at a reduced weight). Use it with a local model (0 USD)."},
         "pilot_size": {"type": "integer", "description": "Items in the pilot (default bulk.pilot_size)."},
         "confirm": {"type": "boolean",
                     "description": "false (default): run the pilot and return a projection. true: start the "
                                    "full background run (after a pilot of the same job)."},
         "job_id": {"type": "string", "description": "Optional; defaults to a hash of the job definition."},
     },
-    "required": ["subagent_type", "prompt_template", "schema", "budget_usd"],
+    "required": ["subagent_type", "prompt_template", "schema"],
 }
 
 
@@ -326,15 +356,17 @@ def bulk_dispatch_tools(runtime: Any) -> list[Tool]:
         base = rt.agents.get(sub)
         if base is None:
             raise ToolFailure(f"unknown subagent_type {sub!r}; roster: {sorted(rt.agents)}")
-        try:
-            budget_usd = float(a.get("budget_usd"))
-        except (TypeError, ValueError):
-            raise ToolFailure("budget_usd is required (a positive number)") from None
+        budget_usd = _positive_number(a.get("budget_usd"), "budget_usd")
+        budget_tokens = _positive_number(a.get("budget_tokens"), "budget_tokens")
+        if budget_usd is None and budget_tokens is None:
+            raise ToolFailure("budget_usd is required (a positive number); with a local model (0 USD) pass "
+                              "budget_tokens instead")
         cap = float(cfg.get("dispatch_max_budget_usd") or 0) or None
-        if budget_usd <= 0:
-            raise ToolFailure("budget_usd must be positive")
-        if cap is not None and budget_usd > cap:
+        if budget_usd is not None and cap is not None and budget_usd > cap:
             raise ToolFailure(f"budget_usd {budget_usd} exceeds bulk.dispatch_max_budget_usd={cap}")
+        tcap = float(cfg.get("dispatch_max_budget_tokens") or 0) or None
+        if budget_tokens is not None and tcap is not None and budget_tokens > tcap:
+            raise ToolFailure(f"budget_tokens {budget_tokens:g} exceeds bulk.dispatch_max_budget_tokens={tcap:g}")
         items_path = _resolve_input(ctx, a["items_path"], "items_path") if a.get("items_path") else None
         rows, id_col = load_items(items_path, ids=a.get("ids"), query=a.get("query"),
                                   id_column=a.get("id_column"), max_items=a.get("max_items"))
@@ -368,22 +400,27 @@ def bulk_dispatch_tools(runtime: Any) -> list[Tool]:
             raise ToolFailure(f"job {job_id} is already running; use BulkStatus")
         if job is None:
             job = BulkJob(job_id, agent.name, out_path, summary_path, len(items), budget_usd,
-                          spent_usd=_persisted_spend(summary_path))
+                          spent_usd=_persisted_spend(summary_path),
+                          spent_tokens=_persisted_spend(summary_path, "spent_tokens"))
             jobs[job_id] = job
-        job.n_items, job.budget_usd = len(items), budget_usd
+        job.n_items, job.budget_usd, job.budget_tokens = len(items), budget_usd, budget_tokens
         concurrency = int(a.get("concurrency") or 16)
         pilot_size = int(a["pilot_size"]) if a.get("pilot_size") is not None else int(cfg.get("pilot_size") or 5)
-        # budget_usd caps the job's cumulative spend: every pilot and every full run counts against it
-        remaining_budget = budget_usd - job.spent_usd
-        if remaining_budget <= 0:
+        # the budgets cap the job's cumulative spend: every pilot and every full run counts against them
+        remaining_budget = None if budget_usd is None else budget_usd - job.spent_usd
+        if remaining_budget is not None and remaining_budget <= 0:
             raise ToolFailure(f"job {job_id} already spent ${job.spent_usd:.2f} of budget_usd={budget_usd}; "
                               "raise budget_usd (within bulk.dispatch_max_budget_usd) to continue")
+        remaining_tokens = None if budget_tokens is None else budget_tokens - job.spent_tokens
+        if remaining_tokens is not None and remaining_tokens <= 0:
+            raise ToolFailure(f"job {job_id} already used {job.spent_tokens:,.0f} of budget_tokens="
+                              f"{budget_tokens:,.0f}; raise budget_tokens to continue")
 
         if not a.get("confirm"):
             pilot_items = items[:max(1, pilot_size)]
             pilot_conc = max(1, min(concurrency, len(pilot_items)))
             runner = BulkRunner(rt, agent, model, out_path, concurrency=pilot_conc,
-                                budget_usd=remaining_budget, job_id=job_id)
+                                budget_usd=remaining_budget, budget_tokens=remaining_tokens, job_id=job_id)
             t0 = time.time()
             try:
                 summary = await runner.run(pilot_items)
@@ -403,7 +440,15 @@ def bulk_dispatch_tools(runtime: Any) -> list[Tool]:
             lat = [float(r["elapsed_s"]) for r in results if r.get("elapsed_s") is not None]
             latency = statistics.median(lat) if lat else elapsed / ran * pilot_conc
             wall_s = math.ceil(remaining / max(1, concurrency)) * latency
-            left = budget_usd - job.spent_usd
+            left = None if budget_usd is None else budget_usd - job.spent_usd
+            all_tokens = [float(r.get("budget_tokens") or 0) for r in results]
+            tok_item = (sum(all_tokens) / len(all_tokens)) if all_tokens else None
+            left_tokens = None if budget_tokens is None else budget_tokens - job.spent_tokens
+            fits = []
+            if left is not None and per_item is not None:
+                fits.append(per_item * remaining <= left)
+            if left_tokens is not None and tok_item is not None:
+                fits.append(tok_item * remaining <= left_tokens)
             projection = {
                 "n_items": len(items), "n_remaining": remaining,
                 "pilot_cost_usd": round(sum(all_costs), 4),
@@ -411,10 +456,15 @@ def bulk_dispatch_tools(runtime: Any) -> list[Tool]:
                 "median_cost_per_success_usd": summary.get("median_cost_usd"),
                 "projected_remaining_cost_usd": None if per_item is None else round(per_item * remaining, 2),
                 "projected_total_cost_usd": None if per_item is None else round(per_item * len(items), 2),
+                "pilot_tokens": round(sum(all_tokens)),
+                "mean_tokens_per_item": None if tok_item is None else round(tok_item),
+                "projected_remaining_tokens": None if tok_item is None else round(tok_item * remaining),
                 "projected_wall_time_s": round(wall_s, 1),
                 "budget_usd": budget_usd, "job_spent_usd": round(job.spent_usd, 6),
-                "budget_remaining_usd": round(left, 6),
-                "fits_budget": None if per_item is None else per_item * remaining <= left,
+                "budget_remaining_usd": None if left is None else round(left, 6),
+                "budget_tokens": budget_tokens, "job_spent_tokens": round(job.spent_tokens),
+                "budget_remaining_tokens": None if left_tokens is None else round(left_tokens),
+                "fits_budget": all(fits) if fits else None,
                 "pilot_success_rate": round(len(ok_costs) / len(results), 3) if results else None,
             }
             job.state, job.pilot = "piloted", {"summary": summary, "projection": projection}
@@ -428,7 +478,7 @@ def bulk_dispatch_tools(runtime: Any) -> list[Tool]:
             raise ToolFailure("run a pilot first: call BulkDispatch with confirm: false, review the projection, "
                               "then confirm (or pass pilot_size: 0 to skip the pilot)")
         runner = BulkRunner(rt, agent, model, out_path, concurrency=concurrency, budget_usd=remaining_budget,
-                            job_id=job_id, account_to_parent=False)
+                            budget_tokens=remaining_tokens, job_id=job_id, account_to_parent=False)
         job.runner, job.state, job.summary, job.error, job.started = runner, "running", None, None, time.time()
 
         async def background() -> None:
@@ -454,9 +504,10 @@ def bulk_dispatch_tools(runtime: Any) -> list[Tool]:
         track = getattr(rt, "_track", None)
         if callable(track):
             track(job.task)
-        rt.emit("bulk_start", job_id=job_id, agent=agent.name, n_items=len(items), budget_usd=budget_usd)
+        rt.emit("bulk_start", job_id=job_id, agent=agent.name, n_items=len(items), budget_usd=budget_usd,
+                budget_tokens=budget_tokens)
         return {"job_id": job_id, "state": "running", "n_items": len(items), "budget_usd": budget_usd,
-                "results_path": str(out_path), "summary_path": str(summary_path),
+                "budget_tokens": budget_tokens, "results_path": str(out_path), "summary_path": str(summary_path),
                 "next": "Follow progress with BulkStatus(job_id)."}
 
     def status(ctx: ToolContext, a: dict[str, Any]) -> dict[str, Any]:
@@ -475,7 +526,8 @@ def bulk_dispatch_tools(runtime: Any) -> list[Tool]:
         Tool("BulkDispatch",
              "Massively parallel per-item run (one fresh agent per item, schema-validated JSON results). "
              "Without confirm: runs a pilot and returns results plus a cost/time projection. With confirm: "
-             "starts the full run in the background. budget_usd is required.",
+             "starts the full run in the background. budget_usd (or, with a local model, budget_tokens) is "
+             "required.",
              _DISPATCH_SCHEMA, dispatch, source="harness"),
         Tool("BulkStatus", "Progress and summary of a BulkDispatch job (omit job_id to list jobs).",
              {"type": "object", "properties": {"job_id": {"type": "string"}}, "required": []},

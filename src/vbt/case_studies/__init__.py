@@ -25,10 +25,8 @@ def add_case_parsers(sub) -> None:
     a.add_argument("--ids", nargs="*", help="explicit NCT IDs")
     a.add_argument("--ids-file", help="file with one NCT ID per line")
     a.add_argument("--phases", default="2,3")
-    a.add_argument("--concurrency", type=int, default=64)
-    a.add_argument("--budget", type=float, help="stop the bulk run when its spend reaches this many USD "
-                   "(the per-turn cap never applies to bulk runs)")
-    a.add_argument("--max-item-cost", type=float, help="per-trial cost cap in USD (limits.max_item_cost_usd)")
+    from ..bulk import add_budget_arguments
+    add_budget_arguments(a, what="trial")   # --concurrency --budget --budget-tokens --max-item-cost/-tokens
     a.add_argument("--prewarm", choices=["first_item", "none"], help="bulk.prewarm (default first_item)")
     a.add_argument("--protocol", help="trial_curation run directory or protocol .md designed by the clinical "
                    "trialist (default: the bundled annotator_prompt.md)")
@@ -148,15 +146,15 @@ def _case1(args, config: dict[str, Any]) -> int:
                 n = st.done + st.failed
                 if n - last[0] >= 25:
                     last[0] = n
-                    print(f"  {n} done ({st.failed} failed), ${sum(st.costs):.2f}")
-            kw: dict[str, Any] = {}
-            if getattr(args, "max_item_cost", None):
-                kw["max_item_cost_usd"] = args.max_item_cost
+                    from ..budget import format_tokens
+                    print(f"  {n} done ({st.failed} failed), ${sum(st.costs):.2f}, "
+                          f"{format_tokens(sum(st.tokens))} tokens")
+            from ..bulk import budget_kwargs
+            kw: dict[str, Any] = budget_kwargs(args)
             if getattr(args, "prewarm", None):
                 kw["prewarm"] = args.prewarm
             try:
-                summary = await ann.annotate(session.rt, trials, resolve_path(args.out),
-                                             concurrency=args.concurrency, budget_usd=args.budget,
+                summary = await ann.annotate(session.rt, trials, resolve_path(args.out), budget_usd=args.budget,
                                              on_progress=progress, protocol=protocol, schema=schema, **kw)
             except ProviderError as exc:
                 print(f"\nFATAL: the bulk run stopped on a non-retryable provider error: {exc}\n"
@@ -170,7 +168,8 @@ def _case1(args, config: dict[str, Any]) -> int:
                 await session.close()
             print(json.dumps(summary, indent=2))
             if summary.get("budget_stop"):
-                print(f"stopped at the bulk budget (${summary.get('budget_spent')}); "
+                print(f"stopped at the bulk budget (${summary.get('budget_spent')}, "
+                      f"{summary.get('budget_tokens_spent')} tokens); "
                       f"{summary.get('unrun')} trials not run (rerun to resume)")
             labels = ann.results_to_labels(resolve_path(args.out))
             labels.to_csv(resolve_path(args.out).with_suffix(".labels.csv"), index=False)

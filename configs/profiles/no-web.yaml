@@ -19,6 +19,8 @@
 web:
   enabled: false
   literature_max_date: '2025/01/31'
+  search:
+    backend: none                 # explicit: no WebSearch backend (web.enabled false already implies it)
 bash:
   network: false
   network_isolation: unshare
