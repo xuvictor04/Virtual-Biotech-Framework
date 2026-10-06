@@ -345,7 +345,13 @@ length" / "exceeds the model's maximum context length", llama.cpp
 `exceed_context_size_error`) is retried once inside `complete()` with
 `max_tokens = L - N - 256` when `L - N >= 2048`; otherwise it raises
 `ContextOverflowError` and the context manager compacts. A learned `L` is
-remembered.
+remembered. Recent vLLM (observed on 0.30) stops tokenizing at `L - max_tokens + 1` tokens, so
+its message says only "your prompt contains **at least** N input tokens" (or
+"contains C characters (more than X characters, which is the upper bound for Y
+input tokens)"), which is not the prompt size: the adapter then counts the
+prompt with vLLM's `POST /tokenize` (same messages, tools and template kwargs)
+and falls back to a chars/4 estimate when the server has no such endpoint
+(verified against vLLM 0.30, docs/LOCAL_LLM_VERIFICATION.md).
 
 **Errors.** Connection errors (with a "is the inference server running? `vbt
 local serve ...`" hint), timeouts, dropped streams, error events mid-stream,

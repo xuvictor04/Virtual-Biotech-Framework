@@ -110,6 +110,8 @@ class Fake:
         self.max_inflight = 0
         self.lock = threading.Lock()
         self.url = ""
+        self.tokenize_count = None  # POST /tokenize answer ({"count": N}); None -> 404 (no such endpoint)
+        self.tokenize_requests = []  # kept apart from `requests` so `posts` stays chat completions only
 
     @property
     def posts(self):
@@ -144,6 +146,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         fake = self.server.fake
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+        if self.path == "/tokenize":
+            fake.tokenize_requests.append(body)
+            if fake.tokenize_count is None:
+                self._send(404, json.dumps({"detail": "Not Found"}).encode())
+            else:
+                self._send(200, json.dumps({"count": fake.tokenize_count, "max_model_len": 32768,
+                                            "tokens": [1] * fake.tokenize_count}).encode())
+            return
         fake.requests.append({"method": "POST", "path": self.path, "headers": dict(self.headers), "body": body})
         with fake.lock:
             fake.inflight += 1
@@ -613,6 +623,32 @@ async def test_think_tags_in_content_become_reasoning(fake, make):
     assert r.message.content[0].text == "consider" and r.message.text == "Answer."
 
 
+async def test_stray_think_tag_with_thinking_off_stays_answer_text(fake, make):
+    """Live llama.cpp + Qwen3.5-0.8B, thinking off: the model wrote 'I'm doing well ...</think>...'; the
+    first sentence was moved into a hidden ThinkingBlock. With thinking off it is answer text."""
+    content = "I'm doing well, thanks!</think>\n\nHow can I help?"
+    fake.responses.append(("sse", text_turn(content)))
+    p = make()
+    r = await p.complete(settings=settings(None, False, 1024), system="s", messages=Q, tools=[])
+    assert not [b for b in r.message.content if isinstance(b, ThinkingBlock)]
+    assert r.message.text == content
+    fake.responses.append(("sse", text_turn("<think>\nplan\n</think>\n\nAnswer.")))  # explicit tags still split
+    r = await p.complete(settings=settings(None, False, 1024), system="s", messages=Q, tools=[])
+    assert r.message.content[0].text == "plan" and r.message.text == "Answer."
+    await p.aclose()
+
+
+async def test_tool_choice_none_never_extracts_text_tool_calls(fake, make):
+    """Live llama.cpp: with tool_choice 'none' the model's attempted call comes back as content text."""
+    xml = "<tool_call>\n<function=Read>\n<parameter=file_path>\n/x\n</parameter>\n</function>\n</tool_call>"
+    fake.responses.append(("sse", text_turn(xml)))
+    p = make()
+    r = await p.complete(settings=settings(tool_choice="none"), system="s", messages=Q, tools=TOOLS)
+    assert fake.posts[-1]["body"]["tool_choice"] == "none"
+    assert not r.message.tool_calls and r.message.text == xml and r.stop_reason is StopReason.END_TURN
+    await p.aclose()
+
+
 async def test_tool_alias_round_trip(fake, make):
     long = "mcp__clinicaltrials__" + "y" * 60
     tools = [ToolSpec(long, "long tool", {"type": "object"}), ToolSpec("ns.tool", "dotted", {"type": "object"})]
@@ -688,6 +724,91 @@ async def test_overflow_without_room_raises_context_overflow(fake, make):
                                                    "n_prompt_tokens": 5000, "n_ctx": 4096}}, {}))
     with pytest.raises(ContextOverflowError):
         await p.complete(settings=settings(), system="s", messages=Q, tools=[])
+    await p.aclose()
+
+
+# Verbatim vLLM 0.30.0 messages (live CPU run, docs/LOCAL_LLM_VERIFICATION.md). vLLM tokenizes at
+# most limit - max_tokens + 1 prompt tokens, so "at least N" is a lower bound, never the prompt size, and a
+# character pre-check can fire before any tokenization ("upper bound for 0 input tokens").
+VLLM030_AT_LEAST = ("This model's maximum context length is 32768 tokens. However, you requested 32512 output "
+                    "tokens and your prompt contains at least 257 input tokens, for a total of at least 32769 "
+                    "tokens. Please reduce the length of the input prompt or the number of requested output tokens. "
+                    "(parameter=input_tokens, value=257)")
+VLLM030_CHARS = ("This model's maximum context length is 32768 tokens. However, you requested 32768 output tokens "
+                 "and your prompt contains 31800 characters (more than 0 characters, which is the upper bound for 0 "
+                 "input tokens). Please reduce the length of the input prompt or the number of requested output "
+                 "tokens. (parameter=input_text, value=31800)")
+
+
+def test_vllm_lower_bound_overflow_messages_are_not_prompt_sizes():
+    from vbt.providers.openai_compat import overflow_info
+
+    assert parse_overflow(VLLM030_AT_LEAST) == (32768, None, 32512)
+    assert overflow_info(VLLM030_AT_LEAST).prompt_min == 257
+    assert parse_overflow(VLLM030_CHARS) == (32768, None, 32768)
+    assert overflow_info(VLLM030_CHARS).prompt_min == 1
+    exact = overflow_info(VLLM_OVERFLOW)
+    assert (exact.prompt, exact.prompt_min) == (20000, 20000)
+
+
+@pytest.mark.parametrize("message", [VLLM030_AT_LEAST, VLLM030_CHARS])
+async def test_lower_bound_overflow_counts_the_prompt_via_tokenize_then_retries(fake, make, message):
+    """Regression (live vLLM 0.30): the retry used the lower bound as the prompt size, so it either
+    retried with max_tokens=limit-256 (characters form: 'for 0 input tokens') or limit-(limit-M+1)-256,
+    which overflowed again. The prompt is now counted with POST /tokenize."""
+    fake.tokenize_count = 26207
+    fake.responses.append(api_error(400, message))
+    fake.responses.append(("sse", text_turn("ok")))
+    p = make(auto_discover=False)
+    s = settings(effort=None, thinking=False, max_tokens=32768)
+    r = await p.complete(settings=s, system="s", messages=Q, tools=TOOLS)
+    assert r.message.text == "ok"
+    assert [b["max_tokens"] for b in (fake.posts[-2]["body"], fake.posts[-1]["body"])] == \
+        [32768, 32768 - 26207 - 256]
+    tok = fake.tokenize_requests[-1]
+    assert tok["messages"] == fake.posts[-2]["body"]["messages"] and tok["add_generation_prompt"] is True
+    assert tok["tools"] == fake.posts[-2]["body"]["tools"]
+    assert tok["chat_template_kwargs"] == {"enable_thinking": False}
+    assert p.context_window(MODEL) == 32768
+    await p.aclose()
+
+
+async def test_lower_bound_overflow_without_room_after_counting(fake, make):
+    fake.tokenize_count = 31900
+    fake.responses.append(api_error(400, VLLM030_AT_LEAST))
+    p = make(auto_discover=False)
+    with pytest.raises(ContextOverflowError, match=r"limit 32768, prompt 31900 counted via /tokenize"):
+        await p.complete(settings=settings(max_tokens=32512), system="s", messages=Q, tools=[])
+    assert len(fake.posts) == 1
+    await p.aclose()
+
+
+async def test_lower_bound_overflow_without_tokenize_estimates_and_retries_once(fake, make):
+    fake.tokenize_count = None  # e.g. a server without /tokenize
+    fake.responses.extend([api_error(400, VLLM030_AT_LEAST), api_error(400, VLLM030_AT_LEAST)])
+    p = make(auto_discover=False)
+    with pytest.raises(ContextOverflowError, match="limit 32768, prompt 257 estimated"):
+        await p.complete(settings=settings(max_tokens=32512), system="s", messages=Q, tools=[])
+    first, second = fake.posts[-2]["body"], fake.posts[-1]["body"]
+    assert second["max_tokens"] == 32768 - 257 - 256 < first["max_tokens"]
+    assert len(fake.tokenize_requests) == 1
+    await p.aclose()
+
+
+async def test_tokenize_request_carries_the_effort_the_server_would_apply(fake, make):
+    fake.tokenize_count = 1000
+    fake.responses.extend([api_error(400, VLLM030_AT_LEAST), ("sse", text_turn("ok"))])
+    p = make(auto_discover=False)
+    await p.complete(settings=settings("high", True, 32512), system="s", messages=Q, tools=[])
+    assert fake.tokenize_requests[-1]["chat_template_kwargs"] == {"enable_thinking": True, "reasoning_effort": "xhigh"}
+    await p.aclose()
+
+
+async def test_data_parallel_rank_out_of_range_names_the_option(fake, make):
+    fake.responses.append(api_error(400, "data_parallel_rank 1 is out of range [0, 1)."))
+    p = make(auto_discover=False, data_parallel_size=2)
+    with pytest.raises(ProviderError, match="data_parallel_size \\(2\\) must equal the server's --data-parallel-size"):
+        await p.complete(settings=settings(session_key="k"), system="s", messages=Q, tools=[])
     await p.aclose()
 
 
@@ -823,6 +944,18 @@ async def test_prepare_discovers_models_and_window(fake, make):
         await make().prepare()
     for prov in (p,):
         await prov.aclose()
+
+
+async def test_llamacpp_window_from_meta_n_ctx(fake, make):
+    """llama-server's /v1/models has no max_model_len; its per-slot window is meta.n_ctx (live llama.cpp run)."""
+    fake.models = [{"id": "qwen3.5-0.8b-q8_0", "aliases": [], "object": "model", "owned_by": "llamacpp",
+                    "meta": {"vocab_type": 2, "n_vocab": 248320, "n_ctx": 16384, "n_ctx_train": 262144}}]
+    p = make(name="llamacpp")
+    await p.prepare()
+    assert p.context_window("qwen3.5-0.8b-q8_0") == 16384
+    assert (await p.list_models())[0]["max_model_len"] == 16384
+    assert (await p.server_info())["max_model_len"] == 16384
+    await p.aclose()
 
 
 async def test_family_resolved_from_the_served_root(fake, make):
