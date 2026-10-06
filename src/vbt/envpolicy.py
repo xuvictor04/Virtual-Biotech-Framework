@@ -6,7 +6,11 @@ instead of inheriting ``os.environ``; anything that looks like a secret is
 dropped unless the caller names it explicitly in ``passthrough`` (for example
 ``NCBI_API_KEY`` for the PubMed server only). ``redact`` masks the values of
 secret-looking variables in text before it is shown to a model or written to a
-shareable record (trace, tool output).
+shareable record (trace, tool output); credentials that come from the config
+rather than the environment (``web.search.brave_api_key``, a provider
+``api_key``, the password in a ``user:pass@`` URL) are added with
+``register_secret``. ``redact_url`` strips the user-info part of a URL before
+it is pinned or put into an error message.
 """
 
 from __future__ import annotations
@@ -14,8 +18,11 @@ from __future__ import annotations
 import fnmatch
 import glob
 import os
+import threading
 from collections.abc import Iterable, Mapping
+from typing import Any
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 #: Variables (exact names or fnmatch patterns) copied from the parent environment.
 ALLOW: tuple[str, ...] = (
@@ -107,13 +114,65 @@ def child_env(base: Mapping[str, str] | None = None, *, passthrough: Iterable[st
     return env
 
 
+#: Credentials from the config (not the environment), masked by ``redact`` too: ``{value: label}``.
+_CONFIG_SECRETS: dict[str, str] = {}
+_CONFIG_SECRETS_LOCK = threading.Lock()
+
+
+def register_secret(value: str | None, name: str) -> None:
+    """Also mask ``value`` wherever :func:`redact` runs (tool output, traces).
+
+    For credentials that come from the config file rather than an environment
+    variable, e.g. ``web.search.brave_api_key`` or ``provider.options.api_key``;
+    short values (< 8 characters) are ignored like short environment values."""
+    if not isinstance(value, str) or len(value.strip()) < _MIN_SECRET_LEN:
+        return
+    with _CONFIG_SECRETS_LOCK:
+        _CONFIG_SECRETS.setdefault(value.strip(), str(name))
+
+
+def url_secrets(url: str | None) -> str | None:
+    """The password (else the user name) embedded in ``url``'s user-info, or None."""
+    if not isinstance(url, str) or "@" not in url:
+        return None
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return None
+    return parts.password or parts.username or None
+
+
+def redact_url(url: Any) -> Any:
+    """``url`` without its ``user:password@`` part (other values unchanged).
+
+    Used for URLs that are pinned into run records or quoted in error messages
+    the model can see (SearxNG, the local inference server)."""
+    if not isinstance(url, str) or "@" not in url:
+        return url
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return url
+    if not (parts.username or parts.password):
+        return url
+    host = parts.hostname or ""
+    if ":" in host:  # IPv6 literal
+        host = f"[{host}]"
+    netloc = host + (f":{parts.port}" if parts.port else "")
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
 def secret_values(env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """``{value: name}`` for every secret-looking variable with a non-trivial value."""
+    """``{value: name}`` for every secret-looking variable with a non-trivial value,
+    plus the config-sourced credentials added with :func:`register_secret`."""
     env = os.environ if env is None else env
     out: dict[str, str] = {}
     for name, value in env.items():
         if isinstance(value, str) and len(value.strip()) >= _MIN_SECRET_LEN and is_secret_name(name):
             out[value.strip()] = name
+    with _CONFIG_SECRETS_LOCK:
+        for value, name in _CONFIG_SECRETS.items():
+            out.setdefault(value, name)
     return out
 
 
@@ -131,4 +190,5 @@ def redact(text, env: Mapping[str, str] | None = None):
     return text
 
 
-__all__ = ["ALLOW", "SECRET", "child_env", "is_secret_name", "redact", "secret_values"]
+__all__ = ["ALLOW", "SECRET", "child_env", "is_secret_name", "redact", "redact_url", "register_secret",
+           "secret_values", "url_secrets"]

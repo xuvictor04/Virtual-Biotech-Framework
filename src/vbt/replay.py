@@ -144,16 +144,21 @@ def _replay_config(pinned: Mapping[str, Any], *, model: str | None, runs_dir: st
     list and ``extra`` (CLI flag overrides such as ``preflight`` or ``web``) is
     merged on top of the pinned sections."""
     from .config import deep_merge, load_config
+    from .pinning import drop_redacted, pinned_profiles
 
     profs = list(profiles if profiles is not None else (pinned.get("profiles") or []))
     overrides: dict[str, Any] = {}
     for key in ("models", "web", "orchestration", "limits", "agent_overrides", "model_aliases"):
         if isinstance(pinned.get(key), dict) and pinned[key]:
-            overrides[key] = pinned[key]
+            overrides[key] = drop_redacted(pinned[key])  # a redacted secret falls back to the current config
     prov = pinned.get("provider")
     pname = prov.get("name") if isinstance(prov, Mapping) else prov if isinstance(prov, str) else None
     if pname:
         overrides["provider"] = {"name": pname}  # options were redacted when pinned; profiles restore them
+        # Same rule as --resume (cli.build_config): an anthropic run pinned without the claude/paper
+        # profile predates the local default; layering `claude` resets the local server's options
+        # (base_url!) and Qwen tier keys that would otherwise reach the Anthropic adapter.
+        profs = pinned_profiles(pname, profs)
     if runs_dir is not None:
         overrides["paths"] = {"runs_dir": str(runs_dir)}
     if extra:

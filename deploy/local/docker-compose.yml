@@ -19,9 +19,13 @@
 #   VLLM_TAG      image tag: v0.31.0 needs NVIDIA driver >= 580 (CUDA 13.0); use v0.31.0-cu129 for
 #                 drivers 575-579 (`vbt local profiles --detect` prints the right one)
 #   VLLM_GPU      GPU index for the single-GPU services (default 0)
-#   VLLM_BIND     host address the API is published on (default 127.0.0.1: vLLM has no auth)
+#   VLLM_BIND     host address the API is published on (default 127.0.0.1). Keep it on loopback:
+#                 vLLM's API key covers only /v1 (/invocations, /tokenize, /metrics, ... stay open),
+#                 and Docker's published ports bypass host firewalls (ufw). For remote access use an
+#                 SSH tunnel or an authenticating reverse proxy (deploy/local/README.md, Security).
 #   VLLM_PORT     host port (default 8000)
-#   VLLM_API_KEY  require this bearer token (set the same value as VBT_LLM_API_KEY for the harness)
+#   VLLM_API_KEY  bearer token for the /v1 routes only (set the same value as VBT_LLM_API_KEY for the
+#                 harness); not a substitute for keeping the port private
 #   HF_CACHE      Hugging Face cache on the host (default ~/.cache/huggingface); HF_TOKEN if needed
 #   SEARXNG_PORT  host port of SearxNG (default 8888); SEARXNG_BIND (default 127.0.0.1)
 # The SearxNG settings (deploy/local/searxng/settings.yml: JSON API on, limiter off) are described in
@@ -31,7 +35,7 @@ name: vbt-local
 
 x-vllm: &vllm
   image: vllm/vllm-openai:${VLLM_TAG:-v0.31.0}
-  ipc: host
+  shm_size: 16g             # private /dev/shm for NCCL / vLLM shared memory (not ipc: host)
   restart: unless-stopped
   ports:
     - "${VLLM_BIND:-127.0.0.1}:${VLLM_PORT:-8000}:8000"

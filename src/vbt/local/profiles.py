@@ -62,7 +62,7 @@ _PROFILE_KEYS = {
     "title", "digest_profile", "hardware", "hf_id", "tokenizer", "alternatives", "served_model_name", "family",
     "engine", "docker", "vllm_args", "context_tokens", "kv_cache_dtype", "max_num_seqs", "data_parallel_size",
     "mtp", "env", "capacity", "variants", "harness", "vision", "verification", "verification_detail", "caveats",
-    "flag_min_versions", "host", "port", "container_port",
+    "flag_min_versions", "host", "port", "container_port", "revision",
 }
 _REQUIRED_PROFILE_KEYS = ("title", "hardware", "hf_id", "served_model_name", "family", "vllm_args",
                           "context_tokens", "kv_cache_dtype", "max_num_seqs", "mtp", "harness", "verification",
@@ -452,6 +452,9 @@ class ServeSpec:
     verification: str
     notes: list[str] = field(default_factory=list)
     extra_argv: list[str] = field(default_factory=list)
+    #: ``--trust-remote-code`` without a pinned ``--revision`` / ``--code-revision``: the server would run
+    #: whatever Python is at the checkpoint repo's HEAD (``vbt local serve`` refuses to start it)
+    unpinned_remote_code: bool = False
 
     @property
     def server_argv(self) -> list[str]:
@@ -483,14 +486,18 @@ class ServeSpec:
 def resolve_serve(profiles: Mapping[str, Mapping[str, Any]], name: str, *, variants: Iterable[str] = (),
                   bulk: bool = False, hf_id: str | None = None, engine_version: str | None = None,
                   data_parallel: int | None = None, host: str | None = None, port: int | None = None,
-                  extra_args: Iterable[str] = ()) -> ServeSpec:
+                  extra_args: Iterable[str] = (), revision: str | None = None) -> ServeSpec:
     """Resolve profile ``name`` with ``variants`` (``bulk`` adds ``bulk``) and overrides.
 
     * ``hf_id`` swaps the checkpoint (e.g. a listed alternative);
     * ``engine_version`` below a flag's minimum (``flag_min_versions``) drops that
       flag, e.g. ``--tool-strict-level`` for vLLM 0.30.0;
     * ``data_parallel`` sets ``--data-parallel-size`` (1 removes it);
-    * ``extra_args`` are appended verbatim.
+    * ``extra_args`` are appended verbatim;
+    * ``revision`` (else the profile's ``revision``) pins the checkpoint: with
+      ``--trust-remote-code`` it is sent as ``--revision`` and ``--code-revision``,
+      so the server never runs unreviewed code pushed to the repo later; without a
+      pin such a spec is marked ``unpinned_remote_code``.
     """
     if name not in profiles:
         raise LocalProfileError(f"unknown serving profile {name!r}; available: {', '.join(profiles)}")
@@ -533,6 +540,20 @@ def resolve_serve(profiles: Mapping[str, Mapping[str, Any]], name: str, *, varia
                          f"{fb}); expect differences")
     if prof.get("verification") != "recipe-verified":
         notes.append(f"verification: {prof.get('verification')} - run `vbt local check` against the server")
+    pin = str(revision or prof.get("revision") or "").strip() or None
+    extra = [str(a) for a in extra_args or []]
+    pinned_by_extra = any(a.startswith(("--revision", "--code-revision")) for a in extra)
+    unpinned = False
+    if has_flag(args, "--trust-remote-code"):
+        if pin:
+            args = set_arg(set_arg(args, "--revision", pin), "--code-revision", pin)
+        elif not pinned_by_extra:
+            unpinned = True
+            notes.append(f"--trust-remote-code runs Python code from {prof['hf_id']} at whatever revision is current "
+                         "when it downloads; pin it with --revision <commit sha> (the reviewed commit on the Hub; "
+                         "also sent as --code-revision) or pass --allow-unpinned-remote-code")
+    elif pin:
+        args = set_arg(args, "--revision", pin)
     return ServeSpec(
         profile=name, variants=wanted, hf_id=str(prof["hf_id"]), served_model_name=str(prof["served_model_name"]),
         family=str(prof["family"]), args=args, env={str(k): str(v) for k, v in (prof.get("env") or {}).items()},
@@ -541,8 +562,11 @@ def resolve_serve(profiles: Mapping[str, Mapping[str, Any]], name: str, *, varia
         context_tokens=int(prof["context_tokens"]), kv_cache_dtype=prof.get("kv_cache_dtype"),
         max_num_seqs=prof.get("max_num_seqs"), data_parallel_size=int(prof.get("data_parallel_size") or 1),
         mtp=copy.deepcopy(prof.get("mtp")), docker=copy.deepcopy(prof.get("docker") or {}), engine=eng,
-        harness=dict(prof.get("harness") or {}), verification=str(prof.get("verification")), notes=notes,
-        extra_argv=[str(a) for a in extra_args or []],
+        # the harness's provider.options.data_parallel_size must equal the server's (variants such as
+        # deepseek-v4 tep/tp2/rtxpro6000x8 and --data-parallel N change it)
+        harness={**dict(prof.get("harness") or {}), "data_parallel_size": int(prof.get("data_parallel_size") or 1)},
+        verification=str(prof.get("verification")), notes=notes,
+        extra_argv=extra, unpinned_remote_code=unpinned,
     )
 
 
@@ -583,6 +607,10 @@ def select_docker_tag(docker: Mapping[str, Any], driver: str | None, *, engine: 
                             f"{oldest['min_driver']}; upgrade the driver")
 
 
+#: ``docker run --shm-size`` (and ``shm_size`` in deploy/local/docker-compose.yml).
+DOCKER_SHM_SIZE = "16g"
+
+
 def docker_run_argv(spec: ServeSpec, *, driver: str | None = None, hf_cache: str | None = None,
                     name: str = "vbt-vllm", bind: str = "127.0.0.1", gpus: str = "all",
                     detach: bool = False) -> tuple[list[str], list[str]]:
@@ -599,8 +627,10 @@ def docker_run_argv(spec: ServeSpec, *, driver: str | None = None, hf_cache: str
     argv = ["docker", "run", "--rm"]
     if detach:
         argv.append("-d")
-    argv += ["--name", name, "--gpus", gpus, "--ipc=host", "-p", f"{bind}:{spec.port}:{spec.container_port}",
-             "-v", f"{cache}:/root/.cache/huggingface"]
+    # A private /dev/shm sized for NCCL / vLLM's shared-memory queues instead of --ipc=host, which
+    # would share the host's IPC namespace with the container (and any remote code it runs).
+    argv += ["--name", name, "--gpus", gpus, f"--shm-size={DOCKER_SHM_SIZE}", "-p",
+             f"{bind}:{spec.port}:{spec.container_port}", "-v", f"{cache}:/root/.cache/huggingface"]
     for k, v in spec.env.items():
         argv += ["-e", f"{k}={v}"]
     argv += ["-e", "HF_TOKEN", "-e", "VLLM_API_KEY"]   # passed through only when set on the host
@@ -722,6 +752,74 @@ def parse_nvidia_smi(text: str) -> GPUInfo:
     return info
 
 
+#: Environment variable the local harness profiles read ``provider.options.data_parallel_size`` from.
+DP_SIZE_ENV = "VBT_LLM_DP_SIZE"
+_ENV_DEFAULT_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*):?-([^}]*)\}$")
+
+
+def _resolve_env_value(value: Any) -> Any:
+    """``${VAR:-default}`` -> ``$VAR`` or ``default`` (the config loader's rule); other values unchanged."""
+    if isinstance(value, str):
+        m = _ENV_DEFAULT_RE.match(value.strip())
+        if m:
+            return os.environ.get(m.group(1)) or m.group(2)
+    return value
+
+
+def harness_data_parallel_size(harness_profile: str | None) -> int | None:
+    """``provider.options.data_parallel_size`` of a harness config profile
+    (``configs/profiles/<name>.yaml`` over ``configs/default.yaml``), with
+    ``${VBT_LLM_DP_SIZE:-N}`` resolved from the environment; None if unknown."""
+    if not harness_profile:
+        return None
+    value: Any = None
+    for path in (CONFIG_DIR / "default.yaml", CONFIG_DIR / "profiles" / f"{harness_profile}.yaml"):
+        try:
+            doc = yaml.safe_load(path.read_text()) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        opts = ((doc.get("provider") or {}).get("options") or {}) if isinstance(doc, dict) else {}
+        if "data_parallel_size" in opts:
+            value = opts["data_parallel_size"]
+    try:
+        return max(1, int(_resolve_env_value(value) or 1))
+    except (TypeError, ValueError):
+        return None
+
+
+def harness_context_window(harness_profile: str | None) -> int | None:
+    """The largest ``models.<tier>.context_window_tokens`` of a harness config profile
+    (over ``configs/default.yaml``), None if unknown."""
+    if not harness_profile:
+        return None
+    tiers: dict[str, Any] = {}
+    for path in (CONFIG_DIR / "default.yaml", CONFIG_DIR / "profiles" / f"{harness_profile}.yaml"):
+        try:
+            doc = yaml.safe_load(path.read_text()) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        for tier, t in ((doc.get("models") or {}) if isinstance(doc, dict) else {}).items():
+            if isinstance(t, dict):
+                tiers[tier] = {**tiers.get(tier, {}), **t}
+    wins = []
+    for t in tiers.values():
+        try:
+            if t.get("context_window_tokens"):
+                wins.append(int(t["context_window_tokens"]))
+        except (TypeError, ValueError):
+            continue
+    return max(wins) if wins else None
+
+
+def harness_dp_hint(harness_profile: str | None, server_dp: int) -> str | None:
+    """The ``export VBT_LLM_DP_SIZE=N`` the harness needs to match a server with ``server_dp``
+    data-parallel ranks, or None when its profile already matches."""
+    have = harness_data_parallel_size(harness_profile)
+    if have is None or have == int(server_dp):
+        return None
+    return f"export {DP_SIZE_ENV}={int(server_dp)}"
+
+
 @dataclass
 class ProfilePick:
     """The serving profile recommended for the detected GPUs (``profile`` None: no fit)."""
@@ -834,6 +932,13 @@ def pick_profile(nvidia_smi: str | GPUInfo, profiles: Mapping[str, Mapping[str, 
     if cls == "rtxpro6000" and n >= 8 and "deepseek-v4" in profiles:
         pick.alternatives.append("deepseek-v4 --variant rtxpro6000x8")
     prof = profiles[pick.profile]
+    hp = (prof.get("harness") or {}).get("profile")
+    hint = harness_dp_hint(hp, pick.data_parallel_size)
+    if hint:
+        pick.warnings.append(
+            f"the server will run {pick.data_parallel_size} data-parallel rank(s) but harness profile {hp} defaults "
+            f"to data_parallel_size {harness_data_parallel_size(hp)}: `{hint}` before `vbt --profile {hp} ...` "
+            "(the adapter pins sessions with X-data-parallel-rank; a rank the server does not have is rejected)")
     try:
         pick.docker_tag, _ = select_docker_tag(prof.get("docker") or {}, info.driver_version,
                                                engine=prof.get("engine") or {})
@@ -846,7 +951,9 @@ def pick_profile(nvidia_smi: str | GPUInfo, profiles: Mapping[str, Mapping[str, 
 
 
 __all__ = [
-    "GPU", "GPUInfo", "LOCAL_MODELS_FILE", "LocalProfileError", "NVIDIA_SMI_QUERY", "ProfilePick", "ServeSpec",
+    "DOCKER_SHM_SIZE", "DP_SIZE_ENV", "GPU", "GPUInfo", "LOCAL_MODELS_FILE", "harness_context_window",
+    "harness_data_parallel_size", "harness_dp_hint", "LocalProfileError", "NVIDIA_SMI_QUERY", "ProfilePick",
+    "ServeSpec",
     "apply_variant", "arg_value", "args_to_argv", "detect_nvidia_smi", "docker_run_argv", "format_value", "has_flag",
     "load_local_models", "load_local_profiles", "normalize_args", "parse_nvidia_smi", "pick_profile",
     "remove_arg", "resolve_serve", "select_docker_tag", "set_arg", "shell_command", "shell_join",

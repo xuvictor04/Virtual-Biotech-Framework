@@ -306,15 +306,34 @@ class ContextManager:
 
     def window_for(self, settings: ModelSettings) -> int:
         """Context window for ``settings``: ``extra['context_window_tokens']``
-        override, else the provider's table, else ``policy.default_window_tokens``."""
+        override, else the provider's table, else ``policy.default_window_tokens``.
+
+        Either way it never exceeds the limit the serving engine enforces when the
+        provider knows it (``provider.server_context_window(model)``: a local
+        server's discovered ``max_model_len``). A 262K tier on a server started
+        with ``--max-model-len 65536`` (``vbt local serve --bulk``) would otherwise
+        compact only after the server had started rejecting the requests."""
         override = (settings.extra or {}).get("context_window_tokens")
         if override:
-            return int(override)
+            w: int | None = int(override)
+        else:
+            try:
+                w = self.provider.context_window(settings.model)
+            except Exception:  # noqa: BLE001 - a broken table must not break the loop
+                w = None
+            w = int(w) if w else int(self.policy.default_window_tokens)
+        hard = self._server_window(settings.model)
+        return min(w, hard) if hard else w
+
+    def _server_window(self, model: str | None) -> int | None:
+        fn = getattr(self.provider, "server_context_window", None)
+        if not callable(fn):
+            return None
         try:
-            w = self.provider.context_window(settings.model)
-        except Exception:  # noqa: BLE001 - a broken table must not break the loop
-            w = None
-        return int(w) if w else int(self.policy.default_window_tokens)
+            v = fn(model)
+            return int(v) if v and int(v) > 0 else None
+        except Exception:  # noqa: BLE001 - informational
+            return None
 
     @staticmethod
     def used_tokens(usage: Usage | None) -> int:

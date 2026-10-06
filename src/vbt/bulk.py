@@ -33,7 +33,10 @@ scope afterwards for accounting only.
 
 * An item's cost is its scope's spend: every attempt (including failed ones)
   and tool-side costs such as web-search fees; ``budget_tokens`` likewise.
-* ``BudgetExceeded`` of the item scope fails that item (no retry).
+* When the item scope runs out, the agent still makes one forced, budget-exempt
+  ``submit_result`` call in its own conversation (``run_agent(force_tool=...)``),
+  so the evidence gathered so far is submitted; only if that call does not
+  submit does ``BudgetExceeded`` fail the item (status ``item_budget``, no retry).
 * ``BudgetExceeded`` of the bulk scope (or the bulk spend reaching
   ``budget_usd`` / ``budget_tokens``) stops the run; items that never ran are
   not written.
@@ -70,12 +73,13 @@ from .tools.base import Tool, ToolContext, ToolFailure, inline_refs
 
 __all__ = ["BulkItem", "BulkStats", "BulkRunner", "BULK_DEFAULTS", "bulk_settings", "max_item_cost",
            "max_item_tokens", "default_concurrency", "is_fatal_provider_error", "load_results", "add_bulk_parser",
-           "SUBMIT_NUDGE"]
+           "SUBMIT_NUDGE", "ANNOTATE_CONCURRENCY", "unpriced_provider", "usd_only_budget_problem"]
 
 #: In-code defaults for the ``bulk:`` config section. Also read (with in-code
 #: defaults): ``default_concurrency`` (:data:`DEFAULT_CONCURRENCY`; concurrent
 #: items when a caller does not say: vbt bulk, case1 annotate) and
-#: ``dispatch_max_budget_tokens`` (cap on BulkDispatch budget_tokens; None = no cap).
+#: ``dispatch_max_budget_tokens`` (cap on BulkDispatch budget_tokens; None = no cap; the local
+#: default.yaml sets a finite one).
 BULK_DEFAULTS: dict[str, Any] = {
     "dispatch_enabled": False,        # register BulkDispatch/BulkStatus for the CSO
     "dispatch_max_budget_usd": 50.0,  # upper bound on BulkDispatch budget_usd
@@ -83,6 +87,9 @@ BULK_DEFAULTS: dict[str, Any] = {
     "prewarm": "first_item",          # 'first_item' | 'none'
 }
 DEFAULT_CONCURRENCY = 32
+#: ``vbt case1 annotate`` when ``bulk.default_concurrency`` is unset (the Claude-era default; the local
+#: profiles set default_concurrency to what their server's --max-num-seqs leaves room for).
+ANNOTATE_CONCURRENCY = 64
 
 SUBMIT_TOOL = "submit_result"
 SUBMIT_REPLY = "Result recorded."
@@ -121,12 +128,50 @@ def max_item_tokens(config: dict[str, Any] | None) -> float | None:
 max_item_tokens_cfg = max_item_tokens  # BulkRunner's keyword argument shadows the function name
 
 
-def default_concurrency(config: dict[str, Any] | None) -> int:
-    """``bulk.default_concurrency`` (default :data:`DEFAULT_CONCURRENCY`)."""
+def default_concurrency(config: dict[str, Any] | None, fallback: int = DEFAULT_CONCURRENCY) -> int:
+    """``bulk.default_concurrency``, else ``fallback`` (:data:`DEFAULT_CONCURRENCY` for
+    ``vbt bulk``, :data:`ANNOTATE_CONCURRENCY` for ``vbt case1 annotate``): the
+    Claude profiles leave the key unset, so each command keeps its own default."""
     try:
-        return max(1, int(bulk_settings(config).get("default_concurrency") or DEFAULT_CONCURRENCY))
+        return max(1, int(bulk_settings(config).get("default_concurrency") or fallback))
     except (TypeError, ValueError):
-        return DEFAULT_CONCURRENCY
+        return fallback
+
+
+def unpriced_provider(provider: Any = None, config: dict[str, Any] | None = None) -> bool:
+    """True when every model call costs 0 USD: a local OpenAI-compatible server
+    (vllm, sglang, llamacpp, openai_compat) without a nominal ``pricing``. A USD
+    budget can then never stop anything. Judged from the provider object when
+    given, else from ``config['provider']``."""
+    from .pinning import LOCAL_PROVIDER_NAMES
+
+    if provider is not None:
+        if getattr(provider, "name", None) not in LOCAL_PROVIDER_NAMES:
+            return False
+        pricing = getattr(provider, "pricing", None)
+    else:
+        prov = (config or {}).get("provider") or {}
+        if prov.get("name") not in LOCAL_PROVIDER_NAMES:
+            return False
+        pricing = (prov.get("options") or {}).get("pricing")
+    if not isinstance(pricing, dict):
+        return True
+    try:
+        return not any(float(v or 0) > 0 for v in pricing.values())
+    except (TypeError, ValueError):
+        return True
+
+
+def usd_only_budget_problem(budget_usd: Any, budget_tokens: Any, *, provider: Any = None,
+                            config: dict[str, Any] | None = None, usd_name: str = "budget_usd",
+                            tokens_name: str = "budget_tokens") -> str | None:
+    """Why a bulk job budgeted only in USD would have no effective cap (the provider
+    costs 0 USD), or None."""
+    if not budget_usd or budget_tokens or not unpriced_provider(provider, config):
+        return None
+    return (f"{usd_name} alone cannot stop this job: the local model costs 0 USD (provider.options.pricing is "
+            f"unset), so the spend never reaches it. Pass {tokens_name} (input + output tokens) instead, or "
+            "set a nominal provider.options.pricing")
 
 
 def is_fatal_provider_error(exc: BaseException) -> bool:
@@ -310,23 +355,31 @@ class BulkRunner:
         submit = _submit_tool(self.model, sink)
 
         def tally(r: Any) -> None:
-            counts["model_calls"] += r.model_calls
+            counts["model_calls"] += int(getattr(r, "model_calls", 0) or 0)
             counts["fallbacks"] += int(getattr(r, "fallback_count", 0) or 0)
             if getattr(r, "status", "") == "refusal":
                 counts["refusals"] += 1
 
-        res = await self.rt.run_agent(self.agent, item.prompt, history=history, depth=1, extra_tools=[submit],
-                                      description=f"bulk item {item.id}", force_tool=SUBMIT_TOOL, session_key=key)
-        tally(res)
+        async def run(task: str, **kw: Any) -> Any:
+            try:
+                r = await self.rt.run_agent(self.agent, task, history=history, depth=1, extra_tools=[submit],
+                                            force_tool=SUBMIT_TOOL, session_key=key, **kw)
+            except BudgetExceeded as exc:
+                # The item's budget ran out: the runtime already granted the forced submit_result call
+                # (budget-exempt); count the calls this invocation made before re-raising.
+                partial = getattr(exc, "agent_result", None)
+                if partial is not None:
+                    tally(partial)
+                raise
+            tally(r)
+            return r
+
+        res = await run(item.prompt, description=f"bulk item {item.id}")
         if "result" in sink or not self.continue_unsubmitted or getattr(res, "status", "") not in _CONTINUABLE:
             return res
         counts["continued"] = True
         self.rt.run.trace("bulk_continue", item=item.id, agent=self.agent.name, status=res.status)
-        res = await self.rt.run_agent(self.agent, SUBMIT_NUDGE, history=history, depth=1, extra_tools=[submit],
-                                      description=f"bulk item {item.id} (submit)", force_tool=SUBMIT_TOOL,
-                                      max_turns=0, session_key=key)
-        tally(res)
-        return res
+        return await run(SUBMIT_NUDGE, description=f"bulk item {item.id} (submit)", max_turns=0)
 
     async def _one(self, item: BulkItem) -> dict[str, Any] | None:
         """Run one item. Returns its record, or None when it never ran (bulk budget)."""
@@ -532,7 +585,8 @@ def add_budget_arguments(p, *, what: str = "item") -> None:
                    help="concurrent agents (default: bulk.default_concurrency, 32; size it to the server's "
                         "--max-num-seqs for a local model)")
     p.add_argument("--budget", type=float, help="stop the bulk run when its spend reaches this many USD "
-                   "(the per-turn caps never apply to bulk runs)")
+                   "(the per-turn caps never apply to bulk runs); refused alone with a 0-USD local model - "
+                   "use --budget-tokens")
     p.add_argument("--budget-tokens", type=float,
                    help="stop the bulk run when it has used this many tokens (input + output, cached input "
                         "at limits.cached_token_weight); local models cost 0 USD, so budget them in tokens")
@@ -560,6 +614,11 @@ def _cli(args, config) -> int:
 
     from .orchestrator import open_session
 
+    problem = usd_only_budget_problem(args.budget, getattr(args, "budget_tokens", None), config=config,
+                                      usd_name="--budget", tokens_name="--budget-tokens")
+    if problem:
+        print(f"error: {problem}", file=sys.stderr)
+        return 2
     mod, _, name = args.schema.partition(":")
     model = getattr(importlib.import_module(mod), name)
     items = [BulkItem(str(r["id"]), r["prompt"], r) for r in

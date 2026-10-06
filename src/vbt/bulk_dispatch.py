@@ -21,8 +21,10 @@ These tools let the CSO do the same from conversation:
     (pilot items are reused, not rerun) and the tool returns the job id and paths.
     ``budget_usd`` (capped by ``bulk.dispatch_max_budget_usd``) and/or
     ``budget_tokens`` (capped by ``bulk.dispatch_max_budget_tokens``, if set) is
-    required; local models cost 0 USD, so their jobs are budgeted in tokens. Both
-    cap the job's cumulative spend (every pilot and full run).
+    required; local models cost 0 USD, so their jobs need ``budget_tokens`` (a
+    USD-only job is refused: its spend would never reach the cap, and the
+    projection's ``fits_budget`` ignores a USD budget there). Both cap the job's
+    cumulative spend (every pilot and full run).
 
 ``BulkStatus``
     Progress of a job (done/failed/queued, spend) and its summary when finished.
@@ -50,7 +52,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, create_model
 
-from .bulk import BulkItem, BulkRunner, bulk_settings, load_results
+from .bulk import BulkItem, BulkRunner, bulk_settings, load_results, unpriced_provider, usd_only_budget_problem
 from .tools.base import Tool, ToolContext, ToolFailure
 
 __all__ = ["bulk_dispatch_tools", "SCHEMA_REGISTRY", "resolve_schema", "load_items", "BulkJob"]
@@ -331,7 +333,8 @@ _DISPATCH_SCHEMA: dict[str, Any] = {
                    "description": "Output schema: a registered name (trial_annotation) or a JSON Schema file."},
         "concurrency": {"type": "integer", "description": "Parallel agents (default 16)."},
         "budget_usd": {"type": "number", "description": "Spend cap in USD for this job (pilot included); this "
-                                                        "or budget_tokens is required."},
+                                                        "or budget_tokens is required (budget_tokens with a "
+                                                        "local model, which costs 0 USD)."},
         "budget_tokens": {"type": "number",
                           "description": "Token cap for this job (pilot included; input + output tokens, cached "
                                          "input at a reduced weight). Use it with a local model (0 USD)."},
@@ -358,9 +361,16 @@ def bulk_dispatch_tools(runtime: Any) -> list[Tool]:
             raise ToolFailure(f"unknown subagent_type {sub!r}; roster: {sorted(rt.agents)}")
         budget_usd = _positive_number(a.get("budget_usd"), "budget_usd")
         budget_tokens = _positive_number(a.get("budget_tokens"), "budget_tokens")
+        unpriced = unpriced_provider(getattr(rt, "provider", None), rt.config)
         if budget_usd is None and budget_tokens is None:
-            raise ToolFailure("budget_usd is required (a positive number); with a local model (0 USD) pass "
+            raise ToolFailure("budget_tokens is required with a local model (0 USD); budget_usd with a priced "
+                              "provider" if unpriced else
+                              "budget_usd is required (a positive number); with a local model (0 USD) pass "
                               "budget_tokens instead")
+        problem = usd_only_budget_problem(budget_usd, budget_tokens, provider=getattr(rt, "provider", None),
+                                          config=rt.config)
+        if problem:  # a 0-USD model never reaches a USD cap: the job would run unbounded
+            raise ToolFailure(problem)
         cap = float(cfg.get("dispatch_max_budget_usd") or 0) or None
         if budget_usd is not None and cap is not None and budget_usd > cap:
             raise ToolFailure(f"budget_usd {budget_usd} exceeds bulk.dispatch_max_budget_usd={cap}")
@@ -445,7 +455,8 @@ def bulk_dispatch_tools(runtime: Any) -> list[Tool]:
             tok_item = (sum(all_tokens) / len(all_tokens)) if all_tokens else None
             left_tokens = None if budget_tokens is None else budget_tokens - job.spent_tokens
             fits = []
-            if left is not None and per_item is not None:
+            # a 0-USD model gives no cost signal: its USD budget says nothing about fitting
+            if left is not None and per_item is not None and not unpriced:
                 fits.append(per_item * remaining <= left)
             if left_tokens is not None and tok_item is not None:
                 fits.append(tok_item * remaining <= left_tokens)

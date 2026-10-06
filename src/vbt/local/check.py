@@ -5,14 +5,22 @@ talks to the server twice over: raw HTTP for the server facts (``/health``,
 ``/v1/models``, ``/version``) and the harness's own adapter
 (:class:`vbt.providers.openai_compat.OpenAICompatProvider`) for every model
 probe, so request encoding and response decoding are exercised exactly as in a
-session. Checks (each pass / warn / fail / skip with its threshold):
+session; the adapter is built from the same ``provider.options`` the runtime
+uses (``base_urls``, ``data_parallel_size``, ``routing``, ``headers``,
+``extra_body``, ``trust_env``, ...), with only the model and the probe's own
+request fields overridden. Checks (each pass / warn / fail / skip with its
+threshold):
 
 ========================  =====================================================================
 ``health``                ``GET /health`` answers 200
 ``models``                the served model name is listed; ``max_model_len`` >= the configured
                           context window
 ``version``               engine version >= 0.31.0 (``--tool-strict-level``); warn otherwise
-``prepare``               the adapter's ``prepare()`` (health + model discovery)
+``prepare``               the adapter's ``prepare()`` (health + model discovery; with
+                          ``data_parallel_size`` > 1 also the server's DP engine count)
+``routing``               every configured ``base_urls`` replica serves the model, and with
+                          ``data_parallel_size`` > 1 (``routing: header``) every
+                          ``X-data-parallel-rank`` 0..N-1 is accepted
 ``tool_call``             one tool call with the right arguments
 ``parallel_tool_calls``   three independent lookups -> >= 2 calls in one turn
 ``strict_schema``         ``submit_result`` with the Case 1 ``TrialAnnotation`` schema (13 anyOf,
@@ -69,7 +77,7 @@ PASS, WARN, FAIL, SKIP = "pass", "warn", "fail", "skip"
 
 MODEL_CHECKS = ("tool_call", "parallel_tool_calls", "strict_schema", "forced_tool_choice", "reasoning_effort",
                 "thinking_budget", "needle", "prefix_cache", "throughput", "malformed_calls")
-CHECK_NAMES = ("health", "models", "version", "prepare", *MODEL_CHECKS)
+CHECK_NAMES = ("health", "models", "version", "prepare", "routing", *MODEL_CHECKS)
 
 ProviderFactory = Callable[["CheckOptions", "dict[str, Any] | None"], Any]
 
@@ -85,6 +93,7 @@ class CheckOptions:
     family: str = "auto"
     provider_name: str = "vllm"
     api_key: str | None = None
+    api_key_env: str | None = None        # explicit opt-in: read the key from this variable
     timeout_s: float = 30.0               # connect / plain HTTP
     read_timeout_s: float = 600.0         # silence between streamed chunks
     check_timeout_s: float = 900.0        # wall-clock cap per check
@@ -106,11 +115,30 @@ class CheckOptions:
     max_malformed_rate: float = 0.1
     chars_per_token: float = 4.0          # haystack sizing (actual prompt tokens are reported)
     seed: int | None = None
+    # the config's non-null provider.options (local providers): the probe adapter is built from them
+    provider_options: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d.pop("api_key", None)
+        from ..pinning import redact_config
+        d["provider_options"] = redact_config(d.get("provider_options") or {})
         return d
+
+    @property
+    def replica_urls(self) -> list[str]:
+        """The configured replica base URLs (``provider_options.base_urls``), else ``[base_url]``."""
+        urls = self.provider_options.get("base_urls")
+        if isinstance(urls, str):
+            urls = [u for u in urls.replace(",", " ").split() if u]
+        return [str(u).strip() for u in urls or [] if str(u).strip()] or [self.base_url]
+
+    @property
+    def data_parallel_size(self) -> int:
+        try:
+            return max(1, int(self.provider_options.get("data_parallel_size") or 1))
+        except (TypeError, ValueError):
+            return 1
 
 
 @dataclass
@@ -182,18 +210,29 @@ class CheckReport:
 # ---------------------------------------------------------------- provider plumbing
 
 def default_provider_factory(opts: CheckOptions, extra_body: dict[str, Any] | None = None) -> Any:
-    """The harness adapter for ``opts`` (``extra_body`` is merged into every request)."""
+    """The harness adapter for ``opts``, built like the runtime builds it: from the
+    config's ``provider.options`` (routing, ``data_parallel_size``, ``base_urls``,
+    ``headers``, ``extra_body``, ``trust_env``, ...), with only the probed model,
+    the check's timeouts and the probe's ``extra_body`` (merged over the
+    configured one) overridden."""
     try:
-        from ..providers.openai_compat import OpenAICompatProvider
+        from ..providers.openai_compat import create
     except ImportError as exc:  # pragma: no cover - present once the local provider is installed
         raise ProviderError(f"vbt.providers.openai_compat is not available ({exc})") from None
-    kwargs: dict[str, Any] = {"base_url": opts.base_url, "model": opts.model, "api_key": opts.api_key,
-                              "family": opts.family or "auto", "name": opts.provider_name,
-                              "timeout_s": opts.timeout_s, "read_timeout_s": opts.read_timeout_s,
-                              "served_model_name": opts.model}
+    kwargs: dict[str, Any] = {k: v for k, v in (opts.provider_options or {}).items() if v is not None}
+    kwargs.pop("name", None)
+    kwargs.update({"model": opts.model, "served_model_name": opts.model,
+                   "family": opts.family if (opts.family or "auto") != "auto" else kwargs.get("family") or "auto",
+                   "timeout_s": opts.timeout_s, "read_timeout_s": opts.read_timeout_s})
+    if not kwargs.get("base_urls"):
+        kwargs["base_url"] = opts.base_url
+    if opts.api_key:
+        kwargs["api_key"] = opts.api_key
     if extra_body:
-        kwargs["extra_body"] = dict(extra_body)
-    return OpenAICompatProvider(**kwargs)
+        merged = dict(kwargs.get("extra_body") or {})
+        merged.update(extra_body)
+        kwargs["extra_body"] = merged
+    return create(opts.provider_name, **kwargs)
 
 
 def family_traits(model: str | None, family: str | None) -> tuple[str, bool]:
@@ -224,6 +263,12 @@ def split_base_url(url: str) -> tuple[str, str]:
 def _is_loopback(url: str) -> bool:
     host = (urlsplit(url).hostname or "").lower()
     return host in ("localhost", "::1") or host.startswith("127.")
+
+
+def _shown(url: str) -> str:
+    """``url`` without a ``user:password@`` part (reports are shareable)."""
+    from ..envpolicy import redact_url
+    return str(redact_url(url))
 
 
 def _tool_spec(name: str, description: str, schema: dict[str, Any], *, strict: bool = False) -> ToolSpec:
@@ -402,12 +447,17 @@ class LocalChecker:
         return not hit(self.opts.skip)
 
     def _http(self) -> httpx.AsyncClient:
-        headers = {}
-        key = self.opts.api_key or os.environ.get("VBT_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        # the configured provider.options.headers (e.g. an auth proxy in front of vLLM) apply here too
+        headers = {str(k): str(v) for k, v in (self.opts.provider_options.get("headers") or {}).items()}
+        # Same rule as the adapter: the api_key option, else $VBT_LLM_API_KEY (never OPENAI_API_KEY
+        # implicitly: the user's OpenAI credential must not go to a self-hosted server).
+        key = self.opts.api_key or os.environ.get("VBT_LLM_API_KEY", "").strip() or (
+            os.environ.get(self.opts.api_key_env, "").strip() if self.opts.api_key_env else "")
         if key:
             headers["Authorization"] = f"Bearer {key}"
+        trust_env = self.opts.provider_options.get("trust_env")
         kwargs: dict[str, Any] = {"timeout": httpx.Timeout(self.opts.timeout_s), "headers": headers,
-                                  "trust_env": not _is_loopback(self.root)}
+                                  "trust_env": (not _is_loopback(self.root)) if trust_env is None else bool(trust_env)}
         if self._transport is not None:
             kwargs["transport"] = self._transport
         return httpx.AsyncClient(**kwargs)
@@ -559,6 +609,63 @@ class LocalChecker:
         return CheckResult("version", WARN, f"vLLM {version or '?'} < {self.opts.min_engine_version}: "
                            "--tool-strict-level is unavailable (per-tool strict and forced tool_choice still work "
                            "on 0.30) and hybrid prefix-cache fixes are missing", threshold, {"version": version})
+
+    async def check_routing(self) -> CheckResult:
+        """Every replica of ``base_urls`` serves the model, and every DP rank the adapter
+        will address (``X-data-parallel-rank`` 0..N-1) is accepted. A server started
+        with a smaller ``--data-parallel-size`` rejects the higher ranks with HTTP 400,
+        so a run would fail for the sessions hashed to them."""
+        urls, dp = self.opts.replica_urls, self.opts.data_parallel_size
+        routing = str(self.opts.provider_options.get("routing") or "header").lower()
+        threshold = (f"{len(urls)} replica(s) serve {self.model!r}"
+                     + (f"; X-data-parallel-rank 0..{dp - 1} accepted" if dp > 1 and routing == "header" else ""))
+        if len(urls) <= 1 and (dp <= 1 or routing != "header"):
+            return CheckResult("routing", SKIP, "one server and no data-parallel ranks configured", threshold)
+        if not self.model:
+            return CheckResult("routing", SKIP, "no model to probe", threshold)
+        problems: list[str] = []
+        metrics: dict[str, Any] = {"replicas": [], "ranks": {}}
+        async with self._http() as http:
+            for url in urls:
+                api, _root = split_base_url(url)
+                shown = _shown(api)
+                try:
+                    r = await http.get(api + "/models")
+                    ids = [str(d.get("id")) for d in (r.json().get("data") or []) if isinstance(d, dict)] \
+                        if r.status_code < 400 else []
+                except (httpx.HTTPError, ValueError, AttributeError) as exc:
+                    problems.append(f"{shown} unreachable ({type(exc).__name__})")
+                    metrics["replicas"].append({"url": shown, "ok": False})
+                    continue
+                ok = self.model in ids
+                metrics["replicas"].append({"url": shown, "ok": ok, "served": ids})
+                if not ok:
+                    problems.append(f"{shown} does not serve {self.model!r} (HTTP {r.status_code}; served: {ids})")
+                    continue
+                if dp <= 1 or routing != "header":
+                    continue
+                for rank in range(dp):
+                    body = {"model": self.model, "messages": [{"role": "user", "content": "Reply with OK."}],
+                            "max_tokens": 1, "stream": False}
+                    try:
+                        rr = await http.post(api + "/chat/completions", json=body,
+                                             headers={"X-data-parallel-rank": str(rank)})
+                    except httpx.HTTPError as exc:
+                        problems.append(f"{shown} rank {rank}: {type(exc).__name__}")
+                        continue
+                    metrics["ranks"][f"{shown}#{rank}"] = rr.status_code
+                    if rr.status_code >= 400:
+                        text = rr.text[:300]
+                        if "data_parallel_rank" in text:
+                            problems.append(
+                                f"{shown} rejected X-data-parallel-rank {rank} (HTTP {rr.status_code}): "
+                                f"provider.options.data_parallel_size ({dp}) must equal the server's "
+                                "--data-parallel-size (export VBT_LLM_DP_SIZE=<N> for the local-* profiles)")
+                            break
+                        problems.append(f"{shown} rank {rank}: HTTP {rr.status_code}: {text}")
+        if problems:
+            return CheckResult("routing", FAIL, "; ".join(problems[:6]), threshold, metrics)
+        return CheckResult("routing", PASS, threshold, threshold, metrics)
 
     async def check_prepare(self) -> CheckResult:
         self.family, self.supports_budget = family_traits(self.model, self.opts.family)
@@ -718,29 +825,58 @@ class LocalChecker:
         detail = ", ".join(f"{k} {v['reasoning_chars']} chars" for k, v in per.items())
         return CheckResult("reasoning_effort", PASS, detail, threshold, per)
 
+    async def _count_text_tokens(self, text: str) -> tuple[int, str]:
+        """``(tokens, method)`` of ``text``: the server's ``POST /tokenize`` (exact, the
+        served tokenizer - Qwen splits numbers into single digits, so chars/4 badly
+        undercounts a list of numbers), else ``len / chars_per_token``."""
+        if text and self.model:
+            try:
+                async with self._http() as http:
+                    r = await http.post(self.root + "/tokenize", json={"model": self.model, "prompt": text,
+                                                                       "add_special_tokens": False})
+                if r.status_code < 400:
+                    d = r.json()
+                    n = d.get("count") if isinstance(d, dict) else None
+                    if n is None and isinstance(d, dict) and isinstance(d.get("tokens"), list):
+                        n = len(d["tokens"])
+                    if isinstance(n, int) and n >= 0:
+                        return n, "tokenize"
+            except (httpx.HTTPError, ValueError):
+                pass
+        return _est_tokens(text, self.opts.chars_per_token), "chars"
+
     async def check_thinking_budget(self) -> CheckResult:
         if not self.supports_budget:
             return CheckResult("thinking_budget", SKIP, f"family {self.family} has no thinking_token_budget")
         budget = int(self.opts.thinking_budget)
         limit = int(budget * self.opts.max_thinking_overrun) + 64
-        threshold = f"reasoning <= {limit} tokens (budget {budget}), no max_tokens stop"
+        threshold = f"reasoning <= {limit} tokens (budget {budget})"
+        # Invite long reasoning but a one-number answer: the budget caps the reasoning only, so an
+        # answer that keeps working in the visible text must not count against it.
         resp, dt = await self._complete(
-            "List every prime number below 400, double-checking each one, then count them. Final answer: only the "
-            "count.", effort="medium", thinking=True, max_tokens=budget + 1536, thinking_budget=budget,
+            "Reason at length: work out how many prime numbers lie below 400, double-checking each candidate. "
+            "After thinking, reply with a single number (the count) and nothing else.",
+            effort="medium", thinking=True, max_tokens=budget + 1536, thinking_budget=budget,
             session_key="check-budget")
         reasoning = _reasoning(resp)
-        cpt = self.opts.chars_per_token
         out = resp.usage.output_tokens
-        est = max(0, out - _est_tokens(resp.message.text, cpt)) if out else _est_tokens(reasoning, cpt)
-        metrics = {"budget": budget, "reasoning_tokens_est": est, "reasoning_chars": len(reasoning),
-                   "output_tokens": out, "stop_reason": resp.stop_reason.value, "latency_s": round(dt, 2)}
+        # Measured directly on the returned reasoning (not output_tokens minus an estimate of the
+        # answer, which miscounts digit-heavy answers).
+        est, method = await self._count_text_tokens(reasoning)
+        metrics = {"budget": budget, "reasoning_tokens": est, "counted_with": method,
+                   "reasoning_chars": len(reasoning), "output_tokens": out, "answer_chars": len(resp.message.text),
+                   "stop_reason": resp.stop_reason.value, "latency_s": round(dt, 2)}
         if not reasoning:
             return CheckResult("thinking_budget", FAIL, "no reasoning returned", threshold, metrics)
-        if resp.stop_reason in (StopReason.MAX_TOKENS, StopReason.CONTEXT_EXCEEDED) or est > limit:
-            return CheckResult("thinking_budget", FAIL, f"reasoning ran to ~{est} tokens (stop "
+        approx = "" if method == "tokenize" else "~"
+        if est > limit:
+            return CheckResult("thinking_budget", FAIL, f"reasoning ran to {approx}{est} tokens (stop "
                                f"{resp.stop_reason.value}): thinking_token_budget is not enforced", threshold, metrics)
-        return CheckResult("thinking_budget", PASS, f"~{est} reasoning tokens for a {budget}-token budget", threshold,
-                           metrics)
+        if resp.stop_reason in (StopReason.MAX_TOKENS, StopReason.CONTEXT_EXCEEDED):
+            return CheckResult("thinking_budget", WARN, f"reasoning stayed within the budget ({approx}{est} tokens), "
+                               f"but the answer ran on to max_tokens ({resp.stop_reason.value})", threshold, metrics)
+        return CheckResult("thinking_budget", PASS, f"{approx}{est} reasoning tokens for a {budget}-token budget",
+                           threshold, metrics)
 
     async def check_needle(self, n_tokens: int) -> CheckResult:
         name = f"needle_{n_tokens // 1024}k"
@@ -914,7 +1050,7 @@ class LocalChecker:
                              started_at=_now(), options=self.opts.as_dict())
         plan: list[tuple[str, Callable[[], Awaitable[CheckResult]]]] = [
             ("health", self.check_health), ("models", self.check_models), ("version", self.check_version),
-            ("prepare", self.check_prepare), ("tool_call", self.check_tool_call),
+            ("prepare", self.check_prepare), ("routing", self.check_routing), ("tool_call", self.check_tool_call),
             ("parallel_tool_calls", self.check_parallel_tool_calls), ("strict_schema", self.check_strict_schema),
             ("forced_tool_choice", self.check_forced_tool_choice),
             ("reasoning_effort", self.check_reasoning_effort), ("thinking_budget", self.check_thinking_budget)]
@@ -1021,7 +1157,7 @@ def options_from_config(config: Mapping[str, Any] | None, args: argparse.Namespa
     config = config or {}
     prov = config.get("provider") or {}
     local = prov.get("name") in LOCAL_PROVIDERS
-    popts = dict(prov.get("options") or {}) if local else {}
+    popts = {k: v for k, v in (prov.get("options") or {}).items() if v is not None} if local else {}
     get = (lambda k, d=None: getattr(args, k, d) if args is not None else d)
     base_urls = popts.get("base_urls")
     if isinstance(base_urls, str):
@@ -1037,8 +1173,14 @@ def options_from_config(config: Mapping[str, Any] | None, args: argparse.Namespa
     opts = CheckOptions(base_url=str(base_url), model=model or None,
                         family=str(get("family") or popts.get("family") or "auto"),
                         provider_name=str(prov.get("name")) if local else "vllm",
-                        api_key=popts.get("api_key") or None,
+                        api_key=popts.get("api_key") or None, api_key_env=popts.get("api_key_env") or None,
                         read_timeout_s=float(popts.get("read_timeout_s") or 600.0))
+    # the probe adapter is built from the same options as the runtime's; an explicit --base-url
+    # probes that one server instead of the configured replicas
+    opts.provider_options = {k: v for k, v in popts.items() if k not in ("api_key",)}
+    if get("base_url"):
+        opts.provider_options.pop("base_urls", None)
+        opts.provider_options.pop("base_url", None)
     opts.min_context_tokens = get("min_context") or (max(windows) if windows else None)
     if args is None:
         return opts

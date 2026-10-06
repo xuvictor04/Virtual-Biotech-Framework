@@ -254,27 +254,37 @@ def resolve_model(config: Mapping[str, Any], value: str | None) -> str | None:
     if not value:
         return None
     value = str(value).strip()
+    from ..pinning import served_model_conflict
+
+    def checked(model: str) -> str:
+        problem = served_model_conflict(config or {}, model)
+        if problem:
+            raise ValueError(problem)
+        return model
+
     aliases = (config or {}).get("model_aliases") or {}
     if value in aliases:
         target = aliases[value]
-        return str(target.get("model") if isinstance(target, Mapping) else target)
+        return checked(str(target.get("model") if isinstance(target, Mapping) else target))
     configured = {str((t or {}).get("model")) for t in ((config or {}).get("models") or {}).values()
                   if isinstance(t, Mapping)}
     if value in configured:
-        return value
+        return checked(value)
     pat = _model_pattern(config)
     if pat and re.fullmatch(pat, value):
-        return value
+        return checked(value)
     raise ValueError(f"unknown model {value!r}; choose one of: {', '.join(sorted(set(aliases) | configured))}")
 
 
 def _apply_profile(base: dict[str, Any], profile: str) -> dict[str, Any]:
-    from ..config import CONFIG_DIR, _expand, _load_yaml, deep_merge, resolve_path
+    from ..config import (CONFIG_DIR, _expand, _load_yaml, check_profile_requirement, deep_merge, resolve_path,
+                          split_profile)
 
     path = CONFIG_DIR / "profiles" / f"{profile}.yaml"
-    raw = _load_yaml(path)
+    raw, required = split_profile(_load_yaml(path))
     variables = base.get("vars") or {}
     cfg = deep_merge(base, _expand(raw, variables))
+    check_profile_requirement(cfg, profile, required)  # ProfileError is a ValueError: a 400 for the client
     for key in ("agents_file", "mcp_servers_file"):
         if raw.get(key):
             cfg[key.replace("_file", "")] = _expand(_load_yaml(resolve_path(cfg[key])), variables)

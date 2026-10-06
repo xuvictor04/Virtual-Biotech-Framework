@@ -76,6 +76,7 @@ from .base import (
     content_text,
     system_text,
 )
+from ..envpolicy import redact_url, register_secret, url_secrets
 from .families import FAMILIES, GENERIC, GENERIC_WITH_EFFORT, ModelFamily, resolve_family
 
 log = logging.getLogger(__name__)
@@ -159,6 +160,33 @@ def tool_alias(name: str, max_len: int = 64) -> str:
     digest = hashlib.sha1((name or "").encode("utf-8")).hexdigest()[:8]
     base = re.sub(r"[^A-Za-z0-9_-]+", "_", name or "").strip("_") or "tool"
     return f"{base[:max_len - 9]}_{digest}"
+
+
+#: Environment variable the adapter reads its bearer token from when no ``api_key`` option is set.
+API_KEY_ENV = "VBT_LLM_API_KEY"
+
+
+#: ``engine="k"`` label of vLLM's per-engine metrics (one per data-parallel rank).
+_DP_ENGINE_RE = re.compile(r'^vllm:num_requests_running\{[^}]*\bengine="(\d+)"', re.MULTILINE)
+
+
+def resolve_api_key(api_key: str | None = None, api_key_env: str | None = None) -> str | None:
+    """The bearer token for the inference server: the ``api_key`` option, else
+    ``$VBT_LLM_API_KEY``, else the variable named by ``api_key_env`` (an explicit
+    opt-in such as ``OPENAI_API_KEY`` for a hosted OpenAI-compatible API).
+
+    ``OPENAI_API_KEY`` is never read implicitly: developers commonly have it
+    exported, and a self-hosted server (or whatever listens on its port) must
+    not receive the user's OpenAI billing credential. A key given in the config
+    is registered for redaction in tool output."""
+    key = (api_key or "").strip()
+    if key:
+        register_secret(key, "provider.options.api_key")
+        return key
+    key = os.environ.get(API_KEY_ENV, "").strip()
+    if not key and api_key_env and str(api_key_env).strip():
+        key = os.environ.get(str(api_key_env).strip(), "").strip()
+    return key or None
 
 
 def _split_base_url(url: str) -> tuple[str, str]:
@@ -480,7 +508,9 @@ class OpenAICompatProvider(LLMProvider):
       when unset); ``base_urls`` — several replicas (sticky per agent session).
     * ``model`` / ``served_model_name`` — the served model name to request
       (``served_model_name`` overrides ``ModelSettings.model``).
-    * ``api_key`` — optional (env ``VBT_LLM_API_KEY``, then ``OPENAI_API_KEY``).
+    * ``api_key`` — optional (else env ``VBT_LLM_API_KEY``, or the variable
+      named by ``api_key_env``). ``OPENAI_API_KEY`` is never read implicitly:
+      a self-hosted server must not receive the user's OpenAI credential.
     * ``family`` — ``auto`` (from the model id / served root) or a
       :mod:`~vbt.providers.families` name (``qwen3_8``, ``qwen3_6``, ``qwen3``,
       ``deepseek_v4``, ``generic``).
@@ -533,6 +563,7 @@ class OpenAICompatProvider(LLMProvider):
         wait_ready_s: float = 0.0,
         trust_env: bool | None = None,
         headers: dict[str, str] | None = None,
+        api_key_env: str | None = None,
         **unknown: Any,
     ) -> None:
         if unknown:
@@ -549,12 +580,12 @@ class OpenAICompatProvider(LLMProvider):
         if not urls and primary:
             urls = [primary]
         self.base_url: str | None = urls[0] if urls else None
+        for u in urls:  # a user:password@ URL: never echo the password into tool output
+            register_secret(url_secrets(u), "provider.options.base_url credentials")
         self._bases: list[tuple[str, str]] = [_split_base_url(u) for u in urls]
         self.model = (model or "").strip() or None
         self.served_model_name = (served_model_name or "").strip() or None
-        key = (api_key or "").strip() or os.environ.get("VBT_LLM_API_KEY", "").strip() \
-            or os.environ.get("OPENAI_API_KEY", "").strip()
-        self._api_key = key or None
+        self._api_key = resolve_api_key(api_key, api_key_env)
         fam_opt = (family or "auto").strip() if isinstance(family, str) else "auto"
         if fam_opt.lower() not in ("", "auto"):
             try:
@@ -659,6 +690,12 @@ class OpenAICompatProvider(LLMProvider):
     def context_window(self, model: str) -> int | None:
         if self.context_window_option:
             return self.context_window_option
+        return self._server_window(model)
+
+    def server_context_window(self, model: str | None = None) -> int | None:
+        """The window the server enforces (``max_model_len`` from ``/v1/models``,
+        or learned from an overflow error), None until discovered. The context
+        manager never compacts against a configured window larger than this."""
         return self._server_window(model)
 
     def _server_window(self, model: str | None) -> int | None:
@@ -1001,13 +1038,15 @@ class OpenAICompatProvider(LLMProvider):
             resp = await self._get(api + "/models", timeout=30.0)
         except httpx.TransportError as exc:
             if raise_errors:
-                raise ProviderError(f"{self.name}: cannot reach {api}/models ({type(exc).__name__}: {exc}); "
+                raise ProviderError(f"{self.name}: cannot reach {redact_url(api)}/models "
+                                    f"({type(exc).__name__}: {exc}); "
                                     f"{SERVE_HINT}") from None
             raise
         if resp.status_code >= 400:
             if raise_errors:
                 msg = _error_info(_safe_json(resp.content))[0]
-                raise ProviderError(f"{self.name}: GET {api}/models returned HTTP {resp.status_code}: {msg}")
+                raise ProviderError(f"{self.name}: GET {redact_url(api)}/models returned HTTP {resp.status_code}: "
+                                    f"{msg}")
             return []
         payload = _safe_json(resp.content)
         data = payload.get("data") if isinstance(payload, dict) else None
@@ -1059,9 +1098,9 @@ class OpenAICompatProvider(LLMProvider):
                     h = await self._get(root + "/health", timeout=30.0)
                     if h.status_code < 400 or h.status_code in (404, 405):
                         break  # healthy, or a server without /health
-                    why = f"GET {root}/health returned HTTP {h.status_code}"
+                    why = f"GET {redact_url(root)}/health returned HTTP {h.status_code}"
                 except httpx.TransportError as exc:
-                    why = f"cannot connect to {root} ({type(exc).__name__}: {exc})"
+                    why = f"cannot connect to {redact_url(root)} ({type(exc).__name__}: {exc})"
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise ProviderError(f"{self.name} server not ready: {why}; {SERVE_HINT}")
@@ -1075,10 +1114,45 @@ class OpenAICompatProvider(LLMProvider):
             missing = sorted({m for m in wanted if m not in ids})
             if missing and ids:
                 raise ProviderError(
-                    f"{self.name}: model(s) {missing} are not served by {api}; served: {ids}. Set models.<tier>.model "
-                    f"(or provider.options.served_model_name) to a served name, or start the server with "
+                    f"{self.name}: model(s) {missing} are not served by {redact_url(api)}; served: {ids}. Set "
+                    f"models.<tier>.model (or --model) to a served name, or start the server with "
                     f"--served-model-name {missing[0]}")
+            await self._check_data_parallel(root)
         self._prepared = True
+
+    async def _dp_engines(self, root: str) -> int | None:
+        """Data-parallel engines behind ``root``: the distinct ``engine="k"`` labels of
+        vLLM's ``/metrics`` (None when the server exposes no such metrics)."""
+        try:
+            r = await self._get(root + "/metrics", timeout=10.0)
+        except httpx.HTTPError:
+            return None
+        if r.status_code >= 400:
+            return None
+        engines = set(_DP_ENGINE_RE.findall(r.text or ""))
+        return len(engines) or None
+
+    async def _check_data_parallel(self, root: str) -> None:
+        """Fail at startup (not mid-run) when ``data_parallel_size`` exceeds the server's
+        data-parallel engines: vLLM rejects ``X-data-parallel-rank`` >= its
+        ``--data-parallel-size`` with HTTP 400, i.e. for every session hashed there."""
+        if self.routing != "header":
+            return
+        n = await self._dp_engines(root)
+        if n is None or n == self.data_parallel_size:
+            return
+        where = redact_url(root)
+        if self.data_parallel_size > n:
+            raise ProviderError(
+                f"{self.name}: provider.options.data_parallel_size is {self.data_parallel_size}, but the server at "
+                f"{where} runs {n} data-parallel engine(s) (/metrics), so X-data-parallel-rank values >= {n} would be "
+                f"rejected (HTTP 400) for those agent sessions. Set data_parallel_size to {n} (the local-* profiles "
+                f"read it from VBT_LLM_DP_SIZE: export VBT_LLM_DP_SIZE={n}) or restart the server with "
+                f"--data-parallel-size {self.data_parallel_size}")
+        _warn_once(f"dp:{where}:{n}", "%s: the server at %s runs %d data-parallel engines but "
+                   "provider.options.data_parallel_size is %d: sessions are pinned to ranks below %d only (set "
+                   "VBT_LLM_DP_SIZE=%d for sticky routing over every replica)", self.name, where, n,
+                   self.data_parallel_size, self.data_parallel_size, n)
 
     async def list_models(self) -> list[dict[str, Any]]:
         """Models served by every configured server (``GET /v1/models``)."""
@@ -1108,7 +1182,7 @@ class OpenAICompatProvider(LLMProvider):
 
     async def server_info(self) -> dict[str, Any]:
         """Engine version, served models and context length (never raises)."""
-        info: dict[str, Any] = {"provider": self.name, "base_urls": self.api_bases,
+        info: dict[str, Any] = {"provider": self.name, "base_urls": [redact_url(u) for u in self.api_bases],
                                 "family": self.family_for(self.served_model_name or self.model).name,
                                 "served_model_name": self.served_model_name, "models": [], "max_model_len": None,
                                 "version": None}
@@ -1144,7 +1218,7 @@ class OpenAICompatProvider(LLMProvider):
     async def _http_error(self, status: int, raw: bytes, headers: Any, api: str, model: str) -> Exception:
         payload = _safe_json(raw)
         msg, etype, _code, err = _error_info(payload if payload is not None else raw.decode("utf-8", "replace"))
-        where = f"{self.name} server at {api}"
+        where = f"{self.name} server at {redact_url(api)}"
         if status in RETRYABLE_STATUS:
             return RetryableProviderError(f"{where} returned HTTP {status} ({etype or 'transient'}): {msg}",
                                           retry_after=_retry_after(headers), status=status)
@@ -1364,6 +1438,11 @@ class OpenAICompatProvider(LLMProvider):
         usage = self._usage(st.usage)
         fr = st.finish
         detail = None
+        if fr in ("abort", "error"):
+            # Checked before the tool calls: an aborted stream (engine shutdown/restart, KV transfer
+            # failure) can hold half-streamed calls with truncated arguments, which must not become a
+            # TOOL_USE turn (a bogus call/result pair in the history); the whole request is re-sent.
+            raise RetryableProviderError(f"{self.name}: the server aborted the request (finish_reason={fr})")
         if fr == "length":
             window = self._server_window(settings.model) or self._clamp_window(settings)
             total = (_int((st.usage or {}).get("prompt_tokens")) or 0) + usage.output_tokens
@@ -1376,8 +1455,6 @@ class OpenAICompatProvider(LLMProvider):
             stop = StopReason.END_TURN
         elif fr == "content_filter":
             stop, detail = StopReason.REFUSAL, "content_filter"
-        elif fr == "abort":
-            raise RetryableProviderError(f"{self.name}: the server aborted the request (finish_reason=abort)")
         else:
             stop, detail = StopReason.OTHER, f"finish_reason={fr}"
         served = st.model or body.get("model") or settings.model
@@ -1455,7 +1532,7 @@ class OpenAICompatProvider(LLMProvider):
                     raw = await resp.aread()
                     payload = _safe_json(raw)
                     if not isinstance(payload, dict):
-                        raise RetryableProviderError(f"{self.name}: unparseable response body from {url}: "
+                        raise RetryableProviderError(f"{self.name}: unparseable response body from {redact_url(url)}: "
                                                      f"{raw[:200]!r}")
                     if payload.get("error") is not None or payload.get("object") == "error":
                         raise self._stream_error(payload)
@@ -1465,13 +1542,13 @@ class OpenAICompatProvider(LLMProvider):
         except (ProviderError, _Overflow, _EffortRejected):
             raise
         except httpx.ConnectError as exc:
-            raise RetryableProviderError(f"{self.name}: cannot connect to {api} ({type(exc).__name__}: {exc}); "
-                                         f"{SERVE_HINT}") from None
+            raise RetryableProviderError(f"{self.name}: cannot connect to {redact_url(api)} "
+                                         f"({type(exc).__name__}: {exc}); {SERVE_HINT}") from None
         except httpx.TimeoutException as exc:
-            raise RetryableProviderError(f"{self.name}: timed out talking to {api} ({type(exc).__name__}; "
+            raise RetryableProviderError(f"{self.name}: timed out talking to {redact_url(api)} ({type(exc).__name__}; "
                                          f"read timeout {self.read_timeout_s}s between chunks)") from None
         except httpx.TransportError as exc:
-            raise RetryableProviderError(f"{self.name}: connection to {api} dropped ({type(exc).__name__}: "
+            raise RetryableProviderError(f"{self.name}: connection to {redact_url(api)} dropped ({type(exc).__name__}: "
                                          f"{exc})") from None
         return self._build_response(st, body, settings, fam, tools, reverse)
 

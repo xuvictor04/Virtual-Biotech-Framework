@@ -32,7 +32,9 @@ Key facts encoded here
   thinking T=0.6 top_p=0.95 top_k=20 min_p=0, non-thinking T=0.7 top_p=0.8.
 * DeepSeek-V4-Flash (``deepseek_v4``): effort vocabulary none/low/high/max
   (vLLM maps medium->low and xhigh->high itself; the adapter sends canonical
-  values), thinking toggled with ``chat_template_kwargs {"thinking": bool}``;
+  values). The harness's ``max`` maps to ``high``: Think-Max needs max_tokens
+  >= 128K, so ``max`` is sent only as an explicit ``extra['reasoning_effort']``.
+  Thinking is toggled with ``chat_template_kwargs {"thinking": bool}``;
   sampling T=1.0 top_p=0.95 (no top_k/min_p guidance).
 * ``generic``: plain OpenAI semantics; nothing family-specific is sent unless
   the provider option ``reasoning_effort_supported`` is set, in which case the
@@ -218,7 +220,10 @@ QWEN3 = ModelFamily(
 DEEPSEEK_V4 = ModelFamily(
     name="deepseek_v4",
     match=(r"deepseek[-_]?v4", r"dsv4"),
-    effort_map={"minimal": "low", "low": "low", "medium": "low", "high": "high", "xhigh": "high", "max": "max"},
+    # Harness 'max' -> 'high': Think-Max needs max_tokens >= 128K (digest P5), more than any tier
+    # sends, so it would be cut off at max_tokens. 'max' goes on the wire only when requested
+    # explicitly (extra['reasoning_effort'] = 'max', which reasoning_mode passes through verbatim).
+    effort_map={"minimal": "low", "low": "low", "medium": "low", "high": "high", "xhigh": "high", "max": "high"},
     allowed_efforts=frozenset({"low", "high", "max"}),
     off_effort="none",
     sampling_thinking={"temperature": 1.0, "top_p": 0.95},

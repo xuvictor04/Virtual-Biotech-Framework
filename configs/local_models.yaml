@@ -18,6 +18,8 @@
 #                                (regexes matched against nvidia-smi GPU names, case-insensitive),
 #                                driver_min (oldest NVIDIA driver that can run the engine)
 #   hf_id, tokenizer             checkpoint (pinned official repo ids only; many forks exist)
+#   revision                     optional Hub commit to pin (--revision; with --trust-remote-code
+#                                also --code-revision); `vbt local serve --revision SHA` sets it
 #   alternatives                 other checkpoints for the same card, each with its own
 #                                verification status (`vbt local serve --hf-id ...`)
 #   served_model_name, family    the name the harness requests and its dialect
@@ -567,6 +569,10 @@ profiles:
       name_patterns: ['\bH200\b', '\bG?B200\b', '\bG?B300\b']
       driver_min: '575'
     hf_id: deepseek-ai/DeepSeek-V4-Flash-0731   # MIT, 284B total / 13B active, 166.9 GB
+    # --trust-remote-code (the recipe's) executes Python from this repo: pin the reviewed Hub commit
+    # here or with `vbt local serve --revision <sha>` (sent as --revision and --code-revision);
+    # `vbt local serve` refuses to START it unpinned unless --allow-unpinned-remote-code.
+    revision: null
     alternatives: []
     served_model_name: dsv4-flash
     family: deepseek_v4
@@ -630,10 +636,12 @@ profiles:
         mtp: {method: dspark, num_speculative_tokens: 7}
     harness: {profile: local-deepseek-v4, max_concurrency: 128, bulk_concurrency: 64}
     vision: false
-    verification: recipe-verified
-    verification_detail: The vLLM recipe (image v0.28.0) is verified on H200, B200, GB200, B300,
-      GB300 and 8x RTX PRO 6000; v0.31.0 (needed for --tool-strict-level) and the 2-GPU layout are
-      not - smoke-test them.
+    # The default command targets vLLM 0.31.0, which the recipe has not verified: "supported,
+    # smoke-test" (recipe-verified only with `--engine-version 0.28.0`, the recipe image).
+    verification: supported, smoke-test
+    verification_detail: The vLLM recipe (image v0.28.0, `--engine-version 0.28.0`) is verified on
+      H200, B200, GB200, B300, GB300 and 8x RTX PRO 6000; v0.31.0 (the default here, needed for
+      --tool-strict-level) and the 2-GPU layout are not - smoke-test them.
     caveats:
       - Different effort vocabulary (none/low/high/max; vLLM maps medium->low and xhigh->high);
         the harness family deepseek_v4 handles it. 'max' needs max_tokens >= 128K and the
@@ -644,4 +652,8 @@ profiles:
       - With DP > 1 the harness must pin sessions with X-data-parallel-rank (local-deepseek-v4
         sets data_parallel_size 4), or use variant tep.
       - Avoid 8x H100 on vLLM 0.27.0 (startup regression, vLLM issue 52065); prefer H200/B200.
+      - --trust-remote-code runs the repo's Python (as root in the container); pin --revision to a
+        reviewed commit. vLLM renders the prompt with its built-in DeepseekV4Renderer
+        (--tokenizer-mode deepseek_v4), so the flag may be unnecessary on 0.31, but that is
+        unverified, so the recipe's flag is kept.
       - vLLM 0.28-0.30 - remove --tool-strict-level (`--engine-version 0.28.0` does).

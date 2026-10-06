@@ -18,11 +18,12 @@ provider:
   name: vllm
   options:
     base_url: ${VBT_LLM_BASE_URL:-http://localhost:8000/v1}
-    served_model_name: qwen3.8-27b
-    family: qwen3_8
     read_timeout_s: 900
     max_concurrency: 256          # --max-num-seqs 64 per rank x 4 ranks
-    data_parallel_size: 4         # = --data-parallel-size
+    # MUST equal the server's --data-parallel-size: `vbt local serve --profile dp --data-parallel N`
+    # prints `export VBT_LLM_DP_SIZE=N` when N is not 4 (a rank >= N is rejected with HTTP 400, and
+    # the adapter's prepare() refuses to start when /metrics shows fewer engines)
+    data_parallel_size: ${VBT_LLM_DP_SIZE:-4}
     routing: header
     pricing: null
 

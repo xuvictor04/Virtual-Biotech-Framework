@@ -111,12 +111,20 @@ def test_qwen36_toggles_thinking_and_preserves_reasoning():
 
 
 @pytest.mark.parametrize("effort, wire", [("minimal", "low"), ("low", "low"), ("medium", "low"), ("high", "high"),
-                                          ("xhigh", "high"), ("max", "max")])
+                                          ("xhigh", "high"), ("max", "high")])
 def test_deepseek_v4_effort_vocabulary(effort, wire):
     on, eff = DEEPSEEK_V4.reasoning_mode(effort, True)
     assert on and eff == wire
     assert DEEPSEEK_V4.reasoning_fields(on, eff) == {"reasoning_effort": wire,
                                                      "chat_template_kwargs": {"thinking": True}}
+
+
+def test_deepseek_v4_sends_max_only_when_requested_explicitly():
+    """P4: the harness 'max' (agents.yaml single-cell-analyst) must not become Think-Max, which needs
+    max_tokens >= 128K; an explicit extra['reasoning_effort'] = 'max' still reaches the wire."""
+    assert DEEPSEEK_V4.reasoning_mode("max", True) == (True, "high")
+    assert "max" not in {DEEPSEEK_V4.map_effort(e) for e in HARNESS_EFFORTS}
+    assert DEEPSEEK_V4.reasoning_mode("high", True, override="max") == (True, "max")
 
 
 def test_deepseek_v4_thinking_off_and_sampling():

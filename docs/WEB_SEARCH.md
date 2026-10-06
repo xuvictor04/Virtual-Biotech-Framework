@@ -19,6 +19,13 @@ search, so the harness calls a search API itself. The code is in `src/vbt/tools/
 3. Brave, when `BRAVE_SEARCH_API_KEY` (or `web.search.brave_api_key`) is set;
 4. none.
 
+The shipped configs (`configs/default.yaml` and every `configs/profiles/local-*.yaml`) set
+`web.search.searxng_url: ${SEARXNG_URL:-http://localhost:8888}`, so a SearxNG URL is always
+configured: with them, `auto` picks SearxNG for every provider without native search (at
+`http://localhost:8888`, the compose service, unless `SEARXNG_URL` says otherwise) and never
+reaches steps 3 and 4. If no SearxNG runs there, `WebSearch` reports "SearxNG ... is unreachable".
+To use Brave instead, set `web.search.backend: brave` (or `web.search.searxng_url: null`).
+
 With `web.enabled: false` (the `no-web` profile of case study 2), every setting resolves to no
 search: `WebSearch` and `WebFetch` are removed from the agents and the tool refuses to run.
 
@@ -72,7 +79,9 @@ errors.
 export BRAVE_SEARCH_API_KEY=...        # https://api-dashboard.search.brave.com
 ```
 
-Set `web.search.backend: brave`, or leave it on `auto` with no SearxNG URL configured. Each HTTP
+Set `web.search.backend: brave`. (`auto` reaches Brave only when no SearxNG URL is configured,
+and the shipped configs always configure one, `http://localhost:8888` by default; `auto` with
+`web.search.searxng_url: null` also works.) Each HTTP
 request is charged to the calling agent at `web.search.brave_cost_per_query` USD (default 0.0; set
 it to your plan's price). A filtered search can make up to `brave_max_requests` requests. The key
 is sent only as the `X-Subscription-Token` header to `brave_url`. Redirects are never followed, and
@@ -85,7 +94,9 @@ web:
   enabled: true
   search:
     backend: auto                         # auto | searxng | brave | provider | none
-    searxng_url: ${SEARXNG_URL:-}         # e.g. http://localhost:8888 (instance root)
+    searxng_url: ${SEARXNG_URL:-http://localhost:8888}   # the shipped default (instance root);
+                                          # ${SEARXNG_URL:-} (unset without the variable) lets
+                                          # auto fall through to Brave / none
 ```
 
 Every key is optional. A missing key or a `null` value uses the default. `web.search: searxng`
@@ -94,14 +105,14 @@ Every key is optional. A missing key or a `null` value uses the default. `web.se
 | key | default | meaning |
 |---|---|---|
 | `backend` | `auto` | `auto`, `searxng`, `brave`, `provider` or `none` |
-| `searxng_url` | unset → `$SEARXNG_URL` | SearxNG instance root. A trailing `/search` is accepted. |
+| `searxng_url` | shipped configs: `$SEARXNG_URL`, else `http://localhost:8888`; in-code: unset → `$SEARXNG_URL` | SearxNG instance root. A trailing `/search` is accepted. A `user:password@` part is never shown in errors or run records. |
 | `categories` | `[general, science]` | SearxNG categories (list or comma string) |
 | `engines` | `[]` | SearxNG engine names to query, in addition to the categories |
 | `language` | `en` | SearxNG `language`, Brave `search_lang` (`all` = no language filter) |
 | `safesearch` | `0` | 0/1/2 or off/moderate/strict (SearxNG `safesearch`, Brave `safesearch`) |
 | `time_range` | `null` | `day`/`week`/`month`/`year` → SearxNG `time_range`, Brave `freshness`. Brave also accepts `YYYY-MM-DDtoYYYY-MM-DD`. |
 | `brave_url` | `https://api.search.brave.com/res/v1/web/search` | Brave endpoint |
-| `brave_api_key` | unset → `$BRAVE_SEARCH_API_KEY` | prefer the environment variable |
+| `brave_api_key` | unset → `$BRAVE_SEARCH_API_KEY` | prefer the environment variable; a key set here is recorded as `<redacted>` in the run's pinned config and masked in tool output |
 | `brave_cost_per_query` | `0.0` | USD charged per successful Brave request |
 | `brave_country` | `null` | Brave `country` (e.g. `US`) |
 | `brave_max_requests` | `2` | Brave requests per `WebSearch` call (filter follow-ups) |

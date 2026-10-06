@@ -85,7 +85,10 @@ context:
   default_window_tokens: 200000
 
 bulk:
-  default_concurrency: 64         # the paper-era `vbt case1 annotate` default
+  # unset: `vbt case1 annotate` runs 64 trials at once and `vbt bulk` 32 (the paper-era per-command
+  # defaults); the local default.yaml sets 32 for both to fit one GPU
+  default_concurrency: null
+  dispatch_max_budget_tokens: null  # Claude jobs are capped in USD (dispatch_max_budget_usd)
 
 web:
   search:

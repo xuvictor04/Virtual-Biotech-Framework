@@ -22,7 +22,8 @@ from typing import Any, Iterable, Mapping
 
 __all__ = ["build_pinned_config", "git_info", "prompt_hashes", "package_versions", "installed_distributions",
            "PINNED_PACKAGES", "PIN_SCHEMA", "default_model_pattern", "CLAUDE_MODEL_PATTERN", "SERVED_MODEL_PATTERN",
-           "LOCAL_PROVIDER_NAMES"]
+           "LOCAL_PROVIDER_NAMES", "REDACTED", "redact_config", "drop_redacted", "pinned_profiles",
+           "served_model_conflict"]
 
 PIN_SCHEMA = 1
 
@@ -37,6 +38,9 @@ PINNED_PACKAGES = ("anthropic", "httpx", "mcp", "fastmcp", "pydantic", "jsonsche
                    "anndata", "statsmodels", "rpy2")
 
 _SECRET_KEY = re.compile(r"(key|token|secret|password|auth)", re.IGNORECASE)
+#: Placeholder for a secret in a pinned record (a value, or the user-info of a URL).
+REDACTED = "<redacted>"
+_URL_USERINFO = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]*@")
 
 
 def _sha256_bytes(b: bytes) -> str:
@@ -48,15 +52,71 @@ def _sha256_text(text: str) -> str:
 
 
 def _redact(value: Any) -> Any:
-    """Drop secret-looking keys (provider options never need them on record)."""
+    """Drop secret-looking keys (provider options, ``web.search.brave_api_key``) and
+    the ``user:password@`` part of URLs (a SearxNG or vLLM behind basic auth):
+    run records are readable by every agent of the run and travel in audit bundles."""
     if isinstance(value, Mapping):
-        return {str(k): ("<redacted>" if _SECRET_KEY.search(str(k)) and v not in (None, "", False) else _redact(v))
+        return {str(k): (REDACTED if _SECRET_KEY.search(str(k)) and v not in (None, "", False) else _redact(v))
                 for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_redact(v) for v in value]
+    if isinstance(value, str) and "@" in value and "://" in value:
+        return _URL_USERINFO.sub(lambda m: m.group(1) + REDACTED + "@", value)
     if callable(value):
         return f"<{type(value).__name__}>"
     return value
+
+
+def redact_config(value: Any) -> Any:
+    """A config section as it may be written to a run record (see :func:`_redact`)."""
+    return _redact(value)
+
+
+def drop_redacted(value: Any) -> Any:
+    """A pinned section without its redacted leaves, for re-use as config overrides
+    (resume, replay): a ``<redacted>`` key or URL falls back to the current
+    config's value (e.g. the Brave key from the environment) instead of being
+    used literally."""
+    if isinstance(value, Mapping):
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            if isinstance(v, str) and (v == REDACTED or f"{REDACTED}@" in v):
+                continue
+            out[str(k)] = drop_redacted(v)
+        return out
+    return value
+
+
+def pinned_profiles(provider_name: str | None, profiles: Iterable[str]) -> list[str]:
+    """The profile list to rebuild a recorded run's configuration with.
+
+    A run pinned on the ``anthropic`` provider without the ``claude`` or
+    ``paper`` profile was made before the default switched to the local model;
+    its provider options were redacted when pinned, so the ``claude`` profile is
+    layered first to restore them and reset the local server's options (above
+    all ``base_url``) and tier settings. Shared by ``--resume``
+    (``cli.build_config``) and ``vbt replay`` so the two cannot drift."""
+    out = [str(p) for p in profiles or []]
+    if provider_name == "anthropic" and not any(p in ("claude", "paper") for p in out):
+        out = ["claude", *out]
+    return out
+
+
+def served_model_conflict(config: Mapping[str, Any], model: str | None) -> str | None:
+    """Why ``--model`` would be ignored on the wire, or None.
+
+    For local providers ``provider.options.served_model_name`` is sent for every
+    tier, so a different ``--model`` (or web model choice) would be recorded in
+    the run while another model actually ran."""
+    prov = config.get("provider") or {}
+    if not model or prov.get("name") not in LOCAL_PROVIDER_NAMES:
+        return None
+    served = str(((prov.get("options") or {}).get("served_model_name") or "")).strip()
+    if served and str(model) != served:
+        return (f"model {model!r} would not be used: provider.options.served_model_name ({served!r}) is "
+                "requested from the server for every tier. Remove served_model_name from the config (the tier "
+                f"models then go on the wire) or choose {served!r}")
+    return None
 
 
 def _git(args: list[str], cwd: Path) -> str | None:
@@ -260,7 +320,7 @@ def build_pinned_config(config: Mapping[str, Any], runtime: Any, *, interface: s
         "agents": agents,
         "limits": dict(config.get("limits") or {}),
         "orchestration": orch,
-        "web": dict(config.get("web") or {}),
+        "web": _redact(dict(config.get("web") or {})),
         "bash": _bash_summary(config),
         "skill_roots": [str(p) for p in getattr(runtime, "skill_roots", []) or []],
         "read_roots": [str(p) for p in getattr(runtime, "read_roots", []) or []],

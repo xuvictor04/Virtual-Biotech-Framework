@@ -45,7 +45,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
-from .config import deep_merge, load_config, resolve_path
+from .config import ProfileError, deep_merge, load_config, resolve_path
 
 
 def _e(value: Any) -> str:
@@ -85,6 +85,16 @@ def _model_pattern(config: Mapping[str, Any]) -> str | None:
     return default_model_pattern(prov.get("name"))
 
 
+def _check_served(config: Mapping[str, Any], model: str) -> str:
+    """``model``, unless the local provider's ``served_model_name`` would replace it on the wire."""
+    from .pinning import served_model_conflict
+
+    problem = served_model_conflict(config, model)
+    if problem:
+        raise ModelResolutionError(problem)
+    return model
+
+
 def resolve_model(config: Mapping[str, Any], value: str | None) -> str | None:
     """Resolve ``--model``: a ``model_aliases`` label, a configured model id, or an id
     matching ``provider.model_pattern``. Raises ModelResolutionError otherwise."""
@@ -94,14 +104,14 @@ def resolve_model(config: Mapping[str, Any], value: str | None) -> str | None:
     aliases = config.get("model_aliases") or {}
     if value in aliases:
         target = aliases[value]
-        return str(target.get("model") if isinstance(target, Mapping) else target)
+        return _check_served(config, str(target.get("model") if isinstance(target, Mapping) else target))
     configured = sorted({str(t.get("model")) for t in (config.get("models") or {}).values()
                          if isinstance(t, Mapping) and t.get("model")})
     if value in configured:
-        return value
+        return _check_served(config, value)
     pat = _model_pattern(config)
     if pat is None or re.fullmatch(pat, value):
-        return value
+        return _check_served(config, value)
     alias_list = ", ".join(f"{k} -> {v.get('model') if isinstance(v, Mapping) else v}" for k, v in aliases.items())
     raise ModelResolutionError(
         f"unknown model {value!r}: not an alias, not a configured model, and not matching {pat!r}. "
@@ -149,21 +159,22 @@ def build_config(args, extra_profiles: Iterable[str] = (), *, pinned: Mapping[st
     ``--profile``, the run's profiles, provider, models and orchestration /
     web / limit settings are the base, so a resumed session continues on the
     settings it was made with; explicit flags still apply on top."""
+    from .pinning import drop_redacted, pinned_profiles
+
     profiles = _profiles(args, extra_profiles)
     base: dict[str, Any] = {}
     if pinned and not profiles:
         profiles = [str(p) for p in (pinned.get("profiles") or [])]
         for key in RESUME_KEYS:
             if isinstance(pinned.get(key), Mapping) and pinned[key]:
-                base[key] = dict(pinned[key])
+                base[key] = drop_redacted(pinned[key])  # a redacted secret falls back to the current config
         prov = pinned.get("provider")
         pname = prov.get("name") if isinstance(prov, Mapping) else prov if isinstance(prov, str) else None
         if pname:
             base["provider"] = {"name": pname}  # options were redacted when pinned; profiles restore them
-            if pname == "anthropic" and not any(p in ("claude", "paper") for p in profiles):
-                # a run made before the default switched to the local model: the claude profile
-                # restores its provider options (and resets the local server's, e.g. base_url)
-                profiles = ["claude", *profiles]
+            # a run made before the default switched to the local model: the claude profile
+            # restores its provider options (and resets the local server's, e.g. base_url)
+            profiles = pinned_profiles(pname, profiles)
     overrides = flag_overrides(args)
     cfg = load_config(profiles, deep_merge(base, overrides) if base else overrides)
     model = getattr(args, "model", None)
@@ -1101,7 +1112,7 @@ def main(argv: list[str] | None = None) -> int:
         config = build_config(args)
         if args.cmd == "replay" and getattr(args, "replay_model", None):
             resolve_model(config, args.replay_model)
-    except ModelResolutionError as exc:
+    except (ModelResolutionError, ProfileError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     from .preflight import DataReadinessError, ProviderNotReadyError

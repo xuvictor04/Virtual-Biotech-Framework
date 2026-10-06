@@ -5,9 +5,14 @@
 #   - specialists: AgentDefinition(effort="high"), except single-cell-analyst at effort="max";
 #   - Chief of Staff and Scientific Reviewer: model='haiku', no effort or thinking set.
 # The web app's model is user-selected (default Sonnet 4.5, which accepts neither adaptive
-# thinking nor effort); this profile keeps the harness's default models, on which
-# xhigh/max take effect (Opus 4.7 and later). Combine with `paper` to pin Sonnet 4.5:
-# `vbt --profile paper --profile upstream-web ...` (effort is then ignored by those models).
+# thinking nor effort). This profile only sets effort levels, so it needs a Claude profile
+# underneath (the harness default is now a local Qwen3.8 model, whose vocabulary maps
+# high/max to xhigh):
+#   vbt --profile claude --profile upstream-web ...   # Claude Opus 5, where xhigh/max take effect
+#   vbt --profile paper --profile upstream-web ...    # pins Sonnet 4.5 (effort is then ignored)
+# Used alone it is refused (requires_provider) instead of silently running the local model.
+requires_provider: anthropic
+
 models:
   orchestrator: {effort: xhigh, thinking: true}
   scientist:    {effort: high, thinking: true}

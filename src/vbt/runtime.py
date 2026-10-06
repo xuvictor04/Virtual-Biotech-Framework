@@ -46,7 +46,13 @@ Model-facing guards (local open-weight models need them more than Claude):
   harness nudge per invocation;
 * ``run_agent(force_tool=...)`` makes the final allowed call a forced call of
   that tool (``extra['tool_choice']`` when the provider supports it); the final
-  no-tool call (turn limit, budget grace) sends ``tool_choice 'none'``.
+  no-tool call (turn limit, budget grace) sends ``tool_choice 'none'``. When
+  the agent's innermost budget scope runs out (e.g. a bulk item's
+  ``limits.max_item_tokens``), such an agent still gets that one forced call
+  (budget-exempt) before ``BudgetExceeded`` propagates, so the evidence it
+  gathered is submitted instead of lost;
+* ``BudgetExceeded`` raised out of ``run_agent`` carries the partial
+  :class:`AgentResult` as ``exc.agent_result`` (model calls made so far).
 """
 
 from __future__ import annotations
@@ -121,6 +127,9 @@ FORCE_TOOL_MSG = ("[Harness] You have reached the turn limit. Call {tool} now wi
                   "will run.")
 BUDGET_GRACE_MSG = ("[Harness] The turn budget is exhausted. Do not call tools; write your final synthesis from the "
                     "evidence gathered so far and state what is missing.")
+BUDGET_FORCE_MSG = ("[Harness] The budget for this task is exhausted. Call {tool} now with your final result, filled "
+                    "from the evidence gathered so far (use the schema's unknown/null values where evidence is "
+                    "missing); no other tool will run.")
 CONTINUE_MSG = "[Harness] Your response hit the output limit. Continue exactly where you stopped, concisely."
 EMPTY_REPLY_MSG = ("[Harness] Your last reply was empty. Continue: call the next tool or write your final report.")
 TRUNCATED_INPUT_MSG = "Tool input was truncated at max_tokens; retry with a shorter input."
@@ -439,6 +448,7 @@ class _Loop:
     task_given: bool = False           # run_agent got a task message (it is the instruction of call 1)
     empty_nudged: bool = False         # the empty-reply nudge was sent (once per invocation)
     call_mode: str | None = None       # None | 'force' | 'none': tool_choice of the next call
+    budget_forced: BudgetExceeded | None = None  # the budget-exempt forced call was granted for this
 
     @property
     def specs(self):
@@ -867,6 +877,7 @@ class Runtime:
         except BudgetExceeded as exc:
             failure = exc
             result.status, result.stop_reason, result.error = "budget", "budget", str(exc)
+            exc.agent_result = result  # the caller can still count this invocation's model calls (bulk)
             raise
         except KeyboardInterrupt as exc:
             failure = exc
@@ -899,6 +910,7 @@ class Runtime:
                     self._check_budget()
                 except BudgetExceeded as e:
                     exc = e
+            budget_force = False
             if exc is not None:
                 if st.depth == 0 and exc.scope is not None and not exc.scope.grace_used:
                     exc.scope.grace_used = True
@@ -906,11 +918,19 @@ class Runtime:
                     self._trace("budget_grace", agent=st.agent.name, scope=exc.scope.as_dict(), error=str(exc))
                     self.emit("warning", message=f"{st.agent.name}: {exc}; asking for a final synthesis")
                     st.messages.append(Message.user(BUDGET_GRACE_MSG))
+                elif self._budget_force_allowed(st, exc):
+                    # A force_tool agent (bulk: submit_result) whose own scope ran out gets one forced,
+                    # budget-exempt call, so the evidence it gathered is submitted instead of lost.
+                    st.budget_forced = exc
+                    budget_force = True
+                    self._trace("budget_force_tool", agent=st.agent.name, tool=st.force_tool,
+                                scope=exc.scope.as_dict() if exc.scope is not None else None, error=str(exc))
+                    st.messages.append(Message.user(BUDGET_FORCE_MSG.format(tool=st.force_tool)))
                 else:
                     raise exc
-            final_call = grace or st.turns >= st.max_turns
+            final_call = grace or budget_force or st.turns >= st.max_turns
             forced = bool(final_call and not grace and st.force_tool)
-            if final_call and not grace:
+            if final_call and not grace and not budget_force:
                 if not forced:
                     st.messages.append(Message.user(TURN_LIMIT_MSG))
                 elif not (st.turns == 0 and st.task_given):  # else the caller's task is this call's instruction
@@ -954,14 +974,17 @@ class Runtime:
                 r.text = (st.report + "\n\n" + note).strip()
                 return
             if final_call:
+                why = "budget exhausted" if (grace or budget_force) else "turn limit reached"
                 if forced and calls:
                     terminal = await self._tool_round(st, calls, only=st.force_tool,
-                                                      reason=f"turn limit reached; only {st.force_tool} runs")
+                                                      reason=f"{why}; only {st.force_tool} runs")
                     if terminal:
                         r.status, r.stop_reason, r.text = "completed", "terminal_tool", st.report
                         return
                 elif calls:
-                    self._answer(st, calls, "budget exhausted" if grace else "turn limit reached")
+                    self._answer(st, calls, why)
+                if budget_force and st.budget_forced is not None:
+                    raise st.budget_forced  # the forced call did not complete: the scope's limit stands
                 r.status = r.stop_reason = "budget" if grace else "turn_limit"
                 r.text = st.report or ("[The budget ran out before a final report was written.]" if grace else
                                        "[Turn limit reached before a final report was written.]")
@@ -1096,6 +1119,15 @@ class Runtime:
             self._note_audit_error(f"agent transcript {path.name}: {type(exc).__name__}: {exc}")
             return None
         return self.run.rel(path)
+
+    @staticmethod
+    def _budget_force_allowed(st: _Loop, exc: BudgetExceeded) -> bool:
+        """One forced call is granted when the agent has a ``force_tool``, has not had
+        it yet, and the exceeded scope is its own innermost one (a bulk item's
+        scope, not the bulk job's or an enclosing turn's)."""
+        if not st.force_tool or st.budget_forced is not None or exc.scope is None:
+            return False
+        return exc.scope is budget.current_scope()
 
     # ------------------------------------------------------------------ model calls
 

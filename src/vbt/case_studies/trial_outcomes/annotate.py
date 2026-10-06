@@ -161,6 +161,9 @@ async def annotate(runtime: Runtime, trials: pd.DataFrame, out_path: Path, *, co
     agent = annotator_agent(runtime.config, protocol=protocol)
     items = [BulkItem(r["nct_id"], trial_prompt(r), {"phase": r["phase"], "status": r["status"]})
              for _, r in trials.iterrows()]
+    if not concurrency:
+        from ...bulk import ANNOTATE_CONCURRENCY, default_concurrency
+        concurrency = default_concurrency(runtime.config, ANNOTATE_CONCURRENCY)
     runner = BulkRunner(runtime, agent, schema or TrialAnnotation, out_path, concurrency=concurrency,
                         budget_usd=budget_usd, on_progress=on_progress, **runner_kw)
     return await runner.run(items)

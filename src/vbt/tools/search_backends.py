@@ -63,6 +63,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from ..envpolicy import redact_url, register_secret, url_secrets
 from .base import ToolFailure
 
 log = logging.getLogger(__name__)
@@ -183,7 +184,9 @@ def _searxng_url(s: Mapping[str, Any]) -> tuple[str | None, str]:
 
 def _brave_key(s: Mapping[str, Any]) -> tuple[str | None, str]:
     if not _blank(s.get("brave_api_key")):
-        return str(s["brave_api_key"]).strip(), "web.search.brave_api_key"
+        key = str(s["brave_api_key"]).strip()
+        register_secret(key, "web.search.brave_api_key")  # a config key is masked in tool output like an env key
+        return key, "web.search.brave_api_key"
     env = os.environ.get(BRAVE_KEY_ENV, "")
     if env.strip():
         return env.strip(), BRAVE_KEY_ENV
@@ -297,7 +300,7 @@ def describe_search_backend(config: Mapping[str, Any] | None, provider: Any = No
     when there is no usable backend.
     """
     c = _choose(config, provider)
-    return {"requested": c.requested, "backend": None if c.problem else c.kind, "url": c.url,
+    return {"requested": c.requested, "backend": None if c.problem else c.kind, "url": redact_url(c.url),
             "reason": c.reason, "problem": c.problem}
 
 
@@ -495,6 +498,10 @@ class SearchBackend:
 
     def __init__(self, url: str, settings: Mapping[str, Any] | None = None, *, transport: Any = None) -> None:
         self.url = url
+        # Shown in errors the model sees, describe() and logs: never the user:password@ part
+        # (a SearxNG behind basic auth); the password is also masked in tool output.
+        self.shown_url = redact_url(url)
+        register_secret(url_secrets(url), "web.search URL credentials")
         self.settings = {**SEARCH_DEFAULTS, **{k: v for k, v in (settings or {}).items() if v is not None}}
         self.transport = transport
 
@@ -512,11 +519,11 @@ class SearchBackend:
         return 0.0
 
     def _unreachable(self, exc: Exception) -> SearchBackendError:
-        return SearchBackendError(f"{self.label} at {self.url} is unreachable ({type(exc).__name__}: {exc})")
+        return SearchBackendError(f"{self.label} at {self.shown_url} is unreachable ({type(exc).__name__}: {exc})")
 
     def _timed_out(self, exc: Exception) -> SearchBackendError:
         return SearchBackendError(
-            f"{self.label} at {self.url} did not answer within {self.settings['timeout_s']} s "
+            f"{self.label} at {self.shown_url} did not answer within {self.settings['timeout_s']} s "
             f"({type(exc).__name__}); raise web.search.timeout_s or check the server")
 
     def _follow_redirects(self) -> bool:
@@ -525,10 +532,10 @@ class SearchBackend:
     # -- plumbing
 
     def describe(self) -> dict[str, Any]:
-        return {"backend": self.name, "url": self.url}
+        return {"backend": self.name, "url": self.shown_url}
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}(url={self.url!r})"
+        return f"{type(self).__name__}(url={self.shown_url!r})"
 
     def _client(self) -> httpx.AsyncClient:
         timeout = float(self.settings.get("timeout_s") or 30.0)
@@ -663,7 +670,7 @@ class SearxNGBackend(SearchBackend):
 
     def _unreachable(self, exc: Exception) -> SearchBackendError:
         return SearchBackendError(
-            f"SearxNG at {self.url} is unreachable ({type(exc).__name__}: {exc}). Start it with "
+            f"SearxNG at {self.shown_url} is unreachable ({type(exc).__name__}: {exc}). Start it with "
             f"`{COMPOSE_HINT}` (see docs/WEB_SEARCH.md) or point {SEARXNG_ENV} / web.search.searxng_url "
             "at a running instance")
 
@@ -682,7 +689,7 @@ class SearxNGBackend(SearchBackend):
 
     def _http_error(self, resp: httpx.Response, attempts: int) -> SearchBackendError:
         code = resp.status_code
-        where = f"SearxNG at {self.url}"
+        where = f"SearxNG at {self.shown_url}"
         if code == 403:
             return SearchBackendError(
                 f"{where} refused the JSON API (HTTP 403): add json to search.formats in its settings.yml "
@@ -693,7 +700,7 @@ class SearxNGBackend(SearchBackend):
                 "set server.limiter: false for a private instance (deploy/local/searxng/settings.yml does)")
         if code == 404:
             return SearchBackendError(
-                f"no SearxNG search endpoint at {self.url}/search (HTTP 404); web.search.searxng_url / "
+                f"no SearxNG search endpoint at {self.shown_url}/search (HTTP 404); web.search.searxng_url / "
                 f"{SEARXNG_ENV} must be the instance root, e.g. http://localhost:8888")
         if code >= 500:
             return SearchBackendError(
@@ -711,10 +718,10 @@ class SearxNGBackend(SearchBackend):
         except ValueError:
             ctype = resp.headers.get("content-type", "?")
             raise SearchBackendError(
-                f"SearxNG at {self.url} returned non-JSON ({ctype}); web.search.searxng_url must be the "
+                f"SearxNG at {self.shown_url} returned non-JSON ({ctype}); web.search.searxng_url must be the "
                 "instance root and search.formats must include json") from None
         if not isinstance(data, dict) or not isinstance(data.get("results"), list):
-            raise SearchBackendError(f"SearxNG at {self.url} returned an unexpected JSON shape (no results list)")
+            raise SearchBackendError(f"SearxNG at {self.shown_url} returned an unexpected JSON shape (no results list)")
         items: list[dict[str, Any]] = []
         for r in data["results"]:
             if not isinstance(r, dict):
@@ -761,7 +768,7 @@ class BraveSearchBackend(SearchBackend):
 
     def _unreachable(self, exc: Exception) -> SearchBackendError:
         return SearchBackendError(
-            f"Brave Search API at {self.url} is unreachable ({type(exc).__name__}: {exc}); check network "
+            f"Brave Search API at {self.shown_url} is unreachable ({type(exc).__name__}: {exc}); check network "
             "access (HTTPS proxy) or use the self-hosted SearxNG backend")
 
     def _params(self, query: str, page: int, count: int) -> dict[str, Any]:
@@ -821,7 +828,7 @@ class BraveSearchBackend(SearchBackend):
         try:
             data = resp.json()
         except ValueError:
-            raise SearchBackendError(f"Brave Search API at {self.url} returned non-JSON") from None
+            raise SearchBackendError(f"Brave Search API at {self.shown_url} returned non-JSON") from None
         web = (data or {}).get("web") if isinstance(data, dict) else None
         rows = (web or {}).get("results") if isinstance(web, dict) else None
         items: list[dict[str, Any]] = []

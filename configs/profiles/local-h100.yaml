@@ -13,16 +13,16 @@
 # prefix cache; medium <-> none does not). Harness effort maps to Qwen3.8 as
 # low->low, medium->medium, high/xhigh/max->xhigh, thinking off -> none (never 'high'/'max').
 # thinking_budget is sent as thinking_token_budget (hard reasoning cap; max_tokens includes it).
+# Per-agent effort in configs/agents.yaml overrides the tier: single-cell-analyst runs at `max`
+# (upstream), i.e. xhigh with the scientist tier's budget; agent_overrides can reset it.
 
 provider:
   name: vllm
   options:
     base_url: ${VBT_LLM_BASE_URL:-http://localhost:8000/v1}
-    served_model_name: qwen3.8-27b
-    family: qwen3_8
     read_timeout_s: 900           # max silence between streamed chunks (xhigh turns think long)
     max_concurrency: 48           # = --max-num-seqs; vLLM queues the rest instead of returning 429
-    data_parallel_size: 1
+    data_parallel_size: ${VBT_LLM_DP_SIZE:-1}  # = the server's --data-parallel-size (`vbt local serve` prints it)
     pricing: null                 # 0 USD; set {input_per_mtok, cached_per_mtok, output_per_mtok} to amortise GPU cost
 
 model_aliases:

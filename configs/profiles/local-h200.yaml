@@ -12,11 +12,9 @@ provider:
   name: vllm
   options:
     base_url: ${VBT_LLM_BASE_URL:-http://localhost:8000/v1}
-    served_model_name: qwen3.8-27b
-    family: qwen3_8
     read_timeout_s: 900
     max_concurrency: 96           # = --max-num-seqs
-    data_parallel_size: 1
+    data_parallel_size: ${VBT_LLM_DP_SIZE:-1}  # = the server's --data-parallel-size
     pricing: null
 
 model_aliases:

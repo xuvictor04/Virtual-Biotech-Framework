@@ -151,7 +151,10 @@ Config (in-code defaults, also listed in `configs/default.yaml`): `retry.attempt
 `ContextManager(provider, ContextPolicy.from_config(config.get("context")), spill_dir)`
 keeps an agent's history inside its model's window. The window is
 `models.<tier>.context_window_tokens` if set, else `provider.context_window(model)`,
-else 200,000. The prompt size is read from the last response
+else `context.default_window_tokens`; either way it is capped at the limit the serving
+engine enforces when the provider knows it (`provider.server_context_window(model)`: a
+local server's `max_model_len` from `/v1/models`), so a 262K tier against a server started
+with `--max-model-len 65536` compacts against 65,536. The prompt size is read from the last response
 (`input + cache_read + cache_write`, plus its output and any tool results
 appended since).
 
@@ -198,21 +201,37 @@ appended since).
   Server-side edits do not count as history edits, so caching and preserved
   thinking stay valid.
 
-Config (in-code defaults, also listed in `configs/default.yaml`): `context.enabled: true`,
-`soft_ratio: 0.70`, `hard_ratio: 0.85`, `keep_recent_calls: 6`, `min_clear_chars: 2000`,
-`min_clear_fraction: 0.05`, `summary_max_tokens: 4000`, `server_side: false`,
-`default_window_tokens: 200000`; optional `models.<tier>.context_window_tokens`.
+Config. In-code defaults: `context.enabled: true`, `soft_ratio: 0.70`, `hard_ratio: 0.85`,
+`keep_recent_calls: 6`, `min_clear_chars: 2000`, `min_clear_fraction: 0.05`,
+`summary_max_tokens: 4000`, `server_side: false`, `default_window_tokens: 200000`; optional
+`models.<tier>.context_window_tokens`. The shipped `configs/default.yaml` (the local Qwen3.8
+default) compacts earlier: `soft_ratio: 0.55`, `hard_ratio: 0.7`, `default_window_tokens:
+262144` (and 262,144 per tier); `--profile claude` / `--profile paper` restore 0.70 / 0.85 /
+200,000. When the provider reports `capabilities().replays_reasoning` (the local adapter: the
+chat template replays every past reasoning block), the soft-clear pass also empties the
+reasoning of turns older than `keep_recent_calls`, in the same pass as the tool results (one
+prefix-cache miss, not one per turn), and summaries drop thinking.
 Compactions and retries are traced (`compaction`, `provider_retry`), counted in each turn
 record, and shown as notices by `vbt chat` and `vbt web`.
 
 ## Choosing a model at the command line
 
 `--model` (chat, run, replay, scenario) sets the orchestrator, scientist and bulk tiers. It
-accepts a `model_aliases` label (`configs/default.yaml`: `opus`, `sonnet`, `haiku`, `paper`),
-a model id already configured in a tier, or an id matching `provider.model_pattern`
-(default `^claude-[a-z0-9.-]+$` for the Anthropic provider; no check for others). Anything
-else exits with code 2 and lists the aliases. The chosen models, with the effective
-thinking/effort per tier, are pinned in the run's `inputs/config.json`.
+accepts a `model_aliases` label, a model id already configured in a tier, or an id matching
+`provider.model_pattern`. The aliases depend on the profile: the default local config has only
+`qwen` (`qwen3.8-27b`); `--profile claude` and `--profile paper` add `opus`, `sonnet`, `haiku`
+and `paper`. The default pattern is `^claude-[a-z0-9.-]+$` for the Anthropic provider, any
+served-model-like name (`qwen3.8-27b`, `Qwen/Qwen3.8-27B-FP8`, `model.gguf`) for the local
+providers (vllm, sglang, llamacpp, openai_compat), and no check for others. Anything else exits
+with code 2 and lists the aliases.
+
+For a local provider the tier's model is the name requested from the server, so `--model` must
+be a name the server serves (`--served-model-name`); `prepare()` checks every configured tier
+model before the first turn. `provider.options.served_model_name`, when set, overrides every
+tier on the wire; the shipped configs leave it unset, and `--model` (or the web model picker)
+with a different name than a configured `served_model_name` exits with code 2 rather than
+recording a model that never ran. The chosen models, with the effective thinking/effort per
+tier, are pinned in the run's `inputs/config.json`.
 
 ## Local models (OpenAI-compatible servers)
 
@@ -237,7 +256,7 @@ provider:
   name: vllm
   options:
     base_url: ${VBT_LLM_BASE_URL:-http://localhost:8000/v1}
-    served_model_name: qwen3.8-27b   # optional: overrides models.<tier>.model on the wire
+    # served_model_name: qwen3.8-27b # optional: overrides models.<tier>.model (and --model) on the wire
     family: auto                     # or qwen3_8 | qwen3_6 | qwen3 | deepseek_v4 | generic
     read_timeout_s: 900              # max silence between streamed chunks (no total cap)
     max_concurrency: 48              # ~ the server's --max-num-seqs
@@ -250,8 +269,11 @@ models:
 
 **Options.** `base_url` (env `VBT_LLM_BASE_URL` when unset; a bare
 `http://host:port` gets `/v1`), `base_urls` (several replicas), `model`,
-`served_model_name`, `api_key` (optional; env `VBT_LLM_API_KEY`, then
-`OPENAI_API_KEY`; never required), `family`, `timeout_s` (connect/write, 30),
+`served_model_name` (unset in the shipped configs; when set it overrides every tier's model
+on the wire), `api_key` (optional; else env `VBT_LLM_API_KEY`, else the variable named by
+`api_key_env`; never required, and `OPENAI_API_KEY` is never read implicitly, so the user's
+OpenAI credential is not sent to a self-hosted server: opt in with `api_key_env:
+OPENAI_API_KEY` for a hosted OpenAI-compatible API), `family`, `timeout_s` (connect/write, 30),
 `read_timeout_s` (600), `max_concurrency`, `data_parallel_size` + `routing`
 (`header` | `urls`), `pricing` (`{input_per_mtok, cached_per_mtok,
 output_per_mtok}`, default 0), `extra_body` (merged into every request last,
@@ -270,7 +292,7 @@ model's `root` path (from `/v1/models`).
 | `qwen3_8` | Qwen3.8-* | top-level `reasoning_effort`: low→`low`, medium→`medium`, high/xhigh/max→`xhigh`; thinking off or no effort → `none` (+ `chat_template_kwargs.enable_thinking=false`) | `thinking_token_budget` | T 1.0, top_p 0.95, top_k 20, min_p 0, presence 0, rep 1.0 / T 0.7, top_p 0.8, top_k 20, min_p 0, presence 1.5 |
 | `qwen3_6` | Qwen3.5-*, Qwen3.6-* | `chat_template_kwargs {enable_thinking, preserve_thinking: true}` (no effort levels) | yes | T 1.0, top_p 0.95, top_k 20, presence 1.5 / T 0.7, top_p 0.8, presence 1.5 |
 | `qwen3` | Qwen3-* (2025, e.g. Qwen3-0.6B for CPU smoke tests) | `chat_template_kwargs.enable_thinking` | yes | T 0.6, top_p 0.95, top_k 20 / T 0.7, top_p 0.8, top_k 20 |
-| `deepseek_v4` | DeepSeek-V4-Flash | `reasoning_effort` none/low/high/max (medium→low, xhigh→high) + `chat_template_kwargs.thinking` | no | T 1.0, top_p 0.95 |
+| `deepseek_v4` | DeepSeek-V4-Flash | `reasoning_effort` none/low/high/max (medium→low, xhigh→high, and the harness's max→high: Think-Max needs `max_tokens` >= 128K, so `max` is sent only as an explicit `extra["reasoning_effort"]`) + `chat_template_kwargs.thinking` | no | T 1.0, top_p 0.95 |
 | `generic` | anything else | nothing (or standard low/medium/high with `reasoning_effort_supported`) | no | server defaults |
 
 `high`, `max` and `minimal` are never sent to Qwen3.8: its chat template raises
@@ -314,7 +336,10 @@ temperature, and `top_k <= 0` is never sent.
   (SHA-1, stable across processes) to pick one of `base_urls`, and with
   `data_parallel_size > 1` and `routing: header` to send
   `X-data-parallel-rank: <hash % N>`, so each agent keeps hitting the same
-  replica's prefix cache.
+  replica's prefix cache. N must equal the server's `--data-parallel-size` (vLLM rejects a
+  higher rank with HTTP 400): `prepare()` counts the server's data-parallel engines from
+  `/metrics` (`engine="k"` labels) and refuses to start when N is larger (a smaller N only
+  warns); the local profiles read N from `$VBT_LLM_DP_SIZE`.
 
 **Response decoding.** SSE chunks (keep-alive comments ignored, `data: [DONE]`
 ends the stream; servers that ignore `stream` and answer JSON are handled too):
@@ -328,7 +353,9 @@ server returned no `tool_calls` but the text holds `<tool_call>{json}</tool_call
 or Qwen XML `<tool_call><function=name><parameter=k>v</parameter>...` blocks
 (server started without a tool-call parser) they are extracted (parameter values
 typed by the tool schema) and a warning is logged once; `<think>...</think>` in
-the content is split off the same way. Stop reasons: any tool calls → `tool_use`;
+the content is split off the same way. Stop reasons: `abort` / `error` →
+`RetryableProviderError` (checked first: an aborted stream may hold half-streamed calls with
+truncated arguments, which must never become a `tool_use` turn); any tool calls → `tool_use`;
 `stop` → `end_turn`; `length` → `max_tokens`, or `context_exceeded` when
 prompt + completion reached the window or `max_tokens` had been cut to fit it;
 `content_filter` → `refusal`. Usage: `cache_read = prompt_tokens_details.
@@ -441,6 +468,13 @@ streaming started (`overloaded_error`, `api_error`) become
 
 **Streaming.** With `on_text`/`on_thinking` the adapter iterates raw stream
 events and dispatches `text_delta` and `thinking_delta`.
+
+**Endpoint.** `provider.options` is one namespace that profiles deep-merge onto the local
+default, so the Anthropic factory ignores the OpenAI-compatible adapter's options (`base_url`,
+`base_urls`, `served_model_name`, `family`, ...): an inherited `base_url` would otherwise send
+every request, with `ANTHROPIC_API_KEY` in `x-api-key`, to the local server's address. Another
+Anthropic endpoint (a gateway) is `provider.options.anthropic_base_url` (or the SDK's
+`ANTHROPIC_BASE_URL`).
 
 **Credentials.** `check_credentials()` treats a blank or whitespace
 `ANTHROPIC_API_KEY` (e.g. an empty `.env` entry) as missing unless

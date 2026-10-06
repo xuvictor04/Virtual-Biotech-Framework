@@ -143,6 +143,7 @@ def _harness(name, monkeypatch=None):
 def test_harness_profile_matches_its_serving_profile(serving, monkeypatch):
     monkeypatch.delenv("VBT_LLM_BASE_URL", raising=False)
     monkeypatch.delenv("SEARXNG_URL", raising=False)
+    monkeypatch.delenv("VBT_LLM_DP_SIZE", raising=False)
     p = PROFILES[serving]
     hp = p["harness"]["profile"]
     assert (CONFIG_DIR / "profiles" / f"{hp}.yaml").is_file()
@@ -151,10 +152,14 @@ def test_harness_profile_matches_its_serving_profile(serving, monkeypatch):
     opts = prov["options"]
     assert prov["name"] == "vllm"
     assert opts["base_url"] == "http://localhost:8000/v1"
-    assert opts["served_model_name"] == p["served_model_name"]
-    assert opts["family"] == p["family"]
+    # INT-2: no served_model_name / family pin: the tier model (or --model) is what goes on the wire,
+    # and the dialect is matched from it
+    assert opts.get("served_model_name") is None and opts.get("family") is None
+    from vbt.providers.families import resolve_family
+    assert resolve_family(cfg["models"]["scientist"]["model"]).name == p["family"]
     assert opts["pricing"] is None and opts["read_timeout_s"] == 900
-    assert opts["data_parallel_size"] == p["data_parallel_size"]
+    # ops-1: env-driven (VBT_LLM_DP_SIZE) so `vbt local serve --data-parallel N` can tell the harness N
+    assert int(opts["data_parallel_size"]) == p["data_parallel_size"]
     seqs = (p["max_num_seqs"] or 256) * p["data_parallel_size"]
     assert opts["max_concurrency"] <= seqs
     if hp != "local-h200" or serving == "h200":   # b200 shares local-h200 (a smaller client cap)
@@ -197,8 +202,9 @@ def test_qwen_tiers_follow_the_tier_mapping(hp):
 
 def test_deepseek_profile_uses_its_own_effort_vocabulary():
     cfg = load_config(["local-deepseek-v4"])
-    assert cfg["provider"]["options"]["family"] == "deepseek_v4"
-    assert cfg["provider"]["options"]["data_parallel_size"] == 4
+    from vbt.providers.families import resolve_family
+    assert all(resolve_family(t["model"]).name == "deepseek_v4" for t in cfg["models"].values())
+    assert int(cfg["provider"]["options"]["data_parallel_size"]) == 4
     assert {t["effort"] for t in cfg["models"].values()} <= {"high", "low", None}
     assert not any(t.get("thinking_budget") for t in cfg["models"].values())
 
@@ -422,7 +428,8 @@ def test_docker_run_line(monkeypatch, tmp_path):
     for piece in (["--gpus", "all"], ["-p", "127.0.0.1:8000:8000"], ["-v", f"{tmp_path / 'hf'}:/root/.cache/huggingface"],
                   ["-e", "VLLM_ENFORCE_STRICT_TOOL_CALLING=1"], ["-e", "HF_TOKEN"]):
         assert any(argv[i:i + 2] == piece for i in range(len(argv))), piece
-    assert "--ipc=host" in argv
+    # SEC-6: a private /dev/shm, never the host's IPC namespace
+    assert "--shm-size=16g" in argv and "--ipc=host" not in argv
     i = argv.index("vllm/vllm-openai:v0.31.0-cu129")
     assert argv[i + 1:] == [*spec.server_argv, "--host", "0.0.0.0", "--port", "8000"]
     assert "cu129" in notes[0]
@@ -442,7 +449,7 @@ def test_compose_services_match_the_serving_profiles():
         assert s["profiles"] == [name]
         assert s["command"] == [*spec.server_argv, "--host", "0.0.0.0", "--port", str(spec.container_port)], name
         assert s["image"] == "vllm/vllm-openai:${VLLM_TAG:-v0.31.0}"
-        assert s["ipc"] == "host"
+        assert s["shm_size"] == "16g" and "ipc" not in s
         dev = s["deploy"]["resources"]["reservations"]["devices"][0]
         assert dev["driver"] == "nvidia" and dev["capabilities"] == ["gpu"]
         assert any(v.endswith(":/root/.cache/huggingface") for v in s["volumes"])
@@ -673,7 +680,8 @@ def test_cmd_profiles_list_show_detect(tmp_path, capsys):
     a = p.parse_args(["local", "profiles"])
     assert a.handler(a, {}) == 0
     out = capsys.readouterr().out
-    assert "deepseek-v4" in out and "local-rtxpro6000" in out and "recipe-verified" in out
+    # DT7: no top-level profile's default command is recipe-verified (deepseek-v4 only on v0.28.0)
+    assert "deepseek-v4" in out and "local-rtxpro6000" in out and "supported, smoke-test" in out
     a = p.parse_args(["local", "profiles", "--show", "rtxpro6000"])
     assert a.handler(a, {}) == 0
     out = capsys.readouterr().out
@@ -1009,6 +1017,8 @@ def _statuses(report):
 def test_check_passes_against_a_capable_server(fake_server, factory):
     report = asyncio.run(chk.run_checks(_opts(fake_server), factory))
     st = _statuses(report)
+    # routing: one server and no data-parallel ranks configured -> skipped
+    assert st.pop("routing") == "skip"
     assert st == {n: "pass" for n in ["health", "models", "version", "prepare", "tool_call", "parallel_tool_calls",
                                       "strict_schema", "forced_tool_choice", "reasoning_effort", "thinking_budget",
                                       "needle_1k", "prefix_cache", "throughput", "malformed_calls"]}, \
@@ -1121,8 +1131,11 @@ def test_options_from_config(monkeypatch):
     monkeypatch.delenv("VBT_LLM_BASE_URL", raising=False)
     cfg = load_config(["local-h100"])
     o = chk.options_from_config(cfg)
+    # INT-2: the profile pins no family; the adapter matches it from the model name
     assert (o.base_url, o.model, o.family, o.provider_name, o.min_context_tokens, o.read_timeout_s) == \
-        ("http://localhost:8000/v1", "qwen3.8-27b", "qwen3_8", "vllm", 262144, 900.0)
+        ("http://localhost:8000/v1", "qwen3.8-27b", "auto", "vllm", 262144, 900.0)
+    # ops-2: the probe adapter is built from the runtime's provider.options
+    assert o.provider_options["max_concurrency"] == 48 and "data_parallel_size" in o.provider_options
     p = _parser()
     a = p.parse_args(["local", "check", "--base-url", "http://h:1/v1", "--served-model", "x", "--only",
                       "tool_call,needle", "--long-context", "--needle-tokens", "8192", "--min-tps", "5"])

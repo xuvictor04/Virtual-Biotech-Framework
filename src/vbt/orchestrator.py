@@ -842,9 +842,11 @@ async def open_session(config: dict[str, Any], *, provider=None, on_event=None, 
     if resume:
         run = Run.open_existing(resume)
     else:
+        from .pinning import redact_config
         run = Run(resolve_path(config["paths"]["runs_dir"]), run_id=run_id, config={
             "provider": config["provider"]["name"], "models": config["models"],
-            "web": config.get("web", {}), "orchestration": config.get("orchestration", {}),
+            # redacted: web.search.brave_api_key / user:pass@ URLs never reach the (agent-readable) record
+            "web": redact_config(config.get("web", {})), "orchestration": config.get("orchestration", {}),
             "audit": config.get("audit") or {},
         })
     rt = Runtime(config, run, provider=provider, on_event=on_event)
@@ -870,6 +872,16 @@ async def open_session(config: dict[str, Any], *, provider=None, on_event=None, 
                 rt.emit("warning", message=f"MCP servers unavailable: {', '.join(sorted(failures))}")
         from .preflight import provider_server_info
         server = await provider_server_info(rt.provider)  # engine version, served models, max_model_len
+        from .preflight import configured_window
+        window, mml = configured_window(config), server.get("max_model_len") if isinstance(server, Mapping) else None
+        try:
+            if window and mml and int(mml) < int(window):
+                rt.emit("warning", message=(
+                    f"the server's max_model_len ({int(mml):,}) is below the configured context window "
+                    f"({int(window):,}): compaction uses {int(mml):,} (lower models.<tier>.context_window_tokens "
+                    "or serve with a larger --max-model-len)"))
+        except (TypeError, ValueError):
+            pass
         try:
             pinned = build_pinned_config(config, rt, interface=interface, profiles=profiles, server=server)
         except Exception as exc:  # noqa: BLE001 - pinning must never block a session

@@ -4,10 +4,13 @@
 #   vbt local serve --profile deepseek-v4      # B200/B300: --variant b200
 #   vbt --profile local-deepseek-v4 local check
 #
-# Family deepseek_v4 has its own effort vocabulary (none/low/high/max): the adapter maps the
-# harness's medium->low and xhigh->high, sends thinking off as 'none', and uses T=1.0, top_p=0.95.
-# There is no thinking_token_budget here; reasoning is bounded by max_tokens ('max' effort needs
-# >= 128K max_tokens and the 393,216-token window, so it is not used by default).
+# Family deepseek_v4 (matched from the served name dsv4-flash) has its own effort vocabulary
+# (none/low/high/max): the adapter maps the harness's medium->low and xhigh->high, sends thinking
+# off as 'none', and uses T=1.0, top_p=0.95. There is no thinking_token_budget here; reasoning is
+# bounded by max_tokens. Think-Max ('max') needs >= 128K max_tokens and the 393,216-token window,
+# so it is never sent for a harness effort: agents.yaml's single-cell-analyst `effort: max` maps
+# to 'high' like the other scientists; 'max' goes out only as an explicit
+# extra['reasoning_effort'] (then raise that agent's max_tokens to >= 131072).
 # With --data-parallel-size 4 every agent session is pinned to one rank (X-data-parallel-rank).
 # Send the same tools on every request of a session (the harness does): omitting tools strips
 # earlier reasoning and changing them invalidates the prefix cache.
@@ -16,11 +19,11 @@ provider:
   name: vllm
   options:
     base_url: ${VBT_LLM_BASE_URL:-http://localhost:8000/v1}
-    served_model_name: dsv4-flash
-    family: deepseek_v4
     read_timeout_s: 900
     max_concurrency: 128
-    data_parallel_size: 4         # = --data-parallel-size (1 with variant tep / tp2 / rtxpro6000x8)
+    # = the server's --data-parallel-size: 1 with variant tep / tp2 / rtxpro6000x8, for which
+    # `vbt local serve` prints `export VBT_LLM_DP_SIZE=1`
+    data_parallel_size: ${VBT_LLM_DP_SIZE:-4}
     routing: header
     pricing: null
 

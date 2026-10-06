@@ -25,17 +25,32 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .profiles import (
+    DP_SIZE_ENV,
     LocalProfileError,
     ProfilePick,
     ServeSpec,
     detect_nvidia_smi,
     docker_run_argv,
+    harness_context_window,
+    harness_data_parallel_size,
+    harness_dp_hint,
     load_local_profiles,
     parse_nvidia_smi,
     pick_profile,
     resolve_serve,
     shell_command,
 )
+
+
+#: Why a vLLM server must not be published beyond loopback, even with an API key.
+UNAUTHENTICATED_NOTE = ("vLLM's --api-key / VLLM_API_KEY protects only the /v1 routes; /invocations (which runs chat "
+                        "completions), /tokenize, /detokenize, /pooling, /score, /rerank and /metrics stay open, so "
+                        "anyone who can reach the port can use the GPU and fill the KV cache the harness relies on")
+
+
+def _is_loopback_host(host: str | None) -> bool:
+    h = (host or "").strip().strip("[]").lower()
+    return h in ("localhost", "::1") or h.startswith("127.")
 
 
 def _exec(argv: Sequence[str], env: Mapping[str, str]) -> int:  # pragma: no cover - replaced in tests
@@ -189,12 +204,21 @@ def cmd_serve(args: argparse.Namespace, config: Mapping[str, Any] | None = None)
         spec = resolve_serve(profiles, name, variants=variants, bulk=bool(getattr(args, "bulk", False)),
                              hf_id=getattr(args, "hf_id", None), engine_version=getattr(args, "engine_version", None),
                              data_parallel=data_parallel, host=getattr(args, "host", None),
-                             port=getattr(args, "port", None), extra_args=getattr(args, "vllm_arg", None) or [])
+                             port=getattr(args, "port", None), extra_args=getattr(args, "vllm_arg", None) or [],
+                             revision=getattr(args, "revision", None))
     except LocalProfileError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     notes = list(spec.notes)
-    if getattr(args, "docker", False):
+    docker = bool(getattr(args, "docker", False))
+    exposed = (getattr(args, "bind", None) or "127.0.0.1") if docker else spec.host
+    if not _is_loopback_host(exposed) and not getattr(args, "allow_unauthenticated", False):
+        print(f"error: refusing to publish vLLM on {exposed}: {UNAUTHENTICATED_NOTE}. Keep it on loopback and reach "
+              "it through an SSH tunnel (ssh -L 8000:127.0.0.1:8000 gpu-host) or a reverse proxy that authenticates "
+              "every path (deploy/local/README.md, Security), or pass --allow-unauthenticated if this network is "
+              "trusted.", file=sys.stderr)
+        return 2
+    if docker:
         driver = getattr(args, "driver", None) or (info.driver_version if info else None)
         try:
             argv, dnotes = docker_run_argv(spec, driver=driver, hf_cache=getattr(args, "hf_cache", None),
@@ -211,13 +235,23 @@ def cmd_serve(args: argparse.Namespace, config: Mapping[str, Any] | None = None)
         argv = spec.vllm_argv()
         env = {**os.environ, **spec.env}
         command = shell_command(argv, spec.env)
-        if spec.host in ("0.0.0.0", "::"):
-            notes.append("listening on all interfaces: vLLM has no authentication unless VLLM_API_KEY (or "
-                         "--api-key) is set; set the same key as VBT_LLM_API_KEY for the harness")
+    if not _is_loopback_host(exposed):
+        notes.append(f"listening on {exposed} (--allow-unauthenticated): {UNAUTHENTICATED_NOTE}")
     harness = spec.harness.get("profile")
+    dp_hint = harness_dp_hint(harness, spec.data_parallel_size)
+    if dp_hint:
+        notes.append(f"the server runs {spec.data_parallel_size} data-parallel rank(s) but harness profile {harness} "
+                     f"defaults to data_parallel_size {harness_data_parallel_size(harness)}: `{dp_hint}` makes the "
+                     "adapter's X-data-parallel-rank match (a rank the server does not have is rejected, HTTP 400)")
+    window = harness_context_window(harness)
+    if window and spec.context_tokens < window:
+        notes.append(f"--max-model-len {spec.context_tokens} is below harness profile {harness}'s context window "
+                     f"({window}): the harness compacts against the server's max_model_len once it has read it "
+                     f"(prepare); for a fixed setting set models.<tier>.context_window_tokens to {spec.context_tokens}")
     if getattr(args, "json", False):
-        print(json.dumps({**spec.as_dict(), "argv": argv, "notes": notes, "docker": bool(getattr(args, "docker", False))},
-                         indent=1))
+        harness_env = {DP_SIZE_ENV: str(spec.data_parallel_size)} if dp_hint else {}
+        print(json.dumps({**spec.as_dict(), "argv": argv, "notes": notes, "docker": docker,
+                          "harness_env": harness_env}, indent=1))
     else:
         title = f"serving profile {spec.profile}" + (f" + {', '.join(spec.variants)}" if spec.variants else "")
         print(f"# {title}: {spec.hf_id} as '{spec.served_model_name}' (vLLM {spec.engine_version}, "
@@ -226,11 +260,17 @@ def cmd_serve(args: argparse.Namespace, config: Mapping[str, Any] | None = None)
         for n in notes:
             print(f"# note: {n}")
         if harness:
-            print(f"# harness: export VBT_LLM_BASE_URL={spec.base_url}; vbt --profile {harness} ...; "
-                  "check the server with `vbt local check`")
+            print(f"# harness: export VBT_LLM_BASE_URL={spec.base_url}; {dp_hint + '; ' if dp_hint else ''}"
+                  f"vbt --profile {harness} ...; check the server with `vbt local check`")
         print(command)
     if getattr(args, "dry_run", False) or getattr(args, "json", False):
         return 0
+    if spec.unpinned_remote_code and not getattr(args, "allow_unpinned_remote_code", False):
+        print(f"error: refusing to start {spec.hf_id} with --trust-remote-code at an unpinned revision (it would run "
+              "whatever Python the repo holds at download time, as root in the container with the HF cache "
+              "mounted). Pass --revision <commit sha> after reviewing that commit's code, or "
+              "--allow-unpinned-remote-code.", file=sys.stderr)
+        return 2
     exe = argv[0]
     if not shutil.which(exe):
         hint = ("install Docker with the NVIDIA Container Toolkit" if exe == "docker" else
@@ -278,9 +318,18 @@ def _add_serve_arguments(p: argparse.ArgumentParser) -> None:
                    help="vLLM version to target (0.30.0 drops --tool-strict-level; picks the docker tag)")
     p.add_argument("--driver", metavar="VERSION", help="NVIDIA driver version for the docker tag (default: nvidia-smi)")
     p.add_argument("--data-parallel", type=int, metavar="N", help="data-parallel replicas (--data-parallel-size)")
-    p.add_argument("--host", help="bind address (bare metal; default 127.0.0.1)")
+    p.add_argument("--host", help="bind address (bare metal; default 127.0.0.1; a non-loopback address needs "
+                                  "--allow-unauthenticated)")
     p.add_argument("--port", type=int, help="port (default 8000)")
-    p.add_argument("--bind", help="docker: host address the port is published on (default 127.0.0.1)")
+    p.add_argument("--bind", help="docker: host address the port is published on (default 127.0.0.1; a non-loopback "
+                                  "address needs --allow-unauthenticated)")
+    p.add_argument("--revision", metavar="SHA",
+                   help="pin the checkpoint to this Hub commit (with --trust-remote-code also --code-revision)")
+    p.add_argument("--allow-unpinned-remote-code", action="store_true",
+                   help="start a --trust-remote-code profile (deepseek-v4) without --revision")
+    p.add_argument("--allow-unauthenticated", action="store_true",
+                   help="allow a non-loopback --host/--bind: vLLM's --api-key covers only /v1, so prefer an SSH "
+                        "tunnel or an authenticating reverse proxy (deploy/local/README.md)")
     p.add_argument("--hf-cache", metavar="DIR", help="docker: Hugging Face cache to mount (default $HF_HOME or "
                                                      "~/.cache/huggingface)")
     p.add_argument("--name", help="docker: container name (default vbt-vllm)")

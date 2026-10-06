@@ -147,12 +147,47 @@ def env_files(config: dict[str, Any] | None = None) -> list[Path]:
     return files
 
 
+class ProfileError(ValueError):
+    """A profile cannot be used with the resulting configuration (``requires_provider``)."""
+
+
+#: Profile-only key: the provider a profile is written for (checked after every layer is merged).
+REQUIRES_PROVIDER_KEY = "requires_provider"
+
+
+def split_profile(raw: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """``(profile data, required provider)``: the ``requires_provider`` meta key
+    is not configuration and is removed from the data."""
+    data = dict(raw or {})
+    req = data.pop(REQUIRES_PROVIDER_KEY, None)
+    return data, (str(req) if req else None)
+
+
+def check_profile_requirement(cfg: dict[str, Any], profile: str, required: str | None) -> None:
+    """Raise :class:`ProfileError` when ``profile`` needs another provider than ``cfg`` has
+    (e.g. ``upstream-web``, which only adjusts Claude's effort levels, used alone on the
+    local default would silently run the local model)."""
+    if not required:
+        return
+    name = (cfg.get("provider") or {}).get("name")
+    if name != required:
+        raise ProfileError(
+            f"profile {profile!r} is written for the {required!r} provider, but the configuration uses "
+            f"{name!r}: combine it with a profile that selects {required} (e.g. `--profile claude "
+            f"--profile {profile}` or `--profile paper --profile {profile}`)")
+
+
 def load_config(profiles: list[str] | None = None, overrides: dict | None = None) -> dict[str, Any]:
     load_env_file(PROJECT_ROOT / ".env")
     cfg = deep_merge(CODE_DEFAULTS, _load_yaml(CONFIG_DIR / "default.yaml"))
+    required: list[tuple[str, str | None]] = []
     for prof in profiles or []:
-        cfg = deep_merge(cfg, _load_yaml(_find(prof)))
+        data, req = split_profile(_load_yaml(_find(prof)))
+        required.append((str(prof), req))
+        cfg = deep_merge(cfg, data)
     cfg = deep_merge(cfg, overrides or {})
+    for prof, req in required:
+        check_profile_requirement(cfg, prof, req)
 
     variables = _variables(cfg)
     if variables.get("upstream") and load_env_file(resolve_path(variables["upstream"]) / ".env"):

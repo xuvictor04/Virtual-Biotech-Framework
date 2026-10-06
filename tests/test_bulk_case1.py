@@ -158,7 +158,10 @@ async def test_bulk_item_budget_fails_item_without_retry(config, tmp_path):
                                prewarm="none").run(_items(3))
     recs = _recs(out)
     assert recs["i00"]["ok"] is False and recs["i00"]["status"] == "item_budget"
-    assert recs["i00"]["attempts"] == 1 and recs["i00"]["cost_usd"] == pytest.approx(2.0)
+    # INT-3: the exhausted item still gets ONE forced, budget-exempt submit_result call (here invalid
+    # again, so the item fails); both calls are counted although run_agent raised
+    assert recs["i00"]["attempts"] == 1 and recs["i00"]["cost_usd"] == pytest.approx(4.0)
+    assert recs["i00"]["model_calls"] == 2
     assert summary["completed"] == 2
     await session.close()
 

@@ -27,15 +27,19 @@ vars:
 # Options of the OpenAI-compatible adapter (vbt.providers.openai_compat, docs/PROVIDERS.md):
 # base_url(s), served_model_name, family, api_key (VBT_LLM_API_KEY), timeout_s, read_timeout_s,
 # max_concurrency, data_parallel_size, routing, pricing, extra_body, context_window, vision, ...
+# These are the local server's options only: the anthropic provider ignores them (base_url
+# above is never used for Claude; it takes anthropic_base_url).
 provider:
   name: vllm
   options:
     base_url: ${VBT_LLM_BASE_URL:-http://localhost:8000/v1}
-    served_model_name: qwen3.8-27b
-    family: qwen3_8
+    # The model requested on the wire is the tier's model (models.<tier>.model, or --model), so
+    # `--model`, agent_overrides and the web model picker take effect; the dialect (family) is
+    # matched from that name or the served root (vbt.providers.families). Setting
+    # served_model_name here would override every tier on the wire (and --model then exits 2).
     read_timeout_s: 900           # max silence between streamed chunks (xhigh turns think long)
     max_concurrency: 48           # = --max-num-seqs; vLLM queues the rest instead of returning 429
-    data_parallel_size: 1
+    data_parallel_size: ${VBT_LLM_DP_SIZE:-1}  # = the server's --data-parallel-size (`vbt local serve` prints it)
     pricing: null                 # 0 USD; set {input_per_mtok, cached_per_mtok, output_per_mtok} to amortise GPU cost
   # `--model` accepts a model_aliases label, a configured model id, or an id
   # matching this pattern. In-code default: '^claude-[a-z0-9.-]+$' for anthropic,
@@ -53,6 +57,9 @@ model_aliases:
 # Harness effort -> Qwen3.8: low->low, medium->medium, high/xhigh/max->xhigh,
 # thinking off -> none (never 'high'/'max'). thinking_budget is sent as
 # thinking_token_budget (a hard reasoning cap; max_tokens includes it).
+# A per-agent effort in configs/agents.yaml replaces the tier's: the single-cell
+# analyst runs at `max` (as upstream), i.e. xhigh with the scientist budget
+# (agent_overrides: {single-cell-analyst: {effort: medium}} keeps it on the tier).
 # Optional per-tier keys: thinking_budget, context_window_tokens.
 # (The paper used Claude Sonnet 4.5 for CSO + scientists and Haiku 4.5 for Chief
 # of Staff + Scientific Reviewer: see profiles/paper.yaml.)
@@ -184,8 +191,10 @@ mcp:
 # ---------------------------------------------------------------- bulk (Case 1 / BulkDispatch)
 bulk:
   dispatch_enabled: false         # register BulkDispatch/BulkStatus for the CSO
-  dispatch_max_budget_usd: 50     # cap on a BulkDispatch job's budget_usd
-  dispatch_max_budget_tokens: null  # cap on a BulkDispatch job's budget_tokens (null = no cap)
+  dispatch_max_budget_usd: 50     # cap on a BulkDispatch job's budget_usd (Claude; a 0-USD local model
+                                  # never reaches it, so local jobs must pass budget_tokens)
+  dispatch_max_budget_tokens: 20000000  # cap on a BulkDispatch job's budget_tokens (5 x max_turn_tokens;
+                                  # null = no cap): the CSO picks the budget itself
   pilot_size: 5                   # items run (and costed) before confirm=true
   prewarm: first_item             # run one item alone first so the rest hit the prompt cache
   default_concurrency: 32         # vbt bulk / case1 annotate without --concurrency; leaves room for

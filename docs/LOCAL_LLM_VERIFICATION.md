@@ -39,8 +39,10 @@ Date: 2026-10-06. Live probes: `tests/test_live_local.py` (skipped unless
   final calls, argument checks before tools run, the empty-reply nudge, a
   `session_key` per invocation and token budgets. These have offline tests
   (`tests/test_local_integration.py`) but have not been run against a live
-  server. The adapter-level probes above (named `tool_choice`, `strict`, `none`,
-  `X-data-parallel-rank`) cover the requests those behaviours send.
+  server. The adapter-level probes above cover the named `tool_choice`, `strict`
+  and `none` requests those behaviours send. `X-data-parallel-rank` was observed
+  only as a raw HTTP request (no adapter, `data_parallel_size` 1 server); the
+  adapter's DP routing and its error mapping are covered by offline tests.
 - **Bugs found and fixed** (adapter, with offline regression tests in
   `tests/test_openai_compat.py`):
   1. Context-overflow recovery read vLLM's prompt-size *lower bound* as the
@@ -389,15 +391,29 @@ Proven against a real vLLM OpenAI server and the real Qwen3.5 chat template:
   `thinking_token_budget` is enforced server-side.
 - Forced tool calls with a strict schema (enum, regex pattern, numeric bounds,
   array bounds, `anyOf` null) come back schema-valid through xgrammar.
-- Error mapping for overflow (after the fix), unknown model (404), template
-  errors and DP rank; model discovery (`/v1/models` `max_model_len`, `/version`).
+- Error mapping for overflow (after the fix) and unknown model (404) through the
+  adapter; model discovery (`/v1/models` `max_model_len`, `/version`). For
+  template errors and an out-of-range DP rank only the server's raw HTTP
+  responses were observed; the adapter's mapping of them is covered by offline
+  tests (`tests/test_openai_compat.py`).
 - The whole harness loop (CSO prompt and tools, Task delegation, specialist tool
-  loop, turn limits, final synthesis) runs on the adapter against both engines.
+  loop, turn limits, final synthesis) runs on the adapter against both engines
+  **with the pre-L2 runtime** (see "Harness version"). The current runtime's
+  final calls differ (below) and were not re-run live.
 - The same adapter works with llama.cpp's `llama-server` (`reasoning_content`,
   exact overflow errors, `meta.n_ctx` window) after the fixes above.
 
 Not proven here:
 
+- **The L2 runtime paths against a live server**: `tool_choice: "none"` on the
+  turn-limit / budget-grace call (observation 2, probe 8: vLLM 0.30 returns
+  `content: null` when the model still tries a call; the live genomics analyst
+  called Grep on every turn, so under the current code its turn-limit reply could
+  come back empty and end with the placeholder instead of a report), the forced
+  final `submit_result`, argument checks before tools run, the empty-reply nudge,
+  the `session_key` per invocation (and the `X-data-parallel-rank` it drives with
+  `data_parallel_size` > 1), and token budgets. All have offline tests only; re-run
+  `VBT_LIVE_LOCAL_HARNESS=1` on the current code to cover them.
 - **vLLM 0.31.0** (`--tool-strict-level function`) and the GPU code paths:
   CUDA graphs, FP8 / NVFP4 / INT4 kernels, FP8 KV cache, MTP speculative
   decoding, chunked prefill at 262K, DP > 1 routing. The CPU build is 0.30.0.

@@ -112,6 +112,7 @@ class Fake:
         self.url = ""
         self.tokenize_count = None  # POST /tokenize answer ({"count": N}); None -> 404 (no such endpoint)
         self.tokenize_requests = []  # kept apart from `requests` so `posts` stays chat completions only
+        self.metrics = None          # GET /metrics text (Prometheus); None -> 404
 
     @property
     def posts(self):
@@ -140,6 +141,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"object": "list", "data": fake.models}).encode())
         elif self.path == "/version":
             self._send(200, json.dumps({"version": "0.31.0"}).encode())
+        elif self.path == "/metrics" and fake.metrics is not None:
+            self._send(200, fake.metrics.encode(), "text/plain; version=0.0.4")
         else:
             self._send(404, json.dumps({"detail": "Not Found"}).encode())
 
@@ -286,7 +289,9 @@ def test_thinking_budget_defaults_and_bounds():
     # deepseek_v4 has no thinking budget
     ds = offline(family="deepseek_v4")
     body = ds._request(settings("max"), "s", Q, [])
-    assert "thinking_token_budget" not in body and body["reasoning_effort"] == "max"
+    # harness 'max' -> 'high' (P4: Think-Max needs max_tokens >= 128K); an explicit 'max' still goes through
+    assert "thinking_token_budget" not in body and body["reasoning_effort"] == "high"
+    assert ds._request(settings("high", reasoning_effort="max"), "s", Q, [])["reasoning_effort"] == "max"
     assert body["chat_template_kwargs"] == {"thinking": True} and "top_k" not in body
 
 

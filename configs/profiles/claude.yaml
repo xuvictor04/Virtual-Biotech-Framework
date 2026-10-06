@@ -62,6 +62,12 @@ context:
   hard_ratio: 0.85
   default_window_tokens: 200000
 
+# unset: `vbt case1 annotate` runs 64 trials at once and `vbt bulk` 32 (the per-command defaults
+# before the switch); the local default.yaml sets 32 for both to fit one GPU
+bulk:
+  default_concurrency: null
+  dispatch_max_budget_tokens: null  # Claude jobs are capped in USD (dispatch_max_budget_usd)
+
 web:
   search:
     backend: auto                 # auto = Anthropic's native web search for this provider

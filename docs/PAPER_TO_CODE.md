@@ -10,7 +10,7 @@ pinned as the `third_party/TheVirtualBiotech` submodule.
 | Paper | Harness | Notes |
 |---|---|---|
 | Claude Agent SDK (parent spawns child agents with isolated contexts, MCP, persistent sessions) | `src/vbt/runtime.py` (`Runtime.run_agent`, `Task` tool), `src/vbt/orchestrator.py` | Own agent loop so any provider works; `Task` calls in one response run in parallel. |
-| Model: Sonnet 4.5 (CSO + scientists), Haiku 4.5 (Chief of Staff, Reviewer) | `configs/profiles/paper.yaml`; tiers in `configs/default.yaml` | Default profile uses current Claude models; `--profile paper` pins the paper's. |
+| Model: Sonnet 4.5 (CSO + scientists), Haiku 4.5 (Chief of Staff, Reviewer) | `configs/profiles/paper.yaml`; tiers in `configs/default.yaml` | The default config runs a local open-weight model (Qwen3.8-27B on vLLM, `deploy/local/README.md`); `--profile claude` uses current Claude models and `--profile paper` pins the paper's. |
 | Virtual CSO — orchestrates, never touches data | `configs/agents.yaml: cso` (tools: Task, provenance, read-only file tools; BulkDispatch when enabled) | Upstream CSO prompt + `src/vbt/prompts/cso_harness_addendum.md` (review policy, plan, claim filing, restricted tools). `orchestration.cso_tools: upstream` gives the upstream CSO tool set. |
 | 8 scientist agents in 4 divisions + Chief of Staff + Scientific Reviewer | `configs/agents.yaml` | Prompts are the upstream originals (Supplementary Text X), followed by per-agent addenda and role-aware harness rules (`src/vbt/agents.py: system_prompt_parts`). Tool lists are checked against the upstream registry (`tests/test_roster.py`). |
 | Strategic orientation: CoS briefing ∥ CSO clarification interview (Fig. 1C) | `CSOSession._orientation` | Run concurrently on turn 1. |

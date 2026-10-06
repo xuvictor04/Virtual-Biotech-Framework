@@ -123,7 +123,13 @@ def _case1(args, config: dict[str, Any]) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if args.step == "annotate":
+        from ..bulk import usd_only_budget_problem
         from ..providers.base import ProviderError
+        problem = usd_only_budget_problem(args.budget, getattr(args, "budget_tokens", None), config=config,
+                                          usd_name="--budget", tokens_name="--budget-tokens")
+        if problem:  # a 0-USD local model never reaches a USD cap
+            print(f"error: {problem}", file=sys.stderr)
+            return 2
         mapping = pd.read_parquet(ann.mapping_path(config))
         ids = list(args.ids or [])
         if args.ids_file:

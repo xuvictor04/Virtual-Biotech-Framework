@@ -10,8 +10,11 @@ selection and clinical development.
   authors' originals. They are pinned as a git submodule
   ([harrisongzhang/TheVirtualBiotech](https://github.com/harrisongzhang/TheVirtualBiotech), MIT license).
 - **Swappable model provider:** the harness runs its own agent loop behind a small
-  `LLMProvider` interface. Claude is the default; supporting another vendor means
-  writing one adapter (see [docs/PROVIDERS.md](docs/PROVIDERS.md)).
+  `LLMProvider` interface. The default is a **local open-weight model**, Qwen3.8-27B served
+  by vLLM 0.31 on one 80-96 GB NVIDIA GPU ([deploy/local/README.md](deploy/local/README.md));
+  `--profile claude` uses Claude through the Anthropic API instead, and `--profile paper`
+  pins the paper's Claude Sonnet/Haiku 4.5 setup. Supporting another vendor means writing
+  one adapter (see [docs/PROVIDERS.md](docs/PROVIDERS.md)).
 - **Reproducible:** includes the paper's three case studies, a bulk runner that assigns
   one agent per trial, statistics code, reference re-implementations of the expert-reviewed
   analyses, and an audit record for every run.
@@ -61,18 +64,29 @@ git submodule update --init
 # (Python + R statistics stack: scanpy, LIANA, decoupler, PyDESeq2, gseapy, lme4,
 # lmerTest, glmmTMB, betareg, MuMIn, rpy2, CELLxGENE Census, FastMCP).
 conda env create -f environment.yml && conda activate vbt-harness
-pip install -e ".[anthropic,web,tools,dev]"
+pip install -e ".[web,tools,dev]"       # add `anthropic` to use Claude (--profile claude / paper)
 
-# pip only (no R): `all` covers the provider, every MCP server's imports, the
+# pip only (no R): `all` covers the providers, every MCP server's imports, the
 # analysis/single-cell/survival stacks and the web UI; `full` adds rpy2 and Cell2Location.
 pip install -e ".[all]"
 
-cp .env.example .env    # set ANTHROPIC_API_KEY and OPEN_TARGETS_DATA_PATH
+cp .env.example .env    # set OPEN_TARGETS_DATA_PATH (and VBT_LLM_BASE_URL if vLLM runs elsewhere)
 python third_party/TheVirtualBiotech/tools/download_open_targets.py /data/open_targets --workers 8
-vbt doctor --smoke      # credentials, data, MCP imports, then one live call per MCP server
+
+# The default model server: Qwen3.8-27B on vLLM 0.31 (one 80-96 GB GPU) + SearxNG for WebSearch.
+vbt local profiles --detect                                            # pick a serving profile
+docker compose -f deploy/local/docker-compose.yml --profile h100 up -d # or: vbt local serve --profile h100
+vbt local check         # capability probe of the running server (tools, strict schema, reasoning, ...)
+vbt doctor --smoke      # server /health + served model, data, MCP imports, one live call per MCP server
 vbt --profile mock run "hello"   # offline dry run: scripted provider, no MCP, no cost
 vbt doctor --analysis   # also the Python/R analysis stack agents use from Bash
+
+# Claude instead of the local model: ANTHROPIC_API_KEY in .env, the `anthropic` extra, and
+vbt --profile claude doctor --smoke     # (or --profile paper for the paper's Sonnet/Haiku 4.5)
 ```
+
+See [deploy/local/README.md](deploy/local/README.md) for the other GPUs (H200, RTX PRO 6000,
+B200, RTX 5090, multi-GPU data parallel, DeepSeek-V4-Flash) and their harness profiles.
 
 **Environment variables.** `.env` is read first, then `third_party/TheVirtualBiotech/.env`
 (the file the upstream README tells you to edit); exported variables win over both. A
@@ -234,7 +248,8 @@ vbt case1 replicate                        # re-run the Case 1 statistics on the
 ## Configuration
 
 - `configs/default.yaml`:
-  - `provider`: which model backend to use.
+  - `provider`: which model backend to use (default `vllm`: the local Qwen3.8-27B server at
+    `$VBT_LLM_BASE_URL`; `--profile claude` / `--profile paper` switch to `anthropic`).
   - `models`: model tiers `orchestrator`, `scientist`, `support` and `bulk`.
   - `paths`: prompts, skills and read-only data roots.
   - `model_aliases`: labels accepted by `--model` (`provider.model_pattern` validates ids).
@@ -299,8 +314,11 @@ python -m pytest -q      # offline: scripted provider, synthetic data, no API ca
   for the literature step of the trial-annotation cascade.
 - **Review is enforced.** The harness enforces the Scientific Reviewer step before synthesis.
   Upstream leaves this to the CSO prompt.
-- **Web search.** Web search is provided by the provider (Claude's server-side search tool).
-  Other providers must implement `web_search` or run with `--no-web`.
+- **Web search.** `WebSearch` goes through a pluggable backend (`web.search.backend`,
+  [docs/WEB_SEARCH.md](docs/WEB_SEARCH.md)): the provider's native search where it has one
+  (Claude's server-side search tool), else a self-hosted SearxNG (the local default:
+  `docker compose -f deploy/local/docker-compose.yml up -d searxng`) or the Brave Search API;
+  `--no-web` disables web access.
 - **Code execution.** `Bash` runs on the host, in the agent's workspace, under a policy
   layer (`src/vbt/tools/policy.py`) shared with the file tools: every path argument must
   be readable (run directory, read roots, system roots) and every redirect/`cp`/`mkdir`
