@@ -115,7 +115,15 @@ _LIMIT_RES = (r"maximum context length (?:is|of) (\d+)", r"model'?s context leng
               r"n_ctx\W{0,4}(\d+)", r"context size \((\d+)")
 _PROMPT_RES = (r"prompt contains (\d+) input tokens", r"(?:request|prompt) has (\d+) input tokens",
                r"\((\d+) in the messages", r"(\d+) tokens from the input", r"[Ii]nput (?:length )?\((\d+) tokens\)",
-               r"n_prompt_tokens\W{0,4}(\d+)", r"(\d+) input tokens")
+               r"n_prompt_tokens\W{0,4}(\d+)", r"(?<!\d)(?<!at least )(?<!bound for )(\d+) input tokens")
+# Recent vLLM (observed on 0.30.0) tokenizes at most (limit - max_tokens + 1) prompt tokens before rejecting
+# a request, so its overflow message carries only a LOWER bound ("your prompt contains at least N input
+# tokens", where N is always limit - max_tokens + 1) or, from a character pre-check, "your prompt contains C
+# characters (more than X characters, which is the upper bound for Y input tokens)". Neither is the real
+# prompt size.
+_PROMPT_MIN_RES = (r"contains at least (\d+) input tokens",)
+_PROMPT_CHARS_RE = re.compile(r"contains (\d+) characters \(more than \d+ characters, which is the upper bound for "
+                              r"(\d+) input tokens\)")
 _REQUEST_RES = (r"requested (\d+) output tokens", r"(\d+) in the completion", r"(\d+) tokens for the completion",
                 r"too large: (\d+)")
 
@@ -228,14 +236,44 @@ def _first_int(patterns: Iterable[str], text: str) -> int | None:
     return None
 
 
+@dataclass(frozen=True)
+class OverflowInfo:
+    """Facts from a context-overflow error. ``prompt`` is the exact prompt size
+    when the server reported it; ``prompt_min`` is a lower bound when it did not
+    (recent vLLM, e.g. 0.30, stops tokenizing at ``limit - requested + 1``)."""
+
+    limit: int | None = None
+    prompt: int | None = None
+    prompt_min: int | None = None
+    requested: int | None = None
+
+
+def overflow_info(message: str, err: dict[str, Any] | None = None) -> OverflowInfo:
+    """:class:`OverflowInfo` from a context-overflow error (vLLM, SGLang or
+    llama.cpp wording); unknown parts are None."""
+    err = err or {}
+    message = message or ""
+    limit = _int(err.get("n_ctx")) or _first_int(_LIMIT_RES, message)
+    requested = _first_int(_REQUEST_RES, message)
+    exact = _int(err.get("n_prompt_tokens"))
+    if exact is not None:
+        return OverflowInfo(limit, exact, exact, requested)
+    lower = _first_int(_PROMPT_MIN_RES, message)
+    if lower is not None:
+        return OverflowInfo(limit, None, lower, requested)
+    chars = _PROMPT_CHARS_RE.search(message)
+    if chars:
+        return OverflowInfo(limit, None, int(chars.group(2)) + 1, requested)
+    prompt = _first_int(_PROMPT_RES, message)
+    return OverflowInfo(limit, prompt, prompt, requested)
+
+
 def parse_overflow(message: str, err: dict[str, Any] | None = None) -> tuple[int | None, int | None, int | None]:
     """``(limit, prompt_tokens, requested_output)`` from a context-overflow error
-    (vLLM, SGLang or llama.cpp wording); unknown parts are None."""
-    err = err or {}
-    limit = _int(err.get("n_ctx")) or _first_int(_LIMIT_RES, message)
-    prompt = _int(err.get("n_prompt_tokens")) or _first_int(_PROMPT_RES, message)
-    requested = _first_int(_REQUEST_RES, message)
-    return limit, prompt, requested
+    (vLLM, SGLang or llama.cpp wording); unknown parts are None. ``prompt_tokens``
+    is None when the server reported only a lower bound (see :func:`overflow_info`)."""
+    info = overflow_info(message, err)
+    return info.limit, info.prompt, info.requested
 
 
 def is_overflow_message(message: str, etype: str | None = None) -> bool:
@@ -395,10 +433,11 @@ def extract_text_tool_calls(text: str, tools: list[ToolSpec] | None = None,
 class _Overflow(Exception):
     """Internal: the server rejected the request as too long for its context."""
 
-    def __init__(self, message: str, limit: int | None = None, prompt: int | None = None,
-                 requested: int | None = None) -> None:
+    def __init__(self, message: str, info: OverflowInfo | None = None) -> None:
         super().__init__(message)
-        self.limit, self.prompt, self.requested = limit, prompt, requested
+        info = info or OverflowInfo()
+        self.limit, self.prompt, self.prompt_min, self.requested = (info.limit, info.prompt, info.prompt_min,
+                                                                    info.requested)
 
 
 class _EffortRejected(Exception):
@@ -916,6 +955,38 @@ class OpenAICompatProvider(LLMProvider):
         t = httpx.Timeout(timeout or self.timeout_s, connect=min(self.timeout_s, timeout or self.timeout_s))
         return await self._client().get(url, headers=self._headers(), timeout=t)
 
+    async def _count_prompt_tokens(self, api: str, headers: dict[str, str], body: dict[str, Any]) -> int | None:
+        """Exact prompt size of a chat request via the server's ``POST /tokenize``
+        (vLLM; same messages, tools and chat-template kwargs), or None when the
+        server has no such endpoint. Used when an overflow error carries only a
+        lower bound."""
+        kwargs = dict(body.get("chat_template_kwargs") or {})
+        effort = body.get("reasoning_effort")
+        if effort is not None:  # what vLLM itself passes to the template for top-level reasoning_effort
+            kwargs.setdefault("enable_thinking", effort != "none")
+            if effort != "none":
+                kwargs.setdefault("reasoning_effort", effort)
+        req: dict[str, Any] = {"model": body.get("model"), "messages": body.get("messages") or [],
+                               "add_generation_prompt": True}
+        if body.get("tools"):
+            req["tools"] = body["tools"]
+        if kwargs:
+            req["chat_template_kwargs"] = kwargs
+        try:
+            r = await self._client().post(self._root_of(api) + "/tokenize", json=req, headers=headers,
+                                          timeout=httpx.Timeout(60.0, connect=self.timeout_s))
+        except httpx.HTTPError:
+            return None
+        if r.status_code >= 400:
+            return None
+        d = _safe_json(r.content)
+        if not isinstance(d, dict):
+            return None
+        n = _int(d.get("count"))
+        if n is None and isinstance(d.get("tokens"), list):
+            n = len(d["tokens"])
+        return n if n and n > 0 else None
+
     # ------------------------------------------------------------------ discovery
 
     def _root_of(self, api: str) -> str:
@@ -943,7 +1014,10 @@ class OpenAICompatProvider(LLMProvider):
         models = [d for d in (data or []) if isinstance(d, dict) and d.get("id")]
         for d in models:
             mid = str(d["id"])
-            mlen = _int(d.get("max_model_len") or d.get("context_length") or d.get("max_context_length"))
+            meta = d.get("meta") if isinstance(d.get("meta"), dict) else {}
+            # vLLM: max_model_len; llama.cpp: meta.n_ctx (the per-slot window, not n_ctx_train)
+            mlen = _int(d.get("max_model_len") or d.get("context_length") or d.get("max_context_length")
+                        or meta.get("n_ctx"))
             if mlen:
                 self._max_len[mid] = mlen
             if d.get("root"):
@@ -1014,7 +1088,8 @@ class OpenAICompatProvider(LLMProvider):
         out: list[dict[str, Any]] = []
         for api in self.api_bases:
             for d in await self._discover(api, raise_errors=True):
-                out.append({"id": d.get("id"), "root": d.get("root"), "max_model_len": d.get("max_model_len"),
+                out.append({"id": d.get("id"), "root": d.get("root"),
+                            "max_model_len": self._max_len.get(str(d.get("id"))) or d.get("max_model_len"),
                             "owned_by": d.get("owned_by"), "base_url": api})
         return out
 
@@ -1074,8 +1149,7 @@ class OpenAICompatProvider(LLMProvider):
             return RetryableProviderError(f"{where} returned HTTP {status} ({etype or 'transient'}): {msg}",
                                           retry_after=_retry_after(headers), status=status)
         if status == 413 or is_overflow_message(msg, etype):
-            limit, prompt, requested = parse_overflow(msg, err)
-            return _Overflow(f"HTTP {status}: {msg}", limit, prompt, requested)
+            return _Overflow(f"HTTP {status}: {msg}", overflow_info(msg, err))
         if status == 404:
             ids: list[str] = []
             with contextlib.suppress(Exception):
@@ -1089,6 +1163,10 @@ class OpenAICompatProvider(LLMProvider):
         if status in (401, 403):
             return ProviderError(f"{where} refused the request (HTTP {status}: {msg}); set provider.options.api_key "
                                  "or VBT_LLM_API_KEY to the server's --api-key")
+        if status == 400 and "data_parallel_rank" in msg:
+            return ProviderError(f"{where} rejected the X-data-parallel-rank header (HTTP 400: {msg}); "
+                                 f"provider.options.data_parallel_size ({self.data_parallel_size}) must equal the "
+                                 "server's --data-parallel-size")
         if status in (400, 422) and "reasoning_effort" in msg and not _TEMPLATE_BUG_RE.search(msg):
             return _EffortRejected(f"{where} rejected the request (HTTP {status}): {msg}")
         if _TEMPLATE_BUG_RE.search(msg):
@@ -1099,8 +1177,7 @@ class OpenAICompatProvider(LLMProvider):
     def _stream_error(self, chunk: Any) -> Exception:
         msg, etype, code, err = _error_info(chunk)
         if is_overflow_message(msg, etype):
-            limit, prompt, requested = parse_overflow(msg, err)
-            return _Overflow(f"error event: {msg}", limit, prompt, requested)
+            return _Overflow(f"error event: {msg}", overflow_info(msg, err))
         if code is not None and 400 <= code < 500 and code not in RETRYABLE_STATUS:
             if _TEMPLATE_BUG_RE.search(msg):
                 return ProviderError(f"{self.name}: the chat template rejected the request ({msg}); this is a "
@@ -1254,14 +1331,22 @@ class OpenAICompatProvider(LLMProvider):
                         tools: list[ToolSpec], reverse: dict[str, str]) -> ModelResponse:
         text = "".join(st.text)
         reasoning = "".join(st.reasoning)
-        if not reasoning and "</think>" in text:
+        kwargs = body.get("chat_template_kwargs") or {}
+        thinking_off = (body.get("reasoning_effort") == "none" or kwargs.get("enable_thinking") is False
+                        or kwargs.get("thinking") is False)
+        # When the request switched thinking off, the template already closed an empty think block, so a
+        # stray </think> in the answer is model noise (seen with a 0.8B model on llama.cpp), not reasoning.
+        if not reasoning and "</think>" in text and (not thinking_off or text.lstrip().startswith("<think>")):
             _warn_once(f"think:{self.name}", "%s returned <think> reasoning inside the content; start the server with "
                        "a reasoning parser (vLLM: --reasoning-parser qwen3)", self.name)
             head, _, tail = text.partition("</think>")
             reasoning, text = head.replace("<think>", "", 1), tail
         seen: set[str] = set()
         calls = [c for c in (self._decode_call(s, reverse, seen) for _, s in sorted(st.slots.items())) if c]
-        if not calls and tools and ("<tool_call>" in text or "<function=" in text):
+        # tool_choice 'none' forbids calls: llama.cpp then returns the model's attempted call as plain
+        # text, which must stay text rather than become a call the caller did not allow.
+        if (not calls and tools and body.get("tool_choice") != "none"
+                and ("<tool_call>" in text or "<function=" in text)):
             extracted, rest = extract_text_tool_calls(text, tools, reverse)
             if extracted:
                 _warn_once(f"textcalls:{self.name}", "%s returned tool calls inside the text; start vLLM with "
@@ -1410,6 +1495,7 @@ class OpenAICompatProvider(LLMProvider):
         api, headers = self._route(settings.extra or {})
         reverse = self._reverse_aliases(tools, messages, fam)
         retried = False
+        known_prompt: tuple[int, str] | None = None
         async with self._limiter():
             while True:
                 try:
@@ -1427,16 +1513,36 @@ class OpenAICompatProvider(LLMProvider):
                 except _Overflow as ov:
                     if ov.limit:
                         self._learned_window = ov.limit
-                    room = (ov.limit - ov.prompt) if (ov.limit and ov.prompt is not None) else None
+                    if ov.prompt is not None:
+                        prompt, how = ov.prompt, ""
+                    elif known_prompt is not None:
+                        prompt, how = known_prompt
+                    elif ov.limit and not retried:
+                        # vLLM (0.30) reports only a lower bound: count the prompt exactly via
+                        # /tokenize, else estimate it (never below the server's bound).
+                        counted = await self._count_prompt_tokens(api, headers, body)
+                        if counted is not None:
+                            prompt, how = counted, "counted via /tokenize"
+                        else:
+                            prompt, how = max(ov.prompt_min or 0, estimate_prompt_tokens(body)), "estimated"
+                        known_prompt = (prompt, how)
+                    else:
+                        prompt, how = None, ""
+                    room = (ov.limit - prompt) if (ov.limit and prompt is not None) else None
                     if not retried and room is not None and room >= OVERFLOW_MIN_ROOM:
                         new_max = room - OVERFLOW_RETRY_MARGIN
                         if new_max < int(body.get("max_tokens") or 0):
-                            log.info("%s: request overflowed the %d-token window (prompt %d); retrying with "
-                                     "max_tokens=%d", self.name, ov.limit, ov.prompt, new_max)
+                            log.info("%s: request overflowed the %d-token window (prompt %d%s); retrying with "
+                                     "max_tokens=%d", self.name, ov.limit, prompt, f", {how}" if how else "",
+                                     new_max)
                             body = self._request(settings, system, messages, tools, max_tokens=new_max)
                             retried = True
                             continue
-                    parts = [f"limit {ov.limit}" if ov.limit else "", f"prompt {ov.prompt}" if ov.prompt else ""]
+                    parts = [f"limit {ov.limit}" if ov.limit else ""]
+                    if prompt is not None:
+                        parts.append(f"prompt {prompt}{' ' + how if how else ''}")
+                    elif ov.prompt_min:
+                        parts.append(f"prompt >= {ov.prompt_min}")
                     facts = ", ".join(p for p in parts if p)
                     raise ContextOverflowError(f"{self.name}: request does not fit the model's context window"
                                                f"{' (' + facts + ')' if facts else ''}: {ov}") from None
@@ -1459,6 +1565,7 @@ def create(registered_name: str = "vllm", /, **options: Any) -> OpenAICompatProv
 
 
 __all__ = [
-    "FAMILIES", "LOCAL_EXTRA_KEYS", "OpenAICompatProvider", "PROVIDER_NAMES", "create", "estimate_prompt_tokens",
-    "extract_text_tool_calls", "is_overflow_message", "parse_overflow", "stable_hash", "tool_alias",
+    "FAMILIES", "LOCAL_EXTRA_KEYS", "OpenAICompatProvider", "OverflowInfo", "PROVIDER_NAMES", "create",
+    "estimate_prompt_tokens", "extract_text_tool_calls", "is_overflow_message", "overflow_info", "parse_overflow",
+    "stable_hash", "tool_alias",
 ]
