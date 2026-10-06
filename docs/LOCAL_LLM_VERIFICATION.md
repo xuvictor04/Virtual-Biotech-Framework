@@ -33,6 +33,14 @@ Date: 2026-10-06. Live probes: `tests/test_live_local.py` (skipped unless
   passed vLLM's request validation.
 - **Second engine**: llama.cpp `llama-server` (built from source) with a Q8_0
   GGUF of the same model; see "llama.cpp".
+- **Harness version**: the live runs used the harness from before the L2
+  integration. L2 made the local provider the default and added several runtime
+  behaviours: forced final `submit_result`, `tool_choice: "none"` on no-tool
+  final calls, argument checks before tools run, the empty-reply nudge, a
+  `session_key` per invocation and token budgets. These have offline tests
+  (`tests/test_local_integration.py`) but have not been run against a live
+  server. The adapter-level probes above (named `tool_choice`, `strict`, `none`,
+  `X-data-parallel-rank`) cover the requests those behaviours send.
 - **Bugs found and fixed** (adapter, with offline regression tests in
   `tests/test_openai_compat.py`):
   1. Context-overflow recovery read vLLM's prompt-size *lower bound* as the
@@ -238,14 +246,20 @@ oversized requests.
    did not affect it; a `generic` family on such a model would.
 2. **`tool_choice: "none"` can yield an empty turn.** With tools present and
    `tool_choice: "none"`, the model still wrote a tool call (26 tokens) and vLLM
-   0.30 returned `content: null` with `finish_reason: stop`. The harness only
-   uses `auto` and forced named choices; the runtime's empty-turn nudge covers
-   the rest.
-3. **Unknown Anthropic options**: running `--profile local-h100` on today's
-   (still Anthropic) `configs/default.yaml` logs `OpenAICompatProvider: ignoring
+   0.30 returned `content: null` with `finish_reason: stop`. Since L2 the
+   runtime sends `tool_choice: "none"` on calls where no tool may run (turn
+   limit, budget grace, tools disabled for a clarification call). An empty
+   reply there ends the agent with the harness's placeholder text ("Turn limit
+   reached before a final report was written."), the same outcome as an
+   unexecuted call before; on llama.cpp the attempted call stays in the report
+   as text (row "tool_choice none" below). Ordinary calls use `auto`, and the
+   bulk final call uses a forced named choice. This was not re-probed live
+   after L2.
+3. **Unknown Anthropic options**: running `--profile local-h100` on the then
+   (still Anthropic) `configs/default.yaml` logged `OpenAICompatProvider: ignoring
    unknown provider options ['max_retries', 'prompt_caching',
-   'refusal_fallback', 'web_search_model']` (profile deep-merge; harmless, goes
-   away when the default config switches to the local provider).
+   'refusal_fallback', 'web_search_model']` (profile deep-merge; harmless). L2
+   made the local provider the default, and the warning no longer appears.
 4. vLLM 0.30 also reports `prompt_tokens_details.created_cache_tokens` and
    `completion_tokens_details.reasoning_tokens`; the adapter does not need them
    (cache writes are free locally; reasoning is counted in output tokens).
