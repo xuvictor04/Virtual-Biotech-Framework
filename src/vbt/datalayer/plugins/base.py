@@ -18,7 +18,7 @@ import copy
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Iterator, Literal, Mapping, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, Iterator, Literal, Mapping, Protocol, Self, Sequence
 
 from ..predicate import Predicate, RankKey
 
@@ -188,7 +188,8 @@ class Candidate:
     extra: Mapping[str, Any] = field(default_factory=dict)   # disambiguate_with values
 
 
-ResolutionStatus = Literal["resolved", "ambiguous", "not_found", "rejected", "unknown"]
+# resolved_unverified: existence ``bound`` and the key is absent from the universe index (§11.5).
+ResolutionStatus = Literal["resolved", "resolved_unverified", "ambiguous", "not_found", "rejected", "unknown"]
 
 
 @dataclass(frozen=True)
@@ -457,7 +458,7 @@ class IdentifierBase(PluginBase):
     def __init__(self) -> None:
         self.options: dict[str, Any] = {}
 
-    def configure(self, options: Mapping[str, Any], universe_sample: Sequence[str] | None) -> "IdentifierBase":
+    def configure(self, options: Mapping[str, Any], universe_sample: Sequence[str] | None) -> Self:
         other = copy.copy(self)
         other.options = dict(options or {})
         return other

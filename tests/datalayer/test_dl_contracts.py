@@ -267,7 +267,8 @@ def test_record_fields_and_summary():
     assert "evidence_nature" in d and "retrieved_at" in d
     s = rec.summary()
     assert set(s) == {"prov", "status", "coverage", "coverage_statement", "source", "tables", "returned", "total",
-                      "truncated", "row_keys_sha256", "served_by", "evidence_nature", "leakage_risk"}
+                      "truncated", "row_keys_sha256", "served_by", "evidence_nature", "leakage_risk",
+                      "order_verified", "evidence_caveat"}
     assert s["source"] == "open_targets@25.09" and s["tables"] == [{"name": "known_drug", "fingerprint": "fp1:x"}]
     assert json.loads(rec.to_json())["id"] == rec.id
 

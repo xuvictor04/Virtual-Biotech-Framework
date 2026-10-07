@@ -30,6 +30,7 @@ ROOT_CONFTEST = Path(__file__).resolve().parents[1] / "conftest.py"
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "correctness: the six correctness tests of docs/DATA_LAYER.md section 19")
+    config.addinivalue_line("markers", "slow: long-running data-layer conformance variants (VBT_DL_SLOW=1)")
     config.addinivalue_line("markers", "needs_fastmcp: launches MCP servers (fastmcp and mcp installed)")
     # pytest imports this file as module ``conftest`` too, replacing tests/conftest.py in
     # sys.modules; the top-level tests ``from conftest import open_scripted_session``, so hand the

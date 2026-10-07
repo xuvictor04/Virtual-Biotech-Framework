@@ -200,6 +200,8 @@ class DataProvenance:
             "served_by": self.served_by,
             "evidence_nature": (self.evidence_nature or {}).get("kind") if self.evidence_nature else None,
             "leakage_risk": leakage_risk,
+            "order_verified": self.result.order.verified if self.result.order else None,
+            "evidence_caveat": (self.evidence_nature or {}).get("caveat") if self.evidence_nature else None,
         }
 
     def to_json(self) -> str:

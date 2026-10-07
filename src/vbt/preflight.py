@@ -255,7 +255,10 @@ def upstream_doctor(config: dict[str, Any]) -> Any | None:
     if path.is_file():
         before_path = list(sys.path)
         before_mods = set(sys.modules)
+        before_bytecode = sys.dont_write_bytecode
         sys.path.insert(0, key)
+        # Never write __pycache__ into the upstream checkout (it stays byte-identical).
+        sys.dont_write_bytecode = True
         try:
             spec = importlib.util.spec_from_file_location("vbt_upstream_doctor", path)
             mod = importlib.util.module_from_spec(spec)
@@ -268,6 +271,7 @@ def upstream_doctor(config: dict[str, Any]) -> Any | None:
             # The upstream module only needs these at import time; do not leave its
             # `src`/`tools` packages shadowing anything for the rest of the process.
             sys.path[:] = before_path
+            sys.dont_write_bytecode = before_bytecode
             for name in set(sys.modules) - before_mods:
                 if name.split(".")[0] in ("src", "tools"):
                     sys.modules.pop(name, None)

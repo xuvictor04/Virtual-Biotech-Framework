@@ -31,6 +31,7 @@ EVIDENCE_STATUS_LABELS = {
     "verified": "verified",
     "external": "external ref",
     "unresolved": "not on record",
+    "absence": "absence",
 }
 
 
