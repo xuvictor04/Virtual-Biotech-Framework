@@ -5,8 +5,9 @@ comes back with an **oracle** computed here, directly from the files with pyarro
 the code under test. Everything is generated (no network, no real data):
 
 * :func:`build_ot_fixture` writes an Open Targets 25.09 directory: real column names and nested
-  types (``large_string`` where the real files use it), the rows each correctness test pins,
-  empty-but-valid placeholder shards for every other directory of
+  types (``large_string`` where the real files use it), the rows each correctness test pins, a few
+  well-formed rows for the DepMap, genetics and interaction-evidence tables the readiness checks
+  bind, empty-but-valid placeholder shards for every other directory of
   ``OPEN_TARGETS_DATASETS`` and a ``.download-manifest.json`` in the upstream downloader's format.
 * :func:`build_tahoe_fixture` writes a prepared Tahoe directory (``tools/prepare_tahoe.py``
   layout): float32 ``concentration``, two plates for one dose, a trailing-space drug name.
@@ -360,6 +361,44 @@ SCHEMAS: dict[str, list[Any]] = {
         ("directionOnTrait", STR),
     ],
 }
+_SCREEN = pa.struct([("depmapId", STR), ("cellLineName", STR), ("diseaseFromSource", STR),
+                     ("diseaseCellLineId", STR), ("expression", F64), ("geneEffect", F64), ("mutation", STR)])
+_RESOURCES = pa.struct([("sourceDatabase", STR), ("databaseVersion", STR)])
+SCHEMAS.update({
+    "target_essentiality": [
+        ("id", STR),
+        ("geneEssentiality", pa.list_(pa.struct([
+            ("isEssential", BOOL),
+            ("depMapEssentiality", pa.list_(pa.struct([("tissueId", STR), ("tissueName", STR),
+                                                       ("screens", pa.list_(_SCREEN))])))]))),
+    ],
+    "credible_set": [
+        ("studyLocusId", STR), ("studyId", STR), ("variantId", STR), ("chromosome", STR), ("position", I32),
+        ("region", STR), ("beta", F64), ("zScore", F64), ("pValueMantissa", F32), ("pValueExponent", I32),
+        ("standardError", F64), ("finemappingMethod", STR), ("credibleSetIndex", I32), ("credibleSetlog10BF", F64),
+        ("purityMeanR2", F64), ("purityMinR2", F64), ("locusStart", I32), ("locusEnd", I32), ("sampleSize", I32),
+        ("locus", pa.list_(pa.struct([("is95CredibleSet", BOOL), ("is99CredibleSet", BOOL), ("logBF", F64),
+                                      ("posteriorProbability", F64), ("variantId", STR), ("pValueMantissa", F32),
+                                      ("pValueExponent", I32), ("beta", F64), ("standardError", F64),
+                                      ("r2Overall", F64)]))),
+        ("confidence", STR), ("studyType", STR), ("qualityControls", pa.list_(STR)),
+    ],
+    "variant": [
+        ("variantId", STR), ("chromosome", STR), ("position", I32), ("referenceAllele", STR),
+        ("alternateAllele", STR), ("mostSevereConsequenceId", STR), ("rsIds", pa.list_(STR)), ("hgvsId", STR),
+        ("variantDescription", STR),
+    ],
+    "interval": [
+        ("chromosome", STR), ("start", I64), ("end", I64), ("geneId", STR), ("biosampleName", STR),
+        ("intervalType", STR), ("distanceToTss", I64), ("score", F64), ("datasourceId", STR), ("datatypeId", STR),
+        ("pmid", STR), ("biosampleId", STR), ("studyId", STR), ("intervalId", STR),
+    ],
+    "interaction_evidence": [
+        ("interactionIdentifier", STR), ("interactionResources", _RESOURCES), ("interactionScore", F64),
+        ("intA", STR), ("intB", STR), ("targetA", STR), ("targetB", STR), ("pubmedId", STR),
+        ("intABiologicalRole", STR), ("intBBiologicalRole", STR), ("interactionDetectionMethodShortName", STR),
+    ],
+})
 SCHEMAS["association_by_datasource_indirect"] = SCHEMAS["association_by_datasource_direct"]
 SCHEMAS["association_by_datatype_indirect"] = SCHEMAS["association_by_datatype_direct"]
 SCHEMAS["association_by_overall_indirect"] = SCHEMAS["association_overall_direct"]
@@ -696,6 +735,38 @@ def _association_rows() -> dict[str, list[dict[str, Any]]]:
             "association_by_datasource_direct": by_ds, "association_by_datasource_indirect": by_ds_ind}
 
 
+def _genetics_rows() -> dict[str, list[dict[str, Any]]]:
+    """A few rows each for the DepMap, genetics and interaction-evidence tables no correctness test pins
+    (so readiness finds them well-formed rather than drifted placeholders)."""
+    screen = lambda effect: {"depmapId": A549, "cellLineName": "A549", "diseaseFromSource": "Lung Cancer",  # noqa: E731
+                             "diseaseCellLineId": "CVCL_0023", "expression": 1.5, "geneEffect": effect,
+                             "mutation": None}
+    essentiality = [
+        {"id": gene, "geneEssentiality": [{"isEssential": essential, "depMapEssentiality": [
+            {"tissueId": "UBERON_0002048", "tissueName": "lung", "screens": [screen(effect)]}]}]}
+        for gene, essential, effect in ((PCSK9, False, -0.1), (TP53, True, -1.2))]
+    variant = "1_55039974_G_T"
+    return {
+        "target_essentiality": essentiality,
+        "variant": [{"variantId": variant, "chromosome": "1", "position": 55039974, "referenceAllele": "G",
+                     "alternateAllele": "T", "mostSevereConsequenceId": "SO_0001583", "rsIds": ["rs11591147"],
+                     "variantDescription": "fixture missense variant in PCSK9"}],
+        "credible_set": [{"studyLocusId": "a1b2c3d4e5f60718293a4b5c6d7e8f90", "studyId": STUDY_BIG,
+                          "variantId": variant, "chromosome": "1", "position": 55039974, "beta": -0.5,
+                          "pValueMantissa": 1.5, "pValueExponent": -120, "finemappingMethod": "SuSie",
+                          "credibleSetIndex": 1, "credibleSetlog10BF": 110.0, "studyType": "gwas",
+                          "locus": [{"variantId": variant, "posteriorProbability": 0.99, "is95CredibleSet": True,
+                                     "is99CredibleSet": True}]}],
+        "interval": [{"chromosome": "1", "start": 55030000, "end": 55031000, "geneId": PCSK9, "biosampleName": "liver",
+                      "intervalType": "enhancer", "distanceToTss": 9366, "score": 0.8, "datasourceId": "e2g",
+                      "datatypeId": "interval", "biosampleId": "UBERON_0002107"}],
+        "interaction_evidence": [{"interactionIdentifier": "EBI-0000001", "intA": "P04637", "intB": "Q8NBP7",
+                                  "targetA": TP53, "targetB": PCSK9, "interactionScore": 0.4, "pubmedId": "15805190",
+                                  "interactionResources": {"sourceDatabase": "intact",
+                                                           "databaseVersion": "2025-06"}}],
+    }
+
+
 def ot_rows(*, safety_variant: str = "default", interaction_sources: Sequence[str] = ("intact",)
             ) -> dict[str, list[dict[str, Any]]]:
     """Every non-placeholder table of the OT fixture as rows (file order)."""
@@ -763,6 +834,7 @@ def ot_rows(*, safety_variant: str = "default", interaction_sources: Sequence[st
              "rna": {"value": 120.0, "zscore": 4, "level": 3, "unit": "TPM"}, "protein": None}]}],
     }
     rows.update(_association_rows())
+    rows.update(_genetics_rows())
     _close_references(rows)
     return rows
 

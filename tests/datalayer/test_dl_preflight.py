@@ -8,6 +8,7 @@ a positive sentinel control must come back populated and a negative control must
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -30,7 +31,8 @@ def _config(tmp_path: Path, ot: Path | None, tahoe: Path | None = None, *, serve
     env = env or DataEnv(ot_root=ot, tahoe_root=tahoe)
     cfg = harness_config(gateway=True, tmp_path=tmp_path, env=env,
                          overrides={"orchestration": {"require_reference_data": True}})
-    cfg["tool_env"] = {"OPEN_TARGETS_DATA_PATH": str(ot) if ot else "", "TAHOE_DATA_PATH": str(tahoe) if tahoe else ""}
+    cfg["tool_env"] = {"OPEN_TARGETS_DATA_PATH": str(ot) if ot else "", "TAHOE_DATA_PATH": str(tahoe) if tahoe else "",
+                       "VBT_ZENODO_DIR": os.environ.get("VBT_ZENODO_DIR", "")}
     if servers is not None:
         cfg["mcp_servers"] = {"servers": server_specs(cfg, servers, env.env())}
     return cfg
@@ -123,40 +125,11 @@ def test_missing_hive_partition_is_not_ready(baseline: dict[str, Any], ot_root: 
     assert set(degraded_tools(cfg, results)) == set(baseline["tools"])
 
 
-def _with_essentiality(root: Path) -> Path:
-    """Write a small DepMap ``target_essentiality`` table (the shared fixture has only a placeholder)."""
-    import shutil
-
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    import dl_fixtures as F
-
-    screen = pa.struct([("depmapId", pa.string()), ("cellLineName", pa.string()), ("diseaseFromSource", pa.string()),
-                        ("diseaseCellLineId", pa.string()), ("expression", pa.float64()),
-                        ("geneEffect", pa.float64()), ("mutation", pa.string())])
-    tissue = pa.struct([("tissueId", pa.string()), ("tissueName", pa.string()), ("screens", pa.list_(screen))])
-    essentiality = pa.struct([("isEssential", pa.bool_()), ("depMapEssentiality", pa.list_(tissue))])
-    schema = pa.schema([("id", pa.string()), ("geneEssentiality", pa.list_(essentiality))])
-    rows = [{"id": gene, "geneEssentiality": [{"isEssential": essential, "depMapEssentiality": [
-        {"tissueId": "UBERON_0002048", "tissueName": "lung", "screens": [
-            {"depmapId": F.A549, "cellLineName": "A549", "diseaseFromSource": "Lung Cancer",
-             "diseaseCellLineId": "CVCL_0023", "expression": 1.5, "geneEffect": effect, "mutation": None}]}]}]}
-        for gene, essential, effect in ((F.PCSK9, False, -0.1), (F.TP53, True, -1.2))]
-    shutil.rmtree(root / "target_essentiality", ignore_errors=True)
-    (root / "target_essentiality").mkdir()
-    pq.write_table(pa.Table.from_pylist(rows, schema=schema),
-                   root / "target_essentiality" / "part-00000-fixture-c000.snappy.parquet")
-    F.write_manifest(root)
-    return root
-
-
 def test_missing_tahoe_leaves_depmap_tools_ready(ot_root: Path, tahoe_root: Path,
                                                  tmp_path_factory: pytest.TempPathFactory) -> None:
     import dl_fixtures as F
 
-    ot = _with_essentiality(_copy(ot_root, tmp_path_factory, "pf-depmap"))
-    before_cfg = _config(tmp_path_factory.mktemp("pf-depmap-cfg"), ot, tahoe_root)
+    before_cfg = _config(tmp_path_factory.mktemp("pf-depmap-cfg"), ot_root, tahoe_root)
     before = degraded_tools(before_cfg, preflight.check_reference_data(before_cfg))
     _settings, catalog, _registry = preflight.data_catalog(before_cfg)
     depmap = {f"mcp__functional_genomics__{t}" for t in catalog.tools("functional_genomics")
@@ -166,7 +139,7 @@ def test_missing_tahoe_leaves_depmap_tools_ready(ot_root: Path, tahoe_root: Path
 
     tahoe = _copy(tahoe_root, tmp_path_factory, "pf-tahoe")
     (tahoe / F.TAHOE_DE).unlink()
-    cfg = _config(tmp_path_factory.mktemp("pf-tahoe-cfg"), ot, tahoe)
+    cfg = _config(tmp_path_factory.mktemp("pf-tahoe-cfg"), ot_root, tahoe)
     results = require_ready(cfg, provider=PROVIDER)
     tools = degraded_tools(cfg, results)
     new = set(tools) - set(before)
@@ -250,8 +223,10 @@ def test_smoke_fails_on_a_phantom_negative(tmp_path_factory: pytest.TempPathFact
     tmp = tmp_path_factory.mktemp("pf-smoke-phantom")
     results = _smoke(_config(tmp, root, servers=["target"]), tmp)
     controls = _controls(results)
-    assert controls["positive"].ok, [r.line() for r in results]
-    assert not controls["negative"].ok and "phantom" in controls["negative"].detail, [r.line() for r in results]
+    # the phantom row trips the table's R8 absent-sentinel check, so every control call is refused as
+    # not_ready and names it; the smoke never reports the phantom-serving table as healthy
+    assert not any(c.ok for c in controls.values()), [r.line() for r in results]
+    assert "absent sentinel {'id': 'ENSG00000000000'}" in controls["negative"].detail, [r.line() for r in results]
 
 
 def test_judge_control() -> None:

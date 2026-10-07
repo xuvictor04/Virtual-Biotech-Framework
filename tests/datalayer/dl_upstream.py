@@ -140,6 +140,9 @@ READ_TABLES = (
 )
 INDEXES = ("ensembl_gene", "ot_disease", "chembl_molecule")
 READY = {"ready", "ok", "awaiting_producer", "unbound"}
+# Sources whose tables the six cases read; a qualified name from any other source (zenodo_vbt.disease)
+# is a different table that happens to share a short name.
+READ_SOURCES = ("open_targets", "tahoe_100m")
 
 
 def readiness_problems(snapshot: Any, tables: Iterable[str] = READ_TABLES, indexes: Iterable[str] = INDEXES
@@ -148,12 +151,16 @@ def readiness_problems(snapshot: Any, tables: Iterable[str] = READ_TABLES, index
 
     The snapshot is walked structurally: any mapping with a ``status`` (or ``ready``) and a name
     (``table``, ``name``, ``id_type``, ``index`` or its key in the parent) counts as one entry.
+    Qualified names match only when their source is one of ``READ_SOURCES``.
     """
     wanted = set(tables) | set(indexes)
     out: list[str] = []
 
-    def short(name: str) -> str:
-        return name.rsplit(".", 1)[-1] if "." in name else name
+    def short(name: str) -> str | None:
+        if "." not in name:
+            return name
+        source, _, table = name.rpartition(".")
+        return table if source in READ_SOURCES else None
 
     def visit(node: Any, key: str | None) -> None:
         if isinstance(node, Mapping):
@@ -208,6 +215,8 @@ class DataEnv:
             out["TAHOE_DATA_PATH"] = str(self.tahoe_root)
         if self.output_dir is not None:
             out["MCP_OUTPUT_DIR"] = str(self.output_dir)
+        if os.environ.get("VBT_ZENODO_DIR"):
+            out["VBT_ZENODO_DIR"] = os.environ["VBT_ZENODO_DIR"]      # see conftest: never the host's extract
         if self.eutils_base:
             out["VBT_EUTILS_BASE"] = self.eutils_base
             local = "127.0.0.1,localhost"
@@ -244,7 +253,8 @@ def harness_config(*, gateway: bool, tmp_path: Path, env: DataEnv | Mapping[str,
         "paths": {"runs_dir": str(tmp_path / "runs")},
         "mcp_servers_file": "configs/mcp_servers.yaml",
         "vars": {"upstream": str(upstream_root())},
-        "tool_env": {k: data_env[k] for k in ("OPEN_TARGETS_DATA_PATH", "TAHOE_DATA_PATH") if k in data_env},
+        "tool_env": {k: data_env[k] for k in ("OPEN_TARGETS_DATA_PATH", "TAHOE_DATA_PATH", "VBT_ZENODO_DIR")
+                     if k in data_env},
     }
     base = _merge(base, data_overrides(gateway=gateway, tmp_path=tmp_path))
     return load_config(["mock"], overrides=_merge(base, overrides))

@@ -17,19 +17,11 @@ from vbt import cli
 pytestmark = needs_arrow
 
 TAHOE_TABLES = ("de_permissive", "drug_metadata", "cell_line_metadata", "gene_metadata")
-#: Tables whose ``_check`` raises in the data child (service/checks.py, reported as a contract request):
-#: R5 parses the composed item key ``hallmarks.cancerHallmarks[]#`` and aggregate_stats a ``moa-broad``
-#: column name with the path grammar. They are unchecked rather than ready until that is fixed.
-CHECK_DEFECTS = {
-    "open_targets.target": "R5 parses the positional item key 'hallmarks.cancerHallmarks[]#' (PathError)",
-    "tahoe_100m.drug_metadata": "aggregate_stats parses the column name 'moa-broad' as a path (PathError)",
-}
 
 
 def _cases() -> list[Any]:
     refs = [f"open_targets.{t}" for t in READ_TABLES] + [f"tahoe_100m.{t}" for t in TAHOE_TABLES]
-    return [pytest.param(ref, id=ref, marks=[pytest.mark.xfail(strict=True, reason=CHECK_DEFECTS[ref])]
-                         if ref in CHECK_DEFECTS else []) for ref in refs]
+    return [pytest.param(ref, id=ref) for ref in refs]
 
 
 @pytest.fixture(scope="module")

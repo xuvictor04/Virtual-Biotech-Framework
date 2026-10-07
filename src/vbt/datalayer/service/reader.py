@@ -69,7 +69,7 @@ from ..predicate import (
     is_null,
     kleene_and,
 )
-from ..roles import parse_path
+from ..roles import format_name, parse_path
 from ..rowkey import canonical, element_type, render_value
 from . import ServiceContext, ServiceError, layout_spec
 from . import items as _items
@@ -236,12 +236,12 @@ def logical_leaves(schema: Any) -> list[tuple[str, Any]]:
             rec(t.item_type, prefix + "[].value")
         elif pa.types.is_struct(t):
             for f in t:
-                rec(f.type, f"{prefix}.{f.name}")
+                rec(f.type, f"{prefix}.{format_name(f.name)}")
         else:
             out.append((prefix, t))
 
     for f in schema:
-        rec(f.type, f.name)
+        rec(f.type, format_name(f.name))
     return out
 
 
@@ -474,7 +474,11 @@ class TableReader:
     def physical_path(self, name: str) -> str:
         """A request path (bare item field, ``^.x``, ``/x`` or a full path) as a path of the physical table."""
         if not self.levels:
-            return name[1:] if name.startswith("/") else name
+            name = name[1:] if name.startswith("/") else name
+            # a descriptor column name need not be a §6.4 path ('moa-broad'): quote it as one segment
+            if name in self.spec.columns or name in self.spec.partitions:
+                return format_name(name)
+            return name
         tops = list(self.spec.columns) + list(self.spec.partitions)
         return _items.qualify_item_path(name, self.levels, self._level_fields(), tops)
 

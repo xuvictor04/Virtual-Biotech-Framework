@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,21 @@ def pytest_configure(config: pytest.Config) -> None:
         if getattr(plugin, "__file__", None) and Path(plugin.__file__).resolve() == ROOT_CONFTEST:
             sys.modules["conftest"] = plugin
             break
+
+
+_EMPTY_ZENODO = tempfile.mkdtemp(prefix="vbt-no-zenodo-")
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
+    """Run every data-layer test, and the servers its fixtures start, with an empty Zenodo directory.
+
+    ``zenodo_vbt`` defaults to ``<project>/data/zenodo``; a partial extract there would make each
+    readiness check scan it and leak host data into the fixtures. Tests outside this directory
+    (``test_replicate``, ``test_analysis_fidelity``) still see the real extract."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("VBT_ZENODO_DIR", _EMPTY_ZENODO)
+        yield
 
 
 # ---------------------------------------------------------------------------- data fixtures

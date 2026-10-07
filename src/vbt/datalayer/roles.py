@@ -31,7 +31,8 @@ from typing import Any
 __all__ = [
     "Role", "ROLE_FACETS", "COMMON_FACETS", "EXISTENCE_FACETS", "KEYABLE_ROLES", "CONTAINER_ROLES",
     "MISSING_KINDS", "facets_for", "ARROW_COMPAT", "type_family", "arrow_compatible",
-    "LIST", "ItemCond", "Segment", "Path", "PathError", "parse_path", "format_path", "AXES",
+    "LIST", "ItemCond", "Segment", "Path", "PathError", "parse_path", "format_path", "format_name",
+    "AXES",
 ]
 
 
@@ -413,11 +414,15 @@ def parse_path(text: str) -> Path:
 
 
 def _format_name(name: str) -> str:
+    """A column or field name as one §6.4 path segment (backtick-quoted unless it is an identifier)."""
     if name == "" or _NAME.fullmatch(name):
         return name
     if "`" in name:
         raise PathError(f"name cannot contain a backtick: {name!r}")
     return f"`{name}`"
+
+
+format_name = _format_name
 
 
 def _format_literal(value: Any) -> str:

@@ -24,6 +24,7 @@ __all__ = [
     "FlagCol", "TimeCol", "PositionCol", "HierarchyCol", "MemberCol", "EndpointCol", "VectorCol", "TextCol",
     "ReferenceCol", "NestedCol", "PayloadCol", "IgnoreCol", "ColumnSpec", "ROLE_MODELS", "validate_column",
     "facet_names", "is_container", "container_fields", "item_key_of", "DEFAULT_POOLING",
+    "DEFAULT_STATISTIC",
 ]
 
 
@@ -338,9 +339,13 @@ class QualifierCol(_Common):
     default_filter: bool = False
 
 
+#: The statistic of a measure column that names none.
+DEFAULT_STATISTIC = "numeric"
+
+
 class MeasureCol(_Common):
     role: Literal["measure"]
-    statistic: str = "numeric"
+    statistic: str = DEFAULT_STATISTIC
     fallback: str | None = None                        # a phase-1 statistic used until the named one is registered
     scale: list[float] | None = None
     unit: str | None = None

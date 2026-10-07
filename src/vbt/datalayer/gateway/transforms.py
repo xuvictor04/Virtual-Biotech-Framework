@@ -25,6 +25,7 @@ import statistics as _stats
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from ..descriptor.columns import DEFAULT_STATISTIC
 from ..errors import json_value
 from ..predicate import (
     Any as AnyItem,
@@ -425,10 +426,10 @@ def rank_keys(order: Sequence[Any], table: Any, registry: Any) -> list[tuple[Ran
         stat = get("statistic") or getattr(spec, "statistic", None)
         measure = getattr(spec, "role", None) in ("measure", "count") or spec is None
         if stat is None and measure:
-            stat = "numeric"
+            stat = DEFAULT_STATISTIC
         plugin = registry.find("statistic", stat) if registry is not None and stat else None
         if plugin is None and registry is not None and measure:
-            plugin = registry.find("statistic", getattr(spec, "fallback", None) or "numeric")
+            plugin = registry.find("statistic", getattr(spec, "fallback", None) or DEFAULT_STATISTIC)
         rk = RankKey(column=str(col), direction=get("direction") or "desc", nulls=get("nulls") or "last",
                      statistic=stat, within=tuple(get("within") or ()))
         out.append((rk, plugin, spec))

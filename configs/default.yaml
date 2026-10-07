@@ -353,3 +353,4 @@ web_ui:
 tool_env:
   OPEN_TARGETS_DATA_PATH: ${OPEN_TARGETS_DATA_PATH:-}
   TAHOE_DATA_PATH: ${TAHOE_DATA_PATH:-}
+  VBT_ZENODO_DIR: ${VBT_ZENODO_DIR:-}   # the zenodo_vbt descriptor root (default <project>/data/zenodo)

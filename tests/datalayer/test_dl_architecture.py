@@ -69,9 +69,6 @@ ALLOWED: dict[str, dict[str, str]] = {
                         "descriptor/overlay.py")},
     "numeric": {
         "descriptor/columns.py": "the default `statistic` of a measure column, part of the descriptor schema (§7)",
-        "gateway/contracts.py": "falls back to the descriptor schema's default statistic (contract request: read "
-                                "the MeasureCol default instead of repeating it)",
-        "gateway/transforms.py": "same fallback as gateway/contracts.py",
     },
     "obs": {"gateway/files.py": "the AnnData obs axis of an .h5ad header", "descriptor/models.py": "the matrix obs axis"},
     "var": {"gateway/files.py": "the AnnData var axis of an .h5ad header", "descriptor/models.py": "the matrix var axis"},

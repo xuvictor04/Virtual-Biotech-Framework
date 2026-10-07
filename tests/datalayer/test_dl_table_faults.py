@@ -12,6 +12,7 @@ can be filled from the descriptors' sentinels is called; each call must fail.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +35,8 @@ SAMPLE = {"ensembl_gene": "ENSG00000169174", "hgnc_symbol": "PCSK9", "ot_disease
 
 def _config(tmp_path: Path, ot: Path, tahoe: Path) -> dict[str, Any]:
     cfg = harness_config(gateway=True, tmp_path=tmp_path, env=DataEnv(ot_root=ot, tahoe_root=tahoe))
-    cfg["tool_env"] = {"OPEN_TARGETS_DATA_PATH": str(ot), "TAHOE_DATA_PATH": str(tahoe)}
+    cfg["tool_env"] = {"OPEN_TARGETS_DATA_PATH": str(ot), "TAHOE_DATA_PATH": str(tahoe),
+                       "VBT_ZENODO_DIR": os.environ.get("VBT_ZENODO_DIR", "")}
     cfg["mcp_servers"]["servers"] = [s for s in cfg["mcp_servers"]["servers"] if s["name"] in OT_SERVERS]
     return cfg
 

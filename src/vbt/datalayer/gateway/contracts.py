@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from ..descriptor.columns import DEFAULT_STATISTIC
 from ..errors import (
     ErrorKind,
     GatewayError,
@@ -783,8 +784,8 @@ def arg_predicate(contract: Any, name: str, binding: Any, value: Any, *, selecte
         spec = column_spec(contract, table, column)
         p: Predicate | None = None
         if binding.op in THRESHOLD_OPS and _role(spec) == "measure" and registry is not None:
-            plugin = registry.find("statistic", getattr(spec, "statistic", "numeric")) or \
-                registry.find("statistic", getattr(spec, "fallback", None) or "numeric")
+            plugin = registry.find("statistic", getattr(spec, "statistic", DEFAULT_STATISTIC)) or \
+                registry.find("statistic", getattr(spec, "fallback", None) or DEFAULT_STATISTIC)
             if plugin is not None:
                 try:
                     p = plugin.predicate(column, binding.op, value, spec, (confirmed or {}).get(column),
@@ -834,7 +835,7 @@ def _compile_flag(contract: Any, name: str, binding: Any, pred: Predicate, *, se
     spec = column_spec(contract, table, column) if column else None
     if _role(spec) != "measure":
         return pred
-    plugin = registry.find("statistic", getattr(spec, "statistic", None) or "numeric")
+    plugin = registry.find("statistic", getattr(spec, "statistic", None) or DEFAULT_STATISTIC)
     if plugin is None:
         return pred
     op, value = ("in", list(pred.values)) if isinstance(pred, In) else ("eq", pred.value)

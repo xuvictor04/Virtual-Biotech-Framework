@@ -590,7 +590,8 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
     if not key or method == "none":
         model.detail = "no key check declared"
         return model
-    flat = [k for k in key if not parse_path(k).crosses_list and not k.endswith("#")]
+    # positional item keys ('col[]#') are not §6.4 paths: test the suffix before parsing
+    flat = [k for k in key if not k.endswith("#") and not parse_path(k).crosses_list]
     nulls: dict[str, int] = {k: 0 for k in key if k not in nullable}
     # R5: footer null counts for flat parts; nested parts are counted from the scanned values below
     if not t.is_item_table:
