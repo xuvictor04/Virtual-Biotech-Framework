@@ -213,26 +213,65 @@ tools:
       tahoe_100m.drug_metadata: {access: full_table}
       tahoe_100m.cell_line_metadata: {access: full_table, when: {cell_line_id: {present: true}}}
     args:
-      drug_a:       {binds: tahoe_100m.de_permissive.drug, accepts: [tahoe_drug], send_as: stored}
-      drug_b:       {binds: tahoe_100m.de_permissive.drug, accepts: [tahoe_drug], send_as: stored}
-      cell_line_id: {binds: tahoe_100m.de_permissive.Cell_ID_DepMap, accepts: [depmap_cell_line]}
-    result: {kind: record, rows: $}
-    serve: block
-    block:
-      reason: "Merges the two drugs' contrasts on gene_name only (a cartesian product over doses, lines and plates) and compares padj across families. A paired comparison verb arrives in phase 3."
-      alternatives: [functional_genomics.query_drug_perturbation]
-      until_phase: 3
+      drug_a:         {binds: tahoe_100m.de_permissive.drug, accepts: [tahoe_drug], send_as: stored}
+      drug_b:         {binds: tahoe_100m.de_permissive.drug, accepts: [tahoe_drug], send_as: stored}
+      cell_line_id:   {binds: tahoe_100m.de_permissive.Cell_ID_DepMap, accepts: [depmap_cell_line]}
+      min_abs_log2fc: {role: family_param, min: 0}                 # upstream's strict |log2FC| > min
+      max_padj:       {role: family_param, min: 0, max: 0.10}      # the stored rows end at padj < 0.10
+    witness: false                                 # a paired comparison, not rows matching the arguments
+    result:
+      kind: record
+      rows: $
+      row_key: [Cell_ID_DepMap, concentration, concentration_unit, gene_name, plate_a, plate_b]
+    serve: derived
+    derived:
+      verb: find
+      table: tahoe_100m.de_permissive
+      # pairs rows of the two drugs within one cell line x concentration context (plates reported per pair);
+      # a combination never profiled is not_found (combination_not_profiled) with the profiled values
+      split: {pairs: {mode: compare}}
+      sections:
+        drug_a_info:    {path: $.drug_a_info, table: tahoe_100m.drug_metadata, verb: lookup, single: true, key_from_args: {drug: drug_a}}
+        drug_b_info:    {path: $.drug_b_info, table: tahoe_100m.drug_metadata, verb: lookup, single: true, key_from_args: {drug: drug_b}}
+        cell_line_info: {path: $.cell_line_info, table: tahoe_100m.cell_line_metadata, verb: lookup, key_from_args: {Cell_ID_DepMap: cell_line_id}}
+    text:
+      drop_promises: [similarity_score]
+      notes:
+        - "Genes are paired only within one cell line and concentration (plates listed per pair); signature_correlation is null when fewer than three genes pair. A gene absent for one drug is not significant there (padj >= 0.10 or NA), not unaffected."
+    defects:
+      - {id: TAHOE-005, what: "merges the two drugs' contrasts on gene_name only: a cartesian product over doses, lines and plates",
+         where: "functional_genomics_mcp/tools.py:1114-1118", effect: silent_wrong}
 
   find_cell_line_selective_effects:
     reads: {tahoe_100m.de_permissive: {access: bounded_scan}, tahoe_100m.drug_metadata: {access: full_table},
             tahoe_100m.cell_line_metadata: {access: full_table}}
     args:
-      drug_name:            {binds: tahoe_100m.de_permissive.drug, accepts: [tahoe_drug], send_as: stored}
+      drug_name:             {binds: tahoe_100m.de_permissive.drug, accepts: [tahoe_drug], send_as: stored}
       cell_line_of_interest: {binds: tahoe_100m.de_permissive.Cell_ID_DepMap, accepts: [depmap_cell_line]}
       comparison_cell_lines: {binds: tahoe_100m.de_permissive.Cell_ID_DepMap, op: in, each: true, accepts: [depmap_cell_line]}
-    result: {rows: $.selective_genes}
-    serve: block
-    block:
-      reason: "Selectivity ratios over padj-censored data treat a missing (not significant or not profiled) contrast as 0 and pool doses; a censored comparison verb arrives in phase 3."
-      alternatives: [functional_genomics.query_drug_perturbation]
-      until_phase: 3
+      min_abs_log2fc:        {role: family_param, min: 0}
+      max_padj:              {role: family_param, min: 0, max: 0.10}
+      selectivity_threshold: {role: family_param, min: 0}
+      top_n:                 {role: limit, min: 1, max: 1000}
+    witness: false
+    result:
+      rows: $.selective_genes
+      row_key: [gene_name, concentration, concentration_unit, plate]
+      count_fields: {"$.num_selective": "len($.selective_genes)"}
+    serve: derived
+    derived:
+      verb: find
+      table: tahoe_100m.de_permissive
+      # every line tested with the drug at the target's concentration is compared; a gene absent from a tested
+      # line is censored (not significant), never dropped (upstream's NaN merge lost the most selective genes)
+      split: {pairs: {mode: selectivity}}
+      envelope: {num_selective: null}
+      sections:
+        drug_info:                  {path: $.drug_info, table: tahoe_100m.drug_metadata, verb: lookup, single: true, key_from_args: {drug: drug_name}}
+        cell_line_of_interest_info: {path: $.cell_line_of_interest_info, table: tahoe_100m.cell_line_metadata, verb: lookup, key_from_args: {Cell_ID_DepMap: cell_line_of_interest}}
+    text:
+      notes:
+        - "Each concentration is compared separately against every line tested with the drug at that concentration; exclusive genes are significant in the target line only (their selectivity ratio is undefined, not infinite)."
+    defects:
+      - {id: TAHOE-006, what: "a gene missing from the comparison lines gets a NaN mean and is dropped, so the most selective genes vanish; doses are pooled",
+         where: "functional_genomics_mcp/tools.py:1283-1304", effect: silent_wrong}
