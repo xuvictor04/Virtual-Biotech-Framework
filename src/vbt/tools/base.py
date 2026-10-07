@@ -378,25 +378,43 @@ def _shrink(obj: Any, jp: str, level: tuple[int, int, int], depth: int, spill: s
     return obj
 
 
+#: The data layer's result header (``vbt.datalayer.result.HEADER_KEY``): the top-level
+#: value under this key is never shortened, so a truncated result still states its
+#: status, counts, coverage and provenance id.
+DATA_HEADER_KEY = "_vbt"
+
+
+def _shrink_top(obj: Any, root: str, level: tuple[int, int, int], spill: str | None) -> Any:
+    """``_shrink`` of ``obj`` with a top-level ``_vbt`` header kept verbatim."""
+    if isinstance(obj, dict) and DATA_HEADER_KEY in obj:
+        return {k: (v if k == DATA_HEADER_KEY else _shrink(v, path_key(root, k), level, 1, spill))
+                for k, v in obj.items()}
+    return _shrink(obj, root, level, 0, spill)
+
+
 def shrink_json(obj: Any, limit: int, *, spill_path: str | None = None, root: str = "$") -> str:
     """Render ``obj`` as JSON text of at most ``limit`` chars where possible.
 
     Every top-level key is kept; long arrays and strings are progressively
     shortened (and deep containers collapsed) with markers such as
     ``...(180 more items; QueryToolOutput path=<p> json_path=$.key[20:40])``.
-    ``root`` is the JSON path of ``obj`` inside the spilled file.
+    The value of a top-level ``_vbt`` key (the data-layer header) is never
+    shortened. ``root`` is the JSON path of ``obj`` inside the spilled file.
     """
     full = _dump(obj)
     if len(full) <= limit:
         return full
     for level in _SHRINK_LEVELS:
-        text = _dump(_shrink(obj, root, level, 0, spill_path))
+        text = _dump(_shrink_top(obj, root, level, spill_path))
         if len(text) <= limit:
             return text
     # Too many top-level entries: keep the keys, summarise every value.
     if isinstance(obj, dict):
-        summary = {}
+        header = {DATA_HEADER_KEY: obj[DATA_HEADER_KEY]} if DATA_HEADER_KEY in obj else {}
+        summary = dict(header)
         for k, v in obj.items():
+            if k in header:
+                continue
             kind = ("object" if isinstance(v, dict) else "array" if isinstance(v, list) else type(v).__name__)
             size = len(v) if isinstance(v, (dict, list, str)) else None
             summary[k] = _marker(spill_path, path_key(root, k), f"{kind}" + (f" of size {size:,}" if size else ""))
@@ -406,13 +424,17 @@ def shrink_json(obj: Any, limit: int, *, spill_path: str | None = None, root: st
         keys = [str(k) for k in obj.keys()]
         k = len(keys)
         while k > 0:
-            text = json.dumps({"__truncated__": _marker(spill_path, f"{root}.keys()",
-                                                        f"{len(keys):,} top-level keys, {len(keys) - k:,} not listed; "
-                                                        f"read a value with json_path={root}[\"<key>\"]"),
-                               "keys": keys[:k]}, ensure_ascii=False)
+            text = json.dumps({**header, "__truncated__": _marker(
+                spill_path, f"{root}.keys()", f"{len(keys):,} top-level keys, {len(keys) - k:,} not listed; "
+                                              f"read a value with json_path={root}[\"<key>\"]"),
+                               "keys": keys[:k]}, default=str, ensure_ascii=False)
             if len(text) <= limit:
                 return text
             k = k // 2
+        if header:  # the header alone is the most useful thing that can be shown
+            return json.dumps({**header, "__truncated__": _marker(spill_path, f"{root}.keys()",
+                                                                  f"object with {len(keys):,} keys")},
+                              default=str, ensure_ascii=False)
         return _marker(spill_path, f"{root}.keys()", f"object with {len(keys):,} keys")[:max(limit, 0)]
     text = _dump(_shrink(obj, root, _SHRINK_LEVELS[-1], 0, spill_path))
     return text[:limit] + "\n" + _marker(spill_path, root, "output clipped")
@@ -580,5 +602,5 @@ def query_tool_output_tool() -> Tool:
 __all__ = [
     "Tool", "ToolContext", "ToolFailure", "ToolRegistry", "schema", "inline_refs", "to_text", "QUERY_TOOL",
     "RUN_WORKSPACE_AGENTS", "parse_json_path", "format_json_path", "eval_json_path", "path_key", "shrink_json", "truncation_note",
-    "truncate_text", "maybe_parse_json", "query_tool_output_tool", "tool_outputs_root",
+    "truncate_text", "maybe_parse_json", "query_tool_output_tool", "tool_outputs_root", "DATA_HEADER_KEY",
 ]

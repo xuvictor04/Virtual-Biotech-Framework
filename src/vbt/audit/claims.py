@@ -11,7 +11,14 @@ at things that exist *in this run*:
   its hash is recorded. Refiling with a stale ``sha256`` is rejected.
 * ``tool_call`` evidence must name a ``tool_use_id`` in the trace whose call
   finished without error (a pending call, including ``record_claims``'s own, is
-  rejected).
+  rejected). Calls served by the data layer also carry a ``result_status``, a
+  ``coverage`` and a provenance summary; the rules of DATA_LAYER.md §15.3 apply
+  (:func:`data_status_rules`): an ``empty`` result supports only an explicit
+  absence (``supports: "absence"``) with ``covered`` coverage (``censored`` only
+  when the claim carries the censor statement) and is then recorded with
+  ``evidence_status='absence'``; ``empty_unverified`` and results that may leak
+  past the evidence ceiling are never citable; partial results and tables with an
+  evidence-nature caveat are flagged.
 * ``citation`` evidence (PMID, DOI or URL) is external: format-checked, stored
   ``verified=False`` with ``evidence_status='external'``.
 
@@ -53,6 +60,13 @@ KIND_ALIASES = {
     "tool": "tool_call", "tool_use": "tool_call", "toolcall": "tool_call",
 }
 CONFIDENCE_LEVELS = ("strong", "moderate", "weak")
+#: What a tool_call evidence item shows: rows that exist (default) or their absence.
+SUPPORTS = ("presence", "absence")
+#: Data-layer result statuses (``vbt.datalayer.result.RESULT_STATUSES``); anything else is "no status".
+RESULT_STATUSES = ("ok", "partial", "empty", "empty_unverified")
+#: Fields of a call's provenance summary copied into a tool_call evidence entry.
+_DATA_ENTRY_FIELDS = ("result_status", "prov", "coverage", "coverage_statement", "source", "release",
+                      "fingerprints")
 
 _PMID_RE = re.compile(r"^\d{1,9}$")
 _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
@@ -230,14 +244,143 @@ def _canonical_kind(ev: Mapping[str, Any]) -> str:
     return KIND_ALIASES.get(kind, kind)
 
 
-def check_evidence(ev: Mapping[str, Any], ctx: EvidenceContext, *, stored: bool = False
-                   ) -> tuple[dict[str, Any] | None, list[str], list[str]]:
+# ----------------------------------------------------------------- data-layer status rules (§15.3)
+
+def _norm_text(text: Any) -> str:
+    return " ".join(str(text or "").casefold().split()).rstrip(" .;:")
+
+
+def censor_phrase(statement: Any) -> str:
+    """The phrase a claim must carry to cite a ``censored`` empty result: the first quoted
+    part of the coverage statement (``... citable only as "not significant at padj 0.10, or
+    not tested"``), else the whole statement."""
+    text = str(statement or "").strip()
+    m = re.search(r"[\"“]([^\"”]{3,})[\"”]", text)
+    return (m.group(1) if m else text).strip().rstrip(".;: ")
+
+
+def carries_censor_statement(claim_text: Any, statement: Any) -> bool:
+    """True when the claim text contains the censor phrase (casefold, whitespace-insensitive)."""
+    phrase = _norm_text(censor_phrase(statement))
+    return bool(phrase) and phrase in _norm_text(claim_text)
+
+
+def call_data_status(call: Mapping[str, Any]) -> tuple[str | None, dict[str, Any]]:
+    """``(result_status, provenance summary)`` of an indexed call; the status is None for calls
+    without a data-layer status (old traces, harness tools: recorded as ``unknown``)."""
+    dp = call.get("data_provenance")
+    dp = dict(dp) if isinstance(dp, Mapping) else {}
+    status = call.get("result_status") or dp.get("status")
+    status = str(status) if status in RESULT_STATUSES else None
+    for k in ("prov", "coverage"):
+        if call.get(k) and not dp.get(k):
+            dp[k] = call[k]
+    return status, dp
+
+
+def _data_entry_fields(status: str | None, dp: Mapping[str, Any]) -> dict[str, Any]:
+    """prov, coverage, coverage statement, source, release and table fingerprints for an entry."""
+    out: dict[str, Any] = {"result_status": status}
+    for k in ("prov", "coverage", "coverage_statement"):
+        out[k] = dp.get(k)
+    source = dp.get("source")
+    release = dp.get("release")
+    if isinstance(source, str) and "@" in source:
+        source, _, rel = source.partition("@")
+        release = release or rel
+    out["source"], out["release"] = source, release
+    tables = dp.get("tables")
+    if isinstance(tables, list):
+        fps = {str(t.get("name")): t.get("fingerprint") for t in tables if isinstance(t, Mapping) and t.get("name")}
+        out["fingerprints"] = fps or None
+    return {k: v for k, v in out.items() if v not in (None, "", {})}
+
+
+def empty_result_citation(status: str | None, coverage: Any, coverage_statement: Any, supports: str,
+                          claim_text: Any) -> str | None:
+    """Why citing an empty result this way is not allowed (None when it is): an ``empty`` or
+    ``empty_unverified`` result cited with ``supports`` other than ``absence``, or with coverage
+    other than ``covered`` (or ``censored`` with the censor statement in the claim). Shared by
+    record_claims and ``vbt verify`` (problem kind ``empty_result_cited``)."""
+    if status not in ("empty", "empty_unverified"):
+        return None
+    if status == "empty_unverified":
+        return ("cites an empty_unverified result (zero rows whose existence or coverage could not be "
+                "confirmed); it is not citable for presence or absence")
+    if supports != "absence":
+        return ("cites an empty result as support; an empty result cannot support a positive finding "
+                "(cite it with supports: 'absence' when the claim is the absence)")
+    cov = str(coverage or "unknown")
+    if cov == "covered":
+        return None
+    if cov == "censored":
+        if not str(coverage_statement or "").strip():
+            return "cites a censored empty result whose censor statement was not recorded"
+        if carries_censor_statement(claim_text, coverage_statement):
+            return None
+        return (f"cites a censored empty result; the claim text must carry the censor statement "
+                f"{censor_phrase(coverage_statement)!r}")
+    return (f"cites an empty result with coverage {cov!r} as an absence; only 'covered' coverage makes "
+            "an empty result an absence finding")
+
+
+def data_status_rules(entry: dict[str, Any], call: Mapping[str, Any], supports: str,
+                      claim: Mapping[str, Any] | None) -> tuple[list[str], list[str], str | None]:
+    """Apply the §15.3 table to a finished, successful call: ``(problems, warnings, evidence_status)``.
+
+    Copies prov, coverage, coverage statement, source, release and table fingerprints into
+    ``entry``. ``evidence_status`` is ``'absence'`` for an accepted absence citation of an
+    empty result, else None (the caller decides verified/unresolved)."""
+    problems: list[str] = []
+    warnings: list[str] = []
+    tuid = entry.get("tool_use_id")
+    tool = str(entry.get("tool_name") or "")
+    status, dp = call_data_status(call)
+    entry.update(_data_entry_fields(status, dp))
+    text = (claim or {}).get("text")
+    if dp.get("leakage_risk") is True:
+        problems.append(f"tool call {tuid!r} cites data that may postdate the evidence ceiling (leakage risk)")
+    if status is None:
+        if tool.startswith("mcp__") and not tool.startswith("mcp__provenance__"):
+            warnings.append(f"tool call {tuid!r} has no data-layer status; its result was not checked for "
+                            "empty or partial answers")
+        return problems, warnings, None
+    absence = None
+    why = empty_result_citation(status, dp.get("coverage"), dp.get("coverage_statement"), supports, text)
+    if why:
+        problems.append(f"tool call {tuid!r} {why}")
+    elif status == "empty":
+        absence = "absence"
+    elif supports == "absence":
+        warnings.append(f"tool call {tuid!r}: absence claim cites rows; the note must say which rows show it")
+    if status == "partial" and supports != "absence":
+        returned, total = dp.get("returned"), dp.get("total")
+        of = f"{returned} of {total}" if total is not None else f"{returned} of an unknown number of"
+        warnings.append(f"tool call {tuid!r} is a partial result ({of} rows); cite it as such")
+        if re.search(r"\btop\b", str(text or ""), re.I) and dp.get("order_verified") is not True:
+            problems.append(f"tool call {tuid!r}: the claim says 'top' but the result's order is not verified")
+    elif status == "partial":
+        warnings.append(f"tool call {tuid!r} is a partial result; an absence in it may lie in the rows not returned")
+    nature = dp.get("evidence_nature") or dp.get("evidence_caveat")
+    if nature and supports != "absence":
+        caveat = dp.get("evidence_caveat") or nature
+        warnings.append(f"tool call {tuid!r} comes from a table with an evidence-nature caveat: {caveat}")
+        confidence = str((claim or {}).get("confidence") or "").lower()
+        if confidence == "strong" and int((claim or {}).get("n_evidence") or 0) == 1:
+            problems.append(f"tool call {tuid!r} is the only evidence of a 'strong' claim but carries the caveat "
+                            f"{caveat!r}; add independent evidence or lower the confidence")
+    return problems, warnings, absence
+
+
+def check_evidence(ev: Mapping[str, Any], ctx: EvidenceContext, *, stored: bool = False,
+                   claim: Mapping[str, Any] | None = None) -> tuple[dict[str, Any] | None, list[str], list[str]]:
     """Validate one evidence item. Returns (entry, problems, warnings).
 
     ``entry`` is None only when the item cannot be represented at all (not an
     object or an unknown kind). With ``stored=True`` the item comes from
     claims.json: its path must be an exact registry key with a recorded sha256,
-    and that hash is preserved.
+    and that hash is preserved. ``claim`` (``text``, ``confidence``,
+    ``n_evidence``) feeds the data-layer rules that depend on the claim.
     """
     if not isinstance(ev, Mapping):
         return None, ["is not an object"], []
@@ -247,8 +390,17 @@ def check_evidence(ev: Mapping[str, Any], ctx: EvidenceContext, *, stored: bool 
     entry: dict[str, Any] = {"kind": kind}
     problems: list[str] = []
     warnings: list[str] = []
+    status_override: str | None = None
     if ev.get("note"):
         entry["note"] = str(ev["note"])[:500]
+    supports = str(ev.get("supports") or "presence").strip().lower()
+    if supports not in SUPPORTS:
+        problems.append(f"'supports' must be 'presence' or 'absence', not {str(ev.get('supports'))[:40]!r}")
+        supports = "presence"
+    if ev.get("supports") is not None:
+        entry["supports"] = supports
+    if ev.get("row_key") is not None:
+        entry["row_key"] = ev["row_key"]  # checked against the stored row keys from phase 5
 
     if kind in LOCAL_KINDS:
         if stored:
@@ -301,11 +453,17 @@ def check_evidence(ev: Mapping[str, Any], ctx: EvidenceContext, *, stored: bool 
                 entry["agent"] = call.get("agent")
                 entry["ts"] = call.get("started_at") or call.get("ts")
                 if call.get("is_error"):
-                    problems.append(f"cites failed tool call {tuid!r}; a failed query cannot support a finding")
+                    kind_note = f" ({call['error_kind']})" if call.get("error_kind") else ""
+                    problems.append(f"cites failed tool call {tuid!r}{kind_note}; a failed query cannot support "
+                                    "a finding")
                 elif call.get("pending"):
                     problems.append(f"cites unfinished tool call {tuid!r}; wait for its result before citing it")
                 elif str(entry.get("tool_name") or "").startswith("mcp__provenance__"):
                     warnings.append(f"tool call {tuid!r} is a provenance bookkeeping call, not evidence")
+                else:
+                    probs, warns, status_override = data_status_rules(entry, call, supports, claim)
+                    problems.extend(probs)
+                    warnings.extend(warns)
     else:  # citation
         raw = {k: ev.get(k) for k in ("pmid", "doi", "url") if ev.get(k)}
         if not raw:
@@ -327,7 +485,7 @@ def check_evidence(ev: Mapping[str, Any], ctx: EvidenceContext, *, stored: bool 
         entry["evidence_status"] = "external" if not problems else "unresolved"
     else:
         entry["verified"] = not problems
-        entry["evidence_status"] = "verified" if not problems else "unresolved"
+        entry["evidence_status"] = (status_override or "verified") if not problems else "unresolved"
     return entry, problems, warnings
 
 
@@ -391,8 +549,9 @@ def validate_claims(claims: Any, ctx: EvidenceContext, *, strict: bool = True, s
             res.errors.append(f"claim {cid}: must cite at least one piece of evidence")
             continue
         evidence: list[dict[str, Any]] = []
+        about = {"text": text, "confidence": confidence, "n_evidence": len(raw_ev)}
         for j, ev in enumerate(raw_ev):
-            entry, problems, warns = check_evidence(ev, ctx, stored=stored)
+            entry, problems, warns = check_evidence(ev, ctx, stored=stored, claim=about)
             res.warnings.extend(f"claim {cid}: {w}" for w in warns)
             msgs = [f"claim {cid}: evidence[{j}] {p}" for p in problems]
             if msgs:
@@ -437,17 +596,17 @@ def refresh_claims(stored: Iterable[Mapping[str, Any]], ctx: EvidenceContext) ->
             continue
         claim = copy.deepcopy(dict(c))
         evs = []
-        for ev in claim.get("evidence") or []:
-            if not isinstance(ev, Mapping):
-                continue
-            entry, problems, _w = check_evidence(ev, ctx, stored=True)
+        raw_ev = [ev for ev in claim.get("evidence") or [] if isinstance(ev, Mapping)]
+        about = {"text": claim.get("text"), "confidence": claim.get("confidence"), "n_evidence": len(raw_ev)}
+        for ev in raw_ev:
+            entry, problems, _w = check_evidence(ev, ctx, stored=True, claim=about)
             new = dict(ev)
             if entry is None:
                 new["verified"], new["evidence_status"] = False, "unresolved"
             else:
                 new["verified"] = entry["verified"]
                 new["evidence_status"] = entry["evidence_status"]
-                for k in ("tool_name", "agent", "produced_by"):
+                for k in ("tool_name", "agent", "produced_by", *_DATA_ENTRY_FIELDS):
                     if entry.get(k) and not new.get(k):
                         new[k] = entry[k]
             if problems:
@@ -510,6 +669,7 @@ def claim_stats(claims: list[Mapping[str, Any]]) -> dict[str, Any]:
         "n_claims": len(claims),
         "n_evidence": len(evs),
         "n_verified_evidence": sum(1 for e in evs if status(e) == "verified"),
+        "n_absence_evidence": sum(1 for e in evs if status(e) == "absence"),
         "n_external_evidence": sum(1 for e in evs if status(e) == "external"),
         "n_unresolved_evidence": sum(1 for e in evs if status(e) == "unresolved"),
         "claims_without_verified_evidence": [c.get("id") for c in claims if not c.get("n_verified")],
@@ -554,5 +714,6 @@ __all__ = [
     "CLAIM_ID_RE", "EVIDENCE_KINDS", "LOCAL_KINDS", "KIND_ALIASES", "ValidationResult", "EvidenceContext",
     "validate_claims", "refresh_claims", "check_evidence", "resolve_evidence_path", "merge_claims",
     "link_cited_by", "claim_stats", "claims_payload", "read_claims_file", "load_claims",
-    "normalize_pmid", "normalize_doi", "normalize_url",
+    "normalize_pmid", "normalize_doi", "normalize_url", "SUPPORTS", "RESULT_STATUSES", "call_data_status",
+    "data_status_rules", "empty_result_citation", "censor_phrase", "carries_censor_statement",
 ]

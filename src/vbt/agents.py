@@ -296,22 +296,93 @@ def _memory_block(agent: AgentDefinition, run_dir: Path) -> str:
             f"data quirks, and approaches that failed. Keep it brief and do not repeat existing notes.")
 
 
+def _first_line(why: Any, n: int = 160) -> str:
+    text = str(why or "").strip()
+    return text.splitlines()[0][:n] if text else ""
+
+
+def _is_split_shape(unavailable: Any) -> bool:
+    """``{"servers": {...}, "tools": {...}}`` (tool-scoped readiness) rather than ``{server: reason}``."""
+    return (isinstance(unavailable, Mapping) and bool(unavailable)
+            and set(unavailable) <= {"servers", "tools"}
+            and all(v is None or isinstance(v, (Mapping, list, tuple)) for v in unavailable.values()))
+
+
+def _tool_reason(why: Any) -> str:
+    """A tool's readiness reason: a string, or ``{table, column?, partition?, check?, detail?}``."""
+    if isinstance(why, Mapping):
+        where = ".".join(str(why[k]) for k in ("table", "column") if why.get(k))
+        if why.get("partition"):
+            where += f" [{why['partition']}]"
+        what = why.get("check") or why.get("status") or why.get("detail") or why.get("reason") or "not ready"
+        return f"{where} {what}".strip() if where else str(what)
+    return _first_line(why) or "not ready"
+
+
+def _server_of(tool: str) -> str:
+    parts = str(tool).split("__")
+    return parts[1] if len(parts) >= 3 and parts[0] == "mcp" else ""
+
+
+def _unready_tools_text(tools: Mapping[str, Any] | Iterable[str]) -> str:
+    """Unready tools grouped by server and by the table/column that makes them unready:
+    "`functional_genomics`: `query_drug_perturbation`, ... unavailable (tahoe_100m.de_permissive missing)"."""
+    items = tools.items() if isinstance(tools, Mapping) else ((t, "") for t in tools)
+    groups: dict[tuple[str, str], list[str]] = {}
+    for tool, why in items:
+        server = _server_of(tool)
+        short = str(tool).split("__", 2)[-1] if server else str(tool)
+        groups.setdefault((server, _tool_reason(why)), []).append(short)
+    parts = []
+    for (server, why), names in sorted(groups.items()):
+        listed = ", ".join(f"`{n}`" for n in sorted(names)[:8]) + (f" (+{len(names) - 8} more)" if len(names) > 8
+                                                                     else "")
+        parts.append((f"`{server}`: " if server else "") + f"{listed} unavailable ({why})")
+    return ("- Unready data tools (their data failed a readiness check; other tools of the same server still "
+            "work): " + "; ".join(parts) + ". Calls to them return `not_ready`: report the gap rather than "
+            "treating it as a negative result.")
+
+
 def _unavailable_text(unavailable: Mapping[str, Any] | Iterable[str] | None) -> str:
+    """The "unavailable data" lines of the volatile prompt. Accepts ``{server: reason}``, a list of
+    server names, or ``{"servers": {server: reason}, "tools": {tool: reason}}``."""
     if not unavailable:
         return ""
-    items = unavailable.items() if isinstance(unavailable, Mapping) else ((n, "") for n in unavailable)
-    parts = []
-    for name, why in items:
-        why = str(why or "").strip().splitlines()[0][:160] if str(why or "").strip() else ""
-        parts.append(f"`{name}`" + (f" ({why})" if why else ""))
-    return ("- Unavailable data servers: " + "; ".join(parts) + ". Their `mcp__<server>__*` tools are "
-            "missing or failing in this run: report the gap rather than substituting silently.")
+    tools: Any = None
+    if _is_split_shape(unavailable):
+        tools = unavailable.get("tools")  # type: ignore[union-attr]
+        unavailable = unavailable.get("servers")  # type: ignore[union-attr]
+    lines = []
+    if unavailable:
+        items = unavailable.items() if isinstance(unavailable, Mapping) else ((n, "") for n in unavailable)
+        parts = []
+        for name, why in items:
+            why = _first_line(why)
+            parts.append(f"`{name}`" + (f" ({why})" if why else ""))
+        lines.append("- Unavailable data servers: " + "; ".join(parts) + ". Their `mcp__<server>__*` tools are "
+                     "missing or failing in this run: report the gap rather than substituting silently.")
+    if tools:
+        lines.append(_unready_tools_text(tools))
+    return "\n".join(lines)
+
+
+def uses_data_tools(agent: "AgentDefinition") -> bool:
+    """The agent may call MCP data tools (``mcp__*`` other than the provenance record tools)."""
+    return any(str(t).startswith("mcp__") and not str(t).startswith("mcp__provenance__")
+               for t in agent.tools or [])
 
 
 def system_prompt_parts(agent: AgentDefinition, *, run_dir: Path, workspace: Path, config: dict[str, Any],
                         roster: Mapping[str, AgentDefinition] | None = None,
-                        unavailable_servers: Mapping[str, Any] | Iterable[str] | None = None) -> tuple[str, str]:
-    """Return ``(stable, volatile)`` system-prompt parts for ``agent``."""
+                        unavailable_servers: Mapping[str, Any] | Iterable[str] | None = None,
+                        data_layer: bool = False) -> tuple[str, str]:
+    """Return ``(stable, volatile)`` system-prompt parts for ``agent``.
+
+    ``unavailable_servers`` is ``{server: reason}`` (or a list of names), or
+    ``{"servers": {...}, "tools": {tool: reason}}`` with tool-scoped readiness.
+    ``data_layer``: the data gateway is enforcing in this run, so agents with MCP
+    data tools get ``data_layer_addendum.md`` (how to read and cite ``_vbt``
+    results) in their volatile part."""
     kind = role_kind(agent)
     web_cfg = config.get("web") or {}
     if web_cfg.get("enabled", True):
@@ -368,6 +439,8 @@ def system_prompt_parts(agent: AgentDefinition, *, run_dir: Path, workspace: Pat
     if unavailable:
         lines.append(unavailable)
     volatile_parts = ["\n".join(lines)]
+    if data_layer and uses_data_tools(agent):
+        volatile_parts.append((LOCAL_PROMPTS / "data_layer_addendum.md").read_text().strip())
     if agent.uses_memory:
         volatile_parts.append(_memory_block(agent, run_dir))
     if (config.get("provider") or {}).get("name") == "mock":
@@ -379,14 +452,16 @@ def system_prompt_parts(agent: AgentDefinition, *, run_dir: Path, workspace: Pat
 
 def system_prompt(agent: AgentDefinition, *, run_dir: Path, workspace: Path, config: dict[str, Any],
                   roster: Mapping[str, AgentDefinition] | None = None,
-                  unavailable_servers: Mapping[str, Any] | Iterable[str] | None = None) -> str:
+                  unavailable_servers: Mapping[str, Any] | Iterable[str] | None = None,
+                  data_layer: bool = False) -> str:
     """Single-string system prompt: the stable part, then the volatile part."""
     stable, volatile = system_prompt_parts(agent, run_dir=run_dir, workspace=workspace, config=config,
-                                           roster=roster, unavailable_servers=unavailable_servers)
+                                           roster=roster, unavailable_servers=unavailable_servers,
+                                           data_layer=data_layer)
     return stable + "\n\n" + volatile
 
 
 __all__ = [
     "AgentDefinition", "load_roster", "system_prompt", "system_prompt_parts", "load_prompt",
-    "filter_web_tools", "role_kind", "memory_path", "PROJECT_ROOT",
+    "filter_web_tools", "role_kind", "memory_path", "PROJECT_ROOT", "uses_data_tools",
 ]

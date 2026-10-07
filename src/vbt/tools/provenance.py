@@ -66,6 +66,7 @@ def _claims(ctx: ToolContext, a: dict[str, Any]) -> Any:
 
 
 _EVIDENCE_KINDS = ["artifact", "figure", "table", "code", "tool_call", "citation"]
+_SUPPORTS = ("presence", "absence")
 
 
 def provenance_tools() -> list[Tool]:
@@ -85,6 +86,16 @@ def provenance_tools() -> list[Tool]:
             "url": {"type": "string", "description": "http(s) URL of the source"},
             "title": {"type": "string"},
             "note": {"type": "string", "description": "which row/column/panel supports the claim"},
+            "supports": {"type": "string", "enum": list(_SUPPORTS),
+                         "description": "presence (default): the cited rows show the finding; absence: the "
+                                        "finding is that nothing was found. A data result with _vbt.status "
+                                        "'empty' is citable only as supports: 'absence' and only when its "
+                                        "_vbt.coverage is 'covered' ('censored' only if the claim text carries "
+                                        "its coverage statement); 'empty_unverified' and errors are never "
+                                        "citable."},
+            "row_key": {"type": "array", "items": {"type": ["string", "number", "boolean", "null"]},
+                        "description": "optional: the key of the cited row (values of the result's _vbt.key "
+                                       "columns, in order)"},
             "sha256": {"type": "string", "description": "only when refiling: the hash the claim was filed with"},
         }}}
     step = {"type": "object", "properties": {
@@ -121,6 +132,8 @@ def provenance_tools() -> list[Tool]:
              "File claim-evidence objects for your synthesis: [{id, text, agent, confidence, evidence[]}]. "
              "Reference each claim inline as [[claim:ID]]. Evidence is validated: files must exist under work/ "
              "with unchanged content, tool_use_ids must be finished successful calls, citations need pmid/doi/url. "
+             "An empty data result supports only an absence finding (supports: 'absence', with covered coverage); "
+             "it never supports a positive finding. "
              "Returns {ok, recorded, claims, warnings} or {ok: false, errors} — fix and call again.",
              schema({"claims": {"type": "array", "items": {"type": "object", "properties": {
                  "id": {"type": "string", "description": "unique id, e.g. 'C1' ([A-Za-z0-9_.-], max 64)"},

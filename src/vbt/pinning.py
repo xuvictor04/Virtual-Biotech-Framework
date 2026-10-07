@@ -23,7 +23,7 @@ from typing import Any, Iterable, Mapping
 __all__ = ["build_pinned_config", "git_info", "prompt_hashes", "package_versions", "installed_distributions",
            "PINNED_PACKAGES", "PIN_SCHEMA", "default_model_pattern", "CLAUDE_MODEL_PATTERN", "SERVED_MODEL_PATTERN",
            "LOCAL_PROVIDER_NAMES", "REDACTED", "redact_config", "drop_redacted", "pinned_profiles",
-           "served_model_conflict"]
+           "served_model_conflict", "pinned_data"]
 
 PIN_SCHEMA = 1
 
@@ -274,6 +274,44 @@ def default_model_pattern(provider_name: str | None) -> str | None:
     return None
 
 
+def pinned_data(config: Mapping[str, Any], runtime: Any) -> dict[str, Any]:
+    """``pinned["data"]`` (DATA_LAYER.md §15.5): the gateway's ``pinned()`` record (catalog and
+    descriptor digests, plugins, sources, readiness, memory), redacted, always with its
+    ``determinism`` and ``leakage`` blocks. Without a gateway (data layer disabled, mode
+    ``off`` or the gateway failed to build): ``{enabled, mode, gateway: None}``. Never raises."""
+    enabled: bool | None = None
+    mode: str | None = None
+    ceiling: Any = None
+    try:
+        from .datalayer.settings import DataSettings
+
+        settings = DataSettings.from_config(dict(config or {}))
+        enabled, ceiling = settings.enabled, settings.leakage.ceiling
+        mode = settings.gateway.mode if settings.enabled else "off"
+    except Exception as exc:  # noqa: BLE001 - a pin record never blocks a session
+        return {"enabled": None, "mode": None, "gateway": None, "error": f"{type(exc).__name__}: {exc}"}
+    gateway = getattr(runtime, "gateway", None)
+    if gateway is None:
+        out: dict[str, Any] = {"enabled": enabled, "mode": mode, "gateway": None}
+        why = getattr(runtime, "gateway_error", None)
+        if why:
+            out["reason"] = str(why)[:500]
+        return out
+    try:
+        data = dict(gateway.pinned() or {})
+    except Exception as exc:  # noqa: BLE001
+        return {"enabled": enabled, "mode": getattr(gateway, "mode", mode), "gateway": None,
+                "error": f"{type(exc).__name__}: {exc}"[:500]}
+    data = _redact(data)
+    data.setdefault("enabled", enabled)
+    data.setdefault("mode", getattr(gateway, "mode", mode))
+    if not isinstance(data.get("determinism"), Mapping):
+        data["determinism"] = {"hash_seed": None, "flags_stripped": []}
+    if not isinstance(data.get("leakage"), Mapping):
+        data["leakage"] = {"ceiling": ceiling}
+    return data
+
+
 def build_pinned_config(config: Mapping[str, Any], runtime: Any, *, interface: str = "chat",
                         profiles: Iterable[str] = (), server: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The pinned configuration of a session (see the module docstring).
@@ -335,6 +373,7 @@ def build_pinned_config(config: Mapping[str, Any], runtime: Any, *, interface: s
     }
     if server:
         pinned["provider"]["server"] = _redact(dict(server))
+    pinned["data"] = pinned_data(config, runtime)
     skill_hashes = getattr(runtime, "skill_hashes", None)
     if skill_hashes is not None:
         try:
