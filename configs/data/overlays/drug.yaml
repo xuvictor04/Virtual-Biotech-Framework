@@ -1,0 +1,152 @@
+# Overlay for the upstream drug server (drug_mcp; docs/DATA_LAYER.md §8.4, Appendix A).
+# Phase 1: 5 pass (get_target_tractability is bound in target.yaml with same_as), 4 derived.
+schema: vbt.overlay/1
+server: drug
+sources: [open_targets]
+upstream_commit: ${vars.upstream_commit:-71f9da68c95c5ee0ef4c1d9b8f45f10693de022d}   # the commit these bindings were reviewed against
+tools:
+  search_drugs:
+    reads: {open_targets.drug_molecule: {access: projection,
+                                         columns: [id, name, drugType, maximumClinicalTrialPhase, linkedTargets, synonyms, tradeNames]}}
+    args:
+      query:     {role: free_text, binds_any: [open_targets.drug_molecule.name], interpreted_as: casefold_substring}
+      target_id: {binds: "open_targets.drug_molecule.linkedTargets.rows[]", op: contains, accepts: [ensembl_gene, hgnc_symbol]}
+      mechanism: {role: unbound}             # drug_molecule has no mechanismOfAction column in 25.09
+      limit:     {role: limit, min: 1, max: 500}
+    result:
+      rows: $.drugs
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      order: [{column: id, direction: asc}]
+    serve: derived
+    derived: {verb: find, table: open_targets.drug_molecule,
+              columns: [id, name, drugType, maximumClinicalTrialPhase, linkedTargets]}
+    defects:
+      - {id: OT-DRUG-001, what: "linkedTargets is a struct {rows, count}, not a list: isinstance(list) is False and the target path is always empty",
+         where: "drug_mcp/tools.py:111-118", test: test_dl_defect_detectors.py::test_ot_drug_001, effect: false_empty}
+      - {id: OT-DRUG-002, what: "filters on drug_molecule.mechanismOfAction, which 25.09 does not have: any mechanism value fails",
+         where: "drug_mcp/tools.py:120-122", effect: error}
+      - {id: OT-DRUG-011, what: "name matched with str.contains(regex=True): a substring and regex match, not a drug name",
+         where: "drug_mcp/tools.py:105-107", effect: silent_wrong}
+
+  get_drug_info:
+    reads: {open_targets.drug_molecule: {access: full_table}}
+    args:
+      drug_id: {binds: open_targets.drug_molecule.id, accepts: [chembl_molecule, drug_name], family: exact}
+    result:
+      kind: record
+      rows: $
+      echo: {drug_id: {path: $.id, source: record}}
+      not_found_when: ["$.error =~ '(?i)not found'"]
+    serve: pass
+    text: {drop_promises: [mechanismOfAction]}       # the docstring promises a column absent in 25.09
+
+  get_drug_indications:
+    reads: {open_targets.drug_indication: {access: full_table}}
+    args:
+      drug_id: {binds: open_targets.drug_indication.id, accepts: [chembl_molecule, drug_name]}
+      limit:   {role: limit, min: 1, max: 500}
+    result:
+      rows: $.indications
+      rows_of: open_targets.drug_indications
+      parent_key: {id: $.drug_id}
+      count_fields: [$.count]
+      order: [{column: "indications[].maxPhaseForIndication", direction: desc, nulls: last},
+              {column: "indications[].disease", direction: asc}]
+    serve: derived
+    derived: {verb: find, table: open_targets.drug_indications, carry: [id]}
+    defects:
+      - {id: OT-DRUG-005, what: "limit counts drug rows (one per drug), not indications; count reports 1 for a drug with 40 indications",
+         where: "drug_mcp/tools.py:291-309", effect: silent_wrong}
+
+  get_drug_warnings:
+    reads: {open_targets.drug_warning: {access: full_table}}
+    args:
+      drug_id: {binds: open_targets.drug_warning.chemblIds, op: contains, accepts: [chembl_molecule, drug_name]}
+      limit:   {role: limit, min: 1, max: 500}
+    result:
+      rows: $.warnings
+      order: [{column: year, direction: desc, nulls: last}, {column: id, direction: asc}]
+      count_fields: [$.count]
+      drop_fields: {$.message: "no warning curated is not evidence of safety"}
+    serve: pass
+
+  get_drug_adverse_events:
+    reads: {open_targets.openfda_significant_adverse_drug_reactions: {access: full_table}}
+    args:
+      drug_id: {binds: open_targets.openfda_significant_adverse_drug_reactions.chembl_id, accepts: [chembl_molecule, drug_name]}
+      limit:   {role: limit, min: 1, max: 500}
+    result:
+      rows: $.adverse_events
+      order: [{column: llr, direction: desc, nulls: last}, {column: event, direction: asc}]
+      count_fields: [$.count]
+    serve: derived
+    derived: {verb: find, table: open_targets.openfda_significant_adverse_drug_reactions}
+    defects:
+      - {id: OT-DRUG-006, what: "head(limit) in file order before sorting by llr: the top events are not the strongest",
+         where: "drug_mcp/tools.py:407,422", test: test_dl_defect_detectors.py::test_ot_drug_006, effect: silent_wrong}
+
+  get_drug_mechanisms:
+    reads: {open_targets.drug_mechanism_of_action: {access: full_table}}
+    args:
+      drug_id:   {binds: open_targets.drug_mechanism_of_action.chemblIds, op: contains, accepts: [chembl_molecule, drug_name]}
+      mechanism: {binds: open_targets.drug_mechanism_of_action.mechanismOfAction, interpreted_as: casefold_substring,
+                  forbid: [".", "*", "+", "?", "(", ")", "[", "]", "{", "}", "|", "^", "$", "\\"]}   # upstream applies a regex
+      limit:     {role: limit, min: 1, max: 500}
+    require_any: [[drug_id, mechanism]]
+    exclusive: [[drug_id, mechanism]]
+    result:
+      rows: $.mechanisms
+      count_fields: [$.count]
+    serve: pass
+    defects:
+      - {id: OT-DRUG-007, what: "if/elif: mechanism is ignored when drug_id is given",
+         where: "drug_mcp/tools.py:471-491", effect: silent_wrong}
+
+  search_known_drugs:
+    reads: {open_targets.known_drug: {access: full_table}}
+    args:
+      target_id:  {binds: open_targets.known_drug.targetId, accepts: [ensembl_gene, hgnc_symbol]}
+      disease_id: {binds: open_targets.known_drug.diseaseId, accepts: [ot_disease, disease_name]}
+      min_phase:  {binds: open_targets.known_drug.phase, op: ge, min: 0, max: 4}
+      limit:      {role: limit, min: 1, max: 200}
+    require_any: [[target_id, disease_id]]
+    result:
+      rows: $.drugs
+      order: [{column: phase, direction: desc, nulls: last}, {column: drugId, direction: asc}]
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      drop_fields: {$.message: "no curated drug is not evidence that the target is undruggable"}
+    serve: pass
+    defects:
+      - {id: OT-DRUG-003, what: "head(limit) before sort_values('phase'): the top rows are file order, not the highest phases",
+         where: "drug_mcp/tools.py:590,601", test: test_dl_defect_detectors.py::test_ot_drug_003, effect: silent_wrong}
+      - {id: OT-DRUG-004, what: "null-phase rows dropped even at min_phase=0",
+         where: "drug_mcp/tools.py:583-588", test: test_dl_defect_detectors.py::test_ot_drug_004, effect: silent_wrong}
+
+  get_pharmacogenomics:
+    same_as: [target.get_pharmacogenomics]
+    reads: {open_targets.pharmacogenomics: {access: bounded_scan}}
+    args:
+      target_id: {binds: open_targets.pharmacogenomics.targetFromSourceId, accepts: [ensembl_gene, hgnc_symbol]}
+      drug_id:   {binds: "open_targets.pharmacogenomics.drugs[].drugId", op: contains,
+                  accepts: [chembl_molecule, drug_name], existence: bound}
+      limit:     {role: limit, min: 1, max: 500}
+    require_any: [[target_id, drug_id]]
+    result:
+      rows: $.pgx_relationships
+      count_fields: [$.count]
+      order: [{column: evidenceLevel, direction: asc, nulls: last, statistic: ordinal}, {column: variantRsId, direction: asc}]
+    serve: derived
+    derived: {verb: find, table: open_targets.pharmacogenomics}     # both args ANDed
+    text:
+      notes: ["evidenceLevel is the PharmGKB level: 1A (strongest) < 1B < 2A < 2B < 3 < 4 (weakest)"]
+    defects:
+      - {id: OT-DRUG-009, what: "isinstance(list) on an ndarray and key 'id' vs 'drugId': the drug path is always empty",
+         where: "drug_mcp/tools.py:649-657", test: test_dl_defect_detectors.py::test_ot_drug_009, effect: false_empty}
+      - {id: OT-DRUG-010, what: "drug_id ignored when target_id is given (if/elif): rows violating drug_id are returned",
+         where: "drug_mcp/tools.py:645-647", test: test_dl_defect_detectors.py::test_ot_drug_010, effect: silent_wrong}
+      - {id: OT-TARGET-013, what: "the target server's copy has the same drug-path bug (isinstance(list), key 'id')",
+         where: "target_mcp/tools.py:860-868", test: test_dl_defect_detectors.py::test_ot_drug_009, effect: false_empty}
+      - {id: OT-TARGET-014, what: "the target server's copy ignores drug_id when target_id is given (if/elif)",
+         where: "target_mcp/tools.py:856-858", test: test_dl_defect_detectors.py::test_ot_drug_010, effect: silent_wrong}

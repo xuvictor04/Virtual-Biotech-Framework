@@ -1,0 +1,46 @@
+# The generic contract (docs/DATA_LAYER.md §11.9): applies to every server and tool without a reviewed
+# binding (third-party stdio or HTTP servers, new upstream tools, bindings marked status: unreviewed).
+#
+# * An explicit not-found shape -> not_found error, evaluated before legacy envelopes.
+# * Legacy error envelopes and isError keep today's semantics (source_error).
+# * A structural empty -> empty_unverified: a success that cannot be cited as support or as absence.
+# * Identifier-like parameters are linted in observe mode with every identifier plugin; a conflict
+#   becomes a _vbt.notes warning, never a rewrite.
+schema: vbt.overlay/1
+server: "*"
+generic:
+  not_found_when:
+    - "$.found == false"
+    - "$.error =~ '(?i)\\bnot found\\b'"
+    - "$.error =~ '(?i)status code: 404'"
+    - "$.message =~ '(?i)^no .* found'"
+  empty_when:
+    - "$.count == 0"
+    - "$.num_results == 0"
+    - "$.total_count == 0"
+    - "$.total_found == 0"
+    - "$.n_cells == 0"
+    - "$ == []"
+  param_kinds:
+    "target_id": [ensembl_gene, hgnc_symbol]
+    "target_ids": [ensembl_gene, hgnc_symbol]
+    "gene_id": [ensembl_gene, hgnc_symbol]
+    "gene_*": [ensembl_gene, hgnc_symbol]
+    "ensembl_ids": [ensembl_gene]
+    "disease_id": [ot_disease, disease_name]
+    "phenotype_id": [hpo]
+    "drug_id": [chembl_molecule, drug_name]
+    "drug_name": [drug_name, tahoe_drug]
+    "go_id": [go]
+    "pathway_id": [reactome]
+    "so_id": [so]
+    "variant_id": [ot_variant]
+    "rs_id": [rsid]
+    "study_id": [gwas_study, cbio_study]
+    "study_locus_id": [study_locus_id]
+    "cell_line*": [depmap_cell_line]
+    "nct*": [nct_id]
+    "pmid*": [pmid]
+    "entity_*": [ot_entity_any]
+  notes:
+    - "no reviewed binding: results are not checked against the data and empty results cannot be cited"

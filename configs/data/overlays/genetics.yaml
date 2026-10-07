@@ -1,0 +1,207 @@
+# Overlay for the upstream genetics server (genetics_mcp; docs/DATA_LAYER.md §8, Appendix A).
+# Phase 1: 8 pass, 1 derived, 1 block.
+schema: vbt.overlay/1
+server: genetics
+sources: [open_targets]
+upstream_commit: ${vars.upstream_commit:-71f9da68c95c5ee0ef4c1d9b8f45f10693de022d}   # the commit these bindings were reviewed against
+tools:
+  query_gwas_associations:
+    reads: {open_targets.credible_set: {access: bounded_scan}}
+    args:
+      output_path: {role: output_path}
+      study_id:    {binds: open_targets.credible_set.studyId, accepts: [gwas_study]}
+      variant_id:  {binds: open_targets.credible_set.variantId, accepts: [ot_variant, rsid]}
+      chromosome:  {binds: open_targets.credible_set.chromosome}            # 'chr' prefix stripped (position role)
+      region:      {binds: open_targets.credible_set.position, op: range,
+                    pattern: "^(chr)?([1-9]|1[0-9]|2[0-2]|X|Y|MT):[0-9]+-[0-9]+$"}
+      limit:       {role: limit, min: 1, max: 10000}
+    require_any: [[study_id, variant_id, chromosome, region]]
+    result:
+      rows: $.top_associations
+      count_fields: [$.num_results]
+      order: [{column: pValueMantissa, direction: asc, nulls: last, statistic: pvalue_mantissa_exponent}]
+      order_source: upstream_full_sort          # scan_top_rows ranks every matching row before the cut
+      summary_fields: {$.summary_stats: drop}
+      files: [{path_from: $.output_path, must_exist: true, write_once: true}]
+    serve: pass
+
+  query_l2g_predictions:
+    reads: {open_targets.l2g_prediction: {access: full_table}}
+    args:
+      gene_id:        {binds: open_targets.l2g_prediction.geneId, accepts: [ensembl_gene, hgnc_symbol]}
+      study_locus_id: {binds: open_targets.l2g_prediction.studyLocusId, accepts: [study_locus_id]}
+      min_score:      {binds: open_targets.l2g_prediction.score, op: ge, min: 0, max: 1, default_disclosed: true}   # default 0.5
+      limit:          {role: limit, min: 1, max: 1000}
+    result:
+      rows: $.results
+      count_fields: [$.num_results]
+      order: [{column: score, direction: desc, nulls: last}, {column: studyLocusId, direction: asc}, {column: geneId, direction: asc}]
+    serve: pass
+    defects:
+      - {id: OT-GEN-002, what: "head(limit) in file order before sort_values('score'): the top predictions are not the highest scores",
+         where: "genetics_mcp/tools.py:302,313", test: test_dl_defect_detectors.py::test_ot_gen_002, effect: silent_wrong}
+
+  get_credible_sets:
+    reads: {open_targets.credible_set: {access: bounded_scan}}
+    args:
+      output_path:    {role: output_path}
+      study_locus_id: {binds: open_targets.credible_set.studyLocusId, accepts: [study_locus_id]}
+      study_id:       {binds: open_targets.credible_set.studyId, accepts: [gwas_study]}
+      min_confidence: {binds: open_targets.credible_set.credibleSetlog10BF, op: ge}
+      study_type:     {binds: open_targets.credible_set.studyType}           # closed vocabulary (enum)
+      limit:          {role: limit, min: 1, max: 10000}
+    result:
+      rows: $.top_credible_sets
+      count_fields: [$.num_results]
+      order: [{column: credibleSetlog10BF, direction: desc, nulls: last}, {column: studyLocusId, direction: asc}]
+      order_source: upstream_full_sort
+      summary_fields: {$.summary_stats: drop}
+      files: [{path_from: $.output_path, must_exist: true, write_once: true}]
+    serve: pass
+
+  get_qtl_colocalization:
+    reads: {open_targets.l2g_prediction: {access: full_table}}
+    args:
+      study_locus_id: {binds: open_targets.l2g_prediction.studyLocusId, accepts: [study_locus_id]}
+      gene_id:        {binds: open_targets.l2g_prediction.geneId, accepts: [ensembl_gene, hgnc_symbol]}
+    result: {rows: $.results}
+    serve: block
+    block:
+      reason: "Reads QTL colocalisation from L2G feature values rather than from the colocalisation tables, so CLPP thresholds apply to model features. A colocalisation statistic plugin and a derived replacement arrive in phase 3."
+      alternatives: [genetics.query_colocalisation, genetics.get_colocalisation_by_chromosome]
+      until_phase: 3
+    defects:
+      - {id: OT-GEN-003, what: "QTL colocalisation taken from l2g_prediction features; qtl_type is recorded but never filters",
+         where: "genetics_mcp/tools.py:559-575", effect: silent_wrong}
+
+  convert_rsid_to_variant_id:
+    reads: {open_targets.variant: {access: bounded_scan, columns: [variantId, rsIds, chromosome, position]}}
+    args:
+      rs_id: {binds: open_targets.variant.rsIds, op: contains, accepts: [rsid]}
+    result:
+      kind: record
+      rows: $
+      fields: {variant_id: {column: variantId}, chromosome: {column: chromosome}, position: {column: position}}
+    serve: derived
+    derived:
+      verb: find
+      table: open_targets.variant
+      columns: [variantId, chromosome, position]
+      rename: {variantId: variant_id}
+      envelope: {success: true, rs_id: "{rs_id}"}
+    text:
+      notes: ["one rsID can name several alleles; every matching variant is returned (more than one is reported as ambiguous by the resolver)"]
+    defects:
+      - {id: OT-GEN-004, what: "iloc[0]: an rsID naming several alleles returns the first variant in file order",
+         where: "genetics_mcp/tools.py:715,748", effect: silent_wrong}
+
+  get_variant_annotation:
+    reads: {open_targets.variant: {access: bounded_scan}}
+    args:
+      variant_id: {binds: open_targets.variant.variantId, accepts: [ot_variant, rsid]}
+      chromosome: {binds: open_targets.variant.chromosome}
+      position:   {binds: open_targets.variant.position}
+    require_any: [[variant_id, position]]
+    exclusive: [[variant_id, position]]
+    result:
+      kind: record
+      rows: $
+      echo: {variant_id: {path: $.variantId, source: record}}
+      not_found_when: ["$.error =~ '(?i)not found'"]
+    serve: pass
+    defects:
+      - {id: OT-GEN-005, what: "chromosome + position matches every allele at the position and iloc[0] returns the first",
+         where: "genetics_mcp/tools.py:831,870", effect: silent_wrong}
+
+  get_study_metadata:
+    reads: {open_targets.study: {access: full_table}}
+    args:
+      study_id:        {binds: open_targets.study.studyId, accepts: [gwas_study]}
+      trait:           {binds: open_targets.study.traitFromSource, interpreted_as: casefold_substring,
+                        forbid: [".", "*", "+", "?", "(", ")", "[", "]", "{", "}", "|", "^", "$", "\\"]}   # upstream applies a regex
+      study_type:      {binds: open_targets.study.studyType}
+      gene_id:         {binds: open_targets.study.geneId, accepts: [ensembl_gene, hgnc_symbol]}
+      min_sample_size: {binds: open_targets.study.nSamples, op: ge, min: 0}              # unknown sizes never pass
+      project_id:      {binds: open_targets.study.projectId, accepts: [gwas_project]}   # exact project, not a regex substring
+      limit:           {role: limit, min: 1, max: 1000}
+    exclusive: [[study_id, trait], [study_id, study_type], [study_id, gene_id], [study_id, min_sample_size], [study_id, project_id]]
+    result:
+      rows: $.studies
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      order: [{column: studyId, direction: asc}]
+    serve: pass
+    defects:
+      - {id: OT-GEN-007, what: "min_sample_size keeps studies whose nSamples is null, so null-size studies fill the limit before larger ones",
+         where: "genetics_mcp/tools.py:969-980", test: test_dl_defect_detectors.py::test_ot_gen_007, effect: silent_wrong}
+      - {id: OT-GEN-008, what: "study_id short-circuits: every other filter is ignored",
+         where: "genetics_mcp/tools.py:933-946", effect: silent_wrong}
+
+  query_regulatory_regions:
+    reads: {open_targets.interval: {access: bounded_scan}}
+    args:
+      output_path:    {role: output_path}
+      gene_id:        {binds: open_targets.interval.geneId, accepts: [ensembl_gene, hgnc_symbol]}
+      chromosome:     {binds: open_targets.interval.chromosome}
+      start:          {binds: open_targets.interval.start, op: ge, min: 0}
+      end:            {binds: open_targets.interval.end, op: le, min: 0}
+      biosample:      {binds: open_targets.interval.biosampleName, interpreted_as: casefold_substring,
+                       forbid: [".", "*", "+", "?", "(", ")", "[", "]", "{", "}", "|", "^", "$", "\\"]}
+      interval_type:  {binds: open_targets.interval.intervalType}
+      min_score:      {binds: open_targets.interval.score, op: ge}                       # unknown scores never pass
+      max_distance_to_tss: {binds: open_targets.interval.distanceToTss, op: le_abs, min: 0}
+      limit:          {role: limit, min: 1, max: 10000}
+    require_any: [[gene_id, chromosome]]
+    result:
+      rows: [$.top_regions, $.regions]
+      count_fields: [$.count]
+      order: [{column: score, direction: desc, nulls: last, within: [datasourceId]}]
+      summary_fields: {$.summary_stats: drop}
+      files: [{path_from: $.output_path, must_exist: false, write_once: true}]
+    serve: pass
+    defects:
+      - {id: OT-GEN-009, what: "scanner.head(limit*10) before the biosample, type, score and distance filters: matching rows past the buffer are lost",
+         where: "genetics_mcp/tools.py:1120-1121", effect: silent_wrong}
+      - {id: OT-GEN-012, what: "min_score and max_distance_to_tss keep rows whose value is null",
+         where: "genetics_mcp/tools.py:1151-1165", effect: silent_wrong}
+
+  query_colocalisation:
+    reads:
+      open_targets.colocalisation_coloc: {access: full_table, when: {method: coloc}}
+      open_targets.colocalisation_ecaviar: {access: full_table, when: {method: ecaviar}}
+    args:
+      study_locus_id: {binds_any: [open_targets.colocalisation_coloc.leftStudyLocusId, open_targets.colocalisation_coloc.rightStudyLocusId],
+                       accepts: [study_locus_id]}
+      method:         {role: selector, match: casefold, values: {coloc: open_targets.colocalisation_coloc,
+                                                                 ecaviar: open_targets.colocalisation_ecaviar}}
+      min_h4:         {binds: open_targets.colocalisation_coloc.h4, op: ge, min: 0, max: 1}
+      min_clpp:       {binds: open_targets.colocalisation_ecaviar.clpp, op: ge, min: 0, max: 1}
+      limit:          {role: limit, min: 1, max: 1000}
+    require_any: [[method]]                       # both tables exist: h4 and clpp are not comparable
+    result:
+      rows: $.colocalisations
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+    serve: pass
+    defects:
+      - {id: OT-GEN-010, what: "without method both tables are concatenated and cut at limit in file order; an unknown method returns an empty success",
+         where: "genetics_mcp/tools.py:1349-1375", effect: silent_wrong}
+
+  get_colocalisation_by_chromosome:
+    reads:
+      open_targets.colocalisation_coloc: {access: full_table, when: {method: coloc}}
+      open_targets.colocalisation_ecaviar: {access: full_table, when: {method: ecaviar}}
+    args:
+      chromosome: {binds: open_targets.colocalisation_coloc.chromosome}
+      method:     {role: selector, match: casefold, values: {coloc: open_targets.colocalisation_coloc,
+                                                             ecaviar: open_targets.colocalisation_ecaviar}}
+      min_score:  {binds: {coloc: open_targets.colocalisation_coloc.h4, ecaviar: open_targets.colocalisation_ecaviar.clpp},
+                   op: ge, min: 0, max: 1, default_disclosed: true}
+      limit:      {role: limit, min: 1, max: 1000}
+    result:
+      rows: $.colocalisations
+      count_fields: [$.count]
+    serve: pass
+    defects:
+      - {id: OT-GEN-011, what: "any method other than 'coloc' (including a typo) is served from eCAVIAR; rows are head(limit) in file order",
+         where: "genetics_mcp/tools.py:1424-1434", effect: silent_wrong}

@@ -1,0 +1,137 @@
+# ClinicalTrials.gov API v2 (docs/DATA_LAYER.md §6.1 LeakageSpec, §8.7; phase 1, strict: false).
+#
+# A live registry: phase 1 serves every tool upstream (layout upstream_only) and stamps results with
+# the registry's data timestamp. The registry returns the *current* record, so facts dated after the
+# run's evidence ceiling (status, why stopped, posted results) leak into historical scenarios unless
+# the leakage policy withholds or redacts them (C25).
+schema: vbt.datasource/1
+source: clinicaltrials_gov
+title: ClinicalTrials.gov (API v2)
+kind: remote
+release: {from: "endpoint:/api/v2/version#$.dataTimestamp", resolve: {table: version, column: dataTimestamp}}
+defaults: {format: none, layout: upstream_only, missing: unknown}
+budget: {requests_per_min: 50, max_pages: 10, page_size: 100}
+strict: false
+leakage:
+  ceiling_from: data.leakage.ceiling
+  available_at: protocolSection.statusModule.studyFirstPostDateStruct.date
+  changed_at: protocolSection.statusModule.lastUpdatePostDateStruct.date
+  partial_dates: latest                       # "2004-01" counts as 2004-01-31
+  rows: withhold
+  redact: [protocolSection.statusModule.overallStatus, protocolSection.statusModule.whyStopped, resultsSection, hasResults]
+  counts: inject_filter
+
+id_types:
+  nct_id: {plugin: nct_id, resolvable: false}   # syntax only; existence is decided by the registry (existence: upstream)
+
+tables:
+  studies:
+    kind: records
+    path: studies
+    grain: one registered clinical study (its current registry record)
+    key: {columns: [protocolSection.identificationModule.nctId], check: none,
+          version: protocolSection.statusModule.lastUpdatePostDateStruct.date}
+    coverage: {statement: "Studies registered on ClinicalTrials.gov at the recorded data timestamp; registry search expands synonyms, so a match is not a literal text match.",
+               absence_means: unknown}
+    columns:
+      protocolSection:
+        role: nested
+        fields:
+          identificationModule:
+            role: nested
+            fields:
+              nctId:         {role: identifier, id_type: nct_id, remote_name: "AREA[NCTId]"}
+              briefTitle:    {role: text, remote_name: "AREA[BriefTitle]"}
+              officialTitle: {role: text, remote_name: "AREA[OfficialTitle]"}
+              acronym:       {role: label, of: nctId}
+              orgStudyIdInfo: {role: payload}
+              secondaryIdInfos: {role: payload}
+          statusModule:
+            role: nested
+            fields:
+              overallStatus: {role: category, remote_name: "AREA[OverallStatus]",
+                              vocab: [ACTIVE_NOT_RECRUITING, COMPLETED, ENROLLING_BY_INVITATION, NOT_YET_RECRUITING,
+                                      RECRUITING, SUSPENDED, TERMINATED, WITHDRAWN, AVAILABLE, NO_LONGER_AVAILABLE,
+                                      TEMPORARILY_NOT_AVAILABLE, APPROVED_FOR_MARKETING, WITHHELD, UNKNOWN]}
+              lastKnownStatus: {role: category, vocab: data}
+              whyStopped:    {role: text, remote_name: "AREA[WhyStopped]"}
+              statusVerifiedDate: {role: time, precision: variable, stored_as: iso8601_string, missing: unknown}
+              startDateStruct: {role: nested, fields: {
+                                  date: {role: time, precision: variable, stored_as: iso8601_string, missing: unknown,
+                                         partial_dates: latest, remote_name: "AREA[StartDate]"},
+                                  type: {role: category, vocab: [ACTUAL, ESTIMATED]}}}
+              primaryCompletionDateStruct: {role: nested, fields: {
+                                  date: {role: time, precision: variable, stored_as: iso8601_string, missing: unknown,
+                                         partial_dates: latest, remote_name: "AREA[PrimaryCompletionDate]"},
+                                  type: {role: category, vocab: [ACTUAL, ESTIMATED]}}}
+              completionDateStruct: {role: nested, fields: {
+                                  date: {role: time, precision: variable, stored_as: iso8601_string, missing: unknown,
+                                         partial_dates: latest, remote_name: "AREA[CompletionDate]"},
+                                  type: {role: category, vocab: [ACTUAL, ESTIMATED]}}}
+              studyFirstPostDateStruct: {role: nested, fields: {
+                                  date: {role: time, precision: day, stored_as: iso8601_string, missing: unknown,
+                                         remote_name: "AREA[StudyFirstPostDate]"}}}
+              lastUpdatePostDateStruct: {role: nested, fields: {
+                                  date: {role: time, precision: day, stored_as: iso8601_string, missing: unknown,
+                                         remote_name: "AREA[LastUpdatePostDate]"}}}
+          designModule:
+            role: nested
+            fields:
+              studyType: {role: category, vocab: [INTERVENTIONAL, OBSERVATIONAL, EXPANDED_ACCESS],
+                          remote_name: "AREA[StudyType]"}
+              phases:    {role: category, path: "[]", vocab: [NA, EARLY_PHASE1, PHASE1, PHASE2, PHASE3, PHASE4],
+                          remote_name: "AREA[Phase]"}
+              enrollmentInfo: {role: nested, fields: {count: {role: count, counts: "participants enrolled or anticipated",
+                                                              remote_name: "AREA[EnrollmentCount]"},
+                                                      type: {role: category, vocab: [ACTUAL, ESTIMATED]}}}
+              designInfo: {role: payload}
+          conditionsModule:
+            role: nested
+            fields:
+              conditions: {role: text, path: "[]", remote_name: "AREA[Condition]"}
+              keywords:   {role: text, path: "[]", remote_name: "AREA[Keyword]"}
+          armsInterventionsModule:
+            role: nested
+            fields:
+              interventions: {role: nested, item_key: {identity: position}, fields: {
+                                type: {role: category, vocab: data, remote_name: "AREA[InterventionType]"},
+                                name: {role: text, remote_name: "AREA[InterventionName]"},
+                                description: {role: text},
+                                otherNames: {role: text, path: "[]"}}}
+              armGroups: {role: payload}
+          eligibilityModule:
+            role: nested
+            fields:
+              eligibilityCriteria: {role: text, remote_name: "AREA[EligibilityCriteria]"}
+              sex:        {role: category, vocab: [ALL, FEMALE, MALE]}
+              minimumAge: {role: payload}
+              maximumAge: {role: payload}
+              stdAges:    {role: category, path: "[]", vocab: [CHILD, ADULT, OLDER_ADULT]}
+          contactsLocationsModule:
+            role: nested
+            fields:
+              locations: {role: nested, item_key: {identity: position}, null_means: unknown, fields: {
+                            facility: {role: text},
+                            city:     {role: category, vocab: data},
+                            country:  {role: category, vocab: data, remote_name: "AREA[LocationCountry]"},
+                            status:   {role: category, vocab: data}}}
+          sponsorCollaboratorsModule:
+            role: nested
+            fields:
+              leadSponsor: {role: nested, fields: {name: {role: text, remote_name: "AREA[LeadSponsorName]"},
+                                                   class: {role: category, vocab: data}}}
+              collaborators: {role: payload}
+          outcomesModule: {role: payload}
+          descriptionModule: {role: payload}
+      derivedSection: {role: payload}
+      hasResults:     {role: flag, missing: unknown, remote_name: "AREA[HasResults]"}
+      resultsSection: {role: payload}
+
+  version:
+    kind: records
+    path: version
+    grain: the registry's data release (one row per API call)
+    key: {columns: [dataTimestamp], check: none}
+    columns:
+      apiVersion:    {role: payload}
+      dataTimestamp: {role: time, precision: second, stored_as: iso8601_string, as_of: true}

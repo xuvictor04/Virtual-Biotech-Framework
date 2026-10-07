@@ -1,0 +1,87 @@
+# CZ CELLxGENE Census, human (docs/DATA_LAYER.md §6.7; phase 1, strict: false).
+#
+# Remote SOMA. Phase 1 serves every tool upstream (layout upstream_only, format none); phase 4
+# replaces the layout with {plugin: soma, uri: census_data/homo_sapiens/obs}. The upstream server
+# opens census_version "stable" (single_cell_mcp/tools.py:29,51), so the release is resolved from
+# each result and recorded, never assumed (N6).
+schema: vbt.datasource/1
+source: cellxgene_census
+title: CZ CELLxGENE Census (human)
+kind: remote
+release: {from: as_of, resolve: {result: "$.census_version"}}   # 'stable' is resolved and recorded, never assumed
+defaults: {format: none, layout: upstream_only, missing: unknown}
+strict: false
+
+id_types:
+  census_joinid:   {plugin: local_key, options: {canonical: "^[0-9]+$"}, resolvable: false}
+  census_feature:  {plugin: ensembl_gene, resolvable: false}        # var feature_id: Ensembl gene IDs
+  cell_ontology:   {plugin: local_key, options: {canonical: "^CL:[0-9]{7}$", normalize: [strip, upper]}, resolvable: false}
+  census_dataset:  {plugin: local_key, options: {canonical: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                                                 normalize: [strip, lower]}, resolvable: false}
+
+tables:
+  obs:
+    kind: records
+    grain: one cell in one dataset
+    key: {columns: [soma_joinid]}
+    grains: {donor: [dataset_id, donor_id], dataset: [dataset_id], cell_type: [cell_type], tissue: [tissue]}
+    coverage: {statement: "Cells of the human Census release named in the result; absence means not in the Census, not absent from the tissue.",
+               absence_means: unknown}
+    columns:
+      soma_joinid:     {role: identifier, id_type: census_joinid, self: true}
+      dataset_id:      {role: identifier, id_type: census_dataset, scope: {kind: batch, pooling: list}}
+      donor_id:        {role: category, vocab: data, unique_within: [dataset_id], scope: {kind: replicate, pooling: list}}
+      is_primary_data: {role: qualifier, effect: duplicate, default_filter: true}   # enforced and disclosed (§7)
+      cell_type:       {role: category, vocab: data, hierarchy_via: cell_type_ontology_term_id}
+      cell_type_ontology_term_id: {role: identifier, id_type: cell_ontology}
+      tissue:          {role: category, vocab: data}
+      tissue_general:  {role: category, vocab: data}
+      disease:         {role: category, vocab: data}
+      assay:           {role: category, vocab: data}
+      sex:             {role: category, vocab: data}
+      development_stage: {role: category, vocab: data}
+      suspension_type: {role: category, vocab: data}
+
+  var:
+    kind: records
+    grain: one gene (feature) measured in the human Census
+    key: {columns: [feature_id]}
+    columns:
+      feature_id:     {role: identifier, id_type: census_feature, self: true}
+      feature_name:   {role: label, of: feature_id, id_type: "open_targets:hgnc_symbol", unique: false}
+      feature_length: {role: measure, statistic: numeric, unit: bp, missing: unknown}
+      n_measured_obs: {role: count, counts: "cells in which the gene was measured"}
+      nnz:            {role: count, counts: "cells with a non-zero count"}
+
+  feature_dataset_presence:
+    kind: records
+    grain: one (dataset, gene) pair telling whether the gene was measured in the dataset
+    key: {columns: [dataset_id, feature_id]}
+    columns:
+      dataset_id: {role: identifier, id_type: census_dataset}
+      feature_id: {role: identifier, id_type: census_feature}
+
+  anndata_outputs:                                      # files written by get_anndata during a run (rev 2)
+    kind: matrix
+    path: "${run.mcp_output_dir}"
+    layout: single_file
+    format: none                                        # the h5ad format plugin arrives in phase 2 (F12)
+    materialized_by: {tool: single_cell.get_anndata, path_from: "$.output_path",
+                      value_from_arg: {layer: {raw: count, normalized: normalized_count}}}
+    grain: one (cell, gene) Census X value for one cell returned by one tool call
+    key: {columns: ["@row.soma_joinid", "@col.feature_id"]}
+    matrix:
+      storage: csr
+      implicit: zero_if_measured
+      measured_by: {table: feature_dataset_presence, key: [dataset_id, feature_id]}
+      axes:
+        obs: {name: cell, from: index, key: {columns: [soma_joinid]},
+              columns: {soma_joinid: {role: identifier, id_type: census_joinid, self: true},
+                        dataset_id: {role: identifier, id_type: census_dataset},
+                        donor_id: {role: category, vocab: data, unique_within: [dataset_id]},
+                        cell_type: {role: category, vocab: data},
+                        tissue: {role: category, vocab: data}}}
+        var: {name: gene, from: index, key: {columns: [feature_id]},
+              columns: {feature_id: {role: identifier, id_type: census_feature, self: true},   # never positional var_names
+                        feature_name: {role: label, of: feature_id, id_type: "open_targets:hgnc_symbol"}}}
+      values: {X: {role: measure, statistic: count, missing: zero, verified: false}}

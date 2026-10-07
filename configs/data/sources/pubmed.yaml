@@ -1,0 +1,39 @@
+# PubMed through the harness pubmed server (NCBI E-utilities; docs/DATA_LAYER.md §2 C1, C12).
+#
+# A live index served upstream. PMIDs are digits, so the pmid plugin rejects PMCIDs and DOIs as
+# invalid_argument instead of letting PMC1234 read as PMID 1234 (VERIFIED). The server enforces the
+# literature ceiling itself and lists what it withheld.
+schema: vbt.datasource/1
+source: pubmed
+title: PubMed (NCBI E-utilities)
+kind: remote
+release: {from: as_of}
+defaults: {format: none, layout: upstream_only, missing: unknown}
+budget: {requests_per_min: 180}
+strict: false
+
+id_types:
+  pmid:  {plugin: pmid, resolvable: false}      # existence is decided by efetch (existence: upstream)
+  pmcid: {plugin: pmcid, resolvable: false}
+  doi:   {plugin: doi, resolvable: false}
+
+tables:
+  records:
+    kind: records
+    path: efetch
+    grain: one PubMed citation record
+    key: {columns: [pmid], check: none}
+    coverage: {statement: "PubMed citations available at the time of the call (and before the run's literature ceiling when one is set).",
+               absence_means: unknown}
+    columns:
+      pmid:     {role: identifier, id_type: pmid, self: true}
+      title:    {role: text, searchable: true}
+      journal:  {role: category, vocab: data}
+      year:     {role: time, precision: year, stored_as: iso8601_string, missing: unknown}
+      pubdate:  {role: time, precision: variable, stored_as: iso8601_string, missing: unknown, partial_dates: latest}
+      epubdate: {role: time, precision: variable, stored_as: iso8601_string, missing: unknown, partial_dates: latest}
+      authors:  {role: payload}
+      doi:      {role: identifier, id_type: doi, resolvable: false}
+      abstract: {role: text, searchable: true}
+      publication_types: {role: category, vocab: data, path: "[]"}
+      registry_ids: {role: reference, ref_kinds: [nct_id], path: "[]"}
