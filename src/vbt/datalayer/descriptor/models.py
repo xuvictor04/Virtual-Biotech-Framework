@@ -508,6 +508,18 @@ class TableSpec(Strict):
     matrix: MatrixSpec | None = None
     strict: bool | None = None
 
+    def pattern_column(self, name: str) -> ColumnSpec | None:
+        """The ``column_patterns`` spec a physical column matches (``ae_serious_{organ}_pct`` matches
+        ``ae_serious_cardiac_pct``), or None. Pattern columns count as declared under ``strict``."""
+        import re
+
+        for template, spec in self.column_patterns.items():
+            parts = re.split(r"\{[A-Za-z_][A-Za-z0-9_]*\}", template)
+            rx = "^" + ".+?".join(re.escape(p) for p in parts) + "$"
+            if re.match(rx, name):
+                return spec
+        return None
+
     @model_validator(mode="after")
     def _shape(self) -> "TableSpec":
         if self.items_of is not None:

@@ -126,13 +126,26 @@ tables:
     kind: crosswalk
     path: clinical_trials/data/chembl_clinical_nct_data.parquet
     layout: single_file
-    grain: one (ClinicalTrials.gov study, target) link from ChEMBL clinical candidates
-    key: {columns: [nct_id, targetId], check: full, verified: false}
+    grain: one (ClinicalTrials.gov study, drug, target, disease) link from ChEMBL clinical candidates
+    # one row per (nct, drug, target, disease): (nct_id, targetId) repeats 125,263 times in the archive
+    key: {columns: [nct_id, drugId, targetId, diseaseId], check: full}
     columns:
-      nct_id:   {role: identifier, id_type: nct_id}
-      targetId: {role: identifier, id_type: "open_targets:ensembl_gene", integrity: partial}
+      nct_id:    {role: identifier, id_type: nct_id}
       # 481 salt-form IDs among 3,936 (§11.5): a parent query is answered per family
-      drugId:   {role: identifier, id_type: "open_targets:chembl_molecule", form: any, integrity: partial, optional: true}
+      drugId:    {role: identifier, id_type: "open_targets:chembl_molecule", form: any, integrity: partial}
+      targetId:  {role: identifier, id_type: "open_targets:ensembl_gene", integrity: partial}
+      diseaseId: {role: identifier, id_type: "open_targets:ot_disease", integrity: partial}
+      phase:     {role: measure, statistic: numeric, missing: unknown}
+      status:    {role: category, vocab: data}
+      trial_date: {role: payload}
+      mechanism_of_action: {role: payload}          # all null in the archive
+      disease_name: {role: label, of: diseaseId}
+      targetFromSourceId: {role: payload}
+      studyId:   {role: payload}                    # the ChEMBL clinical study (equals nct_id in the archive)
+      drugFromSource: {role: payload}               # all null in the archive
+      studyStopReason: {role: text}
+      studyStopReasonCategories: {role: payload}
+      dtd_combo: {role: payload}                    # drugId___targetId___diseaseId
 
   # -------------------------------------------------------------------- case study 1 labels
   clinical_trial_labels:
@@ -154,7 +167,15 @@ tables:
       results_source:            {role: category, vocab: data}
       ae_source:                 {role: category, vocab: data}
       pubmed_ids:                {role: reference, ref_kinds: [pmid], list_delimiter: "|"}
-      confidence:                {role: category, vocab: [high, medium, low]}
+      confidence:                {role: category, vocab: [high, medium, low], optional: true}   # absent from the archive
+      phase:                     {role: measure, statistic: numeric, missing: unknown}
+      status:                    {role: category, vocab: data}
+      studyStopReason:           {role: text}
+      studyStopReasonCategories: {role: category, vocab: data, list_delimiter: "|"}
+      phase2_progression:        {role: category, vocab: [NEVER, EVER]}
+      has_results:               {role: category, vocab: data}
+      ae_has_safety_signals:     {role: category, vocab: data}
+      ae_has_serious_pct_data:   {role: category, vocab: data}
 
   # -------------------------------------------------------------------- S5: GEO cohort matrices (OSMR)
   ibd_cohorts:

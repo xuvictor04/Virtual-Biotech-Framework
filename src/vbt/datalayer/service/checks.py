@@ -494,8 +494,26 @@ def r4_types(run: CheckRun) -> None:
                     column=path)
         else:
             run.columns.setdefault(path, "ready")
+    # columns a ``column_patterns`` template declares: checked against the pattern's role, never undeclared
+    patterned = set()
+    for name in reader.top_columns():
+        pspec = spec.pattern_column(name) if name not in declared_top else None
+        if pspec is None:
+            continue
+        patterned.add(name)
+        t = _arrow_type_of(reader, name)
+        role = getattr(pspec, "role", None)
+        if t is None or t == "partition" or role is None:
+            continue
+        if arrow_compatible(role, str(t), parse=getattr(pspec, "parse", None),
+                            stored_as=getattr(pspec, "stored_as", None), encoding=getattr(pspec, "encoding", None),
+                            list_delimiter=getattr(pspec, "list_delimiter", None)):
+            run.columns.setdefault(name, "ready")
+        else:
+            run.add("R4", False, f"{name} (pattern column): Arrow type {t} does not fit role {role}",
+                    status="schema_drift", column=name)
     if strict:
-        extra = [n for n in reader.top_columns() if n not in declared_top]
+        extra = [n for n in reader.top_columns() if n not in declared_top and n not in patterned]
         if extra:
             run.add("R4:undeclared", False, f"undeclared physical columns under strict: {', '.join(extra[:20])}",
                     status="schema_drift")

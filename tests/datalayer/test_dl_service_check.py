@@ -352,3 +352,38 @@ def test_key_check_spill_is_removed_on_every_exit(tmp_path, monkeypatch):
     removed = checks.sweep_spills(cache)
     assert sorted(Path(p).name for p in removed) == ["keycheck.999999999.abc", "keycheck.zz3xggm8"]
     assert [p.name for p in cache.glob("keycheck.*")] == [f"keycheck.{os.getpid()}.live"]
+
+
+def test_column_patterns_count_as_declared_under_strict(tmp_path):
+    """R3: a physical column matched by a ``column_patterns`` template is declared (and type-checked against
+    the pattern's role) under ``strict``; an unmatched one is still undeclared."""
+    rows = [{"id": "a", "ae_serious_cardiac_pct": 1.5, "ae_serious_renal_pct": 0.0, "stray": "x"}]
+    write(tmp_path, "t", rows)
+    cols = {"id": {"role": "identifier"}}
+    spec = table(cols, ["id"], strict=True,
+                 column_patterns={"ae_serious_{organ}_pct": {"role": "measure", "statistic": "numeric"}})
+    model = check_table(make_ctx(tmp_path, {"t": spec}), "s.t")
+    undeclared = finding(model, "R4:undeclared")
+    assert "stray" in undeclared.detail and "ae_serious" not in undeclared.detail
+    write(tmp_path / "b", "t", [{"id": "a", "ae_serious_cardiac_pct": "high"}])
+    bad = check_table(make_ctx(tmp_path / "b", {"t": spec}), "s.t")
+    assert "pattern column" in finding(bad, "R4").detail and bad.status == "schema_drift"
+
+
+ZENODO = Path(__file__).resolve().parents[2] / "data" / "zenodo"
+
+
+@pytest.mark.skipif(not (ZENODO / "virtualbiotech_submission" / "clinical_trials" / "data").is_dir(),
+                    reason="the Zenodo archive is not extracted under data/zenodo")
+def test_shipped_zenodo_descriptor_is_ready_on_the_real_archive(tmp_path, monkeypatch, capsys):
+    """R3: the case-study-1 tables of the shipped descriptor pass readiness on the real archive (declared
+    columns, pattern columns, and the real grain of chembl_clinical_nct)."""
+    from vbt import cli
+
+    monkeypatch.setenv("VBT_ZENODO_DIR", str(ZENODO))
+    monkeypatch.setenv("VBT_DATA_DIR", str(tmp_path))
+    rc = cli.main(["--profile", "mock", "ds", "check", "--table", "zenodo_vbt.chembl_clinical_nct",
+                   "--table", "zenodo_vbt.clinical_trial_labels"])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "zenodo_vbt.chembl_clinical_nct: ready" in out and "zenodo_vbt.clinical_trial_labels: ready" in out
