@@ -14,7 +14,7 @@
    },
    "country": {
     "default": "United States",
-    "description": "Values of protocolSection.contactsLocationsModule.locations[].country (see mcp__data__vocab). Defaults to 'United States'; pass null for no restriction.",
+    "description": "Values of protocolSection.contactsLocationsModule.locations[].country (see mcp__data__vocab). Defaults to 'United States' (null is not accepted).",
     "type": "string",
     "x-vbt-vocabulary": "clinicaltrials_gov.studies.protocolSection.contactsLocationsModule.locations[].country"
    },

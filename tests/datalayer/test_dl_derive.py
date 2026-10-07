@@ -165,7 +165,7 @@ def test_engine_regex_defaults_and_exclusive(catalog):
     assert p["condition"]["description"] == "Matched by the source's search engine: registry search with synonym expansion."
     assert p["pattern"]["description"] == "Literal text, not a pattern."
     assert p["status"]["enum"] == ["Completed", "Recruiting"]
-    assert p["status"]["description"] == "Defaults to 'Completed'; pass null for no restriction."
+    assert p["status"]["description"] == "Defaults to 'Completed' (null is not accepted)."   # GW-NULL
     assert s["schema"]["x-vbt-exclusive"] == [["condition", "pattern"]]
     assert "ranked by phase desc (ranked by the source, not verified)" in s["text"]
 

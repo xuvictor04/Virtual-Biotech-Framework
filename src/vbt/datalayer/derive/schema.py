@@ -274,7 +274,8 @@ def annotate_schema(contract: Any, schema: Mapping[str, Any] | None, *, catalog:
         if a.interpreted_as == "engine" and a.engine_doc:
             _append(prop, f"Matched by the source's search engine: {a.engine_doc}.")
         if "default" in prop and prop.get("default") is not None and a.role == "filter" and a.default_disclosed:
-            _append(prop, f"Defaults to {prop['default']!r}; pass null for no restriction.")
+            from ..gateway.contracts import default_note
+            _append(prop, default_note(contract, a, prop, prop["default"]))
     for name, column in auto_scope_args(contract, schema).items():
         bound = contract.bound_table
         t = contract.tables.get(bound) if bound else None

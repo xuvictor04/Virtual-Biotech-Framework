@@ -646,6 +646,11 @@ def serve_essentiality(ctx: ServiceContext, req: Mapping[str, Any]) -> dict[str,
     below = 0
     out: list[dict[str, Any]] = []
     if mode == "by_tissue":
+        if not rows:
+            # no screen of this gene: nothing was found (the gateway reports empty, not screened), never a
+            # record that says found
+            return ServeResponse(rows=[], total=0, key_columns=[], served_by="derived",
+                                 sections={"_essentiality": {"cutoff": _cutoff_text(spec)}}).model_dump(mode="json")
         genes = {r.get(cols["gene"]) for r in rows}
         groups: dict[Any, list[dict[str, Any]]] = {}
         for r in rows:
@@ -662,7 +667,8 @@ def serve_essentiality(ctx: ServiceContext, req: Mapping[str, Any]) -> dict[str,
                             "cell_lines": screens})
         flags = [r.get(cols["essential_flag"]) for r in rows if cols.get("essential_flag")]
         known_flags = [f for f in flags if f is not None]
-        record = {"gene_id": next(iter(genes)) if len(genes) == 1 else None, "found": True,
+        gene = next(iter(genes)) if len(genes) == 1 else params.get(args.get("gene", "gene_id"))
+        record = {"gene_id": gene, "found": True,
                   "is_essential": known_flags[0] if known_flags else None, "num_tissues": len(tissues),
                   "num_cell_lines": sum(t["num_cell_lines"] for t in tissues), "essentiality_by_tissue": tissues}
         return ServeResponse(rows=[json_value(record)], total=1, key_columns=[], served_by="derived",

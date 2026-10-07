@@ -38,7 +38,7 @@
    },
    "min_score": {
     "default": 0.0,
-    "description": "Keeps rows with score >= this value; unknown values never pass. Defaults to 0.0; pass null for no restriction.",
+    "description": "Keeps rows with score >= this value; unknown values never pass. Defaults to 0.0; pass 0 for no restriction (null is not accepted).",
     "maximum": 1.0,
     "minimum": 0.0,
     "type": "number"

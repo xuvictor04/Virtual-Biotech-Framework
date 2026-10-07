@@ -25,7 +25,7 @@
    },
    "min_phase": {
     "default": 0,
-    "description": "Keeps rows with phase >= this value; unknown values never pass. Defaults to 0; pass null for no restriction.",
+    "description": "Keeps rows with phase >= this value; unknown values never pass. Defaults to 0; pass 0 for no restriction (null is not accepted).",
     "maximum": 4.0,
     "minimum": 0.0,
     "type": "integer"

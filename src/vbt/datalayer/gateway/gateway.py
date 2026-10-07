@@ -156,6 +156,7 @@ class _CallState:
     anchors: dict[str, tuple[str, Any]] = field(default_factory=dict)
     auto_fixed: dict[str, Any] = field(default_factory=dict)
     soft_sections: dict[str, str] = field(default_factory=dict)
+    section_meta: dict[str, dict[str, Any]] = field(default_factory=dict)   # derived sections' own status
     storage_types: dict[str, str | None] = field(default_factory=dict)
     attempts: int = 0
     t_ms: dict[str, float] = field(default_factory=dict)
@@ -1210,7 +1211,7 @@ class DataGateway:
                              else None, key=key, order=order, k=k, group_by=within, distinct=distinct, grains=grains,
                              unknown_columns=unknown_cols, key_set_max=self.settings.witness.max_key_set,
                              budget_bytes=t.spec.max_scan_bytes or self.settings.witness.max_scan_bytes,
-                             params={n: v for n, v in plan.args_raw.items() if isinstance(v, (str, int, float, bool))})
+                             params=self._params(plan, st))
         try:
             st.witness = await self.service.witness(req)
         except ServiceError as exc:
@@ -1541,6 +1542,18 @@ class DataGateway:
         it = contract.tables.get(r.rows_of) if r.rows_of else None
         prefix = it.items_path if it is not None and it.is_item_table else None
         return FieldMapper(r.fields, parent_key=r.parent_key, key_from_args=r.key_from_args, item_prefix=prefix)
+
+    @staticmethod
+    def _params(plan: CallPlan, st: _CallState) -> dict[str, Any]:
+        """Scalar parameters for the data child: the caller's arguments over the disclosed schema defaults
+        (``min_cell_lines`` defaults to 3), so the computation applies the default ``_vbt.scope`` reports."""
+        prepared = st.prepared
+        defaults = dict(getattr(prepared, "defaults", None) or {}) if prepared is not None else {}
+        merged = {**defaults, **{n: v for n, v in plan.args_raw.items() if v is not None}}
+        for n, v in plan.args_raw.items():
+            if v is None:
+                merged.pop(n, None)                    # an explicit null lifts the default (no restriction)
+        return {n: v for n, v in merged.items() if isinstance(v, (str, int, float, bool))}
 
     @staticmethod
     def _nested_record_column(contract: ToolContract, t: Any) -> Any:
@@ -1982,7 +1995,7 @@ class DataGateway:
                            explode=list(d.explode), carry=list(d.carry), rename=dict(d.rename), split=d.split,
                            nest=nest, aggregate=dict(d.aggregate), sections=sections, anchor=anchor, anchors=anchors,
                            search_text=st.search_text,
-                           params={n: v for n, v in plan.args_raw.items() if isinstance(v, (str, int, float, bool))},
+                           params=self._params(plan, st),
                            budget_bytes=self.settings.witness.repair_max_bytes)
         resp = await self.service.serve(req)
         if resp.error:                                 # the handler refused the request: its own kind, not an outage
@@ -2014,6 +2027,8 @@ class DataGateway:
                 obj["rows"] = rows                     # an envelope is declared: rows under "rows"
             else:
                 obj = rows  # type: ignore[assignment]
+        st.section_meta = {k: dict(v) for k, v in dict(resp.sections.get("_section_meta") or {}).items()
+                           if k in d.sections}
         for sname, sec in d.sections.items():
             value = resp.sections.get(sname)
             unavailable = st.soft_sections.get(sec.table)
@@ -2445,6 +2460,16 @@ class DataGateway:
             served_by=served_by, hash_seed=self._hash_seed(plan.server), notes=notes, cite=cite, prov=prov.id)
         if st.soft_sections:
             header.extra["unavailable_sections"] = dict(st.soft_sections)
+        if st.section_meta:
+            # each section read on its own: its status, total and coverage, never the main table's
+            header.extra["sections"] = json_value(st.section_meta)
+            header.tables = list(dict.fromkeys((header.tables or []) + [
+                _last(str(m["table"])) for m in st.section_meta.values() if m.get("table")]))
+            blind = sorted(n for n, m in st.section_meta.items() if m.get("status") == "empty" and
+                           m.get("coverage") != "covered")
+            if blind and header.cite:
+                header.cite += (f"; empty section(s) {', '.join(blind)} are not evidence of absence "
+                                "(coverage unknown)")
         return DataResult.build(obj, header, prov)
 
     def _record(self, plan: CallPlan, st: _CallState, contract: ToolContract, t: Any, *, status: str,

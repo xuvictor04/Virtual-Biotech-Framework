@@ -78,10 +78,16 @@ def read_section(ctx: ServiceContext, name: str, sec: Mapping[str, Any], params:
 def serve_sections(ctx: ServiceContext, sections: Mapping[str, Mapping[str, Any]], params: Mapping[str, Any]
                    ) -> dict[str, Any]:
     """The sections of a ``_serve`` request in the phase-1 value form (rows, or the single record), a section
-    that cannot be read as ``{_vbt_unavailable, status: not_ready}``."""
+    that cannot be read as ``{_vbt_unavailable, status: not_ready}``. Each section's own status, total,
+    truncation, table and (when empty) coverage go under ``_section_meta``: the gateway reports them per
+    section and never lets the main table's coverage speak for them."""
     out: dict[str, Any] = {}
+    meta: dict[str, Any] = {}
+    out["_section_meta"] = meta
     for name, sec in sections.items():
         got = read_section(ctx, name, sec, params)
+        meta[name] = {k: got[k] for k in ("status", "table", "total", "truncated", "coverage", "coverage_statement")
+                      if got.get(k) is not None}
         if got["status"] == "not_ready":
             out[name] = {"_vbt_unavailable": got["reason"], "status": "not_ready"}
         elif "record" in got:

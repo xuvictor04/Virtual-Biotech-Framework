@@ -422,6 +422,34 @@ def _schema_props(schema: Mapping[str, Any] | None) -> dict[str, Any]:
     return dict((schema or {}).get("properties") or {})
 
 
+def _nullable(prop: Any) -> bool:
+    """The upstream schema accepts null (``type`` lists ``null``, or an ``anyOf``/``oneOf`` branch is null)."""
+    if not isinstance(prop, Mapping):
+        return False
+    t = prop.get("type")
+    if t == "null" or (isinstance(t, list) and "null" in t):
+        return True
+    return any(_nullable(b) for k in ("anyOf", "oneOf") for b in prop.get(k) or [])
+
+
+def null_is_unrestricted(contract: Any, prop: Any) -> bool:
+    """An explicit null on this argument means "no restriction": the gateway serves the call itself
+    (derived), or the upstream signature accepts None."""
+    b = getattr(contract, "binding", None)
+    return (b is not None and b.serve == "derived") or _nullable(prop)
+
+
+def default_note(contract: Any, binding: Any, prop: Any, default: Any) -> str:
+    """How to lift a disclosed default: null where null means no restriction, else the loosest value."""
+    if null_is_unrestricted(contract, prop):
+        return f"Defaults to {default!r}; pass null for no restriction."
+    loosest = binding.min if binding.op in ("ge", "gt", "ge_abs", "gt_abs") else \
+        binding.max if binding.op in ("le", "lt", "le_abs", "lt_abs") else None
+    if loosest is not None:
+        return f"Defaults to {default!r}; pass {loosest:g} for no restriction (null is not accepted)."
+    return f"Defaults to {default!r} (null is not accepted)."
+
+
 def _default(schema: Mapping[str, Any] | None, name: str) -> tuple[bool, Any]:
     prop = _schema_props(schema).get(name)
     if isinstance(prop, Mapping) and "default" in prop:
@@ -583,6 +611,16 @@ def apply_arg_contracts(contract: Any, args: Mapping[str, Any], vocab: Mapping[s
                                    payload=unsupported_filter_payload(name, column, "unbound_argument"))
             continue
 
+        if value is None and name in args:
+            has_default, default = _default(schema, name)
+            if has_default and default is not None and binding.role == "filter":
+                if not null_is_unrestricted(contract, props.get(name)):
+                    # upstream's signature does not take None: say so before the call, never a source error
+                    raise _invalid(contract, name, value, f"{name} cannot be null; "
+                                   + default_note(contract, binding, props.get(name), default).replace(
+                                       "Defaults to", "omit it for the default"), reason="null")
+                out.args_sent.pop(name, None)       # derived: null is "no restriction", nothing is sent
+                out.notes.append(f"{name}=null: no restriction (the default {default!r} is not applied)")
         if value is None:
             continue
 
@@ -793,7 +831,8 @@ def apply_arg_contracts(contract: Any, args: Mapping[str, Any], vocab: Mapping[s
         out.args_sent[name] = default
         out.values[name] = default
         out.scope[name] = json_value(default)
-        out.notes.append(f"{name} defaults to {default!r}; pass null for no restriction")
+        out.notes.append(default_note(contract, binding, prop, default).rstrip(".").replace(
+            "Defaults to", f"{name} defaults to"))
         table, column = bound_column(contract, name, binding, selected, selector_value)
         if binding.op == "eq" and column:
             out.fixed[column] = default

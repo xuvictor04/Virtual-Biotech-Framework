@@ -90,3 +90,55 @@ def test_rsids_resolve_to_the_variant_they_name(live, fixture_ready, tool: str, 
     """SW-6: an rsID is translated to its variant ID (maps_to via variant), never sent on verbatim."""
     r = ok(enforce(live, fixture_ready).call("genetics", tool, args))
     assert VARIANT in str(r.header.get("resolved")), r.header
+
+
+# ---------------------------------------------------------------------------- essentiality
+
+
+def test_min_cell_lines_default_is_applied(live, fixture_ready) -> None:
+    """SW-1: the disclosed default (min_cell_lines=3) is what the data child applies: TP53 in one Lung
+    Cancer screen is not returned as an essential gene."""
+    bridge = enforce(live, fixture_ready)
+    r = bridge.call("functional_genomics", "find_essential_genes", {"disease": "Lung Cancer"})
+    explicit = bridge.call("functional_genomics", "find_essential_genes", {"disease": "Lung Cancer", "min_cell_lines": 3})
+    assert not r.is_error and not explicit.is_error, r.text[:800]
+    assert r.header.get("total") == explicit.header.get("total"), (r.header, explicit.header)
+    assert dict(r.header.get("scope") or {}).get("min_cell_lines") in (None, 3)
+    assert all((g.get("num_cell_lines") or 0) >= 3 for g in r.rows("essential_genes")), r.text[:800]
+
+
+def test_unscreened_gene_is_never_found(live, fixture_ready) -> None:
+    """SW-2: a resolved gene without screens is empty, never a found:true record."""
+    r = enforce(live, fixture_ready).call("functional_genomics", "query_gene_essentiality",
+                                          {"gene_id": F.TP53BP1})
+    assert not r.is_error, r.text[:800]
+    assert (r.status or r.header.get("status")) == "empty", r.header
+    assert r.obj.get("found") is not True, r.text[:800]
+    assert "cite rows by key" not in str(r.header.get("cite"))
+
+
+# ---------------------------------------------------------------------------- derived sections, nulls
+
+
+def test_view_sections_carry_their_own_status_and_coverage(live, fixture_ready) -> None:
+    """SW-4: empty sections of the target profile report their own coverage and are not citable absences."""
+    r = ok(enforce(live, fixture_ready).call("target", "get_comprehensive_target_profile",
+                                             {"target_id": F.TP53BP1}))
+    sections = r.header.get("sections") or {}
+    assert sections["known_drugs"]["status"] == "empty" and sections["known_drugs"]["coverage"] != "covered"
+    assert sections["known_drugs"]["table"] == "open_targets.known_drug"
+    assert "known_drug" in (r.header.get("tables") or [])
+    assert "known_drugs" in str(r.header.get("cite")) and "not evidence of absence" in str(r.header.get("cite"))
+    full = ok(enforce(live, fixture_ready).call("target", "get_comprehensive_target_profile",
+                                                {"target_id": F.PCSK9}))
+    assert full.header["sections"]["known_drugs"]["status"] == "ok"
+    assert full.header["sections"]["known_drugs"]["total"] == len(full.obj.get("known_drugs") or [])
+
+
+def test_null_on_a_defaulted_filter_is_refused_before_the_call(live, fixture_ready) -> None:
+    """GW-NULL: upstream's signature takes no None, so null is invalid_argument naming the loosest value,
+    never a pydantic source_error; the listed description no longer advises null."""
+    payload = err(enforce(live, fixture_ready).call("drug", "search_known_drugs",
+                                                    {"target_id": F.PCSK9, "min_phase": None, "limit": 5}),
+                  "invalid_argument")
+    assert payload.get("argument") == "min_phase" and "pass 0" in payload.get("message", "")
