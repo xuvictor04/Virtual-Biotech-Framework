@@ -813,6 +813,27 @@ def sweep_spills(cache_dir: Any) -> list[str]:
     return removed
 
 
+def access_indexes(run: CheckRun) -> None:
+    """``access_paths`` with ``via: sidecar_index, build: readiness`` are built here, within the scan budget
+    (``build: on_demand`` ones are built on the first read). An over-budget or failed build is a per-column
+    warning naming the offline command: the tools reading through it answer ``too_large`` until it is built."""
+    from .sidecar import BUILD_HINT, build_access_index
+
+    reader = run.reader
+    assert reader is not None
+    for ap in reader.spec.access_paths:
+        if ap.via != "sidecar_index" or ap.build != "readiness":
+            continue
+        for column in ap.columns:
+            try:
+                path, n = build_access_index(reader, column)
+            except (BudgetExceeded, TableUnavailable, FormatError, ServiceError, OSError) as exc:
+                run.add("access_index", False, f"{column}: sidecar index not built ({exc})", level="warning",
+                        column=column, hint=f"build it offline with `{BUILD_HINT}`")
+                continue
+            run.add("access_index", True, f"{column}: sidecar index ready ({n} values, {path.name})", column=column)
+
+
 def r5b_item_keys(run: CheckRun) -> None:
     """Item keys of nested containers (not declared as item tables) are unique within each row (sampled)."""
     reader = run.reader
@@ -1587,6 +1608,7 @@ def check_table(ctx: ServiceContext, ref: str, depth: str = "standard", *,
         r8_sentinels(run)
         r9_refs(run)
         r10_relations(run)
+        access_indexes(run)
         for item_ref in ctx.item_tables_of(str(t.physical)):
             sub = CheckRun(ctx, item_ref, depth, reader=ctx.reader(item_ref), sample_rows=sample_rows, rows=None)
             sub.key_check = r5_keys(sub)

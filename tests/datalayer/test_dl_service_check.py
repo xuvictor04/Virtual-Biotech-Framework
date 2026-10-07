@@ -387,3 +387,21 @@ def test_shipped_zenodo_descriptor_is_ready_on_the_real_archive(tmp_path, monkey
     out = capsys.readouterr().out
     assert rc == 0, out
     assert "zenodo_vbt.chembl_clinical_nct: ready" in out and "zenodo_vbt.clinical_trial_labels: ready" in out
+
+
+def test_readiness_builds_declared_access_indexes(tmp_path):
+    """F19: ``build: readiness`` sidecar indexes are built by the check (within the scan budget); an
+    ``on_demand`` one waits for its first read."""
+    from vbt.datalayer.service.sidecar import access_index_path
+
+    write(tmp_path, "t", [{"id": f"r{i}", "gene": f"G{i % 3}", "drug": f"D{i % 2}"} for i in range(30)])
+    cols = {"id": {"role": "identifier"}, "gene": {"role": "category"}, "drug": {"role": "category"}}
+    spec = table(cols, ["id"], access_paths=[{"columns": ["gene"], "via": "sidecar_index", "build": "readiness"},
+                                             {"columns": ["drug"], "via": "sidecar_index", "build": "on_demand"}])
+    ctx = make_ctx(tmp_path, {"t": spec})
+    model = check_table(ctx, "s.t")
+    built = finding(model, "access_index", ok=True)
+    assert built.column == "gene" and model.status == "ready"
+    fp = ctx.reader("s.t").fingerprint()
+    assert access_index_path(ctx.settings.cache_dir, "s", fp, "t", "gene").exists()
+    assert not access_index_path(ctx.settings.cache_dir, "s", fp, "t", "drug").exists()
