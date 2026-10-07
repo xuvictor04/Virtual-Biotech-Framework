@@ -488,7 +488,8 @@ class TableSpec(BaseModel):
     fragment_key: FragmentKey | None = None       # {name: cohort, from: filename_regex, pattern: "(GSE\\d+)"}
     fragment_overrides: dict[str, dict[str, dict[str, Any]]] = {}   # per fragment: column -> facet overrides / absent
     size_class: Literal["auto", "small", "large", "huge"] = "auto"
-    size_from: SizeFrom | None = None             # remote: {table: study, column: allSampleCount, row_bytes: 2000}
+    size_from: SizeFrom | None = None             # remote: {table: study, column: allSampleCount, row_bytes: 2000,
+                                                  #   via: server.tool, arg, path}: the count read before the call
     max_scan_bytes: int | None = None             # per-table override of data.witness.max_scan_bytes
     evidence_nature: EvidenceNature | None = None # {kind: literature_cooccurrence, caveat: "..."}
     materialized_by: MaterializedBy | None = None # tables written by a tool call during a run (Census h5ad)
@@ -1618,6 +1619,9 @@ class ToolBinding(BaseModel):
     on_contradiction: Literal["derived", "tool_defect"] = "derived"   # derived only if `derived` is set
     witness: bool = True               # false: no inflation, no ranking refusal, total_method unknown (rev 2)
     leakage_filter: LeakageFilter | None = None   # rev 2: {arg: advanced_filter, template: "AREA[StudyFirstPostDate]RANGE[MIN,{ceiling}]"}
+                                       # injected as "(<existing>) AND (<fragment>)": an OR in the value cannot escape it
+    requires_fixed: list[RequiresFixed] = []   # {arg: value_filter, columns: [dataset_id], reason, alternatives}:
+                                       # the SOMA filter must fix each column, else unsupported_combination
     defects: list[DefectSpec] = []     # documentation + detector tests; never drives code
     text: TextSpec = TextSpec()        # summary, drop_promises, notes
     hidden: bool = False
@@ -1673,9 +1677,12 @@ class ResultSpec(BaseModel):
     kind: Literal["rows", "record", "count", "file"] = "rows"   # rev 2
     rows: str | list[str] | None = "$" # JSONPath(s) to row lists; "$" + kind=record for one record
     rows_of: str | None = None         # rev 2: item table the rows are items of ("open_targets.target_go")
+    record_when: str | None = None     # a payload test: a by-key reply is the one record at "$" (study_id)
     grain: str | None = None           # rev 2: the result's grain (a grains name); coarser than the key -> scope rule
     fields: dict[str, FieldMap] = {}   # rev 2: {"entity_id": {column: word}, "similarity": {computed: {...}}}
-    parent_key: dict[str, str] = {}    # rev 2: {"id": "$.target_id"}: item rows carry the parent key
+    parent_key: dict[str, str] = {}    # rev 2: {"id": "$.target_id"}: item rows carry the parent key; "/id" when
+                                       # the items have an `id` of their own (an argument bound to the parent's
+                                       # id is then checked on "/id", never on the item's id)
     row_key: list[str] | Literal["from_descriptor"] = "from_descriptor"   # JSONPaths allowed; $parent, $root
     key_from_args: dict[str, str] = {} # rev 2: {studyId: study_id}: key parts fixed by equality-bound args
     exists_when: str | None = None     # rev 2: per-row JSONPath predicate ($.patientId != null)

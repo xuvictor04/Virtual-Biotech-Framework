@@ -239,7 +239,17 @@ def test_serve_nest_after_negation(ctx):
              nest={"group_by": ["disease"], "items": "evidence", "count_as": "n_evidence", "having": {"min": 1}})
     by = {g["disease"]: g["n_evidence"] for g in s.rows}
     assert by == {F.PHENO["Y"]: 1, F.PHENO["Z"]: 2}, "X and W hold only negated items"
-    assert s.total == 2 and s.sections["_excluded"] == {"negated": 3}
+    assert s.total == 2 and s.sections["_excluded"] == {"negated": 3, "filtered": 0}
+    # item filters and negation empty groups before having (min_arg) and the limit see them (F4)
+    pcs = call(ctx, "_serve", table="ot.disease_phenotype_evidence", predicate={"eq": ["/phenotype", F.SEIZURE]},
+               nest={"group_by": ["disease"], "items": "evidence", "count_as": "n",
+                     "item_filter": [{"eq": ["evidenceType", "PCS"]}]}, limit=1)
+    assert [(g["disease"], g["n"]) for g in pcs.rows] == [(F.PHENO["Z"], 1)] and pcs.total == 1
+    assert pcs.sections["_excluded"]["negated"] >= 1, "X: its only PCS item is negated"
+    two = call(ctx, "_serve", table="ot.disease_phenotype_evidence", predicate={"eq": ["/phenotype", F.SEIZURE]},
+               nest={"group_by": ["disease"], "items": "evidence", "count_as": "n", "having": {"min_arg": "k"}},
+               params={"k": 2})
+    assert [g["disease"] for g in two.rows] == [F.PHENO["Z"]]
     with_neg = call(ctx, "_serve", table="ot.disease_phenotype_evidence",
                     predicate={"eq": ["/phenotype", F.SEIZURE]},
                     nest={"group_by": ["disease"], "count_as": "n", "include_negated": True})

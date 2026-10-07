@@ -118,6 +118,10 @@ def _nest(rows: list[dict[str, Any]], spec: Mapping[str, Any], negate: Sequence[
                     continue
                 g[name].append(it)
             continue
+        if item_preds and not all(evaluate(p, r, params) is True for p in item_preds):
+            dropped[gkey] = True                       # the rows are the items (an item table)
+            continue
+        matched[gkey] = True
         item = {k: v for k, v in r.items() if k not in group_by} if cols is None else {c: r.get(c) for c in cols}
         g[name].append(item)
     out = []
