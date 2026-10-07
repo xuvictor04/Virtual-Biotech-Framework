@@ -27,6 +27,8 @@ tools:
       verb: find
       table: open_targets.target_pathways
       rename: {"pathways[].pathwayId": pathwayId, "pathways[].pathway": pathway, "pathways[].topLevelTerm": topLevelTerm}
+    text:
+      notes: ["topLevelTerm is a lossy single label (a pathway can sit under several top-level pathways); the exact top-level ancestors come from pathway.get_pathway_info or data._expand (direction ancestors) on the Reactome hierarchy."]
 
   search_pathways:
     reads: {open_targets.target: {access: projection, columns: [id, pathways]}}
@@ -122,7 +124,8 @@ tools:
     serve: derived
     # a higher-level pathway (564 Reactome IDs have no direct gene) lists the genes of its sub-pathways;
     # each gene once, with `via` naming the pathway it is annotated to (propagated membership, disclosed)
-    derived: {verb: members, table: open_targets.target_pathways, columns: [id], split: {propagate: true}}
+    derived: {verb: members, table: open_targets.target_pathways, columns: [id], split: {propagate: true},
+              envelope: {pathway_id: "{pathway_id}", gene_count: null}}
     text:
       notes: ["Genes annotated to the pathway or to any of its sub-pathways (Reactome hierarchy); `via` names the pathway each gene is annotated to."]
     defects:

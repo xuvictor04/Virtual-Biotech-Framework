@@ -528,6 +528,27 @@ def propagated_members(ctx: ServiceContext, table_ref: str, set_column: str, mem
     return out, record, direct
 
 
+def mixed_fraction(ctx: ServiceContext, table_ref: str, set_column: str, member_key: str, set_id_type: str
+                   ) -> dict[str, Any]:
+    """``propagation: mixed`` measured: the share of stored (member, set) annotations whose member is also
+    annotated to a descendant of that set (an ancestor listed next to the lowest-level annotation)."""
+    closure = closure_for(ctx, set_id_type)
+    view = long_view(ctx, table_ref)
+    rows, _t, _e = view.rows(None, columns=[set_column, member_key], order=[], limit=None)
+    by_member: dict[str, set[str]] = {}
+    for r in rows:
+        if r.get(set_column) is not None and r.get(member_key) is not None:
+            by_member.setdefault(str(r[member_key]), set()).add(str(r[set_column]))
+    total = sum(len(s) for s in by_member.values())
+    ancestors_listed = 0
+    for sets in by_member.values():
+        for s in sets:
+            if sets & set(closure.walk(s, "descendants")):
+                ancestors_listed += 1
+    return {"annotations": total, "ancestor_annotations": ancestors_listed,
+            "fraction": (ancestors_listed / total) if total else None, "fingerprint": closure.fingerprint}
+
+
 def members(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     """``members(table, set_id, propagate?)``: direct members, or with ``propagate: true`` the members of the
     set and its descendant sets (each once, ``via`` the set it is annotated to)."""
@@ -554,11 +575,22 @@ def members(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     rows, record, direct = propagated_members(ctx, view.ref, set_col, member_key, canon, set_id_type=set_idt,
                                               max_expand=payload.get("max_expand"))
     out = [{set_col: canon, "member": r[member_key], "via": r["via"], "propagated": r["propagated"]} for r in rows]
-    notes.append(f"membership propagated over the {set_idt} hierarchy: {direct} direct member(s), "
-                 f"{len(out) - direct} through {record['n'] if record else 0} descendant set(s)")
+    notes.append(f"propagated over {set_idt}: {direct} direct, {len(out) - direct} via descendant sets")
+    extra: dict[str, Any] = {"expansion": [summary(record)] if record else []}
+    body: dict[str, Any] = {"rows": json_value(out), "expansion": [record] if record else []}
+    if getattr(membership, "propagation", None) == "mixed":
+        mixed = mixed_fraction(ctx, view.ref, set_col, member_key, set_idt)
+        extra["mixed"] = body["mixed"] = mixed
+        if mixed["fraction"] is not None:
+            notes.append(f"membership is mixed: {mixed['fraction']:.1%} of annotations also list an ancestor")
     hdr = header(view, rows=out, total=len(out), resolved=resolved, notes=notes, key=[set_col, "member"],
-                 extra={"expansion": [record] if record else []})
-    return inject_header({"rows": json_value(out)}, hdr)
+                 extra=extra)
+    return inject_header(body, hdr)
+
+
+def summary(record: Mapping[str, Any]) -> dict[str, Any]:
+    """The provenance summary of an expansion record (the full record travels in the body)."""
+    return {k: record.get(k) for k in ("id_type", "term", "direction", "n", "max_depth", "fingerprint")}
 
 
 def _member_key(view: Any, membership: Any, name: str) -> str:
@@ -601,8 +633,8 @@ def expand_verb(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, An
 
     hdr = Header(status="ok" if rows else "empty", returned=len(rows), total=len(rows), served_by="derived",
                  tables=[closure.source.table], key=["of", "term"], resolved=resolved or None,
-                 order="of, depth, term", notes=notes, extra={"expansion": records})
-    return inject_header({"rows": json_value(rows)}, hdr)
+                 order="of, depth, term", notes=notes, extra={"expansion": [summary(r) for r in records]})
+    return inject_header({"rows": json_value(rows), "expansion": json_value(records)}, hdr)
 
 
 # ---------------------------------------------------------------------------- _serve routing

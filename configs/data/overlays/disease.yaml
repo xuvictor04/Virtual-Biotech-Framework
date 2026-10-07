@@ -1,5 +1,5 @@
 # Overlay for the upstream disease server (disease_mcp; docs/DATA_LAYER.md §8, Appendix A).
-# Phase 1: 2 pass, 4 derived.
+# Phase 1: 2 pass, 4 derived. Phase 3 (F18): get_disease_phenotypes takes include_descendants (x-gateway).
 schema: vbt.overlay/1
 server: disease
 sources: [open_targets]
@@ -79,6 +79,9 @@ tools:
     args:
       disease_id: {binds: open_targets.disease_phenotype.disease, accepts: [ot_disease, disease_name]}
       limit:      {role: limit, min: 1, max: 500}
+      # x-gateway (phase 3, F18): the disease and every descendant term (disease.children closure); each row keeps
+      # the disease it is annotated to, and the expansion (size, depth, fingerprint) is recorded
+      include_descendants: {role: family_param, gateway_only: true}
     result:
       rows: $.phenotypes
       count_fields: [$.count]
@@ -86,6 +89,8 @@ tools:
       order: [{column: phenotype, direction: asc}]
     serve: derived
     derived: {verb: find, table: open_targets.disease_phenotype}
+    text:
+      notes: ["include_descendants=true also returns the phenotypes of every descendant disease term; each row names its own disease."]
 
   find_diseases_by_therapeutic_area:
     reads: {open_targets.disease: {access: projection, columns: [id, name, description, therapeuticAreas, ontology]}}
