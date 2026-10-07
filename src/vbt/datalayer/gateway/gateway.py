@@ -305,8 +305,24 @@ class DataGateway:
             return
         if self._readiness_supplied:
             return                                     # preflight's results stand; calls refresh what is unchecked
-        if self._check_task is None or self._check_task.done():
-            self._check_task = loop.create_task(self.refresh_readiness())
+        tables = self._session_tables()
+        if tables and (self._check_task is None or self._check_task.done()):
+            self._check_task = loop.create_task(self.refresh_readiness(tables))
+
+    def _session_tables(self) -> list[str]:
+        """The tables the started servers' bound tools read: the session never checks a table no tool reads
+        (an unbound archive of millions of rows would hold the first call for minutes)."""
+        started = {getattr(s, "name", None) for s in getattr(self.bridge, "servers", None) or []}
+        out: set[str] = set()
+        for server in self.catalog.servers():
+            if started and server not in started:
+                continue
+            for tool in self.catalog.tools(server):
+                try:
+                    out.update(self.readiness.physical(ref)[0] for ref in self.catalog.contract(server, tool).tables)
+                except Exception:  # noqa: BLE001 - a broken contract is reported by lint, not here
+                    continue
+        return sorted(out)
 
     async def refresh_readiness(self, tables: Sequence[str] = (), depth: str | None = None) -> bool:
         """Run the data child's ``_check`` (all tables by default) and cache the results."""
@@ -333,7 +349,8 @@ class DataGateway:
             if task is not None:
                 await asyncio.wait_for(asyncio.shield(task), timeout_s)
                 return bool(task.result())
-            return await asyncio.wait_for(self.refresh_readiness(), timeout_s)
+            tables = self._session_tables()
+            return await asyncio.wait_for(self.refresh_readiness(tables), timeout_s) if tables else True
         except (asyncio.TimeoutError, Exception):  # noqa: BLE001 - readiness stays unchecked
             return False
 

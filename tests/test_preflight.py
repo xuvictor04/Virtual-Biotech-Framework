@@ -264,7 +264,9 @@ def test_one_missing_table_degrades_only_its_readers(monkeypatch, tmp_path):
     cfg, calls = _tool_scoped(monkeypatch, tmp_path, _check(open_targets__known_drug="missing",
                                                              open_targets__target="ready"))
     results = require_ready(cfg)          # one missing table never blocks the session
-    assert calls == [[]]                  # one check over every table
+    # one check, over the tables the enabled servers' tools read (never the unbound Zenodo archive)
+    assert len(calls) == 1 and "open_targets.known_drug" in calls[0]
+    assert not [t for t in calls[0] if t.startswith("zenodo")]
     finding = next(r for r in results if r.label.startswith("data: open_targets.known_drug"))
     assert not finding.ok and finding.kind == "data" and finding.required
     assert finding.scope == {"source": "open_targets", "table": "known_drug"}
@@ -298,7 +300,7 @@ def test_blocks_only_when_no_granted_data_tool_is_ready(monkeypatch, tmp_path):
 def test_per_turn_reuses_the_session_check(monkeypatch, tmp_path):
     cfg, calls = _tool_scoped(monkeypatch, tmp_path, _check(open_targets__known_drug="missing"))
     require_ready(cfg)
-    assert calls == [[]]
+    assert len(calls) == 1 and "open_targets.known_drug" in calls[0]
     calls.clear()
     results = require_ready(cfg, per_turn=True)
     # cached results are reused (stat-only signatures); only tables without a cached result are re-checked

@@ -364,7 +364,7 @@ def test_addendum_points_at_a_served_tool() -> None:
 # ---------------------------------------------------------------------------- preflight (R1, R4)
 
 
-def test_session_check_reads_only_the_enabled_tools_tables(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_session_check_reads_only_the_enabled_tools_tables(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """The session-start check covers the tables the enabled servers' tools read, not every catalog table
     (no unbound Zenodo archive tables), and reuses persisted results that still match (R1)."""
     from vbt import preflight
@@ -373,6 +373,7 @@ def test_session_check_reads_only_the_enabled_tools_tables(monkeypatch: pytest.M
     monkeypatch.setattr(preflight, "run_data_check",
                         lambda config, tables=None, depth=None, **kw: seen.append(tables) or {"tables": {}})
     cfg = load_config()
+    cfg["data"]["cache_dir"] = str(tmp_path / "cache")          # no persisted results to reuse
     cfg["mcp_servers"]["servers"] = [s for s in cfg["mcp_servers"]["servers"] if s.get("name") == "target"]
     preflight.check_reference_data(cfg)
     assert seen and seen[0], seen
@@ -479,3 +480,19 @@ def test_field_maps_never_add_or_null_upstream_values() -> None:
                        item_prefix="geneEssentiality[].depMapEssentiality[].screens[]")
     row = {"disease": "Lung Cancer", "num_cell_lines": 1}
     assert item.to_output(item.to_logical(row)) == row
+
+
+async def test_listing_check_covers_only_the_started_servers(tmp_path: Path) -> None:
+    """The listing-triggered check reads the started servers' tables, never every catalog table (R1, R2)."""
+    from types import SimpleNamespace
+
+    gw = shipped(tmp_path)
+    gw.bridge.servers = [SimpleNamespace(name="expression")]  # type: ignore[attr-defined]
+    tables = gw._session_tables()
+    assert tables and all(t.startswith("open_targets.") for t in tables), tables
+    assert "open_targets.expression" in tables and "open_targets.known_drug" not in tables
+    gw._schedule_check()
+    assert gw._check_task is not None
+    await gw._check_task
+    checked = [r for v, r in gw.service.log if v == "_check"]  # type: ignore[attr-defined]
+    assert checked and sorted(checked[0].tables) == tables
