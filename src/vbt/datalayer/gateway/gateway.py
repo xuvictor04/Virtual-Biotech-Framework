@@ -1744,6 +1744,11 @@ class DataGateway:
         r = contract.binding.result
         if isinstance(r.row_key, list):
             return [k[2:] if k.startswith("$.") else k for k in r.row_key]
+        d = contract.binding.derived
+        if d is not None and d.verb == "aggregate" and d.group_by:
+            # one output row per group: the group is the row's key (under its renamed output names)
+            rename = dict(d.rename or {})
+            return [rename.get(c, c) for c in d.group_by]
         if t is None:
             return []
         if t.is_item_table:

@@ -184,6 +184,36 @@ def _role(spec: Any) -> str | None:
     return getattr(spec, "role", None)
 
 
+_CHROMOSOMES = [str(i) for i in range(1, 23)] + ["X", "Y", "MT"]
+
+
+def _chromosome(contract: Any, name: str, value: Any) -> str:
+    """A chromosome name in the bare style, or ``invalid_argument`` with the valid names."""
+    from ..plugins.base import Rejected
+    from ..plugins.identifiers.chromosome import Chromosome
+
+    got = Chromosome().normalize(value)
+    if isinstance(got, Rejected):
+        raise _invalid(contract, name, value, f"{name}={value!r} is not a chromosome: {got.reason}", _CHROMOSOMES,
+                       reason="chromosome")
+    return str(got.value)
+
+
+_REGION = re.compile(r"^\s*([^:\s]+):([0-9][0-9,]*)-([0-9][0-9,]*)\s*$")
+
+
+def _region(contract: Any, name: str, value: str) -> dict[str, Any]:
+    """``chrom:start-end`` (chr prefix allowed) as ``{chrom, min, max}``; ``invalid_argument`` otherwise."""
+    m = _REGION.match(value)
+    if m is None:
+        raise _invalid(contract, name, value, f"{name} must be a region chrom:start-end (e.g. 1:55000000-55100000)",
+                       reason="region")
+    start, end = (int(g.replace(",", "")) for g in m.group(2, 3))
+    if start > end:
+        raise _invalid(contract, name, value, f"{name}: the start {start} is after the end {end}", reason="region")
+    return {"chrom": _chromosome(contract, name, m.group(1)), "min": start, "max": end}
+
+
 def _is_identifier(contract: Any, name: str, binding: Any, table: str | None, column: str | None) -> bool:
     if binding.accepts or binding.role == "anchor":
         return True
@@ -667,6 +697,22 @@ def apply_arg_contracts(contract: Any, args: Mapping[str, Any], vocab: Mapping[s
             if binding.pattern and not re.fullmatch(binding.pattern, value):
                 raise _invalid(contract, name, value, f"{name} does not match {binding.pattern}", reason="pattern")
 
+        if _role(spec) == "position" and getattr(spec, "part", None) == "chrom" and \
+                getattr(spec, "chrom_style", "bare") == "bare" and isinstance(value, (str, int)) and \
+                not isinstance(value, bool):
+            # the position role stores bare names: chr19 -> 19, chrx -> X; M is refused (named MT)
+            chrom = _chromosome(contract, name, value)
+            if chrom != value:
+                out.notes.append(f"{name}: {value!r} normalized to {chrom!r} (bare chromosome names)")
+            value = chrom
+            out.args_sent[name] = chrom
+
+        if binding.op == "range" and isinstance(value, str) and _role(spec) == "position":
+            # a genomic region 'chr1:1000-2000': the chromosome and the position range, checked here; upstream
+            # receives the region string it parses itself
+            out.values[name] = _region(contract, name, value)
+            continue
+
         if _is_identifier(contract, name, binding, table, column):
             values = list(value) if isinstance(value, (list, tuple)) else [value]
             out.list_resolution_requests.append(ArgRequest(name, binding, values, isinstance(value, (list, tuple)),
@@ -948,11 +994,22 @@ def arg_predicate(contract: Any, name: str, binding: Any, value: Any, *, selecte
                                                confirmed_range=getattr(exc, "confirmed_range", None))) from None
         if p is None:
             p = _leaf(binding.op, column, value)
+        if p is not None and binding.op == "range" and isinstance(value, Mapping) and value.get("chrom") is not None:
+            chrom_col = _chrom_column(contract, table)
+            if chrom_col:
+                p = And((Eq(chrom_col, value["chrom"]), p))
         if p is not None:
             preds.append(p)
     if not preds:
         return None
     return preds[0] if len(preds) == 1 else Or(tuple(preds))
+
+
+def _chrom_column(contract: Any, table: str | None) -> str | None:
+    """The chromosome column (``role: position, part: chrom``) of ``table``, for a region's chromosome."""
+    t = (getattr(contract, "tables", None) or {}).get(table) if table else None
+    cols = getattr(getattr(t, "spec", None), "columns", None) or {}
+    return next((n for n, c in cols.items() if _role(c) == "position" and getattr(c, "part", None) == "chrom"), None)
 
 
 def _pairs(contract: Any) -> list[tuple[str, str, list[str]]]:

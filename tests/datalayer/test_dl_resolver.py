@@ -5,6 +5,7 @@ loading without pyarrow. Sidecars are written in tmp_path the way the data child
 
 from __future__ import annotations
 
+import copy
 import subprocess
 import sys
 from pathlib import Path
@@ -752,3 +753,35 @@ def test_resolver_accepts_mapping_provider_and_settings_object(world):
     assert r.canonical == "CHEMBL553"
     assert res.resolve("CHEMBL25", ["chembl_molecule"], bound_id_type="open_targets:chembl_molecule").existence == \
         "exists"
+
+
+def test_rsid_maps_to_a_variant_through_the_data_child(world):
+    """SW-6: an rsID is translated to the variant it names (``maps_to ... via: variant``) by the data child,
+    never sent on as if it were a variant ID; several alleles are ambiguous, none is not_found."""
+    ot = copy.deepcopy(OT)
+    ot["id_types"]["ot_variant"] = {"plugin": "ot_variant", "universe": "variant.variantId", "index": "remote"}
+    ot["id_types"]["rsid"]["maps_to"] = [{"id_type": "ot_variant", "via": "variant", "cardinality": "many"}]
+    catalog = Catalog({"open_targets": SourceDescriptor.model_validate(ot),
+                       "tahoe_100m": SourceDescriptor.model_validate(TAHOE)})
+    alleles = {"rs11591147": ["1_55039974_G_T"], "rs7412": ["19_44908822_C_T", "19_44908822_C_A"], "rs1": []}
+    calls: list[tuple[str, str]] = []
+
+    def remote(source, id_type, values):
+        calls.append((id_type, values[0]))
+        if id_type == "rsid>ot_variant":
+            hits = alleles.get(values[0], [])
+            return {"existence": "exists" if hits else "absent",
+                    "resolutions": [{"value": values[0], "canonical": h} for h in hits]}
+        if id_type == "rsid":
+            return {"existence": "exists" if values[0] in alleles else "absent", "resolutions": []}
+        return {"existence": "exists", "resolutions": []}
+
+    res = Resolver(world["registry"], catalog, world["provider"], remote=remote)
+    args = {"bound_id_type": "open_targets:ot_variant"}
+    r = res.resolve("rs11591147", ["ot_variant", "rsid"], **args)
+    assert (r.status, r.canonical) == ("resolved", "1_55039974_G_T") and "maps_to" in (r.rule or "")
+    assert ("rsid>ot_variant", "rs11591147") in calls
+    r = res.resolve("rs7412", ["ot_variant", "rsid"], **args)
+    assert r.status == "ambiguous" and sorted(c.id for c in r.candidates) == sorted(alleles["rs7412"])
+    assert res.resolve("rs1", ["ot_variant", "rsid"], **args).status == "not_found"
+    assert res.resolve("1_55039974_G_T", ["ot_variant", "rsid"], **args).canonical == "1_55039974_G_T"

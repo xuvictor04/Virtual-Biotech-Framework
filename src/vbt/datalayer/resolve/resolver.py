@@ -140,7 +140,7 @@ class _Hit:
 @dataclass(frozen=True)
 class _Edge:
     kind: str                                          # label_of | label_rev | union_member | identity |
-    #                                                    crosswalk_fwd | crosswalk_rev
+    #                                                    crosswalk_fwd | crosswalk_rev | remote_map
     name: str | None = None                            # crosswalk name
     owner: str | None = None                           # id_type whose index holds the crosswalk rows
 
@@ -350,6 +350,11 @@ class Resolver:
                     elif mt.via and mt.via in theirs:     # rows in their index: my keys -> their keys
                         add(me, other, _Edge("crosswalk_fwd", mt.via, other))
                         add(other, me, _Edge("crosswalk_rev", mt.via, other))
+                    elif mt.via and spec.index == "remote" and mt.via.split(".")[-1] in sources[src].tables:
+                        # a huge universe mapped through a source table (rsid -> ot_variant via variant): the
+                        # data child translates each value by a bounded scan; several targets are ambiguous
+                        add(me, other, _Edge("remote_map", mt.via, other))
+                        add(other, me, _Edge("identity"))
                     else:
                         add(me, other, _Edge("identity"))
                         add(other, me, _Edge("identity"))
@@ -970,6 +975,12 @@ class Resolver:
             if edge.kind in ("label_of", "union_member", "identity"):
                 hops.append(f"{a}>{b} ({edge.kind})")
                 continue
+            if edge.kind == "remote_map":
+                mapped = self._remote_map(ctx, a, b, canonical, rule, hops)
+                if isinstance(mapped, ResolutionResult):
+                    return mapped
+                canonical, rule = mapped
+                continue
             if edge.kind == "label_rev":
                 label = self._label(a, canonical)
                 if label is None:
@@ -1005,6 +1016,36 @@ class Resolver:
         if crosswalks:
             rule = "crosswalk:" + ">".join(_distinct(crosswalks))
         return canonical, rule
+
+    def _remote_map(self, ctx: "_Ctx", a: str, b: str, canonical: str, rule: str, hops: list[str]
+                    ) -> tuple[str, str] | ResolutionResult:
+        """``a`` -> ``b`` through the data child (``_resolve_remote`` with id_type ``a>b``): one target maps,
+        none is not_found, several are ambiguous (``cardinality: many``), an undecidable scan is unknown."""
+        src, _, a_bare = a.partition(":")
+        b_bare = b.partition(":")[2] or b
+        try:
+            resp = dict(self._remote(ctx, src, f"{a_bare}>{b_bare}", (canonical,)) or {})
+        except _NeedRemote:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a remote failure never reads as not found
+            return self._result(ctx, "unknown", canonical=None, matched=a, existence="unknown",
+                                notes=[f"{canonical} could not be mapped to {b}: {exc}"])
+        state = str(resp.get("existence") or "unknown")
+        targets = _distinct(str(r.get("canonical")) for r in resp.get("resolutions") or () if r.get("canonical"))
+        if state == "unknown" and not targets:
+            return self._result(ctx, "unknown", canonical=None, matched=a, existence="unknown",
+                                notes=[f"{canonical} could not be mapped to {b} (the scan was undecided)"])
+        if not targets:
+            return self._result(ctx, "not_found", matched=a, rule=rule,
+                                notes=[f"{canonical} names no {b} record"],
+                                tried_extra=[f"{a}>{b}: no record for {canonical}"])
+        if len(targets) > 1:
+            cands = [Candidate(t, None, f"maps_to:{b_bare}") for t in targets]
+            return self._result(ctx, "ambiguous", matched=a, rule=f"maps_to:{b_bare}",
+                                candidates=cands[: self.settings.max_candidates],
+                                notes=[f"{canonical} names {len(targets)} {b} records (cardinality many); pass one"])
+        hops.append(f"{a}>{b} (maps_to: {canonical} -> {targets[0]})")
+        return targets[0], (rule if rule != "exact" else f"maps_to:{b_bare}")
 
     def _existence(self, ctx: "_Ctx", target: str, canonical: str) -> tuple[str | None, str, list[str]]:
         """``(existence, status, notes)`` of ``canonical`` in ``target``'s universe under ``ctx.existence``."""

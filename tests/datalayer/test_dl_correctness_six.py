@@ -89,13 +89,20 @@ def empty(r: CallResult, coverage: str | None = None) -> dict[str, Any]:
     return r.header
 
 
-def served_full(r: CallResult) -> None:
-    """Derived or repaired service, with the row keys in the provenance record."""
-    assert r.header.get("served_by") in ("derived", "repaired"), r.header
+def row_keys(r: CallResult) -> list[Any]:
+    """The full row keys of the call's provenance record (never only their hash)."""
     prov = r.provenance
     summary = prov.to_dict() if hasattr(prov, "to_dict") else prov
-    if summary is not None:
-        assert dig(summary, "result", "row_keys") or dig(summary, "result", "row_keys_sha256"), summary
+    keys = dig(summary, "result", "row_keys")
+    assert keys, summary
+    assert all(any(v is not None for v in (k if isinstance(k, list) else [k])) for k in keys), keys
+    return keys
+
+
+def served_full(r: CallResult, *, served: tuple[str, ...] = ("derived", "repaired")) -> None:
+    """Derived or repaired service, with the full row keys in the provenance record."""
+    assert r.header.get("served_by") in served, r.header
+    row_keys(r)
 
 
 def grain(header: Mapping[str, Any], name: str) -> dict[str, Any]:
@@ -127,6 +134,8 @@ CALLS: dict[str, tuple[str, str, dict[str, Any]]] = {
     "unknown": ("target", "get_target_info", {"target_id": U}),
     "disease_curie": ("disease", "get_disease_info", {"disease_id": "EFO:0000685"}),
     "drug_case": ("drug", "get_drug_info", {"drug_id": "chembl25"}),
+    "drug_curie": ("drug", "get_drug_info", {"drug_id": "CHEMBL:25"}),
+    "chrom_prefixed": ("genetics", "get_colocalisation_by_chromosome", {"chromosome": "chr19", "method": "ecaviar"}),
     "search_tp53": ("target", "search_targets_by_name", {"query": "TP53", "limit": 1}),
     "pmcid": ("pubmed", "fetch_abstracts", {"pmids": ["PMC1234"]}),
     # CT-2
@@ -253,7 +262,9 @@ def _resolved_to_pcsk9(rule: str, *, note: bool) -> Check:
         ok(r)
         assert r.obj.get("id") == F.PCSK9, show(r)
         assert rule in resolution_text(r), r.header
-        assert mentions(r.header, "ensembl_gene"), r.header
+        summary = r.provenance.to_dict() if hasattr(r.provenance, "to_dict") else r.provenance
+        (res,) = [x for x in dig(summary, "request", "resolutions") or [] if x.get("arg") == "target_id"]
+        assert str(res.get("canonical_id_type")).endswith("ensembl_gene"), res   # I1: the canonical id_type
         if note:
             assert r.header.get("notes"), r.header
     return check
@@ -274,6 +285,13 @@ def _ct1_drug(r: CallResult, root: Path) -> None:
     assert r.obj.get("id") == F.CHEMBL25, show(r)
 
 
+def _ct1_chromosome(r: CallResult, root: Path) -> None:
+    """chr19 is the bare 19 of the position role: rows, never a typed not_found."""
+    ok(r)
+    assert r.rows("colocalisations"), show(r)
+    assert "normalized" in resolution_text(r), r.header
+
+
 def _ct1_search(r: CallResult, root: Path) -> None:
     ok(r)
     first = dig(r.obj, "results", 0) or {}
@@ -289,6 +307,8 @@ CT1: dict[str, Check] = {
     "unknown": _not_found,
     "disease_curie": _ct1_disease,
     "drug_case": _ct1_drug,
+    "drug_curie": _ct1_drug,
+    "chrom_prefixed": _ct1_chromosome,
     "search_tp53": _ct1_search,
 }
 
@@ -684,21 +704,22 @@ def _ct3_go(r: CallResult, root: Path) -> None:
     expected = F.oracle_go_items(root, F.PCSK9)
     assert sorted(g.get("id") for g in r.rows("go_terms")) == sorted(k[1] for k in expected), show(r)
     served_full(r)
-    summary = r.provenance.to_dict() if hasattr(r.provenance, "to_dict") else r.provenance
-    row_keys = dump(dig(summary, "result", "row_keys") or [])
-    assert all(k[1] in row_keys and k[0] in row_keys for k in expected), summary
+    # the item table's complete keys (parent id, GO id, aspect, evidence, source, gene product), exactly
+    assert sorted(tuple(k) for k in row_keys(r)) == sorted(tuple(k) for k in expected)
 
 
 def _ct3_niddm(r: CallResult, root: Path) -> None:
     ok(r)
     assert [d.get("id") for d in r.rows("results")] == F.oracle_disease_search(root, "NIDDM") == [F.T2D], show(r)
     assert "synonym:exact" in resolution_text(r) or mentions(r.header, "synonym:exact"), r.header
+    served_full(r)
 
 
 def _ct3_retired(r: CallResult, root: Path) -> None:
     ok(r)
     assert r.obj.get("id") == F.T2D == F.oracle_retired(root, F.T2D_RETIRED)[0], show(r)
     assert "retired:obsoleteTerms" in resolution_text(r), r.header
+    served_full(r, served=("upstream", "derived", "repaired"))   # resolved upstream lookup: keys recorded too
 
 
 def _ct3_epmc(r: CallResult, root: Path) -> None:
@@ -713,12 +734,14 @@ def _ct3_go_search(r: CallResult, root: Path) -> None:
     ok(r)
     got = {t.get("goId"): t.get("gene_count") for t in r.rows("go_terms")}
     assert got == F.oracle_go_search(root, "GO:1"), show(r)
+    served_full(r)                                       # one row per term: the group is the key
 
 
 def _ct3_biosample(r: CallResult, root: Path) -> None:
     ok(r)
     got = [b.get("biosampleId") for b in r.rows("biosamples")]
     assert got == F.oracle_biosample_search(root, F.BIOSAMPLE_SYNONYM), show(r)
+    served_full(r)
 
 
 def _ct3_negative(rows_key: str) -> Check:
