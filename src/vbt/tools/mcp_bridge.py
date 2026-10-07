@@ -18,7 +18,9 @@ Robustness (one supervisor per server):
 * **Crash recovery** -- a transport failure (connection closed, broken/closed
   stream, EOF) tears the server down, restarts it (at most ``mcp.max_restarts``
   times per session) and retries the call once. MCP data tools are read-only
-  queries, so a retry is safe.
+  queries, so a retry is safe. When the retried call fails too, the session is
+  torn down and the server marked ``broken``; the next call restarts it first
+  instead of reusing the dead pipe.
 * **Timeouts** -- per server ``timeout_s`` (else ``mcp.default_timeout_s``). On
   timeout the call fails with a readable message and a best-effort
   ``notifications/cancelled`` is sent so the server can stop working.
@@ -33,9 +35,24 @@ Robustness (one supervisor per server):
   reported as tool errors, while the upstream servers' explicit empty-lookup
   messages are not.
 
+* **Data gateway** (``docs/DATA_LAYER.md`` §11) -- with ``gateway=`` (a
+  :class:`vbt.datalayer.api.GatewayProtocol`) every call goes through
+  ``gateway.prepare`` once (a retry reuses its resolved arguments), runs upstream
+  under the plan's cold-call lock, and is classified and completed by
+  ``gateway.finish``; transport failures are put to ``gateway.on_crash`` (an OOM
+  kill is never retried and counts against ``mcp.max_oom_kills`` instead of
+  ``max_restarts``). Stdio servers are launched as ``gateway.launch_spec(cfg)``
+  says (the reaper launcher), listings pass through ``gateway.rewrite_listing``
+  (hidden tools are not registered) and ``recycle()`` restarts an idle server to
+  free its memory. Internal ``_``-prefixed tools of the ``data`` server and
+  :meth:`MCPBridge.call_raw` bypass the gateway. With ``gateway=None`` the
+  bridge behaves exactly as before the data layer.
+
 ``on_event(kind, **data)`` (e.g. ``Runtime.emit`` or ``Run.trace``) receives
 ``mcp_server_started``, ``mcp_start_failed``, ``mcp_crash``, ``mcp_restart``,
-``mcp_timeout`` and ``mcp_lazy_retry`` events.
+``mcp_timeout``, ``mcp_lazy_retry`` and ``mcp_recycle`` events.
+``on_tools_changed(tools)`` receives tools that were registered or whose listing
+changed (a restarted or late-starting server), so they reach the agents' registry.
 """
 
 from __future__ import annotations
@@ -52,10 +69,14 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
+from ..datalayer.api import RawResult
 from ..envpolicy import child_env
 from .base import Tool, ToolContext, ToolFailure, inline_refs
+
+if TYPE_CHECKING:  # pragma: no cover
+    from ..datalayer.api import CallPlan, CrashDecision, GatewayProtocol
 
 log = logging.getLogger(__name__)
 
@@ -66,11 +87,16 @@ DEFAULT_OPTIONS: dict[str, Any] = {
     "start_backoff_factor": 1.5,
     "default_timeout_s": 1800.0,
     "max_restarts": 3,
+    "max_oom_kills": 3,
     "inherit_env": False,
 }
 
 STDERR_TAIL_CHARS = 2000
 _CONNECTION_CLOSED = -32000  # JSON-RPC code the MCP SDK uses for a closed connection
+
+DATA_SERVER = "data"              # the harness-owned data child; its "_" tools are internal verbs
+EXIT_MARKER = "VBT_CHILD_EXIT"    # written to the server log by the reaper launcher when the child ends
+EXIT_MARKER_WAIT_S = 0.5          # the pipe can close before the reaper writes the marker
 
 TIMEOUT_HINT = ("the server may still be working — narrow the query (e.g. count_cells first, "
                 "add value_filter/genes) before retrying")
@@ -94,6 +120,11 @@ class MCPServerConfig:
     env_passthrough: list[str] = field(default_factory=list)
     max_concurrency: int | None = None
     start_timeout_s: float | None = None    # per startup attempt; None -> options.start_timeout_s
+    # Data layer (docs/DATA_LAYER.md §11.1, §14.2); runtime and preflight keep only declared fields.
+    mem_limit_mb: int | str | None = None   # MB or "auto"; None -> data.memory.default_server_mb
+    overlay: str | None = None              # None -> configs/data/overlays/<name>.yaml
+    sources: list[str] = field(default_factory=list)
+    launcher: bool | None = None            # False: launch without the reaper (no memory limit)
 
 
 class _ConfigError(Exception):
@@ -103,10 +134,14 @@ class _ConfigError(Exception):
 @dataclass
 class _Server:
     cfg: MCPServerConfig
-    state: str = "stopped"            # stopped | starting | ready | failed | closed
+    state: str = "stopped"            # stopped | starting | ready | broken | failed | closed
     session: Any = None
     generation: int = 0               # bumped on every successful (re)start
     restarts: int = 0
+    oom_kills: int = 0                # memory kills (separate budget: options.max_oom_kills)
+    broken_oom: bool = False          # the session broke because of a memory kill
+    recycles: int = 0
+    status_path: str | None = None    # reaper status file when launched under the launcher
     last_error: str | None = None
     in_flight: int = 0
     queued: int = 0
@@ -198,6 +233,54 @@ def tool_result_error(result: Any) -> str | None:
     return message
 
 
+def _lookup_miss(result: Any) -> bool:
+    """True when the result envelope is one of the upstream's explicit empty-lookup messages
+    (the envelopes :func:`tool_result_error` exempts), inspecting the same places it does."""
+    if isinstance(result, str):
+        try:
+            return _lookup_miss(json.loads(result))
+        except (ValueError, TypeError):
+            return False
+    if isinstance(result, (list, tuple)):
+        for block in result:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+            elif getattr(block, "type", None) == "text":
+                text = getattr(block, "text", None)
+            else:
+                continue
+            if _lookup_miss(text):
+                return True
+        return False
+    if not isinstance(result, dict):
+        return False
+    if result.get("type") == "text":
+        return _lookup_miss(result.get("text"))
+    if "structuredContent" in result and _lookup_miss(result["structuredContent"]):
+        return True
+    if result.get("type") == "tool_result" or "isError" in result:
+        return _lookup_miss(result.get("content"))
+    error = result.get("error") or result.get("errors")
+    if not error and result.get("success") is not False and result.get("ok") is not False:
+        return False
+    message = "; ".join(str(item) for item in error) if isinstance(error, list) else str(error or "")
+    return bool(_EMPTY_LOOKUP.fullmatch(message.strip()))
+
+
+def legacy_result(raw: RawResult, tool: str) -> Any:
+    """What the bridge returns (or raises) for ``raw`` without a gateway: text, content parts,
+    or a ``ToolFailure`` for ``isError`` and legacy failure envelopes. Empty lookups are results.
+    A gateway in ``observe`` mode returns this to stay byte-identical with no gateway."""
+    if raw.envelope == "is_error":
+        raise ToolFailure(raw.error_text or raw.text or "MCP tool reported an error")
+    if raw.envelope == "legacy_error":
+        raise ToolFailure(json.dumps({"status": "tool_error", "tool": tool, "error": raw.error_text,
+                                      "instruction": FAILURE_INSTRUCTION}))
+    if raw.parts is not None:
+        return raw.parts
+    return raw.text
+
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -275,11 +358,13 @@ def _silence(fut: asyncio.Future) -> None:
 class MCPBridge:
     def __init__(self, servers: list[MCPServerConfig], *, extra_env: dict[str, str] | None = None,
                  log_dir: str | os.PathLike | None = None, options: dict[str, Any] | None = None,
-                 on_event: Callable[..., Any] | None = None):
+                 on_event: Callable[..., Any] | None = None, gateway: "GatewayProtocol | None" = None,
+                 on_tools_changed: Callable[[list[Tool]], Any] | None = None):
         self.servers = [s for s in servers if s.enabled]
         self.extra_env = {k: str(v) for k, v in (extra_env or {}).items() if v is not None}
         self.options = {**DEFAULT_OPTIONS, **{k: v for k, v in (options or {}).items() if v is not None}}
         self.on_event = on_event
+        self.on_tools_changed = on_tools_changed
         self._tmp_log_dir: str | None = None
         self.log_dir = Path(log_dir) if log_dir else None
         self._servers: dict[str, _Server] = {}
@@ -292,6 +377,9 @@ class MCPBridge:
         self.failures: dict[str, str] = {}     # servers currently unavailable (name -> reason)
         self.tools: list[Tool] = []
         self._closed = False
+        self.gateway = gateway
+        if gateway is not None:
+            gateway.bind_bridge(self)
 
     # ------------------------------------------------------------------ events / logs
 
@@ -305,7 +393,18 @@ class MCPBridge:
         except Exception:  # noqa: BLE001 - observers must not break tool calls
             log.debug("MCP event callback failed", exc_info=True)
 
-    def _log_file_for(self, st: _Server) -> Path:
+    def _tools_changed(self, tools: list[Tool]) -> None:
+        if self.on_tools_changed is None or not tools:
+            return
+        try:
+            r = self.on_tools_changed(list(tools))
+            if asyncio.iscoroutine(r):
+                asyncio.ensure_future(r)
+        except Exception:  # noqa: BLE001 - observers must not break server starts
+            log.warning("on_tools_changed callback failed", exc_info=True)
+
+    def log_root(self) -> Path:
+        """The directory server logs (and the launcher's status files) are written to."""
         if self.log_dir is None:
             if self._tmp_log_dir is None:
                 self._tmp_log_dir = tempfile.mkdtemp(prefix="vbt-mcp-logs-")
@@ -313,7 +412,10 @@ class MCPBridge:
         else:
             base = self.log_dir
         base.mkdir(parents=True, exist_ok=True)
-        return base / f"{st.cfg.name}.log"
+        return base
+
+    def _log_file_for(self, st: _Server) -> Path:
+        return self.log_root() / f"{st.cfg.name}.log"
 
     def _open_errlog(self, st: _Server):
         path = self._log_file_for(st)
@@ -400,8 +502,14 @@ class MCPBridge:
             from mcp import StdioServerParameters
             from mcp.client.stdio import stdio_client
 
-            params = StdioServerParameters(command=cfg.command, args=[str(a) for a in cfg.args],
-                                           env=self.child_env(cfg), cwd=cfg.cwd)
+            command, args, env = cfg.command, [str(a) for a in cfg.args], self.child_env(cfg)
+            # The gateway may run the server under the reaper launcher (memory limit, status
+            # file, exit marker, effective hash seed); HTTP servers are never relaunched.
+            spec = self.gateway.launch_spec(cfg) if self.gateway is not None else None
+            st.status_path = spec.status_path if spec is not None else None
+            if spec is not None:
+                command, args, env = spec.command, [str(a) for a in spec.args], {**env, **spec.env}
+            params = StdioServerParameters(command=command, args=args, env=env, cwd=cfg.cwd)
             errlog = self._open_errlog(st)
             stack.callback(errlog.close)
             read, write = await stack.enter_async_context(stdio_client(params, errlog=errlog))
@@ -511,26 +619,51 @@ class MCPBridge:
         self.sessions.pop(cfg.name, None)
         return False
 
+    def _listing(self, server: str, tool: str, description: str, schema: dict[str, Any]) -> tuple[bool, str, dict]:
+        """``(visible, description, input_schema)`` after ``gateway.rewrite_listing``."""
+        if self.gateway is None:
+            return True, description, schema
+        try:
+            decision = self.gateway.rewrite_listing(server, tool, description, schema)
+        except Exception:  # noqa: BLE001 - keep the upstream listing, but never expose internal verbs
+            log.warning("rewrite_listing failed for %s.%s", server, tool, exc_info=True)
+            return not (server == DATA_SERVER and tool.startswith("_")), description, schema
+        return bool(decision.visible), decision.description, decision.input_schema
+
     def _register(self, st: _Server, listed: Any) -> list[Tool]:
-        known = {t.name for t in self.tools}
+        """Register the listed tools; returns the new ones. A tool already registered (a restart,
+        a late start) is updated in place, so the registry's object stays valid."""
+        known = {t.name: t for t in self.tools}
         new: list[Tool] = []
+        updated: list[Tool] = []
         names = []
         for t in getattr(listed, "tools", []) or []:
             names.append(t.name)
             full = f"mcp__{st.cfg.name}__{t.name}"
-            if full in known:
-                continue
             schema = _attr(t, "input_schema", "inputSchema") or {"type": "object"}
+            visible, description, input_schema = self._listing(
+                st.cfg.name, t.name, (t.description or t.name).strip(), inline_refs(dict(schema)))
+            if not visible:
+                continue
+            tool = known.get(full)
+            if tool is not None:
+                if tool.description != description or tool.input_schema != input_schema:
+                    tool.description, tool.input_schema = description, input_schema
+                    updated.append(tool)
+                tool.handler = self._make_handler(st.cfg.name, t.name)
+                continue
             tool = Tool(
                 name=full,
-                description=(t.description or t.name).strip(),
-                input_schema=inline_refs(dict(schema)),
+                description=description,
+                input_schema=input_schema,
                 handler=self._make_handler(st.cfg.name, t.name),
                 source=f"mcp:{st.cfg.name}",
             )
             self.tools.append(tool)
+            known[full] = tool
             new.append(tool)
         st.tool_names = names
+        self._tools_changed(new + updated)
         return new
 
     async def start(self, only: set[str] | None = None, connect_timeout: float | None = None) -> list[Tool]:
@@ -565,6 +698,9 @@ class MCPBridge:
                 raise ToolFailure("MCP bridge is closed")
             if st.state == "ready" and st.session is not None:
                 return st.session, st.generation
+            if st.state == "broken":
+                await self._restart_broken(st)
+                return st.session, st.generation
             if st.state == "failed" and st.lazy_retry_used:
                 raise ToolFailure(f"MCP server {name!r} is unavailable: {st.last_error}")
             st.lazy_retry_used = True
@@ -580,13 +716,13 @@ class MCPBridge:
                 return  # another call already restarted it
             if st.state == "failed":  # another call's restart already failed
                 raise ToolFailure(f"MCP server {name!r} is unavailable: {st.last_error}")
+            if st.state == "broken":  # another call gave up on this session; restart it under its budget
+                await self._restart_broken(st)
+                return
             max_restarts = int(self.options["max_restarts"])
             if st.restarts >= max_restarts:
                 await self._teardown(st)
-                st.state = "failed"
-                st.lazy_retry_used = True  # no lazy retry after the restart budget is spent
-                st.last_error = f"crashed {st.restarts + 1} times; restart limit ({max_restarts}) reached: {reason}"
-                self.failures[name] = st.last_error
+                self._give_up(st, f"crashed {st.restarts + 1} times; restart limit ({max_restarts}) reached: {reason}")
                 raise ToolFailure(f"MCP server {name!r} crashed and its restart limit is reached: {reason}")
             st.restarts += 1
             self._emit("mcp_restart", server=name, restarts=st.restarts, reason=reason[:1000])
@@ -596,15 +732,117 @@ class MCPBridge:
             if not await self._start(st, reason="restart"):
                 raise ToolFailure(f"MCP server {name!r} crashed and could not be restarted: {st.last_error}")
 
+    def _give_up(self, st: _Server, error: str) -> None:
+        """Mark ``st`` failed for good (no lazy retry). Caller holds ``st.lock``."""
+        st.state = "failed"
+        st.lazy_retry_used = True  # no lazy retry after the restart budget is spent
+        st.last_error = error
+        self.failures[st.cfg.name] = error
+
+    async def _mark_broken(self, st: _Server, generation: int, reason: str, *, oom: bool = False) -> None:
+        """Tear down a session whose call failed for good, so the next call restarts it first
+        instead of hitting the dead pipe. A memory kill counts against ``max_oom_kills``."""
+        async with st.lock:
+            if st.generation != generation or st.state != "ready":
+                return  # another call already restarted, broke or gave up on this session
+            await self._teardown(st)
+            st.last_error = reason
+            st.broken_oom = oom
+            if oom:
+                st.oom_kills += 1
+                limit = int(self.options["max_oom_kills"])
+                if st.oom_kills > limit:
+                    self._give_up(st, f"killed for memory {st.oom_kills} times; OOM kill limit ({limit}) "
+                                      f"reached: {reason}")
+                    return
+            st.state = "broken"
+
+    async def _restart_broken(self, st: _Server) -> None:
+        """Restart a ``broken`` server. Caller holds ``st.lock``. Counts against ``max_restarts``
+        unless the session broke because of a memory kill (that budget was charged already)."""
+        name = st.cfg.name
+        reason = st.last_error or "the previous call failed"
+        if not st.broken_oom:
+            max_restarts = int(self.options["max_restarts"])
+            if st.restarts >= max_restarts:
+                self._give_up(st, f"crashed {st.restarts + 1} times; restart limit ({max_restarts}) reached: {reason}")
+                raise ToolFailure(f"MCP server {name!r} crashed and its restart limit is reached: {reason}")
+            st.restarts += 1
+        self._emit("mcp_restart", server=name, restarts=st.restarts, reason=reason[:1000], broken=True,
+                   oom=st.broken_oom, oom_kills=st.oom_kills)
+        log.warning("MCP server %s: restarting a broken session (%s)", name, reason.splitlines()[0][:200])
+        st.broken_oom = False
+        if not await self._start(st, reason="restart"):
+            raise ToolFailure(f"MCP server {name!r} crashed and could not be restarted: {st.last_error}")
+
+    async def recycle(self, server: str, wait_s: float = 30.0) -> bool:
+        """Restart an idle server to free the memory it holds (upstream caches every table it
+        loads). Waits up to ``wait_s`` for in-flight calls to finish; does not count toward
+        ``max_restarts``. Returns True when nothing of the old process is resident any more."""
+        st = self._servers.get(server)
+        if st is None:
+            raise ToolFailure(f"unknown MCP server {server!r}")
+        t0 = time.monotonic()
+        deadline = t0 + max(0.0, float(wait_s))
+        while True:
+            async with st.lock:
+                if self._closed:
+                    return False
+                if st.in_flight == 0:
+                    if st.state != "ready":  # stopped, broken or failed: no process holds memory
+                        self._emit("mcp_recycle", server=server, ok=True, skipped=st.state,
+                                   generation=st.generation, waited_s=round(time.monotonic() - t0, 3))
+                        return True
+                    st.recycles += 1
+                    await self._teardown(st)
+                    ok = await self._start(st, reason="recycle")
+                    self._emit("mcp_recycle", server=server, ok=ok, generation=st.generation,
+                               recycles=st.recycles, waited_s=round(time.monotonic() - t0, 3))
+                    return ok
+            if time.monotonic() >= deadline:
+                self._emit("mcp_recycle", server=server, ok=False, reason="busy", in_flight=st.in_flight,
+                           waited_s=round(time.monotonic() - t0, 3))
+                return False
+            await asyncio.sleep(0.05)
+
     # ------------------------------------------------------------------ calls
 
     def _make_handler(self, server: str, tool_name: str):
         async def handler(ctx: ToolContext, args: dict[str, Any]) -> Any:
-            return await self.call(server, tool_name, args)
+            return await self.call(server, tool_name, args, ctx=ctx)
         return handler
 
-    async def call(self, server: str, tool: str, args: dict[str, Any]) -> Any:
-        """Call ``tool`` on ``server`` with crash recovery, timeout and concurrency limits."""
+    async def call(self, server: str, tool: str, args: dict[str, Any], ctx: Any = None) -> Any:
+        """Call ``tool`` on ``server`` through the gateway (when there is one) with crash recovery,
+        timeout and concurrency limits.
+
+        The gateway prepares the call once (resolution, contracts, admission; ``GatewayError``
+        propagates), the upstream attempts run under the plan's cold-call lock with the prepared
+        arguments, and ``gateway.finish`` classifies and completes the raw result. A ``derived``
+        or ``none`` route never reaches the upstream server. Without a gateway, and for the data
+        child's internal ``_`` verbs, this is :meth:`call_raw`.
+        """
+        gw = self.gateway
+        if gw is None or (server == DATA_SERVER and tool.startswith("_")):
+            return await self.call_raw(server, tool, args)
+        if server not in self._servers:
+            raise ToolFailure(f"unknown MCP server {server!r}")
+        plan = await gw.prepare(server, tool, args, ctx)
+        raw: RawResult | None = None
+        if plan.route == "upstream":
+            async with plan.hold():
+                raw = await self._attempts(server, tool, plan.args_sent, plan=plan, classify_only=True)
+        return await gw.finish(plan, raw)
+
+    async def call_raw(self, server: str, tool: str, args: dict[str, Any]) -> Any:
+        """Call ``tool`` on ``server`` without the gateway (internal data-child calls): crash
+        recovery, timeout and concurrency limits, legacy result semantics."""
+        return await self._attempts(server, tool, args)
+
+    async def _attempts(self, server: str, tool: str, args: dict[str, Any], *, plan: "CallPlan | None" = None,
+                        classify_only: bool = False) -> Any:
+        """The attempt loop: a transport failure restarts the server and retries once, unless the
+        crash decision says not to (a memory kill is never retried)."""
         st = self._servers.get(server)
         if st is None:
             raise ToolFailure(f"unknown MCP server {server!r}")
@@ -627,20 +865,54 @@ class MCPBridge:
                     if not is_transport_error(exc):
                         raise ToolFailure(f"{server}.{tool} failed: {_describe(exc)}") from exc
                     reason = _describe(exc)
+                    if st.status_path is not None:
+                        await self._wait_exit_marker(st)
                     self._emit("mcp_crash", server=server, tool=tool, error=reason[:1000],
                                stderr_tail=self.stderr_tail(server, 1000))
-                    if attempt == 0:
+                    decision = await self._crash_decision(st, plan, tool, reason, attempt)
+                    if decision is not None and decision.oom:
+                        await self._mark_broken(st, generation, reason, oom=True)
+                        raise (decision.error or ToolFailure(
+                            f"{server}.{tool}: the server was killed for memory ({reason}); the call is not "
+                            f"retried and the server restarts on the next call")) from exc
+                    if attempt == 0 and (decision is None or decision.retry):
                         await self._restart(st, generation, reason)
                         continue
+                    await self._mark_broken(st, generation, reason)
+                    if decision is not None and decision.error is not None:
+                        raise decision.error from exc
+                    if attempt == 0:
+                        raise ToolFailure(f"{server}.{tool}: the server connection failed ({reason}); the call "
+                                          f"is not retried and the server restarts on the next call") from exc
                     raise ToolFailure(f"{server}.{tool}: the server connection failed again after a "
                                       f"restart ({reason}); the server will be restarted on the next call"
                                       ) from exc
-                return self._convert(server, tool, result)
+                return self._convert(server, tool, result, classify_only=classify_only)
             raise ToolFailure(f"{server}.{tool}: no result")  # pragma: no cover - loop always returns/raises
         finally:
             st.in_flight -= 1
             if st.sem is not None:
                 st.sem.release()
+
+    async def _wait_exit_marker(self, st: _Server) -> None:
+        """Wait up to ``EXIT_MARKER_WAIT_S`` for the launcher's exit marker in the server log
+        (the pipe can close before the reaper has reaped the child)."""
+        deadline = time.monotonic() + EXIT_MARKER_WAIT_S
+        while EXIT_MARKER not in self.stderr_tail(st.cfg.name) and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+
+    async def _crash_decision(self, st: _Server, plan: "CallPlan | None", tool: str, reason: str,
+                              attempt: int) -> "CrashDecision | None":
+        """The gateway's decision for a planned call; for unplanned calls to a launched server, the
+        exit marker's (a memory kill is not retried); otherwise None (today's retry-once rule)."""
+        name = st.cfg.name
+        if self.gateway is not None and plan is not None:
+            return await self.gateway.on_crash(name, plan, reason, self.stderr_tail(name))
+        if st.status_path is not None:
+            from ..datalayer.memory.crash import crash_decision
+            decision = crash_decision(reason, self.stderr_tail(name), server=name, tool=tool, attempt=attempt)
+            return decision if decision.oom else None
+        return None
 
     async def _invoke(self, st: _Server, session: Any, tool: str, args: dict[str, Any]) -> Any:
         import anyio
@@ -672,7 +944,11 @@ class MCPBridge:
         except Exception:  # noqa: BLE001 - best effort
             log.debug("could not send notifications/cancelled", exc_info=True)
 
-    def _convert(self, server: str, tool: str, result: Any) -> Any:
+    def _convert(self, server: str, tool: str, result: Any, classify_only: bool = False) -> Any:
+        """Convert an MCP result to text or content parts. Failures raise ``ToolFailure``, except
+        with ``classify_only``: then a :class:`RawResult` is returned whose ``envelope`` says what
+        the bridge would have done (``is_error``, ``legacy_error``, ``empty_lookup`` or ``ok``), so
+        the gateway owns classification."""
         source = f"mcp__{server}__{tool}"
         items: list[tuple[str, Any]] = []   # ("text", str) | ("part", content part)
         for c in _attr(result, "content", default=[]) or []:
@@ -707,28 +983,36 @@ class MCPBridge:
         structured = _attr(result, "structured_content", "structuredContent")
         if not text and structured is not None and not any(k == "part" for k, _ in items):
             text = json.dumps(structured, default=str)
+        parts = ([(_text_block(v) if k == "text" else v) for k, v in items]
+                 if any(k == "part" for k, _ in items) else None)
         if _attr(result, "is_error", "isError", default=False):
-            raise ToolFailure(text or "MCP tool reported an error")
-        error = tool_result_error(text) if text else None
-        if error is None and structured is not None:
-            error = tool_result_error(structured if isinstance(structured, dict) else None)
-        if error:
-            raise ToolFailure(json.dumps({"status": "tool_error", "tool": tool, "error": error,
-                                          "instruction": FAILURE_INSTRUCTION}))
-        if any(k == "part" for k, _ in items):
-            return [(_text_block(v) if k == "text" else v) for k, v in items]
-        return text
+            raw = RawResult(text, structured, parts, "is_error", text or "MCP tool reported an error")
+        else:
+            error = tool_result_error(text) if text else None
+            if error is None and structured is not None:
+                error = tool_result_error(structured if isinstance(structured, dict) else None)
+            if error:
+                raw = RawResult(text, structured, parts, "legacy_error", error)
+            elif (text and _lookup_miss(text)) or (isinstance(structured, dict) and _lookup_miss(structured)):
+                raw = RawResult(text, structured, parts, "empty_lookup")
+            else:
+                raw = RawResult(text, structured, parts, "ok")
+        if classify_only:
+            return raw
+        return legacy_result(raw, tool)
 
     # ------------------------------------------------------------------ status / shutdown
 
     def status(self) -> dict[str, dict[str, Any]]:
         return {
             name: {
-                "state": st.state, "restarts": st.restarts, "last_error": st.last_error,
+                "state": st.state, "restarts": st.restarts, "oom_kills": st.oom_kills, "recycles": st.recycles,
+                "generation": st.generation, "last_error": st.last_error,
                 "in_flight": st.in_flight, "queued": st.queued, "calls": st.calls,
                 "tools": len(st.tool_names), "started_at": st.started_at,
                 "start_duration_s": st.start_duration_s,
                 "log": str(st.log_path) if st.log_path else None,
+                "status_file": st.status_path,
             }
             for name, st in self._servers.items()
         }
@@ -746,4 +1030,5 @@ class MCPBridge:
             self._tmp_log_dir = None
 
 
-__all__ = ["MCPBridge", "MCPServerConfig", "DEFAULT_OPTIONS", "tool_result_error", "is_transport_error"]
+__all__ = ["MCPBridge", "MCPServerConfig", "DEFAULT_OPTIONS", "DATA_SERVER", "EXIT_MARKER", "tool_result_error",
+           "is_transport_error", "legacy_result"]
