@@ -58,6 +58,7 @@ Model-facing guards (local open-weight models need them more than Claude):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import hashlib
 import inspect
@@ -439,6 +440,16 @@ def _has_tool_blocks(messages: list[Message]) -> bool:
     return any(isinstance(b, (ToolCall, ToolResult)) for m in messages for b in m.content)
 
 
+def _catalog_fault(exc: BaseException) -> bool:
+    """A descriptor/overlay/catalog error (configuration), as opposed to a missing package."""
+    try:
+        from .datalayer.catalog import CatalogError
+        from .datalayer.descriptor.load import DescriptorError
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(exc, (DescriptorError, CatalogError))
+
+
 @dataclass
 class _Loop:
     agent: AgentDefinition
@@ -525,6 +536,7 @@ class Runtime:
         #: (``data.enabled: false``, mode ``off``, or it could not be built: ``gateway_error``).
         self.gateway: Any = None
         self.gateway_error: str | None = None
+        self.gateway_refused: str | None = None     # set when strict refuses servers over a broken catalog
         self._data_settings: Any = None
         #: Tool-scoped readiness from the data layer: {tool: reason} of unready tools.
         self.tool_readiness: dict[str, Any] = {}
@@ -617,8 +629,12 @@ class Runtime:
     def _build_gateway(self) -> Any:
         """The data gateway when ``data.enabled`` and the mode is not ``off``; None otherwise.
         A gateway that cannot be built is reported (warning + ``data_gateway_unavailable``
-        trace event) and the MCP servers start without it."""
+        trace event) and the MCP servers start without it, except that a malformed descriptor or
+        overlay under ``when_service_down: strict`` refuses the servers the gateway would enforce
+        (``gateway_refused``). A missing or empty descriptors/overlays directory is warned about
+        (``data_catalog_missing``): every server would run on the generic guard."""
         self.gateway, self.gateway_error, self._data_settings = None, None, None
+        self.gateway_refused = None
         try:
             settings = self.data_settings()
         except Exception as exc:  # noqa: BLE001
@@ -626,11 +642,23 @@ class Runtime:
             return None
         if not settings.enabled or settings.gateway.mode == "off":
             return None
+        for what, d in (("descriptors_dir", settings.descriptors_dir), ("overlays_dir", settings.overlays_dir)):
+            # an empty catalog builds, but leaves every server on the generic guard: say so
+            if not Path(d).is_dir() or not any(Path(d).glob("*.y*ml")):
+                reason = f"data.{what} {d} is missing or holds no YAML files: no tool has a reviewed binding"
+                log.warning("data catalog: %s", reason)
+                with contextlib.suppress(Exception):
+                    self.run.trace("data_catalog_missing", setting=what, path=str(d), reason=reason)
         try:
             from . import datalayer
             return datalayer.build_gateway(self.config, run=self.run_variables())
         except Exception as exc:  # noqa: BLE001 - e.g. the gateway package is not installed yet
-            self._gateway_unavailable(f"{type(exc).__name__}: {exc}"[:1000])
+            reason = f"{type(exc).__name__}: {exc}"[:1000]
+            self._gateway_unavailable(reason)
+            if settings.gateway.when_service_down == "strict" and _catalog_fault(exc):
+                # a malformed descriptor or overlay is a configuration fault: under strict the servers the
+                # gateway would enforce are refused, never started unguarded
+                self.gateway_refused = reason
             return None
 
     async def start_mcp(self, servers: list[str] | None = None) -> dict[str, str]:
@@ -664,12 +692,31 @@ class Runtime:
         self.mcp = MCPBridge(specs, extra_env=self.tool_env(), log_dir=self.run.dir / "logs" / "mcp",
                              options=self.config.get("mcp") or {}, on_event=self._mcp_event, **seam)
         wanted = (set(servers) | extra_names) if servers else None
-        tools = await self.mcp.start(wanted)
+        refused = self._refused_servers(specs) if gateway is None else {}
+        if refused:
+            wanted = (wanted or {s.name for s in specs}) - set(refused)
+        tools = await self.mcp.start(wanted) if wanted != set() else []
+        if refused:
+            self.mcp.failures.update(refused)
+            self.run.trace("data_gateway_refused", servers=sorted(refused), reason=self.gateway_refused)
         self.registry.extend(tools)
         self.run.trace("mcp_started", servers=sorted(self.mcp.sessions), failures=self.mcp.failures,
                        n_tools=len(tools), data_gateway=getattr(gateway, "mode", None) if gateway else None)
         self._system_cache.clear()  # the unavailable-server list may have changed
         return self.mcp.failures
+
+    def _refused_servers(self, specs: list[Any]) -> dict[str, str]:
+        """Servers not started because the data catalog is broken under ``when_service_down: strict``."""
+        if not getattr(self, "gateway_refused", None):
+            return {}
+        try:
+            settings = self.data_settings()
+        except Exception:  # noqa: BLE001
+            return {}
+        why = (f"not started: the data catalog could not be loaded ({self.gateway_refused}); fix the descriptor "
+               "or overlay (`vbt ds lint`), or set data.gateway.when_service_down: lenient")
+        return {s.name: why[:1200] for s in specs if getattr(s, "enabled", True)
+                and settings.gateway.mode == "enforce" and settings.gateway.enforces(s.name)}
 
     def _on_tools_changed(self, tools: list[Tool]) -> None:
         """Tools the bridge registered or updated after start (a restarted server, a late

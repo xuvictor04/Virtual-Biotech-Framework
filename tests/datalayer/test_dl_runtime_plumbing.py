@@ -417,3 +417,51 @@ def test_add_note_keeps_truncation_note_last(text, expected_last):
     out = runtime_mod._add_note(text, "note")
     assert out.endswith(expected_last) and "note" in out
     assert re.search(r"note\n\n\[Output truncated", out) or "[Output truncated" not in text
+
+
+def _broken_overlays(tmp_path):
+    import shutil
+
+    from dl_upstream import REPO
+
+    ov = tmp_path / "overlays"
+    shutil.copytree(REPO / "configs" / "data" / "overlays", ov)
+    (ov / "target.yaml").write_text((ov / "target.yaml").read_text()[:200])
+    return ov
+
+
+async def test_a_broken_overlay_refuses_enforced_servers_under_strict(config, scripted_session, tmp_path):
+    """R8: a malformed overlay is a configuration fault: under ``when_service_down: strict`` the servers
+    the gateway would enforce are refused (and say why), never started unguarded."""
+    config["data"] = {"enabled": True, "overlays_dir": str(_broken_overlays(tmp_path))}
+    config["mcp_servers"] = {"servers": [{"name": "target", "command": "/nonexistent/python", "args": []}]}
+    session = await scripted_session(config, {"cso": []})
+    rt = session.rt
+    failures = await rt.start_mcp()
+    assert rt.gateway is None and "DescriptorError" in rt.gateway_error and rt.gateway_refused
+    assert "not started: the data catalog could not be loaded" in failures["target"]
+    kinds = [e["type"] for e in rt.run.events()]
+    assert "data_gateway_unavailable" in kinds and "data_gateway_refused" in kinds
+    await session.close()
+
+
+async def test_a_missing_catalog_directory_is_warned_about(config, scripted_session, tmp_path):
+    """R8: an empty or missing descriptors/overlays directory is traced, not silent."""
+    config["data"] = {"enabled": True, "descriptors_dir": str(tmp_path / "nope")}
+    config["mcp_servers"] = {"servers": []}
+    session = await scripted_session(config, {"cso": []})
+    await session.rt.start_mcp()
+    (ev,) = [e for e in session.rt.run.events() if e["type"] == "data_catalog_missing"]
+    assert ev["setting"] == "descriptors_dir"
+    await session.close()
+
+
+def test_preflight_reports_a_broken_catalog_as_a_required_failure(config, tmp_path):
+    """R8: the doctor lists a malformed overlay as a required FAIL, not as a readiness fallback note."""
+    from vbt import preflight
+
+    config["data"] = {"enabled": True, "overlays_dir": str(_broken_overlays(tmp_path))}
+    config["mcp_servers"] = {"servers": [{"name": "target", "command": "python", "args": []}]}
+    results = preflight.check_reference_data(config)
+    (fail,) = [r for r in results if r.label == "data catalog"]
+    assert not fail.ok and fail.required and "target.yaml" in fail.detail

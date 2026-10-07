@@ -389,6 +389,12 @@ def check_reference_data(config: dict[str, Any], *, per_turn: bool = False) -> l
     if data_layer_active(config):
         try:
             return [*check_data_readiness(config, per_turn=per_turn), *_leakage_ceiling(config)]
+        except DataCatalogError as exc:
+            # the catalog itself is broken: the gateway cannot guard any server, which is not a fallback
+            fail = CheckResult("data catalog", False, required=True, kind="data",
+                               detail=f"the data catalog cannot be loaded: {exc}",
+                               hint="fix the descriptor or overlay (`vbt ds lint` names the file and field)")
+            return [*_legacy_reference_data(config), fail]
         except DataCheckUnavailable as exc:
             note = CheckResult("data layer readiness (tool-scoped)", False, required=False, kind="data",
                                detail=f"the data child's check could not run ({exc}); falling back to the "
@@ -476,6 +482,10 @@ def last_data_check(config: dict[str, Any]) -> dict[str, Any] | None:
 
 class DataCheckUnavailable(RuntimeError):
     """The data child's readiness check could not run (no script, no interpreter, a crash)."""
+
+
+class DataCatalogError(DataCheckUnavailable):
+    """The descriptors or overlays cannot be loaded (missing directory, malformed YAML, a schema error)."""
 
 
 def data_layer_active(config: dict[str, Any]) -> bool:
@@ -588,7 +598,7 @@ def data_catalog(config: dict[str, Any]) -> tuple[Any, Any, Any]:
     for what, d in (("descriptors_dir", settings.descriptors_dir), ("overlays_dir", settings.overlays_dir)):
         # a missing or empty catalog would make every tool look ready and silence the legacy checks
         if not Path(d).is_dir() or not any(Path(d).glob("*.y*ml")):
-            raise DataCheckUnavailable(f"data.{what} {d} is missing or holds no YAML files: the data catalog "
+            raise DataCatalogError(f"data.{what} {d} is missing or holds no YAML files: the data catalog "
                                        "cannot be loaded")
     stamps = []
     for d in (settings.descriptors_dir, settings.overlays_dir):
@@ -860,8 +870,12 @@ def check_data_readiness(config: dict[str, Any], *, per_turn: bool = False) -> l
         dr, _cache, _catalog = load_data_readiness(config, per_turn=per_turn)
     except DataCheckUnavailable:
         raise
-    except Exception as exc:  # noqa: BLE001 - a broken catalog: the caller falls back with a note
-        raise DataCheckUnavailable(f"{type(exc).__name__}: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - a broken catalog is a required failure; anything else a note
+        from .datalayer.catalog import CatalogError
+        from .datalayer.descriptor.load import DescriptorError
+
+        cls = DataCatalogError if isinstance(exc, (DescriptorError, CatalogError)) else DataCheckUnavailable
+        raise cls(f"{type(exc).__name__}: {exc}") from exc
     return data_findings(config, dr)
 
 
@@ -1610,7 +1624,7 @@ def add_doctor_parser(sub: Any) -> Any:
 
 
 __all__ = [
-    "CheckResult", "DataCheckUnavailable", "DataReadiness", "DataReadinessError", "LOCAL_PROVIDERS",
+    "CheckResult", "DataCatalogError", "DataCheckUnavailable", "DataReadiness", "DataReadinessError", "LOCAL_PROVIDERS",
     "ProviderNotReadyError", "TURN_NOT_SENT", "DATA_TOOLS_LABEL", "check_data_readiness", "data_catalog",
     "data_child_command", "data_findings", "data_layer_active", "data_readiness", "degraded_tables",
     "degraded_tools", "granted_tools", "judge_control", "last_data_check", "load_data_readiness", "run_data_check",
