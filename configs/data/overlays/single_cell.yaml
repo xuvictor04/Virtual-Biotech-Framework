@@ -1,6 +1,13 @@
 # Overlay for the upstream single_cell server (single_cell_mcp, CELLxGENE Census; docs/DATA_LAYER.md §6.7,
 # Appendix A). Phase 1: 11 pass. value_filter (escape: soma) is a SOMA expression the gateway parses into the
 # Predicate IR (gateway/soma_filter.py), so is_primary_data and dataset scope are checked before the call.
+#
+# Phase 4: obs and var are soma tables. get_anndata, get_expression_for_genes and get_anndata_donor_balanced
+# are admitted count-first by the data child's _census_count (cells x genes against the cap, before upstream
+# fetches anything), against the release 'stable' resolves to (release_confidence, drift). Donors are keyed by
+# (dataset_id, donor_id); _census_count's donor-balanced sample per dataset replaces the upstream balancing that
+# merges donors of different datasets. genes_found/genes_not_found are recomputed from the written h5ad's
+# var.feature_name (census_count.genes_from_h5ad): upstream compares against positional var_names.
 schema: vbt.overlay/1
 server: single_cell
 sources: [cellxgene_census]

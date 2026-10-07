@@ -75,6 +75,10 @@ class ResidencyLedger:
     def generation(self, server: str) -> int | None:
         return self._get(server).generation
 
+    def servers(self) -> list[str]:
+        """Every server the ledger has seen (the host budget sums over them, §14.3)."""
+        return sorted(self._servers)
+
     def sync(self, server: str, generation: int | None) -> bool:
         """Follow the bridge's generation of ``server``; a change empties the ledger. Returns
         True when it was reset."""

@@ -1,20 +1,25 @@
-# CZ CELLxGENE Census, human (docs/DATA_LAYER.md §6.7; phase 1, strict: false).
+# CZ CELLxGENE Census, human (docs/DATA_LAYER.md §6.7; phase 4, strict: false).
 #
-# Remote SOMA. Phase 1 serves every tool upstream (layout upstream_only, format none); phase 4
-# replaces the layout with {plugin: soma, uri: census_data/homo_sapiens/obs}. The upstream server
-# opens census_version "stable" (single_cell_mcp/tools.py:29,51), so the release is resolved from
-# each result and recorded, never assumed (N6).
+# Remote SOMA. The tools are still served upstream; phase 4 gives obs and var the soma layout and
+# format, which the data child uses for count-first admission of Census pulls (_census_count), the
+# remote witness (one value_filter read of soma_joinid) and donor-balanced sampling keyed by
+# (dataset_id, donor_id). The upstream server opens census_version "stable"
+# (single_cell_mcp/tools.py:29,51): the release is resolved from each result ($.census_version) and,
+# in the data child, through cellxgene_census.get_census_version_description, recorded with its
+# release_confidence (exact | inferred | unknown) and drift-checked (a moved alias is reported, never
+# silently mixed into one session's results).
 schema: vbt.datasource/1
 source: cellxgene_census
 title: CZ CELLxGENE Census (human)
 kind: remote
 release: {from: as_of, resolve: {result: "$.census_version"}}   # 'stable' is resolved and recorded, never assumed
 defaults: {format: none, layout: upstream_only, missing: unknown}
+budget: {requests_per_min: 30, timeout_s: 600}
 strict: false
 
 id_types:
   census_joinid:   {plugin: local_key, options: {canonical: "^[0-9]+$"}, resolvable: false}
-  census_feature:  {plugin: ensembl_gene, resolvable: false}        # var feature_id: Ensembl gene IDs
+  census_feature:  {plugin: census_feature, options: {organism: homo_sapiens}, resolvable: false}   # var feature_id
   cell_ontology:   {plugin: local_key, options: {canonical: "^CL:[0-9]{7}$", normalize: [strip, upper]}, resolvable: false}
   census_dataset:  {plugin: local_key, options: {canonical: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
                                                  normalize: [strip, lower]}, resolvable: false}
@@ -22,6 +27,8 @@ id_types:
 tables:
   obs:
     kind: records
+    layout: {plugin: soma, options: {uri: census_data/homo_sapiens/obs, census_version: stable}}
+    format: soma
     grain: one cell in one dataset
     key: {columns: [soma_joinid]}
     grains: {donor: [dataset_id, donor_id], dataset: [dataset_id], cell_type: [cell_type], tissue: [tissue]}
@@ -44,6 +51,8 @@ tables:
 
   var:
     kind: records
+    layout: {plugin: soma, options: {uri: census_data/homo_sapiens/ms/RNA/var, census_version: stable}}
+    format: soma
     grain: one gene (feature) measured in the human Census
     key: {columns: [feature_id]}
     columns:

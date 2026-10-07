@@ -15,6 +15,17 @@ withholds records whose earliest publication date (print or electronic) may
 fall after the ceiling, reporting them under ``withheld``. Dates with missing
 month/day are read as the latest possible day, so ambiguous records are
 withheld. An unparseable ceiling makes every tool fail rather than run undated.
+
+Nothing is dropped silently (docs/DATA_LAYER.md phase 4, F20):
+
+* ``search_pubmed`` returns what E-utilities said about the query: ``query_translation``
+  (how PubMed mapped the terms), ``errors`` (``errorlist``: phrases or fields not found, which
+  PubMed ignored while still answering) and ``warnings`` (``warninglist``: quoted phrases not
+  found, ignored phrases, output messages). A query PubMed partly ignored is a different query.
+* ``fetch_abstracts`` reconciles the requested IDs with the returned records:
+  ``not_returned`` (requested, neither returned nor withheld), ``unrequested`` (returned
+  under a PMID that was not requested: E-utilities reads ``PMC1234`` as PMID 1234),
+  ``invalid_pmids`` (not digits) and ``not_fetched`` (beyond the 50-ID cap, never sent).
 """
 
 from __future__ import annotations
@@ -137,11 +148,32 @@ def _get(endpoint: str, params: dict[str, Any]) -> httpx.Response:
     return r
 
 
+#: At most this many PMIDs are fetched per call; the rest are listed under ``not_fetched``.
+FETCH_CAP = 50
+
+
+def _messages(block: Any) -> list[str]:
+    """``errorlist``/``warninglist`` entries as ``"<kind>: <value>"`` strings (empty lists skipped)."""
+    out: list[str] = []
+    if isinstance(block, dict):
+        for kind, values in sorted(block.items()):
+            for v in values if isinstance(values, list) else [values]:
+                if v not in (None, "", []):
+                    out.append(f"{kind}: {v}")
+    elif isinstance(block, list):
+        out.extend(str(v) for v in block if v not in (None, ""))
+    elif block:
+        out.append(str(block))
+    return out
+
+
 def search(query: str, max_results: int = 20, sort: str = "relevance") -> dict:
     ceiling = literature_ceiling()
     r = _get("esearch.fcgi", {"db": "pubmed", "term": query, "retmax": min(max_results, 200),
                               "retmode": "json", "sort": sort, **_date_params()})
     data = r.json()["esearchresult"]
+    if data.get("ERROR"):
+        raise ValueError(f"PubMed rejected the query: {data['ERROR']}")
     ids = data.get("idlist", [])
     summaries = _summaries(ids) if ids else []
     withheld = []
@@ -159,6 +191,14 @@ def search(query: str, max_results: int = 20, sort: str = "relevance") -> dict:
             doc.pop("_date", None)
     out = {"query": query, "count": int(data.get("count", 0)), "results": summaries,
            "summary": f"{data.get('count', 0)} PubMed records match; showing {len(summaries)}."}
+    if data.get("querytranslation"):
+        out["query_translation"] = data["querytranslation"]
+    errors, warnings = _messages(data.get("errorlist")), _messages(data.get("warninglist"))
+    if errors:
+        out["errors"] = errors
+        out["summary"] += f" PubMed ignored part of the query ({'; '.join(errors)})."
+    if warnings:
+        out["warnings"] = warnings
     if ceiling is not None:
         out["literature_max_date"] = _fmt(ceiling)
         out["summary"] += f" Restricted to publications up to {_fmt(ceiling)}."
@@ -228,18 +268,40 @@ def parse_articles(xml_text: str, ceiling: tuple[int, int, int] | None = None) -
     return out, withheld
 
 
+def reconcile(requested: list[str], returned: list[str], withheld: list[str]) -> dict[str, list[str]]:
+    """Requested IDs against returned and withheld PMIDs: ``not_returned``, ``unrequested``, ``invalid_pmids``."""
+    asked = [p.strip() for p in requested]
+    got = set(returned) | set(withheld)
+    return {"not_returned": [p for p in asked if p not in got],
+            "unrequested": sorted({p for p in returned if p not in set(asked)}),
+            "invalid_pmids": [p for p in asked if not p.isdigit()]}
+
+
 def fetch(pmids: list[str]) -> dict:
     ceiling = literature_ceiling()
-    pmids = [str(p) for p in pmids][:50]
-    r = _get("efetch.fcgi", {"db": "pubmed", "id": ",".join(pmids), "retmode": "xml"})
+    requested = [str(p) for p in pmids]
+    sent, beyond = requested[:FETCH_CAP], requested[FETCH_CAP:]
+    r = _get("efetch.fcgi", {"db": "pubmed", "id": ",".join(sent), "retmode": "xml"})
     out, withheld = parse_articles(r.text, ceiling)
-    result = {"articles": out, "summary": f"Fetched {len(out)} of {len(pmids)} requested abstracts."}
+    result = {"articles": out, "summary": f"Fetched {len(out)} of {len(sent)} requested abstracts."}
     if ceiling is not None:
         result["literature_max_date"] = _fmt(ceiling)
         result["withheld"] = withheld
         if withheld:
             result["summary"] += (f" {len(withheld)} withheld: published after the {_fmt(ceiling)} "
                                   f"literature ceiling (or date unknown).")
+    rec = reconcile(sent, [str(a.get("pmid")) for a in out], [str(w.get("pmid")) for w in withheld])
+    for key, values in rec.items():
+        if values:
+            result[key] = values
+    if rec["not_returned"]:
+        result["summary"] += f" {len(rec['not_returned'])} requested ID(s) returned no record."
+    if rec["unrequested"]:
+        result["summary"] += (f" {len(rec['unrequested'])} record(s) came back under a PMID that was not "
+                              f"requested ({', '.join(rec['unrequested'][:5])}): check the IDs.")
+    if beyond:
+        result["not_fetched"] = beyond
+        result["summary"] += f" {len(beyond)} ID(s) beyond the {FETCH_CAP}-ID cap were not fetched."
     return result
 
 

@@ -13,9 +13,15 @@ TableStatsModel`, or its JSON form):
   about 9x on a three-level fixture (VERIFIED: 11.6 MB of leaf bytes, +1,001 MB peak RSS against
   a 107 MB bytes-only estimate). Seed overheads (``data.memory.object_overhead_bytes``): string
   50 B per value, nested item 120 B per value and list level (``max_rep_level``), and one dict of
-  240 B per struct item. Phase 4 replaces them with factors measured by the format suite.
+  240 B per struct item.
 - **Data-child Arrow scan**: projected leaf bytes x a decode factor; this is what
   ``data.witness.max_scan_bytes`` is compared with.
+
+Phase 4 (F19) replaces the seeds per table in tiers (:mod:`.calibrate`): a **sample** calibration
+(``<cache>/<source>/<fingerprint>/calibration.json``, measured pandas bytes per row of one to three
+row groups) is used instead of the seed model for that fingerprint, and **measured** feedback from
+reaper status files (``memory_feedback.json``: peak RSS of real cold loads over their estimates)
+multiplies either. :meth:`MemoryEstimator.tier` says which tier an estimate came from.
 
 All results are bytes (``MB`` = 2**20 converts).
 """
@@ -28,12 +34,12 @@ from typing import Any, Iterable, Mapping
 
 from ..roles import LIST, Path, PathError, Segment, format_path, parse_path
 
-__all__ = ["MB", "DECODE_FACTORS", "STRING_TYPES", "Leaf", "MemoryEstimator", "leaves_of"]
+__all__ = ["MB", "DECODE_FACTORS", "STRING_TYPES", "TIERS", "Leaf", "MemoryEstimator", "leaves_of"]
 
 MB = 1024 * 1024
 
-#: Arrow bytes per footer (uncompressed) byte when the data child decodes a leaf. Seeds,
-#: calibrated against the format suite's golden files in phase 4 (F19).
+#: Arrow bytes per footer (uncompressed) byte when the data child decodes a leaf. Seeds; a table's
+#: sample calibration (phase 4, F19) replaces them for its fingerprint.
 DECODE_FACTORS: dict[str, float] = {"flat": 1.1, "string": 1.5, "nested": 2.0, "dense_matrix": 1.0,
                                     "sparse_matrix": 1.5}
 
@@ -42,6 +48,9 @@ STRING_TYPES = frozenset({"string", "large_string", "utf8", "large_utf8", "binar
 
 #: Rows a bounded upstream scan holds at least once (one batch of ``scan_top_rows``).
 SCAN_BATCH_ROWS = 1024
+
+#: Where an estimate's factors came from, most trusted first.
+TIERS = ("measured", "sample", "seed")
 
 
 @dataclass(frozen=True)
@@ -110,7 +119,9 @@ class MemoryEstimator:
 
     def __init__(self, expansion: Mapping[str, float] | None = None, fragmentation: float | None = None,
                  object_overhead_bytes: Mapping[str, int] | None = None, safety: float = 1.3,
-                 decode: Mapping[str, float] | None = None) -> None:
+                 decode: Mapping[str, float] | None = None, *,
+                 calibrations: Mapping[str, Mapping[str, Any]] | None = None,
+                 feedback: Mapping[str, Mapping[str, Any]] | None = None) -> None:
         exp = dict(expansion or {"flat": 1.5, "string": 3.5, "nested": 8.0})
         self.fragmentation = float(fragmentation if fragmentation is not None else exp.pop("fragmentation", 1.15))
         exp.pop("fragmentation", None)
@@ -119,14 +130,58 @@ class MemoryEstimator:
                                 **{str(k): int(v) for k, v in (object_overhead_bytes or {}).items()}}
         self.safety = float(safety)
         self.decode = {**DECODE_FACTORS, **{str(k): float(v) for k, v in (decode or {}).items()}}
+        self.calibrations: dict[str, dict[str, Any]] = {str(k): dict(v) for k, v in (calibrations or {}).items()}
+        self.feedback: dict[str, dict[str, Any]] = {str(k): dict(v) for k, v in (feedback or {}).items()}
 
     @classmethod
-    def from_settings(cls, settings: Any) -> "MemoryEstimator":
-        """From ``DataSettings`` (``data.memory.*``)."""
+    def from_settings(cls, settings: Any, *, load_calibrations: bool = False) -> "MemoryEstimator":
+        """From ``DataSettings`` (``data.memory.*``); with ``load_calibrations`` the sample calibrations
+        and measured feedback under ``data.cache_dir`` are loaded too."""
         mem = settings.memory
         exp = dict(mem.expansion)
+        cals = fb = None
+        if load_calibrations:
+            from .calibrate import load_calibrations as _cals, load_feedback
+
+            cache = getattr(settings, "cache_dir", None)
+            cals, fb = _cals(cache), load_feedback(cache)
         return cls(expansion=exp, fragmentation=exp.get("fragmentation"),
-                   object_overhead_bytes=dict(mem.object_overhead_bytes), safety=float(mem.estimate_safety))
+                   object_overhead_bytes=dict(mem.object_overhead_bytes), safety=float(mem.estimate_safety),
+                   calibrations=cals, feedback=fb)
+
+    # ------------------------------------------------------------------ tiers
+
+    def add_calibration(self, cal: Mapping[str, Any], fingerprint: str | None = None) -> None:
+        """Use a sample calibration (:func:`.calibrate.fit` record) for its table fingerprint."""
+        fp = fingerprint or cal.get("fingerprint")
+        if not fp:
+            raise ValueError("a calibration needs the fingerprint of the table it measured")
+        self.calibrations[str(fp)] = dict(cal)
+
+    def add_feedback(self, key: str, factor: float) -> None:
+        """Use a measured feedback factor (peak RSS over the estimate) for a fingerprint or table name."""
+        self.feedback[str(key)] = {"factor": float(factor)}
+
+    def _key(self, table_stats: Any) -> str | None:
+        fp = _get(table_stats, "fingerprint")
+        return str(fp) if fp else None
+
+    def calibration_for(self, table_stats: Any) -> dict[str, Any] | None:
+        key = self._key(table_stats)
+        return self.calibrations.get(key) if key else None
+
+    def feedback_factor(self, table_stats: Any, table: str | None = None) -> float | None:
+        for key in (self._key(table_stats), table):
+            entry = self.feedback.get(key) if key else None
+            if entry and isinstance(entry.get("factor"), (int, float)) and entry["factor"] > 0:
+                return float(entry["factor"])
+        return None
+
+    def tier(self, table_stats: Any, table: str | None = None) -> str:
+        """``measured`` (feedback from real loads), ``sample`` (a calibration of this fingerprint) or ``seed``."""
+        if self.feedback_factor(table_stats, table) is not None:
+            return "measured"
+        return "sample" if self.calibration_for(table_stats) is not None else "seed"
 
     # ------------------------------------------------------------------ per leaf
 
@@ -191,11 +246,22 @@ class MemoryEstimator:
         structs = sum(self.struct_items(leaves, rows).values()) * self.object_overhead["struct_item"]
         return float(per_value + structs)
 
-    def peak_upstream(self, table_stats: Any) -> int:
-        """Peak bytes of an upstream server loading the whole table into pandas."""
+    def peak_upstream(self, table_stats: Any, table: str | None = None) -> int:
+        """Peak bytes of an upstream server loading the whole table into pandas: the sample calibration's
+        measured bytes per row when this fingerprint has one, else the seed model; times the measured
+        feedback factor when real loads were observed."""
         if table_stats is None:
             return 0
-        return int(math.ceil((self.bytes_term(table_stats) + self.objects_term(table_stats)) * self.fragmentation))
+        cal = self.calibration_for(table_stats)
+        rows = _get(table_stats, "rows")
+        if cal is not None and cal.get("bytes_per_row") and rows is not None:
+            base = float(cal["bytes_per_row"]) * int(rows)
+        else:
+            base = self.bytes_term(table_stats) + self.objects_term(table_stats)
+        factor = self.feedback_factor(table_stats, table)
+        if factor is not None:
+            base *= factor
+        return int(math.ceil(base * self.fragmentation))
 
     def peak_arrow_scan(self, table_stats: Any, leaves: Iterable[str] | None = None) -> int:
         """Decoded Arrow bytes of the data child scanning the projected ``leaves`` (all when None),
@@ -203,12 +269,14 @@ class MemoryEstimator:
         if table_stats is None:
             return 0
         wanted = list(leaves) if leaves is not None else None
+        cal = self.calibration_for(table_stats)
+        decode = {**self.decode, **{str(k): float(v) for k, v in ((cal or {}).get("decode") or {}).items()}}
         total = 0.0
         for leaf in leaves_of(table_stats):
             if wanted is not None and not _selected(leaf, wanted):
                 continue
             kind = "nested" if leaf.depth > 0 else ("string" if leaf.is_string else leaf.kind)
-            total += leaf.uncompressed_bytes * self.decode.get(kind, self.decode["flat"])
+            total += leaf.uncompressed_bytes * decode.get(kind, decode["flat"])
         return int(math.ceil(total))
 
     def transient(self, table_stats: Any, predicate_selectivity: float | None = None) -> int:

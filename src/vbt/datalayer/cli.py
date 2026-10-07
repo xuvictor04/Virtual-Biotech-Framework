@@ -9,9 +9,16 @@
     vbt ds resolve <id_type> <value...>            resolutions with rules and candidates
     vbt ds explain <server>.<tool> | --all         binding, serve mode, reads, derived text, defects
     vbt ds fingerprint [--write]                   table fingerprints (what gets pinned)
-    vbt ds index build [--id-type T] [--access-paths]
+    vbt ds index build [--id-type T] [--access-paths [--huge]]
     vbt ds estimate --table S.T | --tool server.tool
     vbt ds retro-audit <run>                       re-classify a recorded run offline
+
+Phase 4::
+
+    vbt ds status [<run> | --log-dir DIR]          per-server memory (reaper status files), host budget,
+                                                   calibrations and measured feedback
+    vbt ds calibrate --table S.T [--row-groups N]  sample-and-scale memory calibration (data child)
+    vbt ds overlay init <server> [--from-json F]   scaffold an overlay for a third-party MCP server
 
 Handlers follow the repo convention ``handler(args, config) -> int``. Nothing here imports pyarrow:
 commands that read data (``check``, ``fingerprint``, ``index build``, ``estimate``) run the data
@@ -22,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -40,6 +48,40 @@ _STATS_SNIPPET = (
     "ctx = ServiceContext(DataSettings.from_env()); "
     "print(json.dumps(load_verbs()['_stats'](ctx, {'tables': sys.argv[2:]}), sort_keys=True, default=str))"
 )
+
+
+#: Python run by commands that call one data-child function ``module:function(ctx, payload)`` in the data
+#: child's interpreter (``python -E -c``; ``src/`` is put on sys.path first), printed as one JSON line.
+_CALL_SNIPPET = (
+    "import importlib, json, sys; sys.path.insert(0, sys.argv[1]); "
+    "from vbt.datalayer.service import ServiceContext; "
+    "from vbt.datalayer.settings import DataSettings; "
+    "mod, fn = sys.argv[2].split(':'); f = getattr(importlib.import_module(mod), fn); "
+    "ctx = ServiceContext(DataSettings.from_env()); "
+    "print(json.dumps(f(ctx, json.loads(sys.argv[3])), sort_keys=True, default=str))"
+)
+
+#: How to bind a third-party server: the header of every ``vbt ds overlay init`` scaffold and the
+#: command's help (docs/DATA_LAYER.md §8.6, §9.5, §11.9).
+THIRD_PARTY_HOWTO = """\
+How to add a third-party MCP server (docs/DATA_LAYER.md §8.6, §9.5, §11.9):
+ 1. Add the server to configs/mcp_servers.yaml (command + args for stdio, or url: for HTTP). Until an
+    overlay reviews its tools, the generic guard applies: explicit not-found shapes become not_found,
+    structural empties are uncitable (empty_unverified), HTTP 5xx is source_error.
+ 2. Run `vbt ds overlay init <server>` (it lists the tools and writes configs/data/overlays/<server>.yaml).
+    Every tool is `status: unreviewed`; every argument is `role: unbound` or a guessed role (limit,
+    free_text, output_path). `guess:` comments name identifier kinds whose plugin recognised the
+    examples in the tool's docstring (looks_like); they are hints, not bindings.
+ 3. If the server reads a dataset the catalog does not describe, add a descriptor under
+    configs/data/sources/ (kind: remote for live APIs; layout live_api with a count endpoint gives
+    the remote witness). Opaque IDs are a local_key id_type with YAML options, not new code.
+ 4. Review each tool: bind arguments (`binds: <source>.<table>.<column>`, `accepts: [<id_type>]`),
+    describe the result (`rows`, `total`, `not_found_when`: an HTTP 404 means not found only when it is
+    declared), and set `status: reviewed`. A payload JSONPaths cannot describe gets an envelope plugin
+    (kind `envelope`, entry point group vbt.datalayer.envelope) named by the result's codec.
+ 5. Check with `vbt ds lint`, `vbt ds explain <server>.<tool>` and
+    `vbt datasource conformance --plugin <name>` for any new plugin.
+"""
 
 
 def _out(text: str = "") -> None:
@@ -524,9 +566,63 @@ def _run_child(config: dict[str, Any], *child_args: str, timeout: float = 3600.0
     return proc.returncode, proc.stdout, proc.stderr
 
 
+def _call_child(config: dict[str, Any], target: str, payload: Mapping[str, Any], *,
+                timeout: float = 3600.0) -> dict[str, Any]:
+    """Run ``module:function(ctx, payload)`` in the data child's interpreter; returns its JSON."""
+    from ..preflight import data_child_command
+    from .settings import DataSettings
+
+    settings = DataSettings.from_config(config)
+    cmd, env = data_child_command(config)
+    src = str(Path(settings.project_root) / "src")
+    argv = [cmd[0], "-E", "-c", _CALL_SNIPPET, src, target, json.dumps(dict(payload))]
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
+    line = next((ln for ln in reversed(proc.stdout.splitlines()) if ln.startswith("{")), None)
+    if proc.returncode != 0 or line is None:
+        raise RuntimeError((proc.stderr or proc.stdout).strip()[-800:] or f"exit {proc.returncode}")
+    return json.loads(line)
+
+
+def cmd_index_build_huge(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    """``index build --access-paths --huge``: resumable sidecars of huge tables, called until complete
+    (each call within ``--time-budget-s`` and ``--max-bytes``) or ``--once``."""
+    _settings, catalog, _registry = _catalog(config)
+    tables = list(args.table or [])
+    if not tables:
+        tables = [f"{s}.{n}" for s, d in sorted(catalog.sources.items()) for n, t in sorted(d.tables.items())
+                  if t.size_class == "huge" and any(ap.via == "sidecar_index" for ap in t.access_paths)]
+    bad = _unknown_tables(catalog, tables)
+    if bad:
+        _err(f"error: unknown table(s): {', '.join(bad)}")
+        return 2
+    rc = 0
+    for ref in tables:
+        payload = {"table": ref, "time_budget_s": args.time_budget_s, "budget_bytes": args.max_bytes,
+                   "force": bool(args.force)}
+        while True:
+            try:
+                body = _call_child(config, "vbt.datalayer.service.verbs.index_huge:build_index_huge", payload)
+            except Exception as exc:  # noqa: BLE001
+                _err(f"failed {ref}: {exc}")
+                rc = 1
+                break
+            payload["force"] = False
+            if args.json:
+                _out(json.dumps(body, sort_keys=True))
+            else:
+                _out(f"{ref}: {body.get('status')} {body.get('units_done')}/{body.get('units_total')} row groups"
+                     + (f", {body['rows']} values -> {body.get('path')}" if body.get("rows") is not None else "")
+                     + (f" ({body['reason']})" if body.get("reason") else ""))
+            if body.get("status") == "complete" or args.once:
+                break
+    return rc
+
+
 def cmd_index_build(args: argparse.Namespace, config: dict[str, Any]) -> int:
     from ..preflight import DataCheckUnavailable
 
+    if getattr(args, "huge", False):
+        return cmd_index_build_huge(args, config)
     child: list[str] = ["--build-index"]
     for t in args.id_type or []:
         child += ["--id-type", t]
@@ -653,6 +749,279 @@ def cmd_estimate(args: argparse.Namespace, config: dict[str, Any]) -> int:
     return 1 if missing else 0
 
 
+# ---------------------------------------------------------------------------- status / calibrate
+
+
+def _status_dir(args: argparse.Namespace, config: dict[str, Any]) -> Path | None:
+    if getattr(args, "log_dir", None):
+        return Path(args.log_dir)
+    if getattr(args, "run", None):
+        from .retro_audit import resolve_run
+
+        return resolve_run(args.run, config) / "logs" / "mcp"
+    return None
+
+
+def memory_status(config: dict[str, Any], status_dir: Path | None) -> dict[str, Any]:
+    """Servers' reaper status files, the host budget and the stored calibrations (``vbt ds status``)."""
+    from .memory.calibrate import factors_summary, load_calibrations, load_feedback
+    from .memory.host import host_budget_mb, host_total_mb
+    from .memory.ledger import read_status
+    from .settings import DataSettings
+
+    settings = DataSettings.from_config(config)
+    servers: dict[str, Any] = {}
+    if status_dir is not None and status_dir.is_dir():
+        for path in sorted(status_dir.glob("*.status.json")):
+            data = read_status(path)
+            if data:
+                servers[path.name[:-len(".status.json")]] = data
+    cals = load_calibrations(settings.cache_dir)
+    feedback = load_feedback(settings.cache_dir)
+    resident = sum(float(d.get("rss_mb") or 0.0) for d in servers.values() if not d.get("exit"))
+    return {"host": {"total_mb": host_total_mb(), "budget_mb": host_budget_mb(settings),
+                     "resident_mb": round(resident, 1), "limit_kind": settings.memory.limit_kind},
+            "servers": servers, "status_dir": str(status_dir) if status_dir else None,
+            "calibrations": {fp: {"table": c.get("table"), "rows_sampled": c.get("rows_sampled"),
+                                  "bytes_per_row": c.get("bytes_per_row"), "factors": c.get("factors"),
+                                  "at": c.get("at")} for fp, c in sorted(cals.items())},
+            "factors": factors_summary(cals.values()),
+            "feedback": {k: {"table": v.get("table"), "factor": v.get("factor"),
+                             "observations": len(v.get("observations") or [])} for k, v in sorted(feedback.items())}}
+
+
+def cmd_status(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    try:
+        status_dir = _status_dir(args, config)
+    except FileNotFoundError as exc:
+        _err(f"error: {exc}")
+        return 2
+    body = memory_status(config, status_dir)
+    if args.json:
+        _out(json.dumps(body, sort_keys=True, default=str))
+        return 0
+    host = body["host"]
+    budget = host["budget_mb"]
+    _out(f"host: {host['total_mb'] or '?'} MB; budget "
+         + (f"{budget:,.0f} MB" if budget else "off") + f"; resident {host['resident_mb']:,.0f} MB; "
+         f"containment {host['limit_kind']}")
+    if status_dir is None:
+        _out("servers: pass a run (or --log-dir) to read the reaper status files")
+    elif not body["servers"]:
+        _out(f"servers: no status files under {status_dir}")
+    for name, d in sorted(body["servers"].items()):
+        state = "exited " + json.dumps(d["exit"], sort_keys=True) if d.get("exit") else f"rss {d.get('rss_mb')} MB"
+        _out(f"  {name:<20} {state}; peak {d.get('peak_rss_mb')} MB; limit {d.get('limit_mb')} MB "
+             f"({d.get('containment')}); hash seed {d.get('hash_seed')}")
+    for fp, c in body["calibrations"].items():
+        _out(f"calibration {c['table']} [{fp}]: {c['rows_sampled']} rows sampled, "
+             f"{(c['bytes_per_row'] or 0):,.0f} B/row, factors {c['factors']}")
+    if not body["calibrations"]:
+        _out("calibrations: none (estimates use the seed factors; run `vbt ds calibrate --table S.T`)")
+    for key, f in body["feedback"].items():
+        _out(f"measured {f['table']} [{key}]: x{f['factor']} over {f['observations']} load(s)")
+    return 0
+
+
+def cmd_calibrate(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    _settings, catalog, _registry = _catalog(config)
+    tables = list(args.table or [])
+    if not tables:
+        _err("error: pass --table S.T (repeatable)")
+        return 2
+    bad = _unknown_tables(catalog, tables)
+    if bad:
+        _err(f"error: unknown table(s): {', '.join(bad)}")
+        return 2
+    rc = 0
+    for ref in tables:
+        try:
+            cal = _call_child(config, "vbt.datalayer.memory.calibrate:calibrate",
+                              {"table": ref, "row_groups": int(args.row_groups)})
+        except Exception as exc:  # noqa: BLE001
+            _err(f"failed {ref}: {exc}")
+            rc = 1
+            continue
+        if args.json:
+            _out(json.dumps(cal, sort_keys=True, default=str))
+            continue
+        _out(f"{ref}: {cal.get('rows_sampled')} of {cal.get('rows')} rows sampled; "
+             f"{(cal.get('bytes_per_row') or 0):,.0f} pandas bytes per row; factors vs seed {cal.get('factors')}")
+        _out(f"  written: {cal.get('path')}")
+    return rc
+
+
+# ---------------------------------------------------------------------------- overlay init
+
+_LIMIT_NAMES = frozenset({"limit", "max_results", "top_k", "top_n", "size", "page_size", "max_cells", "n",
+                          "max_hits", "num_results", "count"})
+_TEXT_NAMES = frozenset({"query", "q", "search", "term", "text", "keywords", "filter", "value_filter"})
+_EXAMPLE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_:.\-]*[0-9][A-Za-z0-9_:.\-]*")
+
+
+def _guess_kinds(registry: Any, texts: Iterable[str], *, top: int = 3) -> list[tuple[str, str]]:
+    """``[(id_type, example)]``: identifier plugins whose ``looks_like`` recognises a token of ``texts``."""
+    tokens: list[str] = []
+    for text in texts:
+        for tok in _EXAMPLE_RE.findall(str(text or "")):
+            tok = tok.strip(".,;:()[]'\"")
+            if len(tok) >= 3 and tok not in tokens:
+                tokens.append(tok)
+    scores: dict[str, tuple[float, str]] = {}
+    for plugin in (registry.all("identifier") if registry is not None else []):
+        for tok in tokens:
+            try:
+                score = float(plugin.looks_like(tok))
+            except Exception:  # noqa: BLE001 - a plugin that cannot score a token does not guess
+                continue
+            if score >= 0.9 and score > scores.get(plugin.id_type, (0.0, ""))[0]:
+                scores[plugin.id_type] = (score, tok)
+    ranked = sorted(scores.items(), key=lambda kv: (-kv[1][0], kv[0]))
+    return [(kind, ex) for kind, (_s, ex) in ranked[:top]]
+
+
+def _arg_doc(doc: str, name: str) -> list[str]:
+    return [ln.strip() for ln in (doc or "").splitlines() if name in ln]
+
+
+def _yaml_text(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def scaffold_overlay(server: str, tools: Iterable[Mapping[str, Any]], registry: Any = None, *,
+                     url: str | None = None) -> str:
+    """The YAML text of an overlay scaffold: every tool ``status: unreviewed``, arguments ``role: unbound``
+    (or a guessed limit, free-text or output-path role), identifier kinds guessed as comments."""
+    lines = [f"# Overlay scaffold for the MCP server {server!r} (generated by `vbt ds overlay init`).", "#"]
+    lines += ["# " + ln if ln else "#" for ln in THIRD_PARTY_HOWTO.rstrip().splitlines()]
+    lines += ["schema: vbt.overlay/1", f"server: {_yaml_text(server)}"]
+    if url:
+        lines.append(f"match: {{url_prefix: {_yaml_text(url)}}}")
+    entries = sorted((dict(t) for t in tools), key=lambda t: str(t.get("name")))
+    if not entries:
+        lines.append("tools: {}")
+        return "\n".join(lines) + "\n"
+    lines.append("tools:")
+    for t in entries:
+        name = str(t.get("name"))
+        doc = str(t.get("description") or "")
+        schema = t.get("inputSchema") or t.get("input_schema") or {}
+        props = dict(schema.get("properties") or {})
+        first = next((ln.strip() for ln in doc.splitlines() if ln.strip()), "")
+        lines.append(f"  {_yaml_text(name)}:")
+        if first:
+            lines.append(f"    # {first[:150]}")
+        lines.append("    status: unreviewed")
+        if not props:
+            lines.append("    args: {}")
+        else:
+            lines.append("    args:")
+            for arg, prop in sorted(props.items()):
+                prop = dict(prop or {})
+                typ = prop.get("type") or ("/".join(str(x.get("type")) for x in prop.get("anyOf", [])
+                                                    if isinstance(x, Mapping)) or "any")
+                lower = arg.lower()
+                if lower in _LIMIT_NAMES and "integer" in str(typ):
+                    role = "{role: limit}"
+                elif lower in _TEXT_NAMES:
+                    role = "{role: free_text, interpreted_as: engine}"
+                elif "output" in lower and ("path" in lower or "file" in lower):
+                    role = "{role: output_path}"
+                else:
+                    role = "{role: unbound}"
+                texts = [str(prop.get("description") or ""), *map(str, prop.get("examples") or []),
+                         *([prop["default"]] if isinstance(prop.get("default"), str) else []),
+                         *_arg_doc(doc, arg)]
+                guesses = _guess_kinds(registry, texts) if role == "{role: unbound}" else []
+                note = f"  # {typ}"
+                if guesses:
+                    note += "; guess: " + ", ".join(f"{k} (from {ex!r})" for k, ex in guesses)
+                lines.append(f"      {_yaml_text(arg)}: {role}{note}")
+        lines.append("    result: {}")
+    return "\n".join(lines) + "\n"
+
+
+def _list_tools_live(config: dict[str, Any], server: str, timeout: float = 120.0) -> tuple[list[dict[str, Any]],
+                                                                                           str | None]:
+    """``(tools, url)`` of a configured MCP server, listed through the bridge without a gateway."""
+    import asyncio
+
+    from ..tools.mcp_bridge import MCPBridge, MCPServerConfig
+
+    spec = next((s for s in (config.get("mcp_servers") or {}).get("servers", []) if s.get("name") == server), None)
+    if spec is None:
+        raise ValueError(f"server {server!r} is not in configs/mcp_servers.yaml (or pass --from-json)")
+    cfg = MCPServerConfig(**{k: v for k, v in spec.items() if k in MCPServerConfig.__dataclass_fields__})
+
+    async def run() -> list[dict[str, Any]]:
+        bridge = MCPBridge([cfg], options=config.get("mcp") or {})
+        try:
+            tools = await bridge.start(connect_timeout=timeout)
+        finally:
+            await bridge.aclose()
+        prefix = f"mcp__{server}__"
+        return [{"name": t.name[len(prefix):] if t.name.startswith(prefix) else t.name,
+                 "description": t.description, "inputSchema": t.input_schema} for t in tools]
+
+    return asyncio.run(run()), cfg.url
+
+
+def lint_scaffold(text: str, config: dict[str, Any] | None = None) -> list[Any]:
+    """Validate a scaffold's YAML as an overlay and lint it against the loaded catalog."""
+    import yaml
+
+    from .descriptor.lint import lint_overlay
+    from .descriptor.overlay import Overlay
+
+    overlay = Overlay.model_validate(yaml.safe_load(text))
+    sources: Any = {}
+    registry = None
+    if config is not None:
+        try:
+            _settings, catalog, registry = _catalog(config)
+            sources = catalog
+        except Exception:  # noqa: BLE001 - no catalog: lint against nothing
+            sources = {}
+    return lint_overlay(overlay, sources, registry)
+
+
+def cmd_overlay_init(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    from .settings import DataSettings
+
+    server = str(args.server)
+    try:
+        if args.from_json:
+            data = json.loads(Path(args.from_json).read_text(encoding="utf-8"))
+            tools = data.get("tools", data) if isinstance(data, Mapping) else data
+            url = data.get("url") if isinstance(data, Mapping) else None
+        else:
+            tools, url = _list_tools_live(config, server)
+    except Exception as exc:  # noqa: BLE001
+        _err(f"error: could not list the tools of {server!r}: {exc}")
+        return 2
+    try:
+        _settings, _catalog_obj, registry = _catalog(config)
+    except Exception:  # noqa: BLE001 - guesses need identifier plugins only
+        from .plugins.registry import discover
+        registry = discover(entry_points=False)
+    text = scaffold_overlay(server, tools, registry, url=url)
+    out = Path(args.out) if args.out else Path(DataSettings.from_config(config).overlays_dir) / f"{server}.yaml"
+    if args.out == "-":
+        _out(text)
+    else:
+        if out.exists() and not args.force:
+            _err(f"error: {out} exists (pass --force to overwrite)")
+            return 2
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8")
+        _out(f"written: {out} ({len(list(tools))} tools, all unreviewed)")
+    findings = lint_scaffold(text, config)
+    errors = [f for f in findings if f.level == "error"]
+    for f in findings:
+        _out(str(f))
+    return 1 if errors else 0
+
+
 # ---------------------------------------------------------------------------- retro-audit
 
 
@@ -678,7 +1047,8 @@ def cmd_retro_audit(args: argparse.Namespace, config: dict[str, Any]) -> int:
 COMMANDS: dict[str, Callable[[argparse.Namespace, dict[str, Any]], int]] = {
     "list": cmd_list, "describe": cmd_describe, "lint": cmd_lint, "check": cmd_check, "resolve": cmd_resolve,
     "explain": cmd_explain, "fingerprint": cmd_fingerprint, "index build": cmd_index_build,
-    "estimate": cmd_estimate, "retro-audit": cmd_retro_audit,
+    "estimate": cmd_estimate, "retro-audit": cmd_retro_audit, "status": cmd_status, "calibrate": cmd_calibrate,
+    "overlay init": cmd_overlay_init,
 }
 
 
@@ -740,6 +1110,11 @@ def add_datasource_parsers(sub: Any) -> Any:
     b.add_argument("--access-paths", action="store_true", help="row-group indexes of declared access paths")
     b.add_argument("--table", action="append", help="limit --access-paths to these tables")
     b.add_argument("--force", action="store_true", help="rebuild indexes that exist")
+    b.add_argument("--huge", action="store_true",
+                   help="with --access-paths: resumable builds of huge tables (time and byte budgets per step)")
+    b.add_argument("--time-budget-s", type=float, default=None, help="--huge: seconds per step (default 3600)")
+    b.add_argument("--max-bytes", type=int, default=None, help="--huge: decoded bytes per step (default unbounded)")
+    b.add_argument("--once", action="store_true", help="--huge: run one step only")
     _add_common(b, "json")
     b.set_defaults(handler=cmd_index_build)
 
@@ -752,4 +1127,27 @@ def add_datasource_parsers(sub: Any) -> Any:
     p.add_argument("run", help="run id, prefix, path or 'latest'")
     _add_common(p, "json")
     p.set_defaults(handler=cmd_retro_audit)
+
+    p = ds.add_parser("status", help="per-server memory from reaper status files, host budget, calibrations")
+    p.add_argument("run", nargs="?", help="run id, prefix, path or 'latest' (reads <run>/logs/mcp)")
+    p.add_argument("--log-dir", help="a directory of <server>.status.json files")
+    _add_common(p, "json")
+    p.set_defaults(handler=cmd_status)
+
+    p = ds.add_parser("calibrate", help="sample-and-scale memory calibration of tables (runs the data child)")
+    p.add_argument("--table", action="append", help="source.table (repeatable)")
+    p.add_argument("--row-groups", type=int, default=3, help="row groups sampled (1-3; default 3)")
+    _add_common(p, "json")
+    p.set_defaults(handler=cmd_calibrate)
+
+    p = ds.add_parser("overlay", help="overlays of MCP servers")
+    ov = p.add_subparsers(dest="overlay_cmd", required=True)
+    o = ov.add_parser("init", help="scaffold an overlay for a third-party server from its tool listing",
+                      description=THIRD_PARTY_HOWTO, formatter_class=argparse.RawDescriptionHelpFormatter)
+    o.add_argument("server", help="the server's name in configs/mcp_servers.yaml")
+    o.add_argument("--from-json", help="a saved tool listing ([{name, description, inputSchema}]) instead of "
+                   "starting the server")
+    o.add_argument("--out", help="output path ('-' prints it; default configs/data/overlays/<server>.yaml)")
+    o.add_argument("--force", action="store_true", help="overwrite an existing overlay")
+    o.set_defaults(handler=cmd_overlay_init)
     return d

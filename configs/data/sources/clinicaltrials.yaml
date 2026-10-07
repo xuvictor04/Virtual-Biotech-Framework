@@ -1,7 +1,11 @@
-# ClinicalTrials.gov API v2 (docs/DATA_LAYER.md §6.1 LeakageSpec, §8.7; phase 1, strict: false).
+# ClinicalTrials.gov API v2 (docs/DATA_LAYER.md §6.1 LeakageSpec, §8.7, §11.6; phase 4, strict: false).
 #
-# A live registry: phase 1 serves every tool upstream (layout upstream_only) and stamps results with
-# the registry's data timestamp. The registry returns the *current* record, so facts dated after the
+# A live registry: the tools are served upstream and results are stamped with the registry's data
+# timestamp. Phase 4 reads the registry itself through the live_api layout (rest_json pages): the
+# remote witness sends one independent count request (countTotal=true&pageSize=0) compiled from the
+# bound predicates (Essie AREA[...] fragments from each column's remote_name, every literal quoted),
+# within the budget below; the release is the version endpoint's dataTimestamp; a study whose
+# lastUpdatePostDate changed since an earlier call is flagged source_updated in provenance (key.version). The registry returns the *current* record, so facts dated after the
 # run's evidence ceiling (status, why stopped, posted results) leak into historical scenarios unless
 # the leakage policy withholds or redacts them (C25).
 schema: vbt.datasource/1
@@ -28,6 +32,24 @@ tables:
   studies:
     kind: records
     path: studies
+    layout:
+      plugin: live_api
+      options:
+        base_url: "${VBT_CTGOV_BASE:-https://clinicaltrials.gov/api/v2}"
+        endpoint: studies
+        params: {format: json}
+        rows_path: $.studies
+        total_path: $.totalCount
+        next_path: $.nextPageToken
+        page_size_param: pageSize
+        page_token_param: pageToken
+        essie_param: filter.advanced
+        filters:
+          protocolSection.statusModule.overallStatus: {param: filter.overallStatus, join: ","}
+          protocolSection.identificationModule.nctId: {param: filter.ids, join: ","}
+        count: {params: {countTotal: "true", pageSize: "0"}, total_path: $.totalCount}
+        release: {endpoint: version, path: $.dataTimestamp}
+    format: rest_json
     grain: one registered clinical study (its current registry record)
     key: {columns: [protocolSection.identificationModule.nctId], check: none,
           version: protocolSection.statusModule.lastUpdatePostDateStruct.date}
@@ -130,6 +152,9 @@ tables:
   version:
     kind: records
     path: version
+    layout: {plugin: live_api, options: {base_url: "${VBT_CTGOV_BASE:-https://clinicaltrials.gov/api/v2}", endpoint: version,
+                                         as_of_path: $.dataTimestamp}}
+    format: rest_json
     grain: the registry's data release (one row per API call)
     key: {columns: [dataTimestamp], check: none}
     columns:

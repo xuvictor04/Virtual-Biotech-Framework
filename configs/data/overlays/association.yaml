@@ -205,18 +205,24 @@ tools:
          where: "association_mcp/tools.py:906-913", test: test_dl_defect_detectors.py::test_ot_assoc_009, effect: false_empty}
 
   search_literature:
-    reads: {open_targets.literature: {access: full_table}}
+    # phase 4 (F19): served by the data child. keywordId is pruned through the sidecar index that
+    # `vbt ds index build --access-paths --huge --table open_targets.literature` builds within time and
+    # byte budgets (service/verbs/index_huge.py); pmid through row-group statistics. A filter neither
+    # can prune (year alone) is over the scan budget and refused as too_large, never read whole.
+    reads: {open_targets.literature: {access: bounded_scan, columns: [pmid, pmcid, date, year, month, day, keywordId, relevance, keywordType]}}
     args:
       pmid:       {binds: open_targets.literature.pmid, accepts: ["open_targets:pmid"]}
       year:       {binds: open_targets.literature.year}
       keyword_id: {binds: open_targets.literature.keywordId, accepts: [literature_word, ensembl_gene, ot_disease, chembl_molecule]}
       limit:      {role: limit, min: 1, max: 1000}
     result: {rows: $.publications, count_fields: [$.count]}
-    serve: block
-    block:
-      reason: "Loads the whole literature table (hundreds of millions of rows) into pandas and returns rows in file order. A sidecar index over pmid and keywordId arrives in phase 4."
-      alternatives: [pubmed.search_pubmed, association.get_evidence_by_publication]
-      until_phase: 4
+    serve: derived
+    derived: {verb: find, table: open_targets.literature, envelope: {success: true}}
+    text:
+      notes: ["served from the literature table by the data layer: keyword_id uses its sidecar index and pmid its row-group statistics; a year-only search is refused as too large"]
+    defects:
+      - {id: OT-ASSOC-011, what: "loads the whole literature table (hundreds of millions of rows) into pandas and returns head(limit) in file order",
+         where: "association_mcp/tools.py:980-994", effect: silent_wrong}
 
   find_similar_entities:
     reads: {open_targets.literature_vector: {access: full_table, columns: [word, category, norm, vector]}}
