@@ -2,7 +2,8 @@
 #
 # Served upstream by the clinicaltrials server. Phase 4 reads the REST API itself (live_api layout,
 # rest_json pages) for the remote witness (projection=META puts the total in the total-count header),
-# per-study importDate releases and the derived patient-level find (_live_find): patient_clinical is
+# per-study importDate releases and the derived patient-level find (mcp__data__find on a live table goes
+# to the data child's _live_find): patient_clinical is
 # pivoted to one row per (studyId, patientId) with one column per attribute, so a patient value is
 # counted once, never once per sample. Clinical data come at two levels: patient attributes
 # (OS_MONTHS, OS_STATUS, AGE, ...) and sample attributes (SAMPLE_TYPE, ...). Upstream get_clinical_data

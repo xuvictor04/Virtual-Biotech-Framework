@@ -1135,6 +1135,19 @@ class DataGateway:
         rs = contract.binding.reads.get(table) if contract.binding is not None else None
         return not (rs is not None and rs.access in ("remote", "upstream"))
 
+    def _remote_countable(self, contract: ToolContract, table: str | None) -> bool:
+        """The table's layout answers an independent count request (capability ``count`` without ``scan``:
+        live APIs, SOMA): its witness is the remote witness (§11.6, F20), whatever the read access."""
+        t = contract.tables.get(table) if table else None
+        if t is None or self.registry is None:
+            return False
+        try:
+            layout = self.registry.find("layout", t.layout)
+        except Exception:  # noqa: BLE001
+            return False
+        caps = set(getattr(layout, "capabilities", ()) or ())
+        return "count" in caps and "scan" not in caps
+
     def _search_text(self, plan: CallPlan, st: _CallState, contract: ToolContract) -> None:
         """A derived ``search`` matches its free-text argument itself (ranked by match class), so that
         argument becomes ``search_text`` instead of a substring conjunct."""
@@ -1171,8 +1184,9 @@ class DataGateway:
         if t is None or st.lenient or not self.settings.witness.enabled or not b.witness:
             st.witness_reason = "no witness for this binding"
             return
-        if not self._scannable(contract, table):
-            st.witness_reason = f"{table} is not scannable by the data child"
+        remote = self._remote_countable(contract, table)
+        if not remote and not self._scannable(contract, table):
+            st.witness_reason = f"{table} is not scannable by the data child and declares no count capability"
             return
         why = self._inexpressible(plan, contract)
         if why:
@@ -1183,6 +1197,24 @@ class DataGateway:
                 if _last(d) not in {_last(k) for k in self._fixed(st, st.prepared)}]
         if derived and not dims:
             return                                     # derived serving counts itself (one scan)
+        if remote:
+            # one independent count request under the bound predicate: only a total, no ranking or keys
+            req = WitnessRequest(table=table, predicate=to_json(st.predicate) if st.predicate else None,
+                                 key=[], params=self._params(plan, st))
+            try:
+                st.witness = await self.service.witness(req)
+            except ServiceError as exc:
+                if self.settings.gateway.when_service_down == "strict":
+                    raise
+                st.witness_reason = exc.message
+                st.lenient = True
+                return
+            plan.witness = st.witness.model_dump(mode="json")
+            if st.witness.total_method == "unknown":
+                st.witness_reason = st.witness.reason or "the remote count request could not count this call"
+            st.checks.append(("witness_count", True if st.witness.total is not None else None,
+                              f"total={st.witness.total} (remote count request)"))
+            return
         predicate = st.predicate
         it = contract.tables.get(b.result.rows_of) if b.result.rows_of else None
         if it is not None and it.is_item_table and str(it.physical) == table:
@@ -1807,6 +1839,9 @@ class DataGateway:
         cols = self._key_columns(contract, t)
         if self._parent_counted(contract):
             return None                                # the witness counts the parent record of a nested section
+        if b.result.kind == "count":
+            # a count answer has no rows: its total was compared with the witness's (classify, contradiction)
+            return None
         # W1 empty
         if not rows and total > 0 and returned_raw == 0:
             return "W1", f"0 rows returned, the witness counted {total}"

@@ -171,6 +171,8 @@ tools:
       levels: {patient: [OS_MONTHS, OS_STATUS, DFS_MONTHS, DFS_STATUS, PFS_MONTHS, PFS_STATUS, AGE, SEX]}
       count_fields: [$.sample_count]
       not_found_when: ["$.error =~ '(?i)status code: 404'"]
+    text:
+      notes: ["Patient-level values repeat on every sample row; for one row per patient use mcp__data__find on cbioportal.patient_clinical (where: {studyId: ...})."]
     serve: pass
     defects:
       - {id: CT-CBIO-001, what: "unknown sample_ids come back as {sampleId, patientId: null} rows and count in sample_count",

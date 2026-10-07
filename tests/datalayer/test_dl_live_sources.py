@@ -232,7 +232,6 @@ async def test_remote_witness_contradiction_is_tool_defect(stub: Stub, tmp_path:
     ctx = ServiceContext(gw.settings, catalog=gw.catalog, registry=REGISTRY)
     gw.service.witness_hook = lambda req, resp: WitnessResponse.model_validate(
         load_verbs()["_witness"](ctx, WitnessRequest.model_validate(req.model_dump()).model_dump(mode="json")))
-    gw._scannable = lambda contract, table: True       # until the gateway dispatches remote tables (contract)
     stub.count = 17
     with pytest.raises(GatewayError) as e:
         await call(gw, "clinicaltrials", "count_clinical_trials", {"status": ["RECRUITING"]},
@@ -240,6 +239,29 @@ async def test_remote_witness_contradiction_is_tool_defect(stub: Stub, tmp_path:
     assert e.value.kind == ErrorKind.tool_defect and "independent count request counted 17" in e.value.message
     assert e.value.payload["witness"]["total"] == 17
     assert [p for p, _q in stub.requests if p == "/ctgov/studies"][-1:] == ["/ctgov/studies"]
+
+
+async def test_shipped_count_tool_gets_the_remote_witness(stub: Stub, tmp_path: Path) -> None:
+    """F20: the shipped clinicaltrials overlay (``access: upstream`` on a ``kind: remote`` table) runs through
+    the unmodified gateway; the live_api layout's ``count`` capability sends the independent count request
+    and a 0 against 17 (CT-GOV-004, totalCount missing) is a tool_defect."""
+    desc = _source("clinicaltrials", stub)
+    ov = load_yaml(SOURCES.parent / "overlays" / "clinicaltrials.yaml", _variables(stub))
+    gw = make_gateway(tmp_path, [desc], [ov], {})
+    ctx = ServiceContext(gw.settings, catalog=gw.catalog, registry=REGISTRY)
+    gw.service.witness_hook = lambda req, resp: WitnessResponse.model_validate(
+        load_verbs()["_witness"](ctx, WitnessRequest.model_validate(req.model_dump()).model_dump(mode="json")))
+    contract = gw.catalog.contract("clinicaltrials", "count_clinical_trials")
+    assert not gw._scannable(contract, "clinicaltrials_gov.studies")       # upstream access on a remote table
+    assert gw._remote_countable(contract, "clinicaltrials_gov.studies")     # ... with a count capability
+    stub.count = 17
+    with pytest.raises(GatewayError) as e:
+        await call(gw, "clinicaltrials", "count_clinical_trials", {"status": ["RECRUITING"], "country": None},
+                   lambda a: {"total_count": 0})
+    assert e.value.kind == ErrorKind.tool_defect and "independent count request counted 17" in e.value.message
+    plan, res = await call(gw, "clinicaltrials", "count_clinical_trials", {"status": ["RECRUITING"], "country": None},
+                           lambda a: {"total_count": 17})
+    assert res.header.get("total") == 17
 
 
 def test_classify_compares_remote_totals_only() -> None:
@@ -273,6 +295,28 @@ def test_patient_level_find_pivots_clinical_data(ctx: ServiceContext, stub: Stub
                                           "predicate": to_json(And((Eq("studyId", "s1"),
                                                                     Eq("OS_STATUS", "1:DECEASED"))))})
     assert [r["patientId"] for r in out["rows"]] == ["p1"]
+
+
+def test_public_find_and_lookup_serve_live_tables(ctx: ServiceContext, stub: Stub) -> None:
+    """F20: mcp__data__find/lookup on a live table go to _live_find (never 'served upstream only'): the
+    cBioPortal patient-level pivot counts each patient once, and the header names the source's as_of."""
+    def split_header(out: dict) -> tuple[dict, dict]:
+        return out, out["_vbt"]
+
+    verbs = load_verbs()
+    out = verbs["find"](ctx, {"table": "cbioportal.patient_clinical", "where": {"studyId": "s1"}})
+    body, hdr = split_header(out)
+    assert sorted(r["patientId"] for r in body["rows"]) == ["p1", "p2"] and hdr["status"] == "ok"
+    assert hdr["served_by"] == "derived" and hdr["tables"] == ["cbioportal.patient_clinical"]
+    one = verbs["find"](ctx, {"table": "cbioportal.patient_clinical",
+                              "where": {"studyId": "s1", "OS_STATUS": "1:DECEASED"}})
+    assert [r["patientId"] for r in split_header(one)[0]["rows"]] == ["p1"]
+    studies = verbs["find"](ctx, {"table": "clinicaltrials_gov.studies", "limit": 1})
+    assert split_header(studies)[0]["rows"]
+    rec = verbs["lookup"](ctx, {"table": "cbioportal.patient_clinical", "key": {"studyId": "s1", "patientId": "p2"}})
+    assert [r["patientId"] for r in split_header(rec)[0]["rows"]] == ["p2"]
+    refused = verbs["find"](ctx, {"table": "cbioportal.patient_clinical", "where": {"studyId": "s1"}, "rank_by": "x"})
+    assert refused["kind"] == "unsupported_combination"
 
 
 def test_record_version_change_is_flagged_source_updated(ctx: ServiceContext, stub: Stub) -> None:

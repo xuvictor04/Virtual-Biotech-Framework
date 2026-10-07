@@ -32,7 +32,7 @@ __all__ = [
     "Role", "ROLE_FACETS", "COMMON_FACETS", "EXISTENCE_FACETS", "KEYABLE_ROLES", "CONTAINER_ROLES",
     "MISSING_KINDS", "facets_for", "ARROW_COMPAT", "type_family", "arrow_compatible",
     "LIST", "ItemCond", "Segment", "Path", "PathError", "parse_path", "format_path", "format_name",
-    "AXES",
+    "AXES", "BARE_CHROMOSOMES", "bare_chromosome",
 ]
 
 
@@ -451,3 +451,24 @@ def format_path(path: Path) -> str:
             part += LIST if b == LIST else f"[{_format_name(b.field)}={_format_literal(b.value)}]"
         parts.append(part)
     return out + ".".join(parts)
+
+
+
+# ---------------------------------------------------------------------------- position role (part: chrom)
+
+#: Chromosome names of the ``chrom_style: bare`` position role (§7: the ``chr`` prefix is stripped).
+BARE_CHROMOSOMES = tuple([str(i) for i in range(1, 23)] + ["X", "Y", "MT"])
+
+
+def bare_chromosome(value: object) -> str | None:
+    """``value`` in the bare style of the position role (``chr19`` -> ``19``, ``chrx`` -> ``X``), or None
+    when it names no human chromosome (``M`` is not renamed: the bare name is ``MT``)."""
+    import re
+
+    text = str(value).strip()
+    m = re.fullmatch(r"chr(\w+)", text, re.IGNORECASE)
+    if m:
+        text = m.group(1)
+    if text.upper() in ("X", "Y", "MT"):
+        text = text.upper()
+    return text if text in BARE_CHROMOSOMES else None

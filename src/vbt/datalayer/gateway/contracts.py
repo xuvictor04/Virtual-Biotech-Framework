@@ -184,19 +184,16 @@ def _role(spec: Any) -> str | None:
     return getattr(spec, "role", None)
 
 
-_CHROMOSOMES = [str(i) for i in range(1, 23)] + ["X", "Y", "MT"]
-
-
 def _chromosome(contract: Any, name: str, value: Any) -> str:
-    """A chromosome name in the bare style, or ``invalid_argument`` with the valid names."""
-    from ..plugins.base import Rejected
-    from ..plugins.identifiers.chromosome import Chromosome
+    """A chromosome name in the bare style of the position role, or ``invalid_argument`` with the valid names."""
+    from ..roles import BARE_CHROMOSOMES, bare_chromosome
 
-    got = Chromosome().normalize(value)
-    if isinstance(got, Rejected):
-        raise _invalid(contract, name, value, f"{name}={value!r} is not a chromosome: {got.reason}", _CHROMOSOMES,
-                       reason="chromosome")
-    return str(got.value)
+    got = bare_chromosome(value)
+    if got is None:
+        why = "; the mitochondrial chromosome is named MT" if str(value).strip().upper() in ("M", "CHRM") else ""
+        raise _invalid(contract, name, value, f"{name}={value!r} names no human chromosome{why}",
+                       list(BARE_CHROMOSOMES), reason="position")
+    return got
 
 
 _REGION = re.compile(r"^\s*([^:\s]+):([0-9][0-9,]*)-([0-9][0-9,]*)\s*$")

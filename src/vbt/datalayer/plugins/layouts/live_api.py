@@ -339,8 +339,9 @@ def fetch_all(layout: LiveApiLayout, spec: LayoutSpec, predicate: Predicate | No
     as_of = None
     pages = 0
     while True:
+        extra = {"remote_names": remote_names} if remote_names is not None else {}
         page = layout.request(spec, predicate=predicate, projection=list(projection or []), page_token=token,
-                              budget=b, remote_names=remote_names)
+                              budget=b, **extra)
         pages += 1
         rows.extend(page.rows)
         total = page.total if page.total is not None else total

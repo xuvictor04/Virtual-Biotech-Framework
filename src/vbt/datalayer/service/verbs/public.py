@@ -672,10 +672,106 @@ def _max_rows(ctx: ServiceContext) -> int:
     return max(1, min(MAX_ROWS, int(ctx.settings.memory.max_result_bytes) // 2000))
 
 
+# ---------------------------------------------------------------------------- live tables (F20)
+
+_LIVE_OPS = {"eq", "in", "ne", "ge", "gt", "le", "lt", "contains"}
+
+
+def is_live(ctx: ServiceContext, table: Any) -> bool:
+    """The table's layout reads a live source (capability ``live`` without ``scan``): ``find`` and ``lookup``
+    are answered by ``_live_find`` (one request of a few pages within the source's budget), never a scan."""
+    try:
+        layout = ctx.plugin("layout", table.layout)
+    except Exception:  # noqa: BLE001
+        return False
+    caps = set(getattr(layout, "capabilities", ()) or ())
+    return "live" in caps and "scan" not in caps
+
+
+def _live_predicate(table: Any, where: Any) -> Predicate | None:
+    """``where`` of a live find: ``{column: value | [values] | {op: value}}`` on the table's columns (dotted
+    paths into a nested column allowed; a pivoted table's attribute columns are named by the source);
+    identifiers are sent as given (the source resolves them)."""
+    if where is None:
+        return None
+    if not isinstance(where, Mapping):
+        raise _invalid("where", where, "where maps columns to values")
+    parts: list[Predicate] = []
+    for col, v in where.items():
+        if table.spec.pivot is None and str(col).split(".")[0].split("[")[0] not in table.columns:
+            raise _invalid("where", col, f"{table.ref} has no column {col!r}", sorted(table.columns))
+        if isinstance(v, Mapping):
+            for op, x in v.items():
+                if op not in _LIVE_OPS:
+                    raise _invalid("where", op, f"unknown operator {op!r}", sorted(_LIVE_OPS))
+                parts.append(Eq(col, x) if op == "eq" else In(col, tuple(x if isinstance(x, list) else [x]))
+                             if op == "in" else Not(Eq(col, x)) if op == "ne" else Contains(col, x)
+                             if op == "contains" else Cmp(col, op, x))
+        elif isinstance(v, list):
+            parts.append(In(col, tuple(v)))
+        else:
+            parts.append(Eq(col, v))
+    return None if not parts else (parts[0] if len(parts) == 1 else And(tuple(parts)))
+
+
+def _live_find(ctx: ServiceContext, table: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
+    from ...predicate import to_json
+    from .. import layout_spec
+    from .witness import live_find
+
+    ref = str(table.ref)
+    pred = _live_predicate(table, payload.get("where"))
+    limit = _limit(payload, 50, _max_rows(ctx))
+    budget = getattr(table.descriptor, "budget", None)
+    max_pages = getattr(budget, "max_pages", None) if budget is not None else None
+    if not max_pages:
+        # a single unpaged read (a SOMA frame): admitted count-first, never an unbounded read
+        layout = ctx.plugin("layout", table.layout)
+        try:
+            n = layout.count(layout_spec(table), predicate=pred, budget=budget)
+        except Exception as exc:  # noqa: BLE001 - an unanswerable count admits nothing
+            n, why = None, str(exc)
+        else:
+            why = "the filter does not compile into the source's own filter"
+        if n is None or n > _max_rows(ctx):
+            raise GatewayError(ErrorKind.too_large, f"{ref}: a find must select at most {_max_rows(ctx)} rows "
+                               f"({'counted ' + str(n) if n is not None else why}); narrow where",
+                               payload={"table": ref, "count": n})
+    got = live_find(ctx, {"table": ref, "predicate": to_json(pred) if pred is not None else None,
+                          "columns": list(payload.get("columns") or []), "limit": limit})
+    rows = list(got.get("rows") or [])
+    notes = []
+    if got.get("truncated"):
+        notes.append(f"{got.get('pages')} page(s) read within the source's budget: the rows are a prefix, not all")
+    if got.get("source_updated"):
+        notes.append("records changed at the source since an earlier call: " + ", ".join(
+            map(str, got["source_updated"][:10])))
+    status = "ok" if rows else "empty"
+    if rows and got.get("truncated"):
+        status = "partial"
+    coverage, statement = coverage_of(table) if not rows else (None, None)
+    as_of = got.get("as_of")
+    src = table.descriptor.source
+    hdr = Header(status=status, source=f"{src}@{as_of}" if as_of else src, tables=[ref],  # type: ignore[arg-type]
+                 key=list(table.key), returned=len(rows), total=got.get("total"),
+                 total_method="remote" if got.get("total") is not None else "unknown",
+                 truncated=bool(got.get("truncated")), coverage=coverage, coverage_statement=statement,  # type: ignore
+                 served_by="derived", notes=notes,
+                 extra={"source_updated": got.get("source_updated") or None})
+    return inject_header({"rows": json_value(rows), "record_versions": got.get("record_versions") or None}, hdr)
+
+
 def find(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     """Rows of a table's long view matching ``where`` (identifiers resolved), ranked by ``rank_by`` (else
-    the table's rank), cut to ``limit`` (per ``group_by`` group), one per ``distinct`` combination."""
+    the table's rank), cut to ``limit`` (per ``group_by`` group), one per ``distinct`` combination. A live
+    table (``live`` layout) is read by ``_live_find`` within the source's request budget."""
     table = table_access(ctx, payload.get("table"), agent=payload.get("agent"))
+    if is_live(ctx, table):
+        for arg in ("rank_by", "group_by", "distinct"):
+            if payload.get(arg):
+                raise GatewayError(ErrorKind.unsupported_combination, f"{arg} is not available on the live table "
+                                   f"{table.ref}: the source orders and pages it", argument=arg)
+        return _live_find(ctx, table, payload)
     view = long_view(ctx, str(table.ref))
     notes: list[str] = []
     resolved: dict[str, str] = {}
@@ -713,8 +809,12 @@ def find(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
 def lookup(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     """The record of a complete key (every key column of the long view; identifiers resolved)."""
     table = table_access(ctx, payload.get("table"), agent=payload.get("agent"))
-    view = long_view(ctx, str(table.ref))
     key = payload.get("key")
+    if is_live(ctx, table):
+        if not isinstance(key, Mapping):
+            raise _invalid("key", key, "key maps every key column to one value", list(table.key))
+        return find(ctx, {"table": str(table.ref), "where": dict(key), "limit": 10, "agent": payload.get("agent")})
+    view = long_view(ctx, str(table.ref))
     if not isinstance(key, Mapping):
         raise _invalid("key", key, "key maps every key column to one value", view.key)
     names = [k for k in view.key if not k.endswith("#")]
