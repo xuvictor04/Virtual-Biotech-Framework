@@ -18,6 +18,16 @@ directory, so none of the data-layer kinds is an integrity failure.
 **Re-execution** (opt-in, ``rerun=True``): agent scripts are re-run in a scratch
 copy and their outputs compared with the recorded hashes.
 
+**Reference data** (DATA_LAYER.md §15.4, phase 5): the table fingerprints pinned in
+``MANIFEST.config.data`` and recorded by the cited data calls are compared with the
+current ones. A difference is ``data_version_drift``: a warning when the current
+fingerprints come from the cache ``vbt ds fingerprint --write`` keeps (a config is
+given), a problem (INCOMPLETE) under ``--data``, which reads them fresh through the
+data child and also replays every cited data call (``vbt.datalayer.replay``): a
+different answer is ``replay_mismatch`` (INCOMPLETE), a live record the source changed
+since the call is ``source_updated`` (warning), and a call that cannot run here is
+``replay_unavailable`` (warning).
+
 These checks establish a recorded evidence trail; they do not verify scientific
 correctness. Every read is tolerant: a missing or malformed record becomes a
 reported problem, never an exception.
@@ -48,6 +58,8 @@ CAVEAT = "These checks do not verify scientific correctness."
 #: Problem kinds that are integrity failures (status FAIL).
 INTEGRITY_KINDS = frozenset({"no_manifest", "invalid_manifest", "hash_mismatch", "missing", "harness_changed",
                              "harness_missing", "invalid_artifact_path"})
+#: Reference-data kinds (phase 5). Reference data lives outside the run, so none is an integrity failure.
+DATA_KINDS = frozenset({"data_version_drift", "replay_mismatch", "source_updated", "replay_unavailable"})
 
 
 def _sha(p: Path) -> str | None:
@@ -116,6 +128,181 @@ def empty_result_citations(claims: list[Mapping[str, Any]],
     return out
 
 
+# ---------------------------------------------------------------------------- reference data (phase 5)
+
+
+def pinned_fingerprints(manifest: Mapping[str, Any]) -> dict[str, str]:
+    """``{"source.table": fingerprint}`` pinned in ``MANIFEST.config.data.sources`` (§15.5)."""
+    config = manifest.get("config") if isinstance(manifest.get("config"), Mapping) else {}
+    data = config.get("data") if isinstance(config.get("data"), Mapping) else {}
+    sources = data.get("sources") if isinstance(data.get("sources"), Mapping) else {}
+    out: dict[str, str] = {}
+    for source, entry in sources.items():
+        tables = entry.get("tables") if isinstance(entry, Mapping) else None
+        for table, fp in (tables or {}).items() if isinstance(tables, Mapping) else []:
+            if fp:
+                out[f"{source}.{table}"] = str(fp)
+    return out
+
+
+def cited_data_calls(claims: list[Mapping[str, Any]],
+                     calls: Mapping[str, Mapping[str, Any]]) -> dict[str, list[str]]:
+    """``{tool_use_id: [claim ids]}`` of the successful data-layer calls cited by tool_call evidence."""
+    out: dict[str, list[str]] = {}
+    for c in claims:
+        evs = c.get("evidence")
+        for ev in ([evs] if isinstance(evs, Mapping) else evs if isinstance(evs, list) else []):
+            if not isinstance(ev, Mapping) or not ev.get("tool_use_id"):
+                continue
+            tuid = str(ev["tool_use_id"]).strip()
+            call = calls.get(tuid) or {}
+            if call.get("is_error") or not isinstance(call.get("data_provenance"), Mapping):
+                continue
+            ids = out.setdefault(tuid, [])
+            if c.get("id") not in ids:
+                ids.append(str(c.get("id")))
+    return out
+
+
+def call_fingerprints(call: Mapping[str, Any]) -> dict[str, str]:
+    """``{"source.table": fingerprint}`` a data call read, from its provenance summary."""
+    dp = call.get("data_provenance") if isinstance(call.get("data_provenance"), Mapping) else {}
+    source = str(dp.get("source") or "").partition("@")[0]
+    out = {}
+    for t in dp.get("tables") or []:
+        if isinstance(t, Mapping) and t.get("name") and t.get("fingerprint"):
+            name = str(t["name"])
+            out[name if "." in name or not source else f"{source}.{name}"] = str(t["fingerprint"])
+    return out
+
+
+def cached_fingerprints(config: Mapping[str, Any]) -> dict[str, str]:
+    """The fingerprints ``vbt ds fingerprint --write`` cached in ``<data.cache_dir>/fingerprints.json``."""
+    try:
+        from .datalayer.settings import DataSettings
+
+        path = Path(DataSettings.from_config(dict(config)).cache_dir) / "fingerprints.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - no cache: nothing to compare
+        return {}
+    tables = data.get("tables") if isinstance(data, Mapping) else None
+    return {str(k): str(v) for k, v in (tables or {}).items() if v} if isinstance(tables, Mapping) else {}
+
+
+def current_fingerprints(config: Mapping[str, Any], tables: list[str]) -> tuple[dict[str, str], str | None]:
+    """Fresh table fingerprints through the data child's ``_stats`` (in this process when pyarrow is
+    importable, else the data child's interpreter). ``(fingerprints, error)``."""
+    if not tables:
+        return {}, None
+    import importlib.util
+
+    try:
+        if importlib.util.find_spec("pyarrow") is not None:
+            from .datalayer.catalog import build_catalog, variables_from_config
+            from .datalayer.plugins.registry import discover
+            from .datalayer.service import ServiceContext
+            from .datalayer.service.verbs import load_verbs
+            from .datalayer.settings import DataSettings
+
+            settings = DataSettings.from_config(dict(config))
+            registry = discover(settings)
+            catalog = build_catalog(settings, registry, variables=variables_from_config(dict(config)))
+            ctx = ServiceContext(settings, catalog=catalog, registry=registry)
+            body = load_verbs()["_stats"](ctx, {"tables": list(tables)})
+        else:
+            from .datalayer.cli import _table_stats
+
+            body = _table_stats(dict(config), list(tables))
+    except Exception as exc:  # noqa: BLE001 - reported, never raised
+        return {}, f"{type(exc).__name__}: {exc}"[:500]
+    out = {str(k): str(m.get("fingerprint")) for k, m in (body.get("tables") or {}).items()
+           if isinstance(m, Mapping) and m.get("fingerprint")}
+    return out, None
+
+
+def data_drift(pinned: Mapping[str, str], recorded: Mapping[str, Mapping[str, list[str]]],
+               current: Mapping[str, str], cited: Mapping[str, list[str]]) -> list[dict[str, Any]]:
+    """``data_version_drift`` entries: a table whose pinned or cited-call fingerprint differs from the
+    current one. ``recorded`` is ``{table: {fingerprint: [tool_use_ids]}}``."""
+    out = []
+    for table in sorted(set(pinned) | set(recorded)):
+        now = current.get(table)
+        if not now:
+            continue
+        before = {fp for fp in [pinned.get(table), *recorded.get(table, {})] if fp}
+        changed = sorted(fp for fp in before if fp != now)
+        if not changed:
+            continue
+        calls = sorted({t for fp in changed for t in recorded.get(table, {}).get(fp, [])})
+        claims = sorted({c for t in calls for c in cited.get(t, [])})
+        detail = (f"{table} changed since the run: {', '.join(changed)} -> {now}"
+                  + (f"; cited by claim(s) {', '.join(claims)}" if claims else "")
+                  + ". Replay the calls (`vbt ds replay`) before relying on them.")
+        out.append(_problem("data_version_drift", detail, table=table, pinned=pinned.get(table), recorded=changed,
+                            current=now, tool_use_ids=calls, claims=claims))
+    return out
+
+
+def data_checks(run_dir: Path, manifest: Mapping[str, Any], claims: list[Mapping[str, Any]],
+                calls: Mapping[str, Mapping[str, Any]], *, data: bool, config: Mapping[str, Any] | None,
+                fingerprints: Mapping[str, str] | None = None, replayer: Any = None,
+                backend: str = "auto") -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """``(problems, warnings, summary)`` of the reference-data checks (see the module docstring)."""
+    problems: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    cited = cited_data_calls(claims, calls)
+    pinned = pinned_fingerprints(manifest)
+    recorded: dict[str, dict[str, list[str]]] = {}
+    for tuid in cited:
+        for table, fp in call_fingerprints(calls[tuid]).items():
+            recorded.setdefault(table, {}).setdefault(fp, []).append(tuid)
+    tables = sorted(set(pinned) | set(recorded))
+    summary: dict[str, Any] = {"mode": "data" if data else "cached", "cited_calls": len(cited),
+                               "tables": len(tables)}
+    if fingerprints is not None:
+        current, error = dict(fingerprints), None
+        summary["fingerprints_from"] = "given"
+    elif data:
+        current, error = current_fingerprints(config or {}, tables)
+        summary["fingerprints_from"] = "data_child"
+    else:
+        current, error = cached_fingerprints(config or {}), None
+        summary["fingerprints_from"] = "cache"
+    if error:
+        warnings.append(_problem("data_version_drift", f"current table fingerprints could not be read: {error}"))
+    drift = data_drift(pinned, recorded, current, cited)
+    (problems if data else warnings).extend(drift)
+    summary["drift"] = [d["table"] for d in drift]
+    if not data:
+        return problems, warnings, summary
+    from .datalayer.replay import ReplayResult, format_result, replay_async
+
+    async def run_all() -> list[ReplayResult]:
+        out = []
+        for tuid in cited:
+            out.append(await replay_async(run_dir, tuid, config or {}, replayer=replayer, backend=backend))
+        return out
+
+    import asyncio
+
+    results = asyncio.run(run_all()) if cited else []
+    summary["replays"] = {r.tool_use_id: r.status for r in results}
+    for r in results:
+        claims_of = cited.get(r.tool_use_id, [])
+        lines = format_result(r)
+        detail = f"{lines[0]} (claims {', '.join(claims_of)})" + ("; " + "; ".join(x.strip() for x in lines[1:4])
+                                                                 if len(lines) > 1 else "")
+        extra = {"tool_use_id": r.tool_use_id, "claims": claims_of, "replay": r.to_dict()}
+        if r.status == "replay_mismatch":
+            problems.append(_problem("replay_mismatch", detail[:1500], **extra))
+        elif r.status == "source_updated":
+            warnings.append(_problem("source_updated", f"{detail[:1200]}: the live source changed these records "
+                                     f"since the call ({', '.join(r.source_updated[:10])})", **extra))
+        elif r.status == "unavailable":
+            warnings.append(_problem("replay_unavailable", detail[:1500], **extra))
+    return problems, warnings, summary
+
+
 def _empty_report(run_dir: Path) -> dict[str, Any]:
     return {
         "run_id": None, "run_dir": str(run_dir), "query": "", "manifest_status": None, "status": "FAIL",
@@ -175,8 +362,15 @@ def _artifact_map(raw: Any, report: dict[str, Any]) -> tuple[dict[str, dict[str,
 
 
 def verify_run(run_dir: str | Path, *, rerun: bool = False, python: str | None = None,
-               timeout: float = 600) -> dict[str, Any]:
-    """Verify a run directory. See the module docstring for the checks."""
+               timeout: float = 600, data: bool = False, config: Mapping[str, Any] | None = None,
+               fingerprints: Mapping[str, str] | None = None, replayer: Any = None,
+               backend: str = "auto") -> dict[str, Any]:
+    """Verify a run directory. See the module docstring for the checks.
+
+    Reference data: ``data=True`` reads the current fingerprints through the data child and replays
+    the cited data calls (``config`` defaults to the loaded configuration); without it, a ``config``
+    compares against the cached fingerprints, and ``fingerprints`` gives the current ones directly.
+    ``replayer`` and ``backend`` are passed to :func:`vbt.datalayer.replay.replay_async`."""
     run_dir = Path(run_dir).expanduser()
     report = _empty_report(run_dir)
     ev = report["evidence"]
@@ -319,6 +513,21 @@ def verify_run(run_dir: str | Path, *, rerun: bool = False, python: str | None =
         problems.append(_problem(kind, e))
     filed = {c["id"] for c in res.claims}
     ev["valid_claims"] = len(filed)
+
+    # ---------------------------------------------------------- reference data
+    if data or config is not None or fingerprints is not None:
+        if data and config is None:
+            try:
+                from .config import load_config
+                config = load_config()
+            except Exception as exc:  # noqa: BLE001 - reported below as an unreadable fingerprint source
+                warnings.append(_problem("replay_unavailable", f"the configuration could not be loaded: {exc}"))
+                config = {}
+        dprobs, dwarns, dsummary = data_checks(run_dir, manifest, claims, prov.calls, data=data, config=config,
+                                               fingerprints=fingerprints, replayer=replayer, backend=backend)
+        problems.extend(dprobs)
+        warnings.extend(dwarns)
+        report["data"] = dsummary
     ev["claims_without_verified_evidence"] = [c["id"] for c in res.claims if not c.get("n_verified")]
 
     # ---------------------------------------------------------- coverage
@@ -426,6 +635,12 @@ def format_report(report: Mapping[str, Any]) -> str:
                      f"research turns: {', '.join(str(n) for n in ev.get('research_turns') or []) or 'none'}")
     lines.append(f"Artifact integrity: {str(integ.get('status', 'unavailable')).upper()}")
     lines.append(f"Evidence coverage:  {str(ev.get('status', 'unavailable')).replace('_', ' ').upper()}")
+    dr = report.get("data")
+    if dr:
+        replays = dr.get("replays") or {}
+        counts = ", ".join(f"{k} {v}" for k, v in sorted(_count_values(replays.values()).items()))
+        lines.append(f"Data:   {dr.get('tables', 0)} table(s) checked ({dr.get('fingerprints_from')}); "
+                     f"{len(dr.get('drift') or [])} changed" + (f"; replays: {counts}" if replays else ""))
     rr = report.get("rerun")
     if rr:
         summ = rr.get("summary") or {}
@@ -454,6 +669,13 @@ def format_report(report: Mapping[str, Any]) -> str:
             lines.append(f"  [{w.get('kind')}] {w.get('detail')}")
     lines.append(CAVEAT)
     return "\n".join(lines)
+
+
+def _count_values(values: Any) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for v in values:
+        out[str(v)] = out.get(str(v), 0) + 1
+    return out
 
 
 def _resolve_run(arg: str) -> Path:
@@ -489,13 +711,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--python", help="interpreter for --rerun (default: this one)")
     ap.add_argument("--timeout", type=float, default=600, help="per-script timeout for --rerun, seconds")
     ap.add_argument("--json", action="store_true", help="print the machine-readable report")
+    ap.add_argument("--data", action="store_true",
+                    help="check reference data: current table fingerprints (data_version_drift) and a replay of "
+                         "every cited data call (replay_mismatch, source_updated)")
+    ap.add_argument("--backend", choices=("auto", "inprocess", "bridge"), default="auto",
+                    help="--data: how cited calls are replayed (see `vbt ds replay`)")
     args = ap.parse_args(argv)
     try:
         run_dir = _resolve_run(args.run)
     except LookupError as exc:  # vbt.audit.index.RunNotFound / AmbiguousRunError
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    report = verify_run(run_dir, rerun=args.rerun, python=args.python, timeout=args.timeout)
+    report = verify_run(run_dir, rerun=args.rerun, python=args.python, timeout=args.timeout, data=args.data,
+                        backend=args.backend)
     print(json.dumps(report, indent=2, default=str) if args.json else format_report(report))
     return 0 if report["status"] == "COMPLETE" else 1
 

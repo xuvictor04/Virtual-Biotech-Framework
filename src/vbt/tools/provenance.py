@@ -94,8 +94,11 @@ def provenance_tools() -> list[Tool]:
                                         "its coverage statement); 'empty_unverified' and errors are never "
                                         "citable."},
             "row_key": {"type": "array", "items": {"type": ["string", "number", "boolean", "null"]},
-                        "description": "optional: the key of the cited row (values of the result's _vbt.key "
-                                       "columns, in order)"},
+                        "description": "optional, for a tool_call: the key of the one row that shows the "
+                                       "finding: the values of the result's _vbt.key columns, in that order, "
+                                       "as the result shows them (numbers as numbers, null for an empty key "
+                                       "part). It is checked against the row keys recorded for the call; a "
+                                       "key the call did not return rejects the evidence"},
             "sha256": {"type": "string", "description": "only when refiling: the hash the claim was filed with"},
         }}}
     step = {"type": "object", "properties": {

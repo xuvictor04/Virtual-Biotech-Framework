@@ -1042,13 +1042,45 @@ def cmd_retro_audit(args: argparse.Namespace, config: dict[str, Any]) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------- phase 5: replay
+
+
+def cmd_replay(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    """Re-execute recorded data calls on current data and compare (``replay.py``). Exit 0 when every call
+    matches or only live records changed (``source_updated``), 1 on a mismatch, 2 when a call cannot run."""
+    import asyncio
+
+    from .replay import data_calls, format_result, replay_run
+    from .retro_audit import resolve_run
+
+    try:
+        run_dir = resolve_run(args.run, config)
+    except FileNotFoundError as exc:
+        _err(f"error: {exc}")
+        return 2
+    ids = data_calls(run_dir) if args.all else list(args.tool_use_id or [])
+    if not ids:
+        _err("error: name tool_use ids or pass --all" if not args.all else f"{run_dir} has no data provenance records")
+        return 2
+    results = asyncio.run(replay_run(run_dir, ids, config, backend=args.backend))
+    if args.json:
+        _out(json.dumps([r.to_dict() for r in results], sort_keys=True, default=str))
+    else:
+        for r in results:
+            for line in format_result(r):
+                _out(line)
+    if any(r.status == "replay_mismatch" for r in results):
+        return 1
+    return 2 if any(r.status == "unavailable" for r in results) else 0
+
+
 # ---------------------------------------------------------------------------- parser
 
 COMMANDS: dict[str, Callable[[argparse.Namespace, dict[str, Any]], int]] = {
     "list": cmd_list, "describe": cmd_describe, "lint": cmd_lint, "check": cmd_check, "resolve": cmd_resolve,
     "explain": cmd_explain, "fingerprint": cmd_fingerprint, "index build": cmd_index_build,
     "estimate": cmd_estimate, "retro-audit": cmd_retro_audit, "status": cmd_status, "calibrate": cmd_calibrate,
-    "overlay init": cmd_overlay_init,
+    "overlay init": cmd_overlay_init, "replay": cmd_replay,
 }
 
 
@@ -1150,4 +1182,14 @@ def add_datasource_parsers(sub: Any) -> Any:
     o.add_argument("--out", help="output path ('-' prints it; default configs/data/overlays/<server>.yaml)")
     o.add_argument("--force", action="store_true", help="overwrite an existing overlay")
     o.set_defaults(handler=cmd_overlay_init)
+
+    p = ds.add_parser("replay", help="re-execute recorded data calls on current data and compare row-key hashes")
+    p.add_argument("run", help="run id, prefix, path or 'latest'")
+    p.add_argument("tool_use_id", nargs="*", help="tool_use ids of recorded data calls")
+    p.add_argument("--all", action="store_true", help="every call with a data provenance record")
+    p.add_argument("--backend", choices=("auto", "inprocess", "bridge"), default="auto",
+                   help="inprocess: the data child's verbs in this process (derived and native calls); bridge: a "
+                        "temporary MCP bridge with the call's server; auto: inprocess when it can answer")
+    _add_common(p, "json")
+    p.set_defaults(handler=cmd_replay)
     return d
