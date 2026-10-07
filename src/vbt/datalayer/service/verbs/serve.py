@@ -1,0 +1,301 @@
+"""``_serve``: rows served from the data (derived tools, repairs, native verbs; §8.2, §11.8).
+
+Verbs (phase 1):
+
+* ``lookup`` / ``find`` / ``members``: rows matching ``predicate``, ordered by ``order`` (else the table's
+  ``rank``; nulls last, ties by the canonical key; within the ``group_by`` groups, else within the
+  order's ``within`` columns, with ``limit`` per group), cut to ``limit`` (per ``limit_grain``: each
+  grain's best row), one row per ``distinct`` combination, with ``explode``/``carry``/``rename``. ``nest: {group_by, items, count_as, having,
+  include_negated}`` groups rows **after** dropping negated rows (a ``qualifier`` with ``effect:
+  negate`` that is true), keeps groups whose count satisfies ``having`` and cuts the groups to
+  ``limit``; ``split: {by, limit, values}`` returns ``{value: rows}`` with a limit per list.
+  ``sections: {name: {table, verb, predicate, key, columns, order, limit, single}}`` are served
+  per section; a section over an ``entity_detail`` table is always a list.
+* ``search``: ``search_text`` against the key, label and synonym leaves, ranked by match class
+  (exact > casefold > previous symbol > alias > other synonym > prefix > word > substring), then
+  the table's rank, then the key; each row carries ``_match: {class, column, value}``; broad and
+  narrow synonyms are labelled ``broad_synonym``/``narrow_synonym``.
+* ``count``: the total (and every declared grain's distinct count) with the unknown attribution.
+
+``served_by`` is ``derived``. Over the scan budget the response has no rows, ``total: null`` and a
+``reason`` starting with ``too_large:`` (never a partial answer presented as complete). Counters that
+have no field of their own (``excluded_negated``) are reported in ``sections["_excluded"]``.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import unicodedata
+from typing import Any, Mapping, Sequence
+
+from ...descriptor.columns import is_container
+from ...ipc import VERB_SERVE, ServeRequest, ServeResponse
+from ...predicate import And, Eq, from_json
+from ...roles import parse_path
+from .. import ServiceContext, ServiceError
+from .. import items as _items
+from ..reader import BudgetExceeded, ScanStats, TableReader, UnboundParameter
+from .index_build import text_leaf
+
+__all__ = ["serve", "search", "VERBS", "MATCH_CLASSES"]
+
+MATCH_CLASSES = ("exact", "casefold", "previous_synonym", "alias", "related_synonym", "broad_synonym",
+                 "narrow_synonym", "prefix", "word", "substring")
+_SYNONYM_CLASS = {"previous": "previous_synonym", "obsolete": "previous_synonym", "alias": "alias",
+                  "exact": "alias", "related": "related_synonym", "broad": "broad_synonym",
+                  "narrow": "narrow_synonym"}
+
+
+def _fold(text: Any) -> str:
+    return unicodedata.normalize("NFKC", str(text)).strip().casefold()
+
+
+def _negate_columns(reader: TableReader) -> list[str]:
+    out = []
+
+    def walk(cols: Mapping[str, Any], prefix: str) -> None:
+        for name, col in cols.items():
+            path = f"{prefix}{name}"
+            if getattr(col, "role", None) == "qualifier" and getattr(col, "effect", None) == "negate":
+                out.append(path)
+            fields = getattr(col, "fields", None)
+            if fields and not prefix:
+                walk(fields, "")                       # item tables see container fields at the top
+    walk(reader.spec.columns, "")
+    return out
+
+
+def _truthy(v: Any) -> bool:
+    return v is True or (isinstance(v, str) and v.strip().lower() in ("true", "1", "yes", "not"))
+
+
+def _nest(rows: list[dict[str, Any]], spec: Mapping[str, Any], negate: Sequence[str]
+          ) -> tuple[list[dict[str, Any]], int]:
+    """Group rows (after dropping negated rows unless ``include_negated``); returns (groups, n negated)."""
+    negated = 0
+    if not spec.get("include_negated"):
+        kept = []
+        for r in rows:
+            if any(_truthy(r.get(c)) for c in negate if c in r):
+                negated += 1
+                continue
+            kept.append(r)
+        rows = kept
+    group_by = list(spec.get("group_by") or [])
+    items = spec.get("items") or "items"
+    name = items if isinstance(items, str) else str(items.get("name", "items"))
+    cols = None if isinstance(items, str) else list(items.get("columns") or []) or None
+    count_as = spec.get("count_as")
+    groups: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        gkey = json.dumps([r.get(g) for g in group_by], default=str)
+        g = groups.get(gkey)
+        if g is None:
+            g = groups[gkey] = {c: r.get(c) for c in group_by}
+            g[name] = []
+        item = {k: v for k, v in r.items() if k not in group_by} if cols is None else {c: r.get(c) for c in cols}
+        g[name].append(item)
+    out = []
+    having = spec.get("having") or {}
+    for g in groups.values():
+        n = len(g[name])
+        if count_as:
+            g[str(count_as)] = n
+        if not _having_ok(n, having):
+            continue
+        out.append(g)
+    return out, negated
+
+
+def _having_ok(n: int, having: Mapping[str, Any]) -> bool:
+    for k, v in having.items():
+        if isinstance(v, Mapping):
+            for op, x in v.items():
+                if not {"ge": n >= x, "gt": n > x, "le": n <= x, "lt": n < x, "eq": n == x}.get(op, True):
+                    return False
+        elif k in ("min", "min_items") and n < int(v):
+            return False
+        elif k in ("max", "max_items") and n > int(v):
+            return False
+    return True
+
+
+def _split(rows: list[dict[str, Any]], spec: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    by = spec.get("by") or spec.get("column")
+    if not by:
+        raise ServiceError("split needs `by` (the column whose values name the lists)")
+    limit = spec.get("limit")
+    values = spec.get("values")
+    out: dict[str, list[dict[str, Any]]] = {str(v): [] for v in values} if values else {}
+    for r in rows:
+        key = str(r.get(by))
+        if values and key not in out:
+            continue
+        bucket = out.setdefault(key, [])
+        cap = limit.get(key) if isinstance(limit, Mapping) else limit
+        if cap is None or len(bucket) < int(cap):
+            bucket.append(r)
+    return out
+
+
+def _section(ctx: ServiceContext, name: str, sec: Mapping[str, Any], params: Mapping[str, Any]) -> Any:
+    table = str(sec.get("table") or "")
+    if not table:
+        raise ServiceError(f"section {name!r} names no table")
+    pred = sec.get("predicate")
+    key = sec.get("key") or {}
+    if key:
+        parts = [Eq("/" + str(c), v) for c, v in key.items()]
+        kp = parts[0] if len(parts) == 1 else And(tuple(parts))
+        pred = kp if pred is None else And((from_json(pred) if isinstance(pred, Mapping) else pred, kp))
+    reader = ctx.reader(table)
+    rows, _keys, _st = reader.rows(pred, sec.get("columns") or (), sec.get("order") or (), sec.get("limit"),
+                                   params=params)
+    if sec.get("single") and reader.table.kind != "entity_detail":
+        return rows[0] if rows else None
+    return rows
+
+
+def search(reader: TableReader, text: str, predicate: Any, limit: int | None, params: Mapping[str, Any],
+           budget: int | None) -> tuple[list[dict[str, Any]], list[list[Any]], int]:
+    """Rows ranked by match class, then the table's rank, then the key; ``(rows, keys, total matches)``."""
+    phys: list[tuple[str, str]] = [(k, "key") for k in reader.key if not k.endswith("#")]
+
+    def walk(cols: Mapping[str, Any], prefix: str) -> None:
+        for name, col in cols.items():
+            dotted = f"{prefix}{name}"
+            if getattr(col, "role", None) in ("label", "synonym"):
+                phys.extend(text_leaf(reader, dotted, col))
+            elif is_container(col):
+                walk(col.fields, dotted + ".")
+
+    if reader.levels:
+        walk(reader._level_fields()[-1], ".".join(n for lvl in reader.levels for n in lvl.names) + ".")
+    else:
+        walk(reader.spec.columns, "")
+    needle = _fold(text)
+    word = re.compile(rf"(?<!\w){re.escape(needle)}(?!\w)")
+    okeys = reader.order_keys([r.model_dump() for r in reader.table.spec.rank])
+    scored = []
+    stats = ScanStats()
+    for m in reader.scan(predicate, columns=[p for p, _ in phys] + [p for *_, p in okeys], params=params,
+                         budget_bytes=budget, stats=stats, attribute_unknown=False):
+        best: tuple[int, str, str, Any] | None = None
+        for path, kind in phys:
+            for v in _items.path_values(m.row, path):
+                if not isinstance(v, (str, int)) or isinstance(v, bool):
+                    continue
+                s = str(v)
+                f = _fold(s)
+                if kind in ("key", "label"):
+                    cls = "exact" if s == text else ("casefold" if f == needle else None)
+                else:
+                    cls = _SYNONYM_CLASS.get(kind, "alias") if f == needle else None
+                if cls is None:
+                    if f.startswith(needle):
+                        cls = "prefix"
+                    elif word.search(f):
+                        cls = "word"
+                    elif needle in f:
+                        cls = "substring"
+                if cls is None:
+                    continue
+                rank = MATCH_CLASSES.index(cls)
+                if best is None or rank < best[0]:
+                    best = (rank, cls, path, s)
+        if best is None:
+            continue
+        ckey = reader.canonical_key(m.key)
+        scored.append((best[0], reader.sort_key(m.row, okeys, ckey), ckey, m, best))
+    scored.sort(key=lambda x: (x[0], x[1], x[2]))
+    total = len(scored)
+    if limit is not None:
+        scored = scored[: int(limit)]
+    rows, keys = [], []
+    for _r, _sk, ckey, m, best in scored:
+        row = reader.output_row(m)
+        row["_match"] = {"class": best[1], "column": best[2], "value": best[3]}
+        rows.append(row)
+        keys.append(json.loads(ckey))
+    return rows, keys, total
+
+
+def _grain_counts(reader: TableReader, pred: Any, params: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
+                  ) -> dict[str, dict[str, int | None]]:
+    grains = dict(reader.table.spec.grains)
+    if not grains:
+        return {}
+    try:
+        totals = reader.distinct_counts(pred, grains, params=params)
+    except (BudgetExceeded, ServiceError):
+        totals = {}
+    out: dict[str, dict[str, int | None]] = {}
+    for name, g in grains.items():
+        cols = g if isinstance(g, list) else list(g.columns) + list(g.unordered) + list(g.by)
+        names = [parse_path(c).segments[-1].name if not reader.levels else c for c in cols]
+        returned = {json.dumps([r.get(n, r.get(c)) for n, c in zip(names, cols)], default=str, sort_keys=True)
+                    for r in rows}
+        out[name] = {"returned": len(returned) if rows else 0, "total": totals.get(name)}
+    return out
+
+
+def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
+    req = ServeRequest.model_validate(dict(payload))
+    reader = ctx.reader(req.table)
+    params = dict(req.params)
+    order = [o.model_dump() for o in req.order]
+    try:
+        if req.verb == "count":
+            total, eu, ena, _ut = reader.count(req.predicate, params=params, budget_bytes=req.budget_bytes)
+            grains = {name: {"returned": None, "total": n}
+                      for name, n in reader.distinct_counts(req.predicate, dict(reader.table.spec.grains),
+                                                            params=params).items()}
+            resp = ServeResponse(rows=[], total=total, key_columns=list(reader.key), grains=grains,
+                                 excluded_unknown=eu, excluded_not_applicable=ena)
+            return resp.model_dump(mode="json")
+        if req.verb == "search":
+            if not req.search_text:
+                raise ServiceError("search needs search_text")
+            rows, keys, total = search(reader, req.search_text, req.predicate, req.limit, params, req.budget_bytes)
+            resp = ServeResponse(rows=rows, total=total, truncated=total > len(rows), key_columns=list(reader.key),
+                                 row_keys=keys)
+            return resp.model_dump(mode="json")
+        if req.verb not in ("lookup", "find", "members"):
+            raise ServiceError(f"_serve verb {req.verb!r} arrives in a later phase (phase 1: lookup, find, search, "
+                               "members, count)")
+        stats = ScanStats()
+        limit = None if req.nest else req.limit
+        rows, keys, stats = reader.rows(req.predicate, req.columns, order, limit, req.limit_grain,
+                                        explode=req.explode, carry=req.carry, rename=req.rename, params=params,
+                                        budget_bytes=req.budget_bytes, stats=stats, group_by=req.group_by,
+                                        distinct=req.distinct)
+        sections: dict[str, Any] = {}
+        total = stats.total
+        truncated = total > len(rows)
+        out_rows: Any = rows
+        if req.nest:
+            nested, negated = _nest(rows, req.nest, _negate_columns(reader))
+            total = len(nested)
+            truncated = req.limit is not None and total > int(req.limit)
+            out_rows = nested[: int(req.limit)] if req.limit is not None else nested
+            keys = []
+            sections["_excluded"] = {"negated": negated}
+        if req.split:
+            out_rows = _split(out_rows, req.split)
+        for name, sec in req.sections.items():
+            sections[name] = _section(ctx, name, sec, params)
+        grains = _grain_counts(reader, req.predicate, params, rows) if not req.nest else {}
+        resp = ServeResponse(rows=out_rows, total=total, truncated=truncated, key_columns=list(reader.key),
+                             grains=grains, excluded_unknown=dict(stats.excluded_unknown),
+                             excluded_not_applicable=dict(stats.excluded_not_applicable), served_by="derived",
+                             sections=sections, row_keys=keys)
+        return resp.model_dump(mode="json")
+    except BudgetExceeded as exc:
+        return ServeResponse(rows=[], total=None, truncated=True, key_columns=list(reader.key),
+                             reason=f"too_large: {exc.reason}").model_dump(mode="json")
+    except UnboundParameter as exc:
+        raise ServiceError(str(exc)) from None
+
+
+VERBS = {VERB_SERVE: serve}
