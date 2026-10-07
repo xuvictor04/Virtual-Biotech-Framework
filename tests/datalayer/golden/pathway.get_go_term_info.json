@@ -1,0 +1,24 @@
+{
+ "description": "Get Gene Ontology term definition.\nData: Open Targets Platform 25.09 · table go — one record = one Gene Ontology term.\nKey: id.\nArguments: go_id accepts go term (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. GO terms of OT 25.09, including obsolete terms named 'obsolete ...'.",
+ "schema": {
+  "properties": {
+   "go_id": {
+    "description": "Accepts go_term; resolved to one go_term (unknown values are errors, never empty results).",
+    "examples": [
+     "GO:0005737"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:go_term"
+    ],
+    "x-vbt-id-type": "open_targets:go_term"
+   }
+  },
+  "required": [
+   "go_id"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "pathway.get_go_term_info"
+}

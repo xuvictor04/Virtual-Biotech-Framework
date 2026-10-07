@@ -1,0 +1,41 @@
+{
+ "description": "UNAVAILABLE: The background ignores the GO aspect and the multiple-testing family counts only overlapping terms; set-test statistic plugins arrive in phase 3.; use pathway.get_gene_ontology. Perform Gene Ontology (GO) enrichment analysis on a gene list.",
+ "schema": {
+  "properties": {
+   "gene_list": {
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "items": {
+     "type": "string"
+    },
+    "type": "array",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   },
+   "go_type": {
+    "default": null,
+    "type": "string"
+   },
+   "limit": {
+    "default": 50,
+    "type": "integer"
+   },
+   "pvalue_threshold": {
+    "default": 0.05,
+    "type": "number"
+   }
+  },
+  "required": [
+   "gene_list"
+  ],
+  "type": "object"
+ },
+ "serve": "block",
+ "tool": "pathway.get_go_enrichment"
+}

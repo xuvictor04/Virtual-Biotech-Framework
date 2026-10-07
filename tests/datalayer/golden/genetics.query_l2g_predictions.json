@@ -1,0 +1,49 @@
+{
+ "description": "Get locus-to-gene (L2G) predictions.\nData: Open Targets Platform 25.09 · table l2g_prediction — one record = one locus-to-gene score of one gene at one credible set.\nKey: studyLocusId, geneId.\nArguments: gene_id accepts ensembl gene or hgnc symbol (resolved; unknown -> error); study_locus_id accepts study locus id (resolved; unknown -> error).\nResults: ranked by score desc (verified by the harness); `_vbt.total` counts all matches; `_vbt.grains.gene` counts genes; `_vbt.grains.locus` counts locuss.\nRows with unknown score are excluded and counted in `_vbt.excluded_unknown`.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. L2G predictions for credible sets of OT 25.09; absence means the gene was not scored at the locus.",
+ "schema": {
+  "properties": {
+   "gene_id": {
+    "default": null,
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   },
+   "limit": {
+    "default": 100,
+    "maximum": 1000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "min_score": {
+    "default": 0.5,
+    "description": "Keeps rows with score >= this value; unknown values never pass. Defaults to 0.5; pass null for no restriction.",
+    "maximum": 1.0,
+    "minimum": 0.0,
+    "type": "number"
+   },
+   "study_locus_id": {
+    "default": null,
+    "description": "Accepts study_locus_id; resolved to one study_locus_id (unknown values are errors, never empty results).",
+    "examples": [
+     "0a1b2c3d4e5f60718293a4b5c6d7e8f9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:study_locus_id"
+    ],
+    "x-vbt-id-type": "open_targets:study_locus_id"
+   }
+  },
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "genetics.query_l2g_predictions"
+}

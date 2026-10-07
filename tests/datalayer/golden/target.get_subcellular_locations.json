@@ -1,0 +1,26 @@
+{
+ "description": "Get subcellular localization annotations for a target protein.\nData: Open Targets Platform 25.09 · table target_subcellular_locations — one record = one subcellular location of one gene from one source.\nKey: id, subcellularLocations[].location, subcellularLocations[].source.\nArguments: target_id accepts ensembl gene or hgnc symbol (resolved; unknown -> error).\nResults: one row = one item (one subcellular location of one gene from one source); `_vbt.total` counts items.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Subcellular locations (HPA, UniProt) integrated by OT 25.09; a missing location means not reported.",
+ "schema": {
+  "properties": {
+   "target_id": {
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   }
+  },
+  "required": [
+   "target_id"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "target.get_subcellular_locations"
+}

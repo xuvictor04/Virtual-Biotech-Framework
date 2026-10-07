@@ -1,0 +1,45 @@
+{
+ "description": "Get variant annotations including consequences, allele frequencies, and functional predictions.\nData: Open Targets Platform 25.09 · table variant — one record = one variant (chromosome, position, reference and alternate allele).\nKey: variantId.\nArguments: variant_id accepts ot variant or rsid (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Variants of OT 25.09 (existence only).",
+ "schema": {
+  "description": "Pass at least one of: variant_id, position. At most one of: variant_id, position.",
+  "properties": {
+   "chromosome": {
+    "default": null,
+    "type": "string"
+   },
+   "position": {
+    "default": null,
+    "type": "integer"
+   },
+   "variant_id": {
+    "default": null,
+    "description": "Accepts ot_variant, rsid; resolved to one ot_variant (unknown values are errors, never empty results).",
+    "examples": [
+     "19_44908822_C_T",
+     "rs7412"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ot_variant",
+     "open_targets:rsid"
+    ],
+    "x-vbt-id-type": "open_targets:ot_variant"
+   }
+  },
+  "type": "object",
+  "x-vbt-exclusive": [
+   [
+    "variant_id",
+    "position"
+   ]
+  ],
+  "x-vbt-require-any": [
+   [
+    "variant_id",
+    "position"
+   ]
+  ]
+ },
+ "serve": "pass",
+ "tool": "genetics.get_variant_annotation"
+}

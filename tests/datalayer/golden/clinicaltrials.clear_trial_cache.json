@@ -1,0 +1,9 @@
+{
+ "description": "UNAVAILABLE: No-op: upstream response caching is disabled.. Clear the cached trial data.",
+ "schema": {
+  "properties": {},
+  "type": "object"
+ },
+ "serve": "block",
+ "tool": "clinicaltrials.clear_trial_cache"
+}

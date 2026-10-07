@@ -19,7 +19,9 @@ The upstream schema from ``list_tools`` is kept and annotated (never loosened):
   arguments with their ``engine_doc``; ``require_any``/``exclusive`` as ``x-vbt-*`` plus one sentence;
   schema defaults on filters disclosed; anchors described as excluded from the results.
 
-Generic (unbound) tools are returned unchanged.
+Generic (unbound) tools are returned unchanged. The data child's public verbs (``data.find`` ...) get
+their native schema from :mod:`.tools` (table enums, ``where`` schemas per long-view column); while the
+child registers each verb with one ``request`` argument, the native schema is placed under it.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from typing import Any, Mapping
 
 from ..errors import json_value
 
-__all__ = ["annotate_schema", "auto_scope_args", "bound_id_type", "THRESHOLD_OPS"]
+__all__ = ["annotate_schema", "auto_scope_args", "bound_id_type", "native_schema", "THRESHOLD_OPS"]
 
 THRESHOLD_OPS = frozenset({"ge", "gt", "le", "lt", "range", "ge_abs", "gt_abs", "le_abs", "lt_abs"})
 _OP_WORDS = {"ge": ">=", "gt": ">", "le": "<=", "lt": "<", "ge_abs": "|x| >=", "gt_abs": "|x| >", "le_abs": "|x| <=",
@@ -130,6 +132,21 @@ def _plugin(registry: Any, catalog: Any, qualified: str | None) -> Any:
     return registry.find("identifier", spec.plugin), spec
 
 
+def native_schema(contract: Any, schema: Mapping[str, Any] | None, catalog: Any, *, enum_max: int = 64,
+                  agent: str | None = None, ready: Any = None) -> dict[str, Any] | None:
+    """The schema of a data-child public verb (None for any other tool); under ``request`` when the
+    listed schema takes the payload as one ``request`` argument."""
+    from .tools import NATIVE_SERVER, NATIVE_VERBS, native_tool, wrap_request
+
+    if catalog is None or getattr(contract, "server", None) != NATIVE_SERVER or contract.tool not in NATIVE_VERBS:
+        return None
+    tool = native_tool(catalog, contract.tool, agent=agent, ready=ready, enum_max=enum_max)
+    if tool is None:
+        return None
+    props = (schema or {}).get("properties") or {}
+    return wrap_request(tool.input_schema) if set(props) == {"request"} else tool.input_schema
+
+
 def annotate_schema(contract: Any, schema: Mapping[str, Any] | None, *, catalog: Any = None, registry: Any = None,
                     vocab: Mapping[str, Any] | None = None, enum_max: int = 64,
                     limit_max: Mapping[str, int] | None = None) -> dict[str, Any]:
@@ -140,6 +157,9 @@ def annotate_schema(contract: Any, schema: Mapping[str, Any] | None, *, catalog:
     b = getattr(contract, "binding", None)
     if b is None or getattr(contract, "generic", False):
         return out
+    native = native_schema(contract, schema, catalog, enum_max=enum_max)
+    if native is not None:
+        return native
     vocab = dict(vocab or {})
     props: dict[str, Any] = out.setdefault("properties", {})
     for name, a in contract.args.items():

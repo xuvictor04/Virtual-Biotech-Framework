@@ -1,0 +1,48 @@
+{
+ "description": "UNAVAILABLE: Reads QTL colocalisation from L2G feature values rather than from the colocalisation tables, so CLPP thresholds apply to model features. A colocalisation statistic plugin and a derived replacement arrive in phase 3.; use genetics.query_colocalisation, genetics.get_colocalisation_by_chromosome. Get QTL colocalization evidence from L2G features.",
+ "schema": {
+  "properties": {
+   "gene_id": {
+    "default": null,
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   },
+   "limit": {
+    "default": 50,
+    "type": "integer"
+   },
+   "min_clpp": {
+    "default": 0.5,
+    "type": "number"
+   },
+   "qtl_type": {
+    "default": null,
+    "type": "string"
+   },
+   "study_locus_id": {
+    "default": null,
+    "description": "Accepts study_locus_id; resolved to one study_locus_id (unknown values are errors, never empty results).",
+    "examples": [
+     "0a1b2c3d4e5f60718293a4b5c6d7e8f9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:study_locus_id"
+    ],
+    "x-vbt-id-type": "open_targets:study_locus_id"
+   }
+  },
+  "type": "object"
+ },
+ "serve": "block",
+ "tool": "genetics.get_qtl_colocalization"
+}

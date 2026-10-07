@@ -15,7 +15,7 @@ Blocked tools are listed as ``UNAVAILABLE: <reason>; use <alternative>``.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Mapping
 
 __all__ = ["describe_tool", "unavailable_text", "first_sentence"]
 
@@ -24,10 +24,14 @@ _SENTENCE = re.compile(r"(.+?[.!?])(\s|$)", re.DOTALL)
 
 
 def first_sentence(description: str | None) -> str:
+    """The first sentence of the first paragraph (before any ``Args:``/``Returns:`` section), ending in a
+    full stop."""
     text = _SECTION.split(str(description or ""), maxsplit=1)[0].strip()
+    text = re.split(r"\n\s*\n", text, maxsplit=1)[0]
     text = " ".join(text.split())
     m = _SENTENCE.match(text)
-    return (m.group(1) if m else text).strip()
+    out = (m.group(1) if m else text).strip()
+    return out + "." if out and not out.endswith((".", "!", "?")) else out
 
 
 def unavailable_text(reason: str, alternatives: list[str] | None = None, description: str | None = None) -> str:
@@ -74,15 +78,31 @@ def _order_text(b: Any) -> str | None:
     return f"ranked by {first.column} {first.direction}{within} ({how})"
 
 
+def _propagation(name: str, prop: str, fraction: float | None) -> str:
+    if prop == "mixed" and fraction is not None:
+        return f"{name}: mixed: {fraction:.0%} of items also list an ancestor."
+    return {"direct": f"{name}: direct annotations only.",
+            "propagated": f"{name}: annotations propagated to ancestors.",
+            "mixed": f"{name}: mixed direct and propagated annotations."}[prop]
+
+
 def describe_tool(contract: Any, description: str | None, *, catalog: Any = None, max_chars: int = 1200,
-                  unready: str | None = None) -> str:
+                  unready: str | None = None, measured: Mapping[str, float] | None = None) -> str:
     """The rewritten description (generic tools: unchanged). ``unready`` is the reason every call
-    would be unready (listed with an ``UNAVAILABLE:`` prefix)."""
+    would be unready (listed with an ``UNAVAILABLE:`` prefix). ``measured`` maps
+    ``"source.table.column"`` of a ``mixed`` member column to the fraction of items that also list an
+    ancestor (measured at readiness)."""
     b = getattr(contract, "binding", None)
     if b is None or getattr(contract, "generic", False):
         return description or ""
     if b.serve == "block" and b.block is not None:
         return _cap(unavailable_text(b.block.reason, list(b.block.alternatives), description), max_chars)
+    from .tools import NATIVE_SERVER, NATIVE_VERBS, native_tool
+    if catalog is not None and getattr(contract, "server", None) == NATIVE_SERVER and contract.tool in NATIVE_VERBS:
+        tool = native_tool(catalog, contract.tool)
+        if tool is not None:
+            head = f"UNAVAILABLE: {unready}.\n" if unready else ""
+            return _cap(head + tool.description, max_chars)
     first = first_sentence(description)
     if any(p.lower() in first.lower() for p in b.text.drop_promises):
         first = ""
@@ -151,14 +171,17 @@ def describe_tool(contract: Any, description: str | None, *, catalog: Any = None
             if role == "measure" and fam:
                 lines.append(f"{name} is adjusted within one {', '.join(fam)} family.")
             if role == "member":
-                prop = c.membership.propagation
-                lines.append({"direct": f"{name}: direct annotations only.",
-                              "propagated": f"{name}: annotations propagated to ancestors.",
-                              "mixed": f"{name}: mixed direct and propagated annotations."}[prop])
+                lines.append(_propagation(name, c.membership.propagation, (measured or {}).get(f"{bound}.{name}")))
+            level = getattr(c, "level", None)
+            if level and not any(name in cols for cols in b.result.levels.values()):
+                lines.append(f"{name} is a {level} value repeated on each row; count {level}s, not rows.")
             if role == "flag" and getattr(c, "event_of", None):
                 lines.append(f"{c.event_of} is right-censored when {name} is false; medians need Kaplan-Meier.")
             if getattr(c, "projection_of", None) and getattr(c, "lossy", False):
                 lines.append(f"{name} keeps one value of {c.projection_of}; records under several are missed.")
+            if role == "qualifier" and getattr(c, "effect", None) == "negate":
+                lines.append(f"{name} = true marks a negative finding (the relation does NOT hold); such records are "
+                             "excluded and counted in `_vbt.excluded_negated` unless include_negated is set.")
             if role == "qualifier" and getattr(c, "default_filter", False):
                 applied = b.result.kind != "file"
                 lines.append(f"{name}: {'rows excluded by default and counted' if applied else 'NOT applied by this tool'}"

@@ -1,0 +1,22 @@
+{
+ "description": "Search for cancer genomics studies in cBioPortal.\nData: cBioPortal for Cancer Genomics (public studies) · table study — one record = one cBioPortal study.\nKey: studyId.\nArguments: cancer_type accepts cbio cancer type (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Public cBioPortal studies at the time of the call (existence only).",
+ "schema": {
+  "properties": {
+   "cancer_type": {
+    "default": null,
+    "description": "Accepts cbio_cancer_type; resolved to one cbio_cancer_type (unknown values are errors, never empty results).",
+    "examples": [
+     "brca"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "cbioportal:cbio_cancer_type"
+    ],
+    "x-vbt-id-type": "cbioportal:cbio_cancer_type"
+   }
+  },
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "clinicaltrials.search_studies"
+}

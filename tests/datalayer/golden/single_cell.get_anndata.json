@@ -1,0 +1,73 @@
+{
+ "description": "Retrieve filtered AnnData object and save to .h5ad file.\nData: CZ CELLxGENE Census (human) · table var — one record = one gene (feature) measured in the human Census.\nKey: feature_id.\nArguments: gene_symbols accepts hgnc symbol (resolved; unknown -> error); ensembl_ids accepts census feature (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence.",
+ "schema": {
+  "properties": {
+   "ensembl_ids": {
+    "default": null,
+    "description": "Accepts census_feature; resolved to one census_feature (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174"
+    ],
+    "items": {
+     "pattern": "^ENSG\\d{11}$",
+     "type": "string"
+    },
+    "type": "array",
+    "x-vbt-accepts": [
+     "cellxgene_census:census_feature"
+    ],
+    "x-vbt-id-type": "cellxgene_census:census_feature"
+   },
+   "gene_symbols": {
+    "default": null,
+    "description": "Accepts hgnc_symbol; resolved to one hgnc_symbol (unknown values are errors, never empty results).",
+    "examples": [
+     "PCSK9"
+    ],
+    "items": {
+     "type": "string"
+    },
+    "type": "array",
+    "x-vbt-accepts": [
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:hgnc_symbol"
+   },
+   "include_duplicates": {
+    "default": false,
+    "description": "Include duplicate records (cells counted in several datasets), which are excluded by default; their number is disclosed.",
+    "type": "boolean",
+    "x-gateway": true
+   },
+   "layer": {
+    "default": "raw",
+    "enum": [
+     "raw",
+     "normalized"
+    ],
+    "type": "string"
+   },
+   "obs_columns": {
+    "default": null,
+    "items": {
+     "type": "string"
+    },
+    "type": "array"
+   },
+   "output_path": {
+    "type": "string"
+   },
+   "value_filter": {
+    "default": null,
+    "description": "Matched by the source's search engine: SOMA value_filter over obs columns; is_primary_data == True is enforced unless include_duplicates.",
+    "type": "string"
+   }
+  },
+  "required": [
+   "output_path"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "single_cell.get_anndata"
+}

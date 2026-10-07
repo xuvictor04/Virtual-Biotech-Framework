@@ -1,0 +1,39 @@
+{
+ "description": "Find genes with disease-selective essentiality.\nData: Open Targets Platform 25.09 · table target_essentiality — one record = the DepMap essentiality of one gene across screened cell lines.\nKey: id.\nArguments: limit counts genes, not rows.\nResults: ranked by effect_difference asc (verified by the harness); `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. DepMap CRISPR essentiality of genes screened in cancer cell lines; a missing gene means not screened.",
+ "schema": {
+  "properties": {
+   "comparison_disease": {
+    "description": "Values of geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource (see mcp__data__vocab).",
+    "type": "string",
+    "x-vbt-vocabulary": "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource"
+   },
+   "limit": {
+    "default": 50,
+    "description": "Counts genes, not rows.",
+    "maximum": 10000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "min_cell_lines": {
+    "default": 3,
+    "type": "integer"
+   },
+   "min_effect_difference": {
+    "default": 0.3,
+    "type": "number"
+   },
+   "target_disease": {
+    "description": "Values of geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource (see mcp__data__vocab).",
+    "type": "string",
+    "x-vbt-vocabulary": "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource"
+   }
+  },
+  "required": [
+   "target_disease",
+   "comparison_disease"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "functional_genomics.find_selective_dependencies"
+}

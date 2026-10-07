@@ -1,0 +1,21 @@
+{
+ "description": "Count cells matching a filter WITHOUT retrieving data.\nData: CZ CELLxGENE Census (human) · table obs — one record = one cell in one dataset.\nKey: soma_joinid.\nResults: `_vbt.total` counts all matches; `_vbt.grains.donor` counts donors; `_vbt.grains.dataset` counts datasets; `_vbt.grains.cell_type` counts cell_types; `_vbt.grains.tissue` counts tissues.\nis_primary_data: rows excluded by default and counted.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Cells of the human Census release named in the result; absence means not in the Census, not absent from the tissue.",
+ "schema": {
+  "properties": {
+   "include_duplicates": {
+    "default": false,
+    "description": "Include duplicate records (cells counted in several datasets), which are excluded by default; their number is disclosed.",
+    "type": "boolean",
+    "x-gateway": true
+   },
+   "value_filter": {
+    "default": null,
+    "description": "Matched by the source's search engine: SOMA value_filter over obs columns; is_primary_data == True is enforced unless include_duplicates.",
+    "type": "string"
+   }
+  },
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "single_cell.count_cells"
+}

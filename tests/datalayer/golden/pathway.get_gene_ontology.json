@@ -1,0 +1,37 @@
+{
+ "description": "Get Gene Ontology (GO) annotations for a gene.\nData: Open Targets Platform 25.09 · table target_go — one record = one direct GO annotation record of one gene.\nKey: id, go[].id, go[].aspect, go[].evidence, go[].source, go[].geneProduct.\nArguments: target_id accepts ensembl gene or hgnc symbol (resolved; unknown -> error).\nResults: ranked by go[].id asc (verified by the harness); one row = one item (one direct GO annotation record of one gene); `_vbt.total` counts items; `_vbt.grains.go_membership` counts go_memberships; `_vbt.grains.gene` counts genes; `_vbt.grains.term` counts terms.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Direct GO annotations, not propagated.",
+ "schema": {
+  "properties": {
+   "aspect": {
+    "default": null,
+    "description": "C: cellular component; F: molecular function; P: biological process.",
+    "enum": [
+     "C",
+     "F",
+     "P",
+     null
+    ],
+    "type": "string"
+   },
+   "target_id": {
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   }
+  },
+  "required": [
+   "target_id"
+  ],
+  "type": "object"
+ },
+ "serve": "derived",
+ "tool": "pathway.get_gene_ontology"
+}

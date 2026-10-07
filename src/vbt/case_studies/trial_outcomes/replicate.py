@@ -100,14 +100,24 @@ def load_inputs(root: str | Path, *, open_targets: bool = True) -> dict[str, Any
     if open_targets:
         ga = d / "association_by_datatype_direct"
         if ga.exists():
-            g = pd.read_parquet(ga, columns=["targetId", "diseaseId", "datatypeId", "score"])
+            g = _ot_subset(ct, "association_by_datatype_direct", ["targetId", "diseaseId", "datatypeId", "score"])
             out["genetic"] = g[g["datatypeId"] == "genetic_association"][["targetId", "diseaseId", "score"]]
         if (d / "drug_molecule").exists():
-            out["drug_types"] = pd.read_parquet(d / "drug_molecule", columns=["id", "drugType"]) \
-                .set_index("id")["drugType"]
+            out["drug_types"] = _ot_subset(ct, "drug_molecule", ["id", "drugType"]).set_index("id")["drugType"]
         if (d / "disease").exists():
-            out["disease"] = pd.read_parquet(d / "disease", columns=["id", "name", "therapeuticAreas"])
+            out["disease"] = _ot_subset(ct, "disease", ["id", "name", "therapeuticAreas"])
     return out
+
+
+def _ot_subset(ct: Path, table: str, columns: list[str]) -> pd.DataFrame:
+    """An Open Targets subset of the archive (``clinical_trials/data/<table>``), read through the data client
+    as the ``zenodo_vbt`` table (checked ready, provenance recorded in ``frame.attrs["vbt_prov"]``). A folder
+    laid out differently from the archive (not ``.../clinical_trials/data``) is read directly."""
+    if ct.name != "clinical_trials":
+        return pd.read_parquet(ct / "data" / table, columns=columns)
+    from ...datalayer import client
+
+    return client.read_frame(f"zenodo_vbt.{table}", columns, root=ct.parent)
 
 
 def sc_columns(features: pd.DataFrame) -> list[str]:

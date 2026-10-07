@@ -1,0 +1,9 @@
+{
+ "description": "Get all cancer types available in cBioPortal.\nData: cBioPortal for Cancer Genomics (public studies) · table cancer_type — one record = one OncoTree cancer type used by cBioPortal.\nKey: cancerTypeId.\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence.",
+ "schema": {
+  "properties": {},
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "clinicaltrials.get_all_cancer_types"
+}

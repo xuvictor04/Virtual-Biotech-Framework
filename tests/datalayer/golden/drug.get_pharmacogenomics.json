@@ -1,0 +1,51 @@
+{
+ "description": "Get pharmacogenomics relationships between genes and drug responses.\nData: Open Targets Platform 25.09 · table pharmacogenomics — one record = one PharmGKB variant or haplotype annotation linking a genotype to a drug response.\nKey: targetFromSourceId, variantRsId, genotypeId, haplotypeId, phenotypeText (variantRsId and genotypeId and haplotypeId may be null).\nArguments: target_id accepts ensembl gene or hgnc symbol (resolved; unknown -> error); drug_id accepts chembl molecule or drug name (resolved; unknown -> error).\nResults: ranked by evidenceLevel asc (verified by the harness); `_vbt.total` counts all matches; `_vbt.grains.drug` counts drugs; `_vbt.grains.variant` counts variants.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. PharmGKB clinical annotations integrated by OT 25.09; absence means none curated.\nevidenceLevel is the PharmGKB level: 1A (strongest) < 1B < 2A < 2B < 3 < 4 (weakest)",
+ "schema": {
+  "description": "Pass at least one of: target_id, drug_id.",
+  "properties": {
+   "drug_id": {
+    "default": null,
+    "description": "Accepts chembl_molecule, drug_name; resolved to one chembl_molecule (unknown values are errors, never empty results).",
+    "examples": [
+     "CHEMBL25",
+     "erlotinib"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:chembl_molecule",
+     "open_targets:drug_name"
+    ],
+    "x-vbt-id-type": "open_targets:chembl_molecule"
+   },
+   "limit": {
+    "default": 20,
+    "maximum": 500,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "target_id": {
+    "default": null,
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   }
+  },
+  "type": "object",
+  "x-vbt-require-any": [
+   [
+    "target_id",
+    "drug_id"
+   ]
+  ]
+ },
+ "serve": "derived",
+ "tool": "drug.get_pharmacogenomics"
+}

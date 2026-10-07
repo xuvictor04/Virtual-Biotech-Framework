@@ -1,0 +1,32 @@
+{
+ "description": "Get disease indications and clinical trial phases for a drug.\nData: Open Targets Platform 25.09 · table drug_indications — one record = one indication (disease) of one drug with its maximum phase.\nKey: id, indications[].disease.\nArguments: drug_id accepts chembl molecule or drug name (resolved; unknown -> error).\nResults: ranked by indications[].maxPhaseForIndication desc (verified by the harness); one row = one item (one indication (disease) of one drug with its maximum phase); `_vbt.total` counts items.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. ChEMBL drug indications; absence means none curated.",
+ "schema": {
+  "properties": {
+   "drug_id": {
+    "description": "Accepts chembl_molecule, drug_name; resolved to one chembl_molecule (unknown values are errors, never empty results).",
+    "examples": [
+     "CHEMBL25",
+     "erlotinib"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:chembl_molecule",
+     "open_targets:drug_name"
+    ],
+    "x-vbt-id-type": "open_targets:chembl_molecule"
+   },
+   "limit": {
+    "default": 20,
+    "maximum": 500,
+    "minimum": 1,
+    "type": "integer"
+   }
+  },
+  "required": [
+   "drug_id"
+  ],
+  "type": "object"
+ },
+ "serve": "derived",
+ "tool": "drug.get_drug_indications"
+}

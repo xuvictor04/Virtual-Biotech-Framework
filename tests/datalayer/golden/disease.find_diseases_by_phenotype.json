@@ -1,0 +1,47 @@
+{
+ "description": "Find diseases associated with a specific phenotype (reverse search).\nData: Open Targets Platform 25.09 · table disease_phenotype — one record = one (disease, HPO phenotype) association with its evidence records.\nKey: disease, phenotype.\nArguments: phenotype_id accepts hpo (resolved; unknown -> error); limit counts diseases, not rows.\nResults: ranked by disease asc (verified by the harness); `_vbt.total` counts all matches; `_vbt.grains.disease` counts diseases; `_vbt.grains.phenotype` counts phenotypes.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. HPO disease-phenotype annotations integrated by OT 25.09; negated (NOT) evidence is a negative finding, not support.",
+ "schema": {
+  "properties": {
+   "evidence_type": {
+    "default": null,
+    "description": "Values of evidence[].evidenceType (see mcp__data__vocab). IEA: inferred from electronic annotation; PCS: published clinical study; TAS: traceable author statement; ICE: individual clinical experience.",
+    "type": "string",
+    "x-vbt-vocabulary": "open_targets.disease_phenotype.evidence[].evidenceType"
+   },
+   "include_negated": {
+    "default": false,
+    "description": "Include negative findings (evidence that the relation does NOT hold), which are excluded by default; their number is disclosed.",
+    "type": "boolean",
+    "x-gateway": true
+   },
+   "limit": {
+    "default": 50,
+    "description": "Counts diseases, not rows.",
+    "maximum": 500,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "min_evidence": {
+    "default": null,
+    "type": "integer"
+   },
+   "phenotype_id": {
+    "description": "Accepts hpo; resolved to one hpo (unknown values are errors, never empty results).",
+    "examples": [
+     "HP_0001250"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:hpo"
+    ],
+    "x-vbt-id-type": "open_targets:hpo"
+   }
+  },
+  "required": [
+   "phenotype_id"
+  ],
+  "type": "object"
+ },
+ "serve": "derived",
+ "tool": "disease.find_diseases_by_phenotype"
+}

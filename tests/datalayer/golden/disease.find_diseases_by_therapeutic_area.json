@@ -1,0 +1,47 @@
+{
+ "description": "Find diseases in a specific therapeutic area or list all therapeutic areas.\nData: Open Targets Platform 25.09 · table disease — one record = one ontology term used by Open Targets as a disease, phenotype, measurement or process.\nKey: id.\nArguments: therapeutic_area accepts ot disease or disease name (resolved; unknown -> error).\nResults: ranked by id asc (verified by the harness); `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Disease, phenotype and measurement terms of OT 25.09 (EFO/MONDO and imported ontologies).",
+ "schema": {
+  "description": "Pass at least one of: therapeutic_area, list_therapeutic_areas. At most one of: therapeutic_area, list_therapeutic_areas.",
+  "properties": {
+   "limit": {
+    "default": 100,
+    "maximum": 1000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "list_therapeutic_areas": {
+    "default": false,
+    "type": "boolean"
+   },
+   "therapeutic_area": {
+    "default": null,
+    "description": "Accepts ot_disease, disease_name; resolved to one ot_disease (unknown values are errors, never empty results).",
+    "examples": [
+     "EFO_0000685",
+     "rheumatoid arthritis"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ot_disease",
+     "open_targets:disease_name"
+    ],
+    "x-vbt-id-type": "open_targets:ot_disease"
+   }
+  },
+  "type": "object",
+  "x-vbt-exclusive": [
+   [
+    "therapeutic_area",
+    "list_therapeutic_areas"
+   ]
+  ],
+  "x-vbt-require-any": [
+   [
+    "therapeutic_area",
+    "list_therapeutic_areas"
+   ]
+  ]
+ },
+ "serve": "derived",
+ "tool": "disease.find_diseases_by_therapeutic_area"
+}

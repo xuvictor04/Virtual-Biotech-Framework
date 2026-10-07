@@ -1,0 +1,70 @@
+{
+ "description": "Query drug perturbation effects from Tahoe-100M.\nData: Tahoe-100M pseudobulk differential expression (prepared by tools/prepare_tahoe.py) · table de_permissive — one record = one gene's DESeq2 contrast for one drug at one concentration in one cell line on one plate (replicate wells pooled).\nKey: drug, concentration, concentration_unit, Cell_ID_DepMap, plate, gene_name.\nArguments: drug_name accepts tahoe drug (resolved; unknown -> error); cell_line_id accepts depmap cell line (resolved; unknown -> error); top_n counts genes, not rows.\nResults: `_vbt.total` counts all matches; `_vbt.grains.gene` counts genes; `_vbt.grains.drug` counts drugs; `_vbt.grains.cell_line` counts cell_lines; `_vbt.grains.drug_dose` counts drug_doses; `_vbt.grains.contrast` counts contrasts.\nRows with unknown padj, log2FoldChange are excluded and counted in `_vbt.excluded_unknown`.\npadj is adjusted within one drug, concentration, concentration_unit, Cell_ID_DepMap, plate family.\nMissing rows are censored (padj >= 0.1): not significant or not tested.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence.…",
+ "schema": {
+  "properties": {
+   "cell_line_id": {
+    "default": null,
+    "description": "Accepts depmap_cell_line; resolved to one depmap_cell_line (unknown values are errors, never empty results).",
+    "examples": [
+     "ACH-000001"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "tahoe_100m:depmap_cell_line"
+    ],
+    "x-vbt-id-type": "tahoe_100m:depmap_cell_line"
+   },
+   "concentration": {
+    "description": "Values of concentration (see mcp__data__vocab).",
+    "x-gateway": true,
+    "x-vbt-vocabulary": "tahoe_100m.de_permissive.concentration"
+   },
+   "concentration_unit": {
+    "description": "Results are per concentration_unit; pass one value, or the call fails with incomplete_key when several apply.",
+    "x-gateway": true
+   },
+   "drug_name": {
+    "description": "Accepts tahoe_drug; resolved to one tahoe_drug (unknown values are errors, never empty results).",
+    "examples": [
+     "Erdafitinib"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "tahoe_100m:tahoe_drug"
+    ],
+    "x-vbt-id-type": "tahoe_100m:tahoe_drug"
+   },
+   "max_padj": {
+    "default": 0.1,
+    "description": "Keeps rows with padj <= this value; unknown values never pass. Defaults to 0.1; pass null for no restriction.",
+    "maximum": 0.1,
+    "minimum": 0.0,
+    "type": "number"
+   },
+   "min_abs_log2fc": {
+    "default": 0.0,
+    "description": "Keeps rows with log2FoldChange |x| > this value (compared on the absolute value); unknown values never pass. Defaults to 0.0; pass null for no restriction.",
+    "minimum": 0.0,
+    "type": "number"
+   },
+   "plate": {
+    "description": "Values of plate (see mcp__data__vocab).",
+    "x-gateway": true,
+    "x-vbt-vocabulary": "tahoe_100m.de_permissive.plate"
+   },
+   "top_n": {
+    "default": 50,
+    "description": "Counts genes, not rows.",
+    "maximum": 500,
+    "minimum": 1,
+    "type": "integer"
+   }
+  },
+  "required": [
+   "drug_name"
+  ],
+  "type": "object"
+ },
+ "serve": "derived",
+ "tool": "functional_genomics.query_drug_perturbation"
+}

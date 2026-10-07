@@ -1,0 +1,79 @@
+{
+ "description": "Retrieve an AnnData object with donor-balanced, cell-type-stratified sampling.\nData: CZ CELLxGENE Census (human) · table var — one record = one gene (feature) measured in the human Census.\nKey: feature_id.\nArguments: gene_symbols accepts hgnc symbol (resolved; unknown -> error); ensembl_ids accepts census feature (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence.\naccepted only when value_filter fixes one dataset_id; otherwise unsupported_combination names single_cell.get_anndata\n'No cells found' is an unverified empty (the filter may name values absent from this Census release)",
+ "schema": {
+  "properties": {
+   "ensembl_ids": {
+    "default": null,
+    "description": "Accepts census_feature; resolved to one census_feature (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174"
+    ],
+    "items": {
+     "pattern": "^ENSG\\d{11}$",
+     "type": "string"
+    },
+    "type": "array",
+    "x-vbt-accepts": [
+     "cellxgene_census:census_feature"
+    ],
+    "x-vbt-id-type": "cellxgene_census:census_feature"
+   },
+   "gene_symbols": {
+    "default": null,
+    "description": "Accepts hgnc_symbol; resolved to one hgnc_symbol (unknown values are errors, never empty results).",
+    "examples": [
+     "PCSK9"
+    ],
+    "items": {
+     "type": "string"
+    },
+    "type": "array",
+    "x-vbt-accepts": [
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:hgnc_symbol"
+   },
+   "include_duplicates": {
+    "default": false,
+    "description": "Include duplicate records (cells counted in several datasets), which are excluded by default; their number is disclosed.",
+    "type": "boolean",
+    "x-gateway": true
+   },
+   "layer": {
+    "default": "raw",
+    "enum": [
+     "raw",
+     "normalized"
+    ],
+    "type": "string"
+   },
+   "max_cells": {
+    "default": 20000,
+    "maximum": 200000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "obs_columns": {
+    "default": null,
+    "items": {
+     "type": "string"
+    },
+    "type": "array"
+   },
+   "output_path": {
+    "type": "string"
+   },
+   "value_filter": {
+    "description": "Matched by the source's search engine: SOMA value_filter over obs columns; it must fix one dataset_id (donor_id is unique only within a dataset).",
+    "type": "string"
+   }
+  },
+  "required": [
+   "output_path",
+   "value_filter"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "single_cell.get_anndata_donor_balanced"
+}

@@ -1,0 +1,50 @@
+{
+ "description": "UNAVAILABLE: Loads the whole literature table (hundreds of millions of rows) into pandas and returns rows in file order. A sidecar index over pmid and keywordId arrives in phase 4.; use pubmed.search_pubmed, association.get_evidence_by_publication. Search publication metadata.",
+ "schema": {
+  "properties": {
+   "keyword_id": {
+    "default": null,
+    "description": "Accepts literature_word, ensembl_gene, ot_disease, chembl_molecule; resolved to one literature_word (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "EFO_0000685",
+     "CHEMBL25"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:literature_word",
+     "open_targets:ensembl_gene",
+     "open_targets:ot_disease",
+     "open_targets:chembl_molecule"
+    ],
+    "x-vbt-id-type": "open_targets:literature_word"
+   },
+   "limit": {
+    "default": 50,
+    "maximum": 1000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "pmid": {
+    "default": null,
+    "description": "Accepts pmid; resolved to one pmid (unknown values are errors, never empty results).",
+    "examples": [
+     "30595370"
+    ],
+    "pattern": "^[1-9]\\d{0,8}$",
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:pmid"
+    ],
+    "x-vbt-id-type": "open_targets:pmid"
+   },
+   "year": {
+    "default": null,
+    "type": "integer"
+   }
+  },
+  "type": "object"
+ },
+ "serve": "block",
+ "tool": "association.search_literature"
+}

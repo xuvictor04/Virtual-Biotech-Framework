@@ -24,8 +24,6 @@ tools:
       verb: find
       table: open_targets.target_pathways
       rename: {"pathways[].pathwayId": pathwayId, "pathways[].pathway": pathway, "pathways[].topLevelTerm": topLevelTerm}
-    text:
-      notes: ["lowest-level Reactome annotations; a gene missing from a pathway is unannotated there"]
 
   search_pathways:
     reads: {open_targets.target: {access: projection, columns: [id, pathways]}}
@@ -120,8 +118,6 @@ tools:
       order: [{column: id, direction: asc}]
     serve: derived
     derived: {verb: members, table: open_targets.target_pathways, columns: [id]}
-    text:
-      notes: ["direct annotations only: genes annotated to a descendant pathway are not included (hierarchy expansion arrives in phase 3)"]
     defects:
       - {id: OT-PATH-002, what: "a pathway with no annotated gene is reported as not found (an error), not as an empty membership",
          where: "pathway_mcp/tools.py:366-370", effect: error}

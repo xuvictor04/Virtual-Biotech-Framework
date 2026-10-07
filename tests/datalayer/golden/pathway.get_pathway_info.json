@@ -1,0 +1,24 @@
+{
+ "description": "Get Reactome pathway information with hierarchy.\nData: Open Targets Platform 25.09 · table reactome — one record = one Reactome pathway or reaction.\nKey: id.\nArguments: pathway_id accepts reactome pathway (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Reactome pathways of OT 25.09 (existence only).",
+ "schema": {
+  "properties": {
+   "pathway_id": {
+    "description": "Accepts reactome_pathway; resolved to one reactome_pathway (unknown values are errors, never empty results).",
+    "examples": [
+     "R-HSA-109582"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:reactome_pathway"
+    ],
+    "x-vbt-id-type": "open_targets:reactome_pathway"
+   }
+  },
+  "required": [
+   "pathway_id"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "pathway.get_pathway_info"
+}

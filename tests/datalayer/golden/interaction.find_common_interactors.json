@@ -1,0 +1,48 @@
+{
+ "description": "UNAVAILABLE: One min_confidence threshold across STRING, IntAct, Reactome and SIGNOR scores, which are not comparable; a per-source network verb arrives in phase 3.; use interaction.get_interactions. Find proteins that interact with multiple targets from input list.",
+ "schema": {
+  "properties": {
+   "limit": {
+    "default": 50,
+    "type": "integer"
+   },
+   "min_confidence": {
+    "default": 0.0,
+    "type": "number"
+   },
+   "min_targets": {
+    "default": 2,
+    "type": "integer"
+   },
+   "sourceDatabase": {
+    "description": "Results are listed per sourceDatabase; pass one value to restrict them.",
+    "enum": [
+     "intact",
+     "reactome",
+     "signor",
+     "string"
+    ],
+    "x-gateway": true
+   },
+   "target_ids": {
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "array",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   }
+  },
+  "required": [
+   "target_ids"
+  ],
+  "type": "object"
+ },
+ "serve": "block",
+ "tool": "interaction.find_common_interactors"
+}

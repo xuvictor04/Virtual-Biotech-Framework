@@ -32,6 +32,13 @@ x-workspace-tools: &ws
   - mcp__provenance__register_artifact
   - mcp__provenance__list_artifacts
 
+# The data layer's native tools (docs/DATA_LAYER.md §10.6): find/lookup/search/aggregate/... over the
+# descriptors, granted to every data agent. Tables with `expose.native: false` or whose
+# `expose.withhold_from` names the agent are refused for it (the Case 1 answer key is withheld from
+# trial-annotator and clinical-trialist).
+x-data-tools: &data
+  - mcp__data__*
+
 # Deliberate differences from the upstream tool lists (agent -> {tool: reason}).
 x-parity-exceptions:
   cso:
@@ -75,6 +82,7 @@ agents:
     tier: scientist
     tools:
       - *ws
+      - *data
       - mcp__genetics__*
       - mcp__target__get_target_info
       - mcp__target__search_targets_by_name
@@ -101,6 +109,7 @@ agents:
     tier: scientist
     tools:
       - *ws
+      - *data
       - mcp__functional_genomics__*
       - mcp__target__get_target_info
       - mcp__target__search_targets_by_name
@@ -115,6 +124,7 @@ agents:
     max_turns: 600
     tools:
       - *ws
+      - *data
       - WebFetch
       - WebSearch
       - mcp__single_cell__*
@@ -132,6 +142,7 @@ agents:
     tier: scientist
     tools:
       - *ws
+      - *data
       - mcp__pathway__*
       - mcp__interaction__get_interactions
       - mcp__interaction__get_interaction_evidence
@@ -146,6 +157,7 @@ agents:
     tier: scientist
     tools:
       - *ws
+      - *data
       - WebFetch
       - WebSearch
       - mcp__pubmed__*
@@ -170,6 +182,7 @@ agents:
     tier: scientist
     tools:
       - *ws
+      - *data
       - mcp__target__get_target_info
       - mcp__target__search_targets_by_name
       - mcp__target__get_target_tractability
@@ -195,6 +208,7 @@ agents:
     tier: scientist
     tools:
       - *ws
+      - *data
       - mcp__drug__search_known_drugs
       - mcp__drug__get_drug_mechanisms
       - mcp__drug__get_drug_indications
@@ -217,6 +231,7 @@ agents:
     tier: scientist
     tools:
       - *ws
+      - *data
       - WebFetch
       - WebSearch
       - mcp__clinicaltrials__*
@@ -235,6 +250,7 @@ agents:
     tier: scientist
     tools:
       - *ws
+      - *data
       - WebFetch
       - WebSearch
       - mcp__clinicaltrials__*

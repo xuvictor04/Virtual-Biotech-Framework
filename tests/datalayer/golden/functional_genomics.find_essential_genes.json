@@ -1,0 +1,34 @@
+{
+ "description": "Find genes that are essential in a specific disease context.\nData: Open Targets Platform 25.09 · table target_essentiality — one record = the DepMap essentiality of one gene across screened cell lines.\nKey: id.\nArguments: limit counts genes, not rows.\nResults: ranked by mean_gene_effect asc (verified by the harness); `_vbt.total` counts all matches.\nRows with unknown geneEffect are excluded and counted in `_vbt.excluded_unknown`.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. DepMap CRISPR essentiality of genes screened in cancer cell lines; a missing gene means not screened.",
+ "schema": {
+  "properties": {
+   "disease": {
+    "description": "Values of geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource (see mcp__data__vocab).",
+    "type": "string",
+    "x-vbt-vocabulary": "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource"
+   },
+   "limit": {
+    "default": 100,
+    "description": "Counts genes, not rows.",
+    "maximum": 10000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "min_cell_lines": {
+    "default": 3,
+    "type": "integer"
+   },
+   "min_effect_threshold": {
+    "default": -0.5,
+    "description": "Keeps rows with geneEssentiality[].depMapEssentiality[].screens[].geneEffect <= this value; unknown values never pass. Defaults to -0.5; pass null for no restriction.",
+    "type": "number"
+   }
+  },
+  "required": [
+   "disease"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "functional_genomics.find_essential_genes"
+}

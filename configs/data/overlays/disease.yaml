@@ -86,8 +86,6 @@ tools:
       order: [{column: phenotype, direction: asc}]
     serve: derived
     derived: {verb: find, table: open_targets.disease_phenotype}
-    text:
-      notes: ["evidence items with qualifierNot = true are negative findings (the phenotype is NOT present) and are excluded unless include_negated"]
 
   find_diseases_by_therapeutic_area:
     reads: {open_targets.disease: {access: projection, columns: [id, name, description, therapeuticAreas, ontology]}}

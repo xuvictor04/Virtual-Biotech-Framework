@@ -1,0 +1,71 @@
+{
+ "description": "Filter associations by specific data source and save to parquet file.\nData: Open Targets Platform 25.09 · table association_by_datasource_direct — one record = one direct target-disease association score within one data source.\nKey: diseaseId, targetId, datasourceId.\nArguments: target_id accepts ensembl gene or hgnc symbol (resolved; unknown -> error); disease_id accepts ot disease or disease name (resolved; unknown -> error).\nResults: ranked by score desc within datasourceId (upstream sorts every match); `_vbt.total` counts all matches.\nRows with unknown score are excluded and counted in `_vbt.excluded_unknown`.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Direct OT 25.09 associations per data source; scores are comparable only within one data source.",
+ "schema": {
+  "properties": {
+   "datasource": {
+    "default": null,
+    "description": "Values of datasourceId (see mcp__data__vocab).",
+    "type": "string",
+    "x-vbt-vocabulary": "open_targets.association_by_datasource_direct.datasourceId"
+   },
+   "disease_id": {
+    "default": null,
+    "description": "Accepts ot_disease, disease_name; resolved to one ot_disease (unknown values are errors, never empty results).",
+    "examples": [
+     "EFO_0000685",
+     "rheumatoid arthritis"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ot_disease",
+     "open_targets:disease_name"
+    ],
+    "x-vbt-id-type": "open_targets:ot_disease"
+   },
+   "include_indirect": {
+    "default": false,
+    "enum": [
+     "False",
+     "True"
+    ],
+    "type": "boolean"
+   },
+   "limit": {
+    "default": 100,
+    "maximum": 100000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "min_score": {
+    "default": 0.0,
+    "description": "Keeps rows with score >= this value; unknown values never pass. Defaults to 0.0; pass null for no restriction.",
+    "maximum": 1.0,
+    "minimum": 0.0,
+    "type": "number"
+   },
+   "output_path": {
+    "type": "string"
+   },
+   "target_id": {
+    "default": null,
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   }
+  },
+  "required": [
+   "output_path"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "association.filter_by_datasource"
+}

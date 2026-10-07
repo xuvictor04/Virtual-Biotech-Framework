@@ -1,0 +1,16 @@
+{
+ "description": "Get Census version information and overall statistics.\nResults: `_vbt.total` counts all matches.",
+ "schema": {
+  "properties": {
+   "include_duplicates": {
+    "default": false,
+    "description": "Include duplicate records (cells counted in several datasets), which are excluded by default; their number is disclosed.",
+    "type": "boolean",
+    "x-gateway": true
+   }
+  },
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "single_cell.get_census_info"
+}

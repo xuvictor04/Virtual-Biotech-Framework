@@ -52,19 +52,24 @@ GENETIC_OUTCOMES = ("ever_phase_ge_2", "ever_phase_ge_3", "ever_phase4", "phase1
                     "stopped_negative", "stopped_safety", "primary_success", "secondary_success")
 
 
+def ot_frame(ot_path: str | Path, table: str, columns: list[str], *, where: dict[str, Any] | None = None
+             ) -> pd.DataFrame:
+    """One Open Targets table under ``ot_path`` read through the data client (§10.6): checked ready, the
+    filter's identifiers resolved, and a ``vbt.dataprov/1`` record written (``frame.attrs["vbt_prov"]``)."""
+    from ...datalayer import client
+
+    return client.read_frame(f"open_targets.{table}", columns, where=where, root=ot_path)
+
+
 def genetic_pairs_from_open_targets(ot_path: str | Path) -> set[tuple[str, str]]:
     """(targetId, diseaseId) pairs with direct genetic-association evidence in Open Targets.
 
     Follows Razuvayevskaya et al.: GWAS, PheWAS, gene burden and ClinVar/EVA
     evidence aggregated into the ``genetic_association`` datatype.
     """
-    import pyarrow.dataset as ds
-
-    d = ds.dataset(Path(ot_path) / "association_by_datatype_direct", format="parquet")
     # any genetic_association row counts (the authors' code; no score threshold)
-    t = d.to_table(columns=["targetId", "diseaseId", "datatypeId", "score"],
-                   filter=ds.field("datatypeId") == "genetic_association")
-    df = t.to_pandas()
+    df = ot_frame(ot_path, "association_by_datatype_direct", ["targetId", "diseaseId", "datatypeId", "score"],
+                  where={"datatypeId": "genetic_association"})
     return set(zip(df["targetId"], df["diseaseId"]))
 
 
@@ -78,12 +83,12 @@ def covariates_from_open_targets(ot_path: str | Path, mapping: pd.DataFrame, *,
     the earlier union of raw therapeutic-area IDs.
     """
     if definitions == "authors":
-        drugs = pd.read_parquet(Path(ot_path) / "drug_molecule", columns=["id", "drugType"]).set_index("id")
-        dis = pd.read_parquet(Path(ot_path) / "disease", columns=["id", "name", "therapeuticAreas"])
+        drugs = ot_frame(ot_path, "drug_molecule", ["id", "drugType"]).set_index("id")
+        dis = ot_frame(ot_path, "disease", ["id", "name", "therapeuticAreas"])
         return (st.drugtype_combo(mapping, drugs["drugType"]).rename(columns={"drugType_combo": "modality"})
                 .merge(st.ta_combo(mapping, dis).rename(columns={"ta_combo": "therapeutic_area"}), on="nct_id"))
-    drugs = pd.read_parquet(Path(ot_path) / "drug_molecule", columns=["id", "drugType"])
-    dis = pd.read_parquet(Path(ot_path) / "disease", columns=["id", "therapeuticAreas"])
+    drugs = ot_frame(ot_path, "drug_molecule", ["id", "drugType"])
+    dis = ot_frame(ot_path, "disease", ["id", "therapeuticAreas"])
     dis["ta"] = dis["therapeuticAreas"].map(lambda v: "|".join(sorted(v)) if v is not None and len(v) else None)
     m = (mapping[["nct_id", "drugId", "diseaseId"]]
          .merge(drugs.rename(columns={"id": "drugId"}), on="drugId", how="left")

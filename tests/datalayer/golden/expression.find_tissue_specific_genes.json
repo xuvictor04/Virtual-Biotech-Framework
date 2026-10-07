@@ -1,0 +1,28 @@
+{
+ "description": "UNAVAILABLE: Fold change against the mean of the other tissues mixes units and in-band unknown codes; a tissue-specificity statistic arrives in phase 3.; use expression.query_expression_by_tissue, expression.compare_expression_across_tissues. Find genes with tissue-enriched or tissue-specific expression and save to CSV file.",
+ "schema": {
+  "properties": {
+   "fold_change_threshold": {
+    "default": 2.0,
+    "type": "number"
+   },
+   "limit": {
+    "default": 100,
+    "type": "integer"
+   },
+   "output_path": {
+    "type": "string"
+   },
+   "tissue": {
+    "type": "string"
+   }
+  },
+  "required": [
+   "output_path",
+   "tissue"
+  ],
+  "type": "object"
+ },
+ "serve": "block",
+ "tool": "expression.find_tissue_specific_genes"
+}

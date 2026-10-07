@@ -1,0 +1,9 @@
+{
+ "description": "Get list of all available tissues in the expression dataset.\nData: Open Targets Platform 25.09 · table expression — one record = the baseline expression of one gene across tissues.\nKey: id.\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Baseline expression (Expression Atlas, HPA) integrated by OT 25.09; a missing tissue means not measured.",
+ "schema": {
+  "properties": {},
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "expression.list_available_tissues"
+}

@@ -1,0 +1,29 @@
+{
+ "description": "Fetch title, abstract, publication types and registry IDs (e.g.\nData: PubMed (NCBI E-utilities) · table records — one record = one PubMed citation record.\nKey: pmid.\nArguments: pmids accepts pmid (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. PubMed citations available at the time of the call (and before the run's literature ceiling when one is set).",
+ "schema": {
+  "properties": {
+   "pmids": {
+    "description": "Accepts pmid; resolved to one pmid (unknown values are errors, never empty results).",
+    "examples": [
+     "30595370"
+    ],
+    "items": {
+     "pattern": "^[1-9]\\d{0,8}$",
+     "type": "string"
+    },
+    "maxItems": 50,
+    "type": "array",
+    "x-vbt-accepts": [
+     "pubmed:pmid"
+    ],
+    "x-vbt-id-type": "pubmed:pmid"
+   }
+  },
+  "required": [
+   "pmids"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "pubmed.fetch_abstracts"
+}

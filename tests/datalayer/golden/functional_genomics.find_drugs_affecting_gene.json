@@ -1,0 +1,71 @@
+{
+ "description": "Find drugs that significantly affect a specific gene.\nData: Tahoe-100M pseudobulk differential expression (prepared by tools/prepare_tahoe.py) · table de_permissive — one record = one gene's DESeq2 contrast for one drug at one concentration in one cell line on one plate (replicate wells pooled).\nKey: drug, concentration, concentration_unit, Cell_ID_DepMap, plate, gene_name.\nArguments: gene_name accepts tahoe gene or ensembl gene or hgnc symbol (resolved; unknown -> error); cell_line_filter accepts depmap cell line (resolved; unknown -> error); top_n counts drugs, not rows.\nResults: ranked by log2FoldChange desc_abs (verified by the harness); `_vbt.total` counts all matches; `_vbt.grains.gene` counts genes; `_vbt.grains.drug` counts drugs; `_vbt.grains.cell_line` counts cell_lines; `_vbt.grains.drug_dose` counts drug_doses; `_vbt.grains.contrast` counts contrasts.\nRows with unknown log2FoldChange, padj are excluded and counted in `_vbt.excluded_unknown`.\npadj is adjusted within one drug, concentration, concentration_unit, Cell_ID_DepMap, plate family.\nMissing rows are censored (padj >= 0.1): not significant or not tested.…",
+ "schema": {
+  "properties": {
+   "cell_line_filter": {
+    "default": null,
+    "description": "Accepts depmap_cell_line; resolved to one depmap_cell_line (unknown values are errors, never empty results).",
+    "examples": [
+     "ACH-000001"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "tahoe_100m:depmap_cell_line"
+    ],
+    "x-vbt-id-type": "tahoe_100m:depmap_cell_line"
+   },
+   "concentration": {
+    "description": "Results are per concentration; pass one value, or the call fails with incomplete_key when several apply.",
+    "x-gateway": true
+   },
+   "concentration_unit": {
+    "description": "Results are per concentration_unit; pass one value, or the call fails with incomplete_key when several apply.",
+    "x-gateway": true
+   },
+   "gene_name": {
+    "description": "Accepts tahoe_gene, ensembl_gene, hgnc_symbol; resolved to one tahoe_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "PCSK9",
+     "ENSG00000169174"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "tahoe_100m:tahoe_gene",
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "tahoe_100m:tahoe_gene"
+   },
+   "max_padj": {
+    "default": 0.1,
+    "description": "Keeps rows with padj <= this value; unknown values never pass. Defaults to 0.1; pass null for no restriction.",
+    "maximum": 0.1,
+    "minimum": 0.0,
+    "type": "number"
+   },
+   "min_abs_log2fc": {
+    "default": 0.5,
+    "description": "Keeps rows with log2FoldChange |x| > this value (compared on the absolute value); unknown values never pass. Defaults to 0.5; pass null for no restriction.",
+    "minimum": 0.0,
+    "type": "number"
+   },
+   "plate": {
+    "description": "Results are listed per plate; pass one value to restrict them.",
+    "x-gateway": true
+   },
+   "top_n": {
+    "default": 20,
+    "description": "Counts drugs, not rows.",
+    "maximum": 500,
+    "minimum": 1,
+    "type": "integer"
+   }
+  },
+  "required": [
+   "gene_name"
+  ],
+  "type": "object"
+ },
+ "serve": "derived",
+ "tool": "functional_genomics.find_drugs_affecting_gene"
+}

@@ -1,0 +1,52 @@
+{
+ "description": "Compute semantic similarity between two specific entities.\nData: Open Targets Platform 25.09 · table literature_vector — one record = one word2vec embedding of one Open Targets entity ID learned from Europe PMC co-mentions.\nKey: word.\nArguments: entity_a accepts literature word or ensembl gene or hgnc symbol or ot disease or disease name or chembl molecule or drug name (resolved; unknown -> error); entity_b accepts literature word or ensembl gene or hgnc symbol or ot disease or disease name or chembl molecule or drug name (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEvidence: Similarity means co-mention in the literature, not function, mechanism or causality.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Entities with a literature embedding in OT 25.09; an entity without one was too rarely mentioned.",
+ "schema": {
+  "properties": {
+   "entity_a": {
+    "description": "Accepts literature_word, ensembl_gene, hgnc_symbol, ot_disease, disease_name, chembl_molecule, drug_name; resolved to one literature_word (unknown values are errors, never empty results). The reference entity; excluded from the results.",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9",
+     "EFO_0000685"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:literature_word",
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol",
+     "open_targets:ot_disease",
+     "open_targets:disease_name",
+     "open_targets:chembl_molecule",
+     "open_targets:drug_name"
+    ],
+    "x-vbt-id-type": "open_targets:literature_word"
+   },
+   "entity_b": {
+    "description": "Accepts literature_word, ensembl_gene, hgnc_symbol, ot_disease, disease_name, chembl_molecule, drug_name; resolved to one literature_word (unknown values are errors, never empty results). The reference entity; excluded from the results.",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9",
+     "EFO_0000685"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:literature_word",
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol",
+     "open_targets:ot_disease",
+     "open_targets:disease_name",
+     "open_targets:chembl_molecule",
+     "open_targets:drug_name"
+    ],
+    "x-vbt-id-type": "open_targets:literature_word"
+   }
+  },
+  "required": [
+   "entity_a",
+   "entity_b"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "association.compute_entity_similarity"
+}

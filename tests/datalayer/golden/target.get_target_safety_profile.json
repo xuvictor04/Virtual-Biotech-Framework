@@ -1,0 +1,32 @@
+{
+ "description": "Get adverse event profile for a target from OpenFDA data.\nData: Open Targets Platform 25.09 · table openfda_significant_adverse_target_reactions — one record = one FAERS adverse event significantly reported for drugs acting on one target.\nKey: targetId, event.\nArguments: target_id accepts ensembl gene or hgnc symbol (resolved; unknown -> error).\nResults: ranked by llr desc (verified by the harness); `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. openFDA FAERS events with llr above the critical value for drugs on this target; FAERS target signals exist only for targets of marketed drugs; absence means not significant or not reported and is not evidence of safety.",
+ "schema": {
+  "properties": {
+   "limit": {
+    "default": 20,
+    "maximum": 500,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "target_id": {
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   }
+  },
+  "required": [
+   "target_id"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "target.get_target_safety_profile"
+}

@@ -1,0 +1,90 @@
+{
+ "description": "Get GWAS/QTL study metadata with enhanced filtering capabilities.\nData: Open Targets Platform 25.09 · table study — one record = one GWAS or molecular-QTL study.\nKey: studyId.\nArguments: study_id accepts gwas study (resolved; unknown -> error); gene_id accepts ensembl gene or hgnc symbol (resolved; unknown -> error); project_id accepts gwas project (resolved; unknown -> error).\nResults: ranked by studyId asc (verified by the harness); `_vbt.total` counts all matches.\nRows with unknown nSamples are excluded and counted in `_vbt.excluded_unknown`.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. GWAS Catalog, FinnGen, UKB-PPP and QTL studies of OT 25.09 (existence only).",
+ "schema": {
+  "description": "At most one of: study_id, trait; study_id, study_type; study_id, gene_id; study_id, min_sample_size; study_id, project_id.",
+  "properties": {
+   "gene_id": {
+    "default": null,
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   },
+   "limit": {
+    "default": 20,
+    "maximum": 1000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "min_sample_size": {
+    "default": null,
+    "type": "integer"
+   },
+   "project_id": {
+    "default": null,
+    "description": "Accepts gwas_project; resolved to one identifier (unknown values are errors, never empty results).",
+    "examples": [
+     "HALLMARK_APOPTOSIS"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:gwas_project"
+    ]
+   },
+   "study_id": {
+    "default": null,
+    "description": "Accepts gwas_study; resolved to one gwas_study (unknown values are errors, never empty results).",
+    "examples": [
+     "GCST004988"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:gwas_study"
+    ],
+    "x-vbt-id-type": "open_targets:gwas_study"
+   },
+   "study_type": {
+    "default": null,
+    "description": "Values of studyType (see mcp__data__vocab).",
+    "type": "string",
+    "x-vbt-vocabulary": "open_targets.study.studyType"
+   },
+   "trait": {
+    "default": null,
+    "type": "string"
+   }
+  },
+  "type": "object",
+  "x-vbt-exclusive": [
+   [
+    "study_id",
+    "trait"
+   ],
+   [
+    "study_id",
+    "study_type"
+   ],
+   [
+    "study_id",
+    "gene_id"
+   ],
+   [
+    "study_id",
+    "min_sample_size"
+   ],
+   [
+    "study_id",
+    "project_id"
+   ]
+  ]
+ },
+ "serve": "pass",
+ "tool": "genetics.get_study_metadata"
+}
