@@ -51,7 +51,7 @@ tools:
       rows: $.genes
       row_key: [gene_id]
       count_fields: {"$.num_results": "len($.genes)"}
-      order: [{column: mean_gene_effect, direction: asc, nulls: last}, {column: gene_id, direction: asc}]
+      # ordered by the handler: mean_gene_effect asc, then gene_id (computed fields, not columns of the table)
     serve: derived
     derived:
       verb: find
@@ -74,7 +74,7 @@ tools:
       rows: $.disease_essentiality
       row_key: [disease]
       count_fields: {"$.num_diseases_compared": "len($.disease_essentiality)"}
-      order: [{column: mean_gene_effect, direction: asc, nulls: last}, {column: disease, direction: asc}]
+      # ordered by the handler: mean_gene_effect asc, then disease
     serve: derived
     derived:
       verb: find
@@ -100,7 +100,7 @@ tools:
       rows: $.genes
       row_key: [gene_id]
       count_fields: {"$.num_results": "len($.genes)"}
-      order: [{column: effect_difference, direction: asc, nulls: last}, {column: gene_id, direction: asc}]
+      # ordered by the handler: effect_difference asc, then gene_id
     serve: derived
     derived:
       verb: find

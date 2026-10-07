@@ -372,6 +372,14 @@ def enrich_sets(ctx: ServiceContext, table_ref: str, column: str | None, query: 
     elif propagate is True and not (via and set_idt):
         raise GatewayError(ErrorKind.unsupported_combination, f"{table.ref}.{column} declares no hierarchy to "
                            "propagate over", payload={"arguments": ["propagate"], "reason": "no_hierarchy"})
+    if closure is not None and getattr(spec.membership, "propagation", None) == "mixed":
+        by_member: dict[str, set[str]] = {}
+        for s, m, _v in pairs:
+            by_member.setdefault(m, set()).add(s)
+        total_ann = sum(len(v) for v in by_member.values())
+        listed = sum(1 for sets_ in by_member.values() for s in sets_ if sets_ & set(closure.walk(s, "descendants")))
+        prop_record["mixed"] = {"annotations": total_ann, "ancestor_annotations": listed,
+                                "fraction": (listed / total_ann) if total_ann else None}
     members_of: dict[Any, dict[str, set[str]]] = {}
     anc_cache: dict[str, list[str]] = {}
     for s, m, sv in pairs:

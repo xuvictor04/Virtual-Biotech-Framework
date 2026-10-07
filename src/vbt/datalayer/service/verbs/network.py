@@ -21,7 +21,7 @@ specified traversal over an ``edges`` table (``TableSpec.edge``):
   budget is ``too_large``, never a smaller network presented as complete;
 * provenance carries the hops, the node-set and edge-set hashes and the frontier counts.
 
-The public ``neighbors`` verb (``{table, node | nodes, hops?, where?, max_nodes?, limit?}``) uses it for
+The public ``neighbors`` verb (``{table, node | nodes, hops?, where?, max_nodes?, score_order?, limit?}``) uses it for
 more than one hop or more than one node (one node, one hop keeps the phase-2 answer). Derived bindings
 reach it through ``_serve`` with ``split: {network: {mode: network | common, ...}}``:
 ``get_interaction_network`` (``mode: network``: nodes, edges and statistics; ``max_hops``,
@@ -211,7 +211,8 @@ def neighbors(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]
     max_nodes = payload.get("max_nodes")
     if max_nodes is not None and (isinstance(max_nodes, bool) or not isinstance(max_nodes, int) or max_nodes < 1):
         raise _invalid("max_nodes", max_nodes, "max_nodes is a positive integer")
-    net = expand_network(view, seeds, hops, pred=extra, max_nodes=max_nodes, budget=payload.get("budget_bytes"))
+    net = expand_network(view, seeds, hops, pred=extra, max_nodes=max_nodes, budget=payload.get("budget_bytes"),
+                         score_order=bool(payload.get("score_order")))
     edges = _ordered_edges(net, view.key)
     limit = _limit(payload, 200, _public._max_rows(ctx))
     shown = edges[:limit]

@@ -84,13 +84,19 @@ def _install() -> None:
 
     @functools.wraps(base)
     def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
+        from ..reader import BudgetExceeded
+
         for _name, claims, fn in _EXTENSIONS:
             try:
                 claimed = claims(payload)
             except Exception:  # noqa: BLE001 - a malformed request is left to serve.py's validation
                 claimed = False
             if claimed:
-                return fn(ctx, payload)
+                try:
+                    return fn(ctx, payload)
+                except BudgetExceeded as exc:          # as serve.py: no rows, total null, never a partial answer
+                    return ServeResponse(rows=[], total=None, truncated=True,
+                                         reason=f"too_large: {exc.reason}").model_dump(mode="json")
         return base(ctx, payload)
 
     serve._phase3 = True  # type: ignore[attr-defined]

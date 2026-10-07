@@ -401,3 +401,32 @@ async def test_tissue_specific_genes_compare_within_one_unit(ctx, tmp_path) -> N
     assert genes[1]["fold_change"] == pytest.approx(100.0 / 15.0) and genes[1]["median_other_tissues"] == 15.0
     assert all(g["unit"] == "TPM" for g in genes), "G4 (blank unit) is excluded, not compared"
     assert res.obj["num_results"] == 2
+
+
+# ---------------------------------------------------------------------------- the DepMap matrix through aggregate
+
+
+def test_depmap_matrix_essential_fraction_uses_the_gene_effect_cutoff(tmp_path, monkeypatch) -> None:
+    """The P12 ``aggregate`` verb over the DepMap long view: with ``gene_effect`` registered the measure's
+    declared cutoff (<= -0.5, inclusive) defines ``essential_fraction``; a NaN cell is excluded and counted;
+    groups below ``min_n`` are dropped."""
+    import yaml
+    from test_dl_native_tools import _ctx, _depmap_descriptor, _write_depmap
+
+    (tmp_path / "data").mkdir()
+    (tmp_path / "sources").mkdir()
+    _write_depmap(tmp_path / "data")
+    (tmp_path / "sources" / "depmap.yaml").write_text(yaml.safe_dump(_depmap_descriptor(), sort_keys=False))
+    monkeypatch.setenv("DEPMAP_DATA_PATH", str(tmp_path / "data"))
+    dctx = _ctx(tmp_path, tmp_path / "sources")
+    assert dctx.statistic("gene_effect") is not None
+    out = ok(call(dctx, "aggregate", table="depmap.gene_effect", where={"entrez_id": "TP53"},
+                  group_by=["OncotreeLineage"], measure="gene_effect", how="essential_fraction"))
+    rows = {r["OncotreeLineage"]: r for r in out["rows"]}
+    assert rows["Skin"]["essential_fraction_gene_effect"] == 1.0 and rows["Skin"]["n"] == 1
+    assert rows["Lung"]["essential_fraction_gene_effect"] == 0.0 and rows["Lung"]["n"] == 2
+    assert rows["Lung"]["n_unknown"] == 1
+    rpl3 = ok(call(dctx, "aggregate", table="depmap.gene_effect", where={"entrez_id": "RPL3"},
+                   group_by=["OncotreeLineage"], measure="gene_effect", how="essential_fraction", min_n=2))
+    assert [(r["OncotreeLineage"], r["essential_fraction_gene_effect"]) for r in rpl3["rows"]] == [("Lung", 1.0)]
+    assert rpl3["_vbt"]["groups_below_min_n"] == 1

@@ -146,7 +146,7 @@ tools:
     result:
       rows: $.enriched_pathways
       row_key: [pathwayId]
-      order: [{column: pvalue, direction: asc}, {column: pathwayId, direction: asc}]
+      # ordered by the handler: pvalue asc, then pathwayId (tested sets, not rows of target)
       count_fields: {"$.count": "len($.enriched_pathways)"}
       statistics: {test: hypergeom_enrichment, correction: fdr_bh, family: "every Reactome pathway within the size bounds, zero-overlap pathways included",
                    universe: "genes with at least one Reactome annotation"}
@@ -184,7 +184,7 @@ tools:
     result:
       rows: $.enriched_terms
       row_key: [go_aspect, go_id]
-      order: [{column: pvalue, direction: asc}, {column: go_id, direction: asc}]
+      # ordered by the handler: pvalue asc, then aspect and go_id
       count_fields: {"$.count": "len($.enriched_terms)"}
       statistics: {test: hypergeom_enrichment, correction: fdr_bh, family: "every GO term of the aspect within the size bounds, zero-overlap terms included",
                    universe: "genes with at least one GO annotation in the aspect"}
