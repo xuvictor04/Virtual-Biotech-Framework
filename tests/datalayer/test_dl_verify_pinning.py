@@ -244,13 +244,15 @@ def test_pinned_data_from_a_gateway_stub_is_redacted_with_determinism_and_leakag
 
 def test_pinned_data_fallbacks(config):
     config["data"] = {"enabled": True}
-    assert pinned_data(config, _runtime()) == {"enabled": True, "mode": "enforce", "gateway": None}
+    assert pinned_data(config, _runtime()) == {"enabled": True, "mode": "enforce", "gateway": None,
+                                               "provenance_dir": "logs/data_provenance"}
     out = pinned_data(config, _runtime(error="ImportError: gateway package not installed"))
     assert out["gateway"] is None and out["reason"].startswith("ImportError")
     out = pinned_data(config, _runtime(_StubGateway(fail=True)))
     assert out["gateway"] is None and "catalog unreadable" in out["error"] and out["mode"] == "enforce"
     config["data"] = {"enabled": False}
-    assert pinned_data(config, _runtime()) == {"enabled": False, "mode": "off", "gateway": None}
+    assert pinned_data(config, _runtime()) == {"enabled": False, "mode": "off", "gateway": None,
+                                               "provenance_dir": "logs/data_provenance"}
     config["data"] = {"gateway": {"mode": "observe"}}
     assert pinned_data(config, _runtime())["mode"] == "observe"
     assert pinned_data(config, object())["gateway"] is None    # a runtime without the attribute

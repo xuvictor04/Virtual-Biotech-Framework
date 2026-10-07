@@ -398,3 +398,23 @@ def test_startup_memory_error_under_rlimit_is_oom(tmp_path):
     assert marker["code"] == 1 and "MemoryError" in proc.stderr
     d = crash_decision("McpError: Connection closed", proc.stderr, server="x", tool="t")
     assert d.oom and not d.retry
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the reaper is Linux-only")
+def test_cli_data_child_commands_run_under_the_reaper() -> None:
+    """INV-4: ``vbt ds``/``vbt verify --data`` run data-child code under the data child's memory limit."""
+    from vbt.datalayer.cli import _run_reaped
+
+    probe = [sys.executable, "-c", "import resource; print(resource.getrlimit(resource.RLIMIT_DATA)[0])"]
+    proc = _run_reaped({"data": {"service": {"mem_limit_mb": 1500}}}, probe, {}, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert int(proc.stdout.strip().splitlines()[-1]) == 1500 * 1024 * 1024
+    assert "VBT_CHILD_EXIT" in proc.stderr
+
+
+async def test_replay_auto_backend_is_the_guarded_bridge() -> None:
+    """INV-4: ``auto`` never replays in this process; only an explicit ``inprocess`` does."""
+    from vbt.datalayer.replay import open_replayer
+
+    with pytest.raises(LookupError, match="not configured"):
+        await open_replayer({}, "drug", backend="auto", served_by="derived")

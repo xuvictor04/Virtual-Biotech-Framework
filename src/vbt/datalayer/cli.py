@@ -734,12 +734,35 @@ def cmd_fingerprint(args: argparse.Namespace, config: dict[str, Any]) -> int:
     return 0
 
 
+def _run_reaped(config: Mapping[str, Any], argv: list[str], env: Mapping[str, str], *,
+                timeout: float) -> subprocess.CompletedProcess[str]:
+    """Run a data-child command line under the reaper with the data child's memory limit
+    (``data.service.mem_limit_mb``, ``data.memory.limit_kind``), as the bridge launches it: decoding
+    reference data never runs unlimited in, or next to, the harness (I12). Where the reaper is not
+    available (not Linux, ``limit_kind: none`` aside) the command runs as given."""
+    import tempfile
+
+    from ..tools.mcp_bridge import MCPServerConfig
+    from .launch import DATA_SERVER, build_launch_spec
+    from .settings import DataSettings
+
+    with tempfile.TemporaryDirectory(prefix="vbt-ds-") as status_dir:
+        try:
+            spec = build_launch_spec(MCPServerConfig(DATA_SERVER, command=argv[0], args=list(argv[1:])),
+                                     DataSettings.from_config(dict(config)), status_dir)
+        except Exception:  # noqa: BLE001 - run unguarded rather than not at all
+            spec = None
+        if spec is not None:
+            argv, env = [spec.command, *spec.args], {**env, **spec.env}
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=dict(env))
+
+
 def _run_child(config: dict[str, Any], *child_args: str, timeout: float = 3600.0) -> tuple[int, str, str]:
     from ..preflight import data_child_command
 
     cmd, env = data_child_command(config, *child_args)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        proc = _run_reaped(config, cmd, env, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 2, "", f"could not run {cmd[0]}: {exc}"
     return proc.returncode, proc.stdout, proc.stderr
@@ -755,7 +778,7 @@ def _call_child(config: dict[str, Any], target: str, payload: Mapping[str, Any],
     cmd, env = data_child_command(config)
     src = str(Path(settings.project_root) / "src")
     argv = [cmd[0], "-E", "-c", _CALL_SNIPPET, src, target, json.dumps(dict(payload))]
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
+    proc = _run_reaped(config, argv, env, timeout=timeout)
     line = next((ln for ln in reversed(proc.stdout.splitlines()) if ln.startswith("{")), None)
     if proc.returncode != 0 or line is None:
         raise RuntimeError((proc.stderr or proc.stdout).strip()[-800:] or f"exit {proc.returncode}")
@@ -846,7 +869,7 @@ def _table_stats(config: dict[str, Any], tables: list[str]) -> dict[str, Any]:
     cmd, env = data_child_command(config)
     src = str(Path(settings.project_root) / "src")
     argv = [cmd[0], "-E", "-c", _STATS_SNIPPET, src, *tables]
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=3600, env=env)
+    proc = _run_reaped(config, argv, env, timeout=3600)
     line = next((ln for ln in reversed(proc.stdout.splitlines()) if ln.startswith("{")), None)
     if proc.returncode != 0 or line is None:
         raise RuntimeError((proc.stderr or proc.stdout).strip()[-800:] or f"exit {proc.returncode}")
@@ -1485,8 +1508,9 @@ def add_datasource_parsers(sub: Any) -> Any:
     p.add_argument("tool_use_id", nargs="*", help="tool_use ids of recorded data calls")
     p.add_argument("--all", action="store_true", help="every call with a data provenance record")
     p.add_argument("--backend", choices=("auto", "inprocess", "bridge"), default="auto",
-                   help="inprocess: the data child's verbs in this process (derived and native calls); bridge: a "
-                        "temporary MCP bridge with the call's server; auto: inprocess when it can answer")
+                   help="bridge (auto): a temporary MCP bridge with the call's server and the data child, under "
+                        "the reaper's memory limit; inprocess: the data child's verbs in this process, with no "
+                        "memory limit (opt-in, for debugging)")
     _add_common(p, "json")
     p.set_defaults(handler=cmd_replay)
 

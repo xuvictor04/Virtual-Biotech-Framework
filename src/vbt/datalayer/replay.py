@@ -132,20 +132,40 @@ def format_result(r: ReplayResult) -> list[str]:
 # ---------------------------------------------------------------------------- the recorded call
 
 
+def provenance_dir(run_dir: str | Path) -> Path:
+    """The run's data provenance directory: ``data.provenance.dir`` as pinned in
+    ``MANIFEST.config.data.provenance_dir`` (always relative to the run), else the default."""
+    from .settings import safe_provenance_dir
+
+    run_dir = Path(run_dir)
+    rel = PROV_DIR
+    with contextlib.suppress(OSError, ValueError, AttributeError, TypeError):
+        manifest = json.loads((run_dir / "MANIFEST.json").read_text(encoding="utf-8"))
+        rel = safe_provenance_dir(((manifest.get("config") or {}).get("data") or {}).get("provenance_dir"))
+    return run_dir / rel
+
+
+def provenance_dirs(run_dir: str | Path) -> list[Path]:
+    """The configured provenance directory, then the default one (records of older runs)."""
+    return list(dict.fromkeys([provenance_dir(run_dir), Path(run_dir) / PROV_DIR]))
+
+
 def record_path(run_dir: str | Path, tool_use_id: str) -> Path:
-    return Path(run_dir) / PROV_DIR / f"{_safe(tool_use_id)}.json"
+    return provenance_dir(run_dir) / f"{_safe(tool_use_id)}.json"
 
 
 def load_record(run_dir: str | Path, tool_use_id: str) -> dict[str, Any]:
     """The call's ``vbt.dataprov/1`` record; :class:`FileNotFoundError` when the run has none."""
-    path = record_path(run_dir, tool_use_id)
+    path = next((d / f"{_safe(tool_use_id)}.json" for d in provenance_dirs(run_dir)
+                 if (d / f"{_safe(tool_use_id)}.json").is_file()), record_path(run_dir, tool_use_id))
     if not path.is_file():
-        # a custom data.provenance.dir, or a sanitised name that differs: match on the stored id
-        for p in sorted((Path(run_dir) / PROV_DIR).glob("*.json")):
-            with contextlib.suppress(OSError, ValueError):
-                rec = json.loads(p.read_text(encoding="utf-8"))
-                if isinstance(rec, dict) and rec.get("tool_use_id") == tool_use_id:
-                    return rec
+        # a sanitised name that differs from the id: match on the stored id
+        for d in provenance_dirs(run_dir):
+            for p in sorted(d.glob("*.json")):
+                with contextlib.suppress(OSError, ValueError):
+                    rec = json.loads(p.read_text(encoding="utf-8"))
+                    if isinstance(rec, dict) and rec.get("tool_use_id") == tool_use_id:
+                        return rec
         raise FileNotFoundError(f"{path} does not exist: the call has no data provenance record")
     rec = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(rec, dict) or not str(rec.get("schema") or "").startswith("vbt.dataprov/"):
@@ -156,12 +176,13 @@ def load_record(run_dir: str | Path, tool_use_id: str) -> dict[str, Any]:
 def data_calls(run_dir: str | Path) -> list[str]:
     """The tool_use ids of every call with a provenance record (client records excluded)."""
     out = []
-    for p in sorted((Path(run_dir) / PROV_DIR).glob("*.json")):
-        with contextlib.suppress(OSError, ValueError):
-            rec = json.loads(p.read_text(encoding="utf-8"))
-            if isinstance(rec, dict) and rec.get("tool_use_id"):
-                out.append(str(rec["tool_use_id"]))
-    return out
+    for d in provenance_dirs(run_dir):
+        for p in sorted(d.glob("*.json")):
+            with contextlib.suppress(OSError, ValueError):
+                rec = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(rec, dict) and rec.get("tool_use_id"):
+                    out.append(str(rec["tool_use_id"]))
+    return list(dict.fromkeys(out))
 
 
 def recorded_output(run_dir: str | Path, tool_use_id: str) -> Any:
@@ -523,24 +544,18 @@ class GatewayReplayer:
             await self._close()
 
 
-def _have_arrow() -> bool:
-    import importlib.util
-
-    return all(importlib.util.find_spec(m) is not None for m in ("pyarrow",))
-
-
 async def open_replayer(config: Mapping[str, Any], server: str, *, backend: str = "auto",
                         served_by: str | None = None) -> GatewayReplayer:
-    """A gateway to replay one call on: ``inprocess`` (the data child's verbs in this process; derived
-    and native calls), ``bridge`` (a temporary MCPBridge with the call's server and the data child), or
-    ``auto`` (in-process for derived or data-child calls when pyarrow is importable)."""
+    """A gateway to replay one call on: ``bridge`` (a temporary MCPBridge with the call's server and the
+    data child, each under the reaper's memory limit; ``auto`` is this) or ``inprocess`` (explicit opt-in:
+    the data child's verbs decode data in this process, unguarded by any memory limit; tests and
+    debugging). The harness never decodes reference data itself (I12)."""
     from .gateway import build_gateway
     from .gateway.service_client import DATA_SERVER
 
     config = dict(config or {})
     if backend == "auto":
-        derived = served_by in ("derived",) or server == DATA_SERVER
-        backend = "inprocess" if derived and _have_arrow() else "bridge"
+        backend = "bridge"
     tmp = Path(tempfile.mkdtemp(prefix="vbt-replay-"))
     (tmp / "mcp").mkdir()
     run = {"dir": str(tmp), "run_id": "replay", "mcp_output_dir": str(tmp / "mcp")}

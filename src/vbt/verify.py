@@ -26,7 +26,10 @@ given), a problem (INCOMPLETE) under ``--data``, which reads them fresh through 
 data child and also replays every cited data call (``vbt.datalayer.replay``): a
 different answer is ``replay_mismatch`` (INCOMPLETE), a live record the source changed
 since the call is ``source_updated`` (warning), and a call that cannot run here is
-``replay_unavailable`` (warning).
+``replay_unavailable`` (warning; a problem when its provenance record is gone). Under
+``--data`` a pinned or cited table that is gone or unreadable is ``data_version_drift``
+with ``current: null``, and a failed fingerprint read is a problem, not a warning. The
+fresh reads and replays run in the data child under the reaper, never in this process.
 
 These checks establish a recorded evidence trail; they do not verify scientific
 correctness. Every read is tolerant: a missing or malformed record becomes a
@@ -189,44 +192,50 @@ def cached_fingerprints(config: Mapping[str, Any]) -> dict[str, str]:
     return {str(k): str(v) for k, v in (tables or {}).items() if v} if isinstance(tables, Mapping) else {}
 
 
-def current_fingerprints(config: Mapping[str, Any], tables: list[str]) -> tuple[dict[str, str], str | None]:
-    """Fresh table fingerprints through the data child's ``_stats`` (in this process when pyarrow is
-    importable, else the data child's interpreter). ``(fingerprints, error)``."""
+def current_fingerprints(config: Mapping[str, Any], tables: list[str]
+                         ) -> tuple[dict[str, str], str | None, dict[str, str]]:
+    """Fresh table fingerprints through the data child's ``_stats``, run in the data child's interpreter
+    under the reaper's memory limit (the harness never decodes reference data itself, I12).
+    ``(fingerprints, error, {table: why it has no fingerprint})``: a table that is gone or unreadable is
+    in the third map (the ``_stats`` errors), never silently absent."""
     if not tables:
-        return {}, None
-    import importlib.util
-
+        return {}, None, {}
     try:
-        if importlib.util.find_spec("pyarrow") is not None:
-            from .datalayer.catalog import build_catalog, variables_from_config
-            from .datalayer.plugins.registry import discover
-            from .datalayer.service import ServiceContext
-            from .datalayer.service.verbs import load_verbs
-            from .datalayer.settings import DataSettings
+        from .datalayer.cli import _table_stats
 
-            settings = DataSettings.from_config(dict(config))
-            registry = discover(settings)
-            catalog = build_catalog(settings, registry, variables=variables_from_config(dict(config)))
-            ctx = ServiceContext(settings, catalog=catalog, registry=registry)
-            body = load_verbs()["_stats"](ctx, {"tables": list(tables)})
-        else:
-            from .datalayer.cli import _table_stats
-
-            body = _table_stats(dict(config), list(tables))
+        body = _table_stats(dict(config), list(tables))
     except Exception as exc:  # noqa: BLE001 - reported, never raised
-        return {}, f"{type(exc).__name__}: {exc}"[:500]
+        return {}, f"{type(exc).__name__}: {exc}"[:500], {}
     out = {str(k): str(m.get("fingerprint")) for k, m in (body.get("tables") or {}).items()
            if isinstance(m, Mapping) and m.get("fingerprint")}
-    return out, None
+    errors = {str(k): str(v)[:300] for k, v in (body.get("errors") or {}).items()}
+    for t in tables:
+        if t not in out and t not in errors:
+            errors[t] = "the data child returned no fingerprint for it"
+    return out, None, errors
 
 
 def data_drift(pinned: Mapping[str, str], recorded: Mapping[str, Mapping[str, list[str]]],
-               current: Mapping[str, str], cited: Mapping[str, list[str]]) -> list[dict[str, Any]]:
+               current: Mapping[str, str], cited: Mapping[str, list[str]], *,
+               missing: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
     """``data_version_drift`` entries: a table whose pinned or cited-call fingerprint differs from the
-    current one. ``recorded`` is ``{table: {fingerprint: [tool_use_ids]}}``."""
+    current one. ``recorded`` is ``{table: {fingerprint: [tool_use_ids]}}``. ``missing`` (fresh reads,
+    ``--data``) holds why a table has no current fingerprint: such a table drifted to nothing
+    (``current: None``); without it (the cache) a table the cache lacks is not compared."""
     out = []
     for table in sorted(set(pinned) | set(recorded)):
         now = current.get(table)
+        if not now and missing is not None:
+            calls = sorted({t for fps in recorded.get(table, {}).values() for t in fps})
+            claims = sorted({c for t in calls for c in cited.get(t, [])})
+            why = missing.get(table) or "no current fingerprint"
+            detail = (f"{table} cannot be read now ({why})"
+                      + (f"; cited by claim(s) {', '.join(claims)}" if claims else "")
+                      + ". The reference data this run pinned or cited is gone or unreadable.")
+            out.append(_problem("data_version_drift", detail[:1500], table=table, pinned=pinned.get(table),
+                                recorded=sorted(recorded.get(table, {})), current=None, error=why,
+                                tool_use_ids=calls, claims=claims))
+            continue
         if not now:
             continue
         before = {fp for fp in [pinned.get(table), *recorded.get(table, {})] if fp}
@@ -259,18 +268,22 @@ def data_checks(run_dir: Path, manifest: Mapping[str, Any], claims: list[Mapping
     tables = sorted(set(pinned) | set(recorded))
     summary: dict[str, Any] = {"mode": "data" if data else "cached", "cited_calls": len(cited),
                                "tables": len(tables)}
+    missing: dict[str, str] | None = None
     if fingerprints is not None:
         current, error = dict(fingerprints), None
-        summary["fingerprints_from"] = "given"
+        summary["fingerprints_from"] = "given"       # only the given tables are compared
     elif data:
-        current, error = current_fingerprints(config or {}, tables)
+        current, error, missing = current_fingerprints(config or {}, tables)
         summary["fingerprints_from"] = "data_child"
     else:
         current, error = cached_fingerprints(config or {}), None
         summary["fingerprints_from"] = "cache"
     if error:
-        warnings.append(_problem("data_version_drift", f"current table fingerprints could not be read: {error}"))
-    drift = data_drift(pinned, recorded, current, cited)
+        # under --data the fresh read is the check itself: a failure leaves the run unverified
+        (problems if data else warnings).append(
+            _problem("data_version_drift", f"current table fingerprints could not be read: {error}"))
+        missing = None                                 # one problem for the read, not one per table
+    drift = data_drift(pinned, recorded, current, cited, missing=missing)
     (problems if data else warnings).extend(drift)
     summary["drift"] = [d["table"] for d in drift]
     if not data:
@@ -298,6 +311,9 @@ def data_checks(run_dir: Path, manifest: Mapping[str, Any], claims: list[Mapping
         elif r.status == "source_updated":
             warnings.append(_problem("source_updated", f"{detail[:1200]}: the live source changed these records "
                                      f"since the call ({', '.join(r.source_updated[:10])})", **extra))
+        elif r.status == "unavailable" and (r.error or {}).get("kind") == "no_record":
+            # the provenance record of a cited call is gone: nothing can be replayed or compared
+            problems.append(_problem("replay_unavailable", detail[:1500], **extra))
         elif r.status == "unavailable":
             warnings.append(_problem("replay_unavailable", detail[:1500], **extra))
     return problems, warnings, summary

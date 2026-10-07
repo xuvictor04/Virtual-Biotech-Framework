@@ -53,6 +53,7 @@ from ..errors import (
 from ..ipc import RankKeyModel, ServeRequest, ServeResponse, WitnessRequest, WitnessResponse
 from ..launch import build_launch_spec
 from ..memory import AdmissionController, MemoryEstimator, ResidencyLedger, TableRead, crash_decision, read_status
+from ..memory.host import host_budget_mb
 from ..predicate import And, Eq, IsNull, Not, Predicate, map_columns, to_json
 from ..record import (
     DataProvenance,
@@ -234,6 +235,10 @@ class DataGateway:
         self.admission = admission or AdmissionController(
             settings, MemoryEstimator.from_settings(settings, load_calibrations=True), ResidencyLedger(),
             feedback_dir=settings.cache_dir)
+        if admission is None and host_budget_mb(settings) is not None:
+            # data.memory.host_budget_mb (auto: a share of host RAM) caps resident memory over all servers;
+            # bind_bridge wires its LRU idle recycle (§14.3)
+            self.admission.enable_host_budget()
         self.readiness = readiness or ReadinessCache(settings.cache_dir, catalog, self.registry)
         self.readiness.load()
         self.resolver = Resolver(self.registry, catalog, self._index_provider, remote=self._remote, settings=settings)

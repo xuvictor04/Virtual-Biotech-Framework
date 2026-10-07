@@ -211,10 +211,27 @@ class SourcesSettings:
     alias: Mapping[str, str] = field(default_factory=dict)   # {open_targets: zenodo_vbt}
 
 
+#: The default ``data.provenance.dir`` (relative to the run directory).
+PROVENANCE_DIR = "logs/data_provenance"
+
+
+def safe_provenance_dir(value: Any) -> str:
+    """``data.provenance.dir`` when it is a relative path inside the run (no ``..``), else the default:
+    records outside the run could be neither replayed nor cited, nor hashed with it."""
+    text = str(value or "").strip().replace("\\", "/")
+    parts = [p for p in text.split("/") if p not in ("", ".")]
+    if not parts or text.startswith("/") or ":" in parts[0] or ".." in parts:
+        return PROVENANCE_DIR
+    return "/".join(parts)
+
+
 @dataclass(frozen=True)
 class ProvenanceSettings:
     row_keys_max: int = 10000
-    dir: str = "logs/data_provenance"
+    dir: str = PROVENANCE_DIR                         # relative to the run; absolute or '..' falls back
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "dir", safe_provenance_dir(self.dir))
 
 
 @dataclass(frozen=True)

@@ -300,3 +300,29 @@ def test_replay_cli_is_wired() -> None:
     args = ap.parse_args(["ds", "replay", "runs/r1", "toolu_1", "--backend", "inprocess", "--json"])
     assert args.ds_cmd == "replay" and args.tool_use_id == ["toolu_1"] and args.backend == "inprocess"
     assert "replay" in COMMANDS
+
+
+def test_a_custom_provenance_dir_is_found_by_replay_and_derived_from(tmp_path: Path) -> None:
+    """INV-3: ``data.provenance.dir`` stays inside the run, is pinned, and replay, ``data_calls`` and
+    ``derived_from`` read the records where the runtime wrote them."""
+    from vbt.datalayer.replay import data_calls, load_record, provenance_dir
+    from vbt.datalayer.settings import DataSettings
+    from vbt.pinning import pinned_data
+    from vbt.session import Run
+
+    assert DataSettings.from_dict({"provenance": {"dir": "/elsewhere"}}).provenance.dir == "logs/data_provenance"
+    assert DataSettings.from_dict({"provenance": {"dir": "../up"}}).provenance.dir == "logs/data_provenance"
+    pinned = pinned_data({"data": {"provenance": {"dir": "logs/dp2"}}}, SimpleNamespace(gateway=None))
+    assert pinned["provenance_dir"] == "logs/dp2"
+
+    run = Run(tmp_path / "runs", run_id="PD")
+    run.manifest["config"] = {"data": pinned}
+    (run.dir / "MANIFEST.json").write_text(json.dumps(run.manifest))
+    assert provenance_dir(run.dir) == run.dir / "logs" / "dp2"
+    rec = {"schema": "vbt.dataprov/1", "id": "dp_0123456789ab", "tool_use_id": "tu_1"}
+    (run.dir / "logs" / "dp2").mkdir(parents=True)
+    (run.dir / "logs" / "dp2" / "tu_1.json").write_text(json.dumps(rec))
+    assert load_record(run.dir, "tu_1")["id"] == "dp_0123456789ab" and data_calls(run.dir) == ["tu_1"]
+    lineage, problems = run._derived_from(["tu_1", "dp_0123456789ab"])
+    assert not problems and [e["found"] for e in lineage] == [True, True]
+    run.close()

@@ -288,11 +288,12 @@ def pinned_data(config: Mapping[str, Any], runtime: Any) -> dict[str, Any]:
         settings = DataSettings.from_config(dict(config or {}))
         enabled, ceiling = settings.enabled, settings.leakage.ceiling
         mode = settings.gateway.mode if settings.enabled else "off"
+        prov_dir = settings.provenance.dir
     except Exception as exc:  # noqa: BLE001 - a pin record never blocks a session
         return {"enabled": None, "mode": None, "gateway": None, "error": f"{type(exc).__name__}: {exc}"}
     gateway = getattr(runtime, "gateway", None)
     if gateway is None:
-        out: dict[str, Any] = {"enabled": enabled, "mode": mode, "gateway": None}
+        out: dict[str, Any] = {"enabled": enabled, "mode": mode, "gateway": None, "provenance_dir": prov_dir}
         why = getattr(runtime, "gateway_error", None)
         if why:
             out["reason"] = str(why)[:500]
@@ -303,6 +304,7 @@ def pinned_data(config: Mapping[str, Any], runtime: Any) -> dict[str, Any]:
         return {"enabled": enabled, "mode": getattr(gateway, "mode", mode), "gateway": None,
                 "error": f"{type(exc).__name__}: {exc}"[:500]}
     data = _redact(data)
+    data.setdefault("provenance_dir", prov_dir)     # where replay and derived_from find the call records
     data.setdefault("enabled", enabled)
     data.setdefault("mode", getattr(gateway, "mode", mode))
     if not isinstance(data.get("determinism"), Mapping):

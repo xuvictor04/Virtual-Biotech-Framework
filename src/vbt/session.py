@@ -889,18 +889,21 @@ class Run:
         if not isinstance(items, (list, tuple)):
             return None, ["'derived_from' is a list of data provenance ids (dp_...) or tool_use ids"]
         out: list[dict[str, Any]] = []
-        prov_dir = self.dir / "logs" / "data_provenance"
+        from .datalayer.replay import provenance_dirs
+
+        prov_dirs = provenance_dirs(self.dir)            # data.provenance.dir as pinned, then the default
         for raw in items:
             ident = str(raw or "").strip()
             if not ident or len(ident) > 128 or any(c.isspace() or c in "/\\" for c in ident):
                 return None, [f"'derived_from' entry {raw!r} is not a provenance or tool_use id"]
             if _PROV_ID.match(ident):
-                found = (prov_dir / "client" / f"{ident}.json").is_file() or any(
+                found = any((d / "client" / f"{ident}.json").is_file() or any(
                     ident in p.read_text(encoding="utf-8", errors="replace")[:400]
-                    for p in prov_dir.glob("*.json") if p.is_file())
+                    for p in d.glob("*.json") if p.is_file()) for d in prov_dirs)
                 out.append({"id": ident, "kind": "data_provenance", "found": found})
             else:
-                out.append({"id": ident, "kind": "tool_use", "found": (prov_dir / f"{ident}.json").is_file()})
+                out.append({"id": ident, "kind": "tool_use",
+                            "found": any((d / f"{ident}.json").is_file() for d in prov_dirs)})
         return out, []
 
     def register_artifact(self, path: str, description: str, agent: str, kind: str | None = None,

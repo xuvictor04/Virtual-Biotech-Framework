@@ -290,6 +290,55 @@ def test_replay_mismatch_is_a_problem_and_source_updated_a_warning(run: Run) -> 
     assert report["status"] == "COMPLETE" and "replay_unavailable" in _kinds(report["evidence"]["warnings"])
 
 
+@pytest.mark.usefixtures("fixed_replays")
+def test_data_mode_reports_missing_tables_unreadable_fingerprints_and_lost_records(
+        run: Run, monkeypatch: pytest.MonkeyPatch) -> None:
+    """INV-2: under --data, a pinned or cited table that is gone, a fingerprint read that fails and a
+    cited call whose provenance record is gone leave the run INCOMPLETE; the cache mode only warns."""
+    import vbt.verify as verify_mod
+
+    assert verify_mod.data_drift({"ot.kd": "fp1:a"}, {"ot.kd": {"fp1:a": ["t1"]}}, {}, {"t1": ["c1"]}) == []
+    (gone,) = verify_mod.data_drift({"ot.kd": "fp1:a"}, {"ot.kd": {"fp1:a": ["t1"]}}, {}, {"t1": ["c1"]},
+                                    missing={"ot.kd": "TableUnavailable: no files"})
+    assert gone["current"] is None and gone["claims"] == ["c1"] and "no files" in gone["detail"]
+
+    _pinned_run(run)
+    match = _FixedReplayer(ReplayResult("t1", TOOL, status="match"))
+    monkeypatch.setattr(verify_mod, "current_fingerprints", lambda config, tables: (
+        {"open_targets.target": "fp1:t"}, None, {"open_targets.known_drug": "TableUnavailable: deleted"}))
+    report = verify_run(run.dir, data=True, config={}, replayer=match)
+    (p,) = [p for p in report["problems"] if p["kind"] == "data_version_drift"]
+    assert p["table"] == "open_targets.known_drug" and p["current"] is None and report["status"] == "INCOMPLETE"
+
+    monkeypatch.setattr(verify_mod, "current_fingerprints", lambda config, tables: ({}, "RuntimeError: x", {}))
+    report = verify_run(run.dir, data=True, config={}, replayer=match)
+    assert report["status"] == "INCOMPLETE" and "could not be read" in report["problems"][0]["detail"]
+
+    monkeypatch.setattr(verify_mod, "current_fingerprints", lambda config, tables: (
+        {"open_targets.known_drug": "fp1:sha256:old", "open_targets.target": "fp1:t"}, None, {}))
+    lost = ReplayResult("t1", TOOL, status="unavailable", error={"kind": "no_record", "message": "deleted"})
+    report = verify_run(run.dir, data=True, config={}, replayer=_FixedReplayer(lost))
+    assert report["status"] == "INCOMPLETE" and "replay_unavailable" in _kinds(report["problems"])
+
+
+def test_fresh_fingerprints_never_decode_data_in_the_harness(monkeypatch: pytest.MonkeyPatch) -> None:
+    """INV-4: ``current_fingerprints`` always asks the data child (under the reaper), and passes its
+    per-table errors through."""
+    import vbt.datalayer.cli as ds_cli
+    import vbt.verify as verify_mod
+
+    seen: dict[str, Any] = {}
+
+    def fake(config: Any, tables: list[str]) -> dict[str, Any]:
+        seen["tables"] = tables
+        return {"tables": {"a.t": {"fingerprint": "fp1:a"}}, "errors": {"b.t": "OSError: gone"}}
+
+    monkeypatch.setattr(ds_cli, "_table_stats", fake)
+    fps, err, missing = verify_mod.current_fingerprints({}, ["a.t", "b.t", "c.t"])
+    assert fps == {"a.t": "fp1:a"} and err is None and seen["tables"] == ["a.t", "b.t", "c.t"]
+    assert missing["b.t"] == "OSError: gone" and "no fingerprint" in missing["c.t"]
+
+
 def test_data_kinds_are_not_integrity_kinds() -> None:
     assert not DATA_KINDS & INTEGRITY_KINDS
     assert {"data_version_drift", "replay_mismatch", "source_updated"} <= DATA_KINDS

@@ -486,3 +486,20 @@ def test_status_and_calibrate_commands_are_registered() -> None:
     assert ns.huge and ns.time_budget_s == 60 and ns.once
     ns = parser.parse_args(["ds", "overlay", "init", "uniprot", "--from-json", "x.json", "--out", "-"])
     assert ns.handler is COMMANDS["overlay init"]
+
+
+async def test_gateway_enables_the_host_budget(tmp_path: Path) -> None:
+    """F19: a gateway built from settings caps host memory (auto by default) and binds its LRU recycle to
+    the bridge; ``off`` leaves it unset."""
+    from test_dl_gateway_flow import world
+
+    gw = world(tmp_path, data={"memory": {"host_budget_mb": 5000}})
+    host = gw.admission.host
+    assert host is not None and host.enabled and host.budget_mb == 5000.0
+    assert host.recycle == gw.bridge.recycle and host.servers is not None
+    gw.admission.ledger.add("pathway", {"pathway.t": 4000.0})
+    host.touch("pathway")
+    assert await host.reserve("target", 2000.0) == ["pathway"]          # the idle server is recycled
+    assert world(tmp_path / "off", data={"memory": {"host_budget_mb": "off"}}).admission.host is None
+    auto = world(tmp_path / "auto").admission.host
+    assert auto is None or auto.enabled == (host_budget_mb(DataSettings.from_dict({})) is not None)

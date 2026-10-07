@@ -1521,13 +1521,14 @@ class Runtime:
             return None
 
     def _data_provenance_dir(self) -> Path:
+        """``<run>/<data.provenance.dir>``; the setting is always relative to the run (an absolute or
+        ``..`` path falls back to the default), so replay and ``derived_from`` find what is written."""
         rel = "logs/data_provenance"
         try:
             rel = self.data_settings().provenance.dir or rel
         except Exception:  # noqa: BLE001 - fall back to the documented default
             log.debug("data settings unreadable; provenance under %s", rel, exc_info=True)
-        p = Path(rel)
-        return p if p.is_absolute() else self.run.dir / p
+        return self.run.dir / rel
 
     def _record_data_result(self, call: ToolCall, data: Any) -> dict[str, Any]:
         """``tool_end`` fields of a data-layer result (§15.1): ``result_status`` and the

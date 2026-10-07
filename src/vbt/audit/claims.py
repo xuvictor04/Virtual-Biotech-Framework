@@ -119,7 +119,9 @@ class EvidenceContext:
         candidates = []
         if dp.get("record"):
             candidates.append(self.run_dir / str(dp["record"]))
-        candidates.append(self.run_dir / "logs" / "data_provenance" / f"{_SAFE_RE.sub('_', tool_use_id)[:160]}.json")
+        from ..datalayer.replay import provenance_dirs
+
+        candidates.extend(d / f"{_SAFE_RE.sub('_', tool_use_id)[:160]}.json" for d in provenance_dirs(self.run_dir))
         record = None
         root = self.run_dir.resolve()
         for path in candidates:
