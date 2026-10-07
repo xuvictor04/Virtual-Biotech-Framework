@@ -12,12 +12,28 @@
 #   inherit_env      true = pass the full parent environment (default mcp.inherit_env = false:
 #                    an allow-list via src/vbt/envpolicy.py, so provider keys never reach servers)
 #   cwd, enabled
+#   smoke            `vbt doctor --smoke=upstream` call: {tool: ..., args: {...}} or false
+#
+# Data layer keys (docs/DATA_LAYER.md §14 and §17; all optional, read when data.enabled):
+#   mem_limit_mb     process memory limit enforced by the reaper (RLIMIT_DATA): an int, 'auto'
+#                    (derived from the tables the server reads) or null (data.memory.default_server_mb)
+#   overlay          the server's overlay file (default configs/data/overlays/<name>.yaml, matched by
+#                    its `server:` field); servers without one get the generic guard (_generic.yaml)
+#   sources          descriptor sources the server reads (default: those its overlay binds); phase 1
+#                    records both keys and takes overlays and sources from data.overlays_dir
+#   launcher         false launches the server directly instead of through the reaper
+#
+# The data gateway adds its own `data` child (src/vbt/datalayer/service/server.py) unless a server
+# of that name is listed here.
 #
 # Interpreter flag: -E makes Python ignore PYTHON* variables (PYTHONPATH,
 # PYTHONHOME, ...), so the environment cannot redirect what the servers import.
 # The stricter -I also drops user site-packages; that broke every server in an
 # installation whose dependencies live in ~/.local (pip --user), so it is not the
 # default. Use -I when vars.mcp_python is a dedicated conda env.
+# With the data layer enabled, the reaper (src/vbt/datalayer/launch/reaper.py) strips -E/-I and
+# launches the server with an explicit, allow-listed environment instead (PYTHONHASHSEED=0 and the
+# memory pins take effect; PYTHONPATH and the other PYTHON* variables are still not passed through).
 servers:
   - name: expression
     # GTEx bulk RNA-seq expression

@@ -1103,11 +1103,13 @@ def build_parser() -> argparse.ArgumentParser:
     from .audit.cli import add_audit_parsers
     from .bulk import add_bulk_parser
     from .case_studies import add_case_parsers
+    from .datalayer.cli import add_datasource_parsers
     from .local import add_local_parsers
     from .preflight import add_doctor_parser
     from .web import add_web_parser
     add_audit_parsers(sub)      # verify, list, index, export, audit, show
-    add_doctor_parser(sub)      # doctor [--smoke] [--analysis]
+    add_doctor_parser(sub)      # doctor [--smoke[=gateway|upstream]] [--analysis] [--data]
+    add_datasource_parsers(sub)  # datasource|ds list|describe|lint|check|resolve|explain|fingerprint|index|estimate|retro-audit
     add_web_parser(sub)         # web [--host] [--port] [--no-auth]
     add_bulk_parser(sub)
     add_case_parsers(sub)       # case1, scenario, data (P9)

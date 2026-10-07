@@ -188,6 +188,73 @@ mcp:
   max_restarts: 3                 # crash restarts per server per session
   inherit_env: false              # MCP children get an allow-listed env (envpolicy), never provider keys
 
+# ---------------------------------------------------------------- data layer (datalayer/, docs/DATA_LAYER.md §17)
+# Descriptors, overlays and one gateway in front of every MCP server. `vbt ds lint|check|explain`
+# inspect it; `vbt doctor --data` prints per-tool readiness. The values are the in-code defaults
+# (vbt.datalayer.settings.DATA_DEFAULTS).
+data:
+  enabled: true                   # false = exact pre-datalayer behaviour (bridge built with gateway=None)
+  descriptors_dir: configs/data/sources
+  overlays_dir: configs/data/overlays
+  cache_dir: ${VBT_DATA_DIR:-data}/.vbt-datalayer   # index/, readiness/, stats/; always safe to delete
+  gateway:
+    mode: enforce                 # off | observe | enforce
+    enforce_servers: all          # or a list, for staged rollout
+    profile: safe                 # safe | fidelity (paper-replication runs)
+    when_service_down: strict     # strict: guarded tools not_ready; lenient: generic guard
+    unbound_empty: empty_unverified   # empty_unverified | error
+  service:                        # the `data` child (service/server.py), launched through the reaper
+    mem_limit_mb: 3000
+    max_concurrency: 4
+    timeout_s: 600
+    max_resident_mb: 2000
+  resolution:
+    max_candidates: 10
+    allow: [raw_member, normalized, label, previous, alias, exact_synonym, related_synonym, retired, xref,
+            crosswalk, parent_family]
+    max_hops: 2                   # crosswalk chain length
+    max_expand: 5000              # descendant expansion fan-out; above it: too_large (expansion)
+    min_resolved_fraction: 0.95   # default for gene-list arguments
+    remote_ttl_s: 3600            # universe_via listing caches
+  witness:
+    enabled: true
+    max_scan_bytes: 2000000000
+    max_inflate_rows: 5000
+    max_inflate_bytes: 20000000
+    max_key_set: 20000
+    repair_max_bytes: 500000000
+    topk: true                    # false: counts only (no top-k comparison)
+  derive: {enum_max: 64, description_max_chars: 1200}
+  memory:
+    default_server_mb: 12000      # 'auto' derives from estimates
+    limit_kind: rlimit_data       # rlimit_data | cgroup | watchdog | none
+    estimate_safety: 1.3
+    expansion: {flat: 1.5, string: 3.5, nested: 8.0, fragmentation: 1.15}
+    object_overhead_bytes: {string: 50, nested_item: 120, struct_item: 240}
+    recycle_idle_servers: true
+    recycle_wait_s: 30
+    max_recycles_per_10min: 4
+    max_oom_kills: 3
+    max_result_bytes: 2000000
+    host_budget_mb: auto
+  readiness:
+    per_turn_depth: shallow       # stat-only signatures before every turn
+    session_depth: standard       # R1-R10 at session start (preflight runs the data child's --check)
+    key_check_full_max_rows: 50000000
+    vocab_budget_bytes: 500000000 # bounded vocabulary scans (R7)
+    remote_ttl_s: 3600
+    sentinels: true
+    block_when: all_unready       # a session blocks on data only when no granted data tool is ready
+  results: {relation_list_max: 50}
+  leakage:
+    # No-web scenarios set the evidence ceiling to web.literature_max_date (YYYY-MM-DD), e.g. in a
+    # profile: `data: {leakage: {ceiling: "2023-01-01"}}`; null = no ceiling (readiness reports it unset).
+    ceiling: null
+  sources:
+    alias: {}                     # {open_targets: zenodo_vbt}: serve open_targets.* from tables that implement them
+  provenance: {row_keys_max: 10000, dir: logs/data_provenance}
+  plugins: {paths: [], entry_points: true, disabled: [], override: {}, require_conformance: false}
+
 # ---------------------------------------------------------------- bulk (Case 1 / BulkDispatch)
 bulk:
   dispatch_enabled: false         # register BulkDispatch/BulkStatus for the CSO

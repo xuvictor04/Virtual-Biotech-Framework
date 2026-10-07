@@ -58,6 +58,8 @@ CODE_DEFAULTS: dict[str, Any] = {
         "require_reference_data": True,     # preflight before sessions and turns
     },
     "agent_overrides": {},                  # {agent: {effort, model, max_turns, tools_add}}
+    # "data": a copy of vbt.datalayer.settings.DATA_DEFAULTS (docs/DATA_LAYER.md section 17), added
+    # by _install_data_defaults() at the end of this module (the settings module imports this one)
 }
 
 
@@ -179,6 +181,8 @@ def check_profile_requirement(cfg: dict[str, Any], profile: str, required: str |
 
 def load_config(profiles: list[str] | None = None, overrides: dict | None = None) -> dict[str, Any]:
     load_env_file(PROJECT_ROOT / ".env")
+    if "data" not in CODE_DEFAULTS:
+        _install_data_defaults()
     cfg = deep_merge(CODE_DEFAULTS, _load_yaml(CONFIG_DIR / "default.yaml"))
     required: list[tuple[str, str | None]] = []
     for prof in profiles or []:
@@ -229,3 +233,17 @@ def resolve_path(p: str | Path) -> Path:
     """Absolute, symlink-resolved path; relative paths are taken from the project root."""
     path = Path(p).expanduser()
     return (path if path.is_absolute() else PROJECT_ROOT / path).resolve()
+
+
+def _install_data_defaults() -> None:
+    """``CODE_DEFAULTS["data"]``: the data layer's in-code defaults (``DataSettings`` carries the same
+    values, so hand-built configs work). ``vbt.datalayer.settings`` imports this module; when it is
+    the one being imported first, its defaults are not defined yet and ``load_config`` installs them."""
+    mod = sys.modules.get("vbt.datalayer.settings")
+    if mod is not None and not hasattr(mod, "DATA_DEFAULTS"):
+        return
+    from .datalayer.settings import DATA_DEFAULTS
+    CODE_DEFAULTS["data"] = copy.deepcopy(DATA_DEFAULTS)
+
+
+_install_data_defaults()
