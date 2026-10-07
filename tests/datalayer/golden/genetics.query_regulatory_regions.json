@@ -1,0 +1,82 @@
+{
+ "description": "Query enhancer-gene regulatory interactions from ATAC-seq, ChIP-seq, and other sources and save to parquet file.\nData: Open Targets Platform 25.09 · table interval — one record = one regulatory interval linked to one gene in one biosample by one source.\nKey: chromosome, start, end, geneId, intervalType, datasourceId, biosampleName (biosampleName may be null).\nArguments: gene_id accepts ensembl gene or hgnc symbol (resolved; unknown -> error).\nResults: ranked by score desc within datasourceId (verified by the harness); `_vbt.total` counts all matches.\nRows with unknown start, end, score, distanceToTss are excluded and counted in `_vbt.excluded_unknown`.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Enhancer-to-gene and promoter intervals of OT 25.09; absence means no interval in these sources.",
+ "schema": {
+  "description": "Pass at least one of: gene_id, chromosome.",
+  "properties": {
+   "biosample": {
+    "default": null,
+    "description": "Values of biosampleName (see mcp__data__vocab).",
+    "type": "string",
+    "x-vbt-vocabulary": "open_targets.interval.biosampleName"
+   },
+   "chromosome": {
+    "default": null,
+    "type": "string"
+   },
+   "datasourceId": {
+    "description": "Results are listed per datasourceId; pass one value to restrict them.",
+    "x-gateway": true
+   },
+   "end": {
+    "default": null,
+    "type": "integer"
+   },
+   "gene_id": {
+    "default": null,
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   },
+   "interval_type": {
+    "default": null,
+    "description": "Values of intervalType (see mcp__data__vocab).",
+    "type": "string",
+    "x-vbt-vocabulary": "open_targets.interval.intervalType"
+   },
+   "limit": {
+    "default": 100,
+    "maximum": 10000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "max_distance_to_tss": {
+    "default": null,
+    "description": "Keeps rows with distanceToTss |x| <= this value (compared on the absolute value); unknown values never pass.",
+    "minimum": 0.0,
+    "type": "integer"
+   },
+   "min_score": {
+    "default": null,
+    "description": "Keeps rows with score >= this value; unknown values never pass.",
+    "type": "number"
+   },
+   "output_path": {
+    "type": "string"
+   },
+   "start": {
+    "default": null,
+    "type": "integer"
+   }
+  },
+  "required": [
+   "output_path"
+  ],
+  "type": "object",
+  "x-vbt-require-any": [
+   [
+    "gene_id",
+    "chromosome"
+   ]
+  ]
+ },
+ "serve": "pass",
+ "tool": "genetics.query_regulatory_regions"
+}

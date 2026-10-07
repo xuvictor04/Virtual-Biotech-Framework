@@ -1,0 +1,24 @@
+{
+ "description": "Get comprehensive details about a specific study.\nData: cBioPortal for Cancer Genomics (public studies) · table study — one record = one cBioPortal study.\nKey: studyId.\nArguments: study_id accepts cbio study (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Public cBioPortal studies at the time of the call (existence only).",
+ "schema": {
+  "properties": {
+   "study_id": {
+    "description": "Accepts cbio_study; resolved to one cbio_study (unknown values are errors, never empty results).",
+    "examples": [
+     "brca_tcga_pan_can_atlas_2018"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "cbioportal:cbio_study"
+    ],
+    "x-vbt-id-type": "cbioportal:cbio_study"
+   }
+  },
+  "required": [
+   "study_id"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "clinicaltrials.get_study_details"
+}

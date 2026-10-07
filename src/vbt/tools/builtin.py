@@ -21,6 +21,7 @@ import asyncio
 import base64
 import collections
 import io
+import json
 import os
 import re
 import shutil
@@ -860,21 +861,24 @@ def _signal_group(pgid: int, sig: int) -> bool:
         return False
 
 
-async def _kill_group(proc: asyncio.subprocess.Process, grace: float = 5.0) -> None:
-    """SIGTERM the process group, wait ``grace`` s, SIGKILL it, then reap the shell."""
-    pgid = proc.pid
-    _signal_group(pgid, signal.SIGTERM)
+async def _kill_group(proc: asyncio.subprocess.Process, grace: float = 5.0, also: Iterable[int] = ()) -> None:
+    """SIGTERM the process group (and the ``also`` groups: the reaper's child runs in its own), wait
+    ``grace`` s, SIGKILL them, then reap the shell."""
+    groups = [proc.pid, *also]
+    for pgid in groups:
+        _signal_group(pgid, signal.SIGTERM)
     try:
         if proc.returncode is None:
             await asyncio.wait_for(proc.wait(), grace)
         else:
             deadline = time.monotonic() + min(grace, 1.0)
-            while _signal_group(pgid, 0) and time.monotonic() < deadline:
+            while any(_signal_group(g, 0) for g in groups) and time.monotonic() < deadline:
                 await asyncio.sleep(0.05)
     except BaseException:  # noqa: BLE001 - timeout or a second cancellation: escalate below
         pass
     finally:
-        _signal_group(pgid, signal.SIGKILL)
+        for pgid in groups:
+            _signal_group(pgid, signal.SIGKILL)
         if proc.returncode is None:
             try:
                 await asyncio.wait_for(proc.wait(), 5)
@@ -884,6 +888,52 @@ async def _kill_group(proc: asyncio.subprocess.Process, grace: float = 5.0) -> N
 
 def _safe_id(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", s or "")[:120] or f"t{int(time.time() * 1000)}"
+
+
+#: ``data.memory.workspace_mb`` default: the RLIMIT_DATA of Bash (and the notebooks it runs) in MB.
+WORKSPACE_MB = 8000
+_EXIT_MARKER = re.compile(r"^VBT_CHILD_EXIT (\{.*\})[ \t]*(?:\n|$)", re.MULTILINE)
+
+
+def _workspace_limit(config: Mapping[str, Any], argv: list[str], run_dir: Path, call_id: str
+                     ) -> tuple[int | None, list[str] | None, Path | None]:
+    """``(limit MB, argv under the reaper)`` when ``data.memory.workspace_mb`` > 0 and the data layer's
+    stdlib launcher is available (Linux; ``launch/reaper.py`` present): Bash commands, and the notebooks
+    and scripts they run, get ``RLIMIT_DATA`` like the MCP servers (§14.2), so an agent's pandas load cannot
+    take the harness host down; the reaper's status file names the child's process group. ``(None, None,
+    None)``: run as configured."""
+    import sys
+
+    data = config.get("data") if isinstance(config.get("data"), Mapping) else {}
+    memory = data.get("memory") if isinstance(data.get("memory"), Mapping) else {}
+    try:
+        limit = int(memory.get("workspace_mb", WORKSPACE_MB) or 0)
+    except (TypeError, ValueError):
+        limit = WORKSPACE_MB
+    if limit <= 0 or not sys.platform.startswith("linux") or data.get("enabled") is False:
+        return None, None, None
+    try:
+        from ..datalayer.launch import REAPER
+    except Exception:  # noqa: BLE001 - no data layer in this checkout: run unlimited
+        return None, None, None
+    if not Path(REAPER).is_file():
+        return None, None, None
+    status = run_dir / "logs" / "tool_outputs" / f"bash_{_safe_id(call_id)}.status.json"
+    status.parent.mkdir(parents=True, exist_ok=True)
+    status.unlink(missing_ok=True)
+    return limit, [sys.executable, "-E", str(REAPER), "--limit-mb", str(limit), "--status", str(status),
+                   "--server", "workspace", "--", *argv], status
+
+
+def _strip_exit_marker(text: str) -> tuple[str, str | None]:
+    """The output without the reaper's exit line, and that line's ``reason``."""
+    reason = None
+    for m in _EXIT_MARKER.finditer(text or ""):
+        try:
+            reason = json.loads(m.group(1)).get("reason")
+        except ValueError:
+            pass
+    return _EXIT_MARKER.sub("", text or ""), reason
 
 
 async def _bash(ctx: ToolContext, a: dict[str, Any]) -> str:
@@ -930,12 +980,23 @@ async def _bash(ctx: ToolContext, a: dict[str, Any]) -> str:
             argv = ["unshare", "-rn", "--", *argv]
         else:
             notes.append("bash.network_isolation=unshare is unavailable here; the pattern block still applies")
+    limit_mb, launched, status_file = _workspace_limit(config, argv, run_dir, ctx.tool_call_id)
+
+    def also() -> list[int]:
+        """The reaper's child process group (it leaves the reaper's group), once the reaper has named it."""
+        if status_file is None:
+            return []
+        try:
+            pid = int(json.loads(status_file.read_text(encoding="utf-8")).get("pid") or 0)
+        except (OSError, ValueError, TypeError, AttributeError):
+            return []
+        return [pid] if pid > 0 and pid != proc.pid else []
     max_bytes = int(cfg.get("max_output_bytes") or 2_000_000)
     spill = run_dir / "logs" / "tool_outputs" / f"bash_{_safe_id(ctx.tool_call_id)}.txt"
     sink = _OutputSink(max_bytes, spill, secrets_env)
     t0 = time.time()
     proc = await asyncio.create_subprocess_exec(
-        *argv, cwd=str(cwd), env=env, stdin=asyncio.subprocess.DEVNULL,
+        *(launched or argv), cwd=str(cwd), env=env, stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
 
     async def pump() -> None:
@@ -957,7 +1018,7 @@ async def _bash(ctx: ToolContext, a: dict[str, Any]) -> str:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
-                await _kill_group(proc)
+                await _kill_group(proc, also=also())
                 break
             await asyncio.wait({reader, waiter}, timeout=min(0.2, remaining),
                                return_when=asyncio.FIRST_COMPLETED)
@@ -965,13 +1026,13 @@ async def _bash(ctx: ToolContext, a: dict[str, Any]) -> str:
         try:
             await asyncio.wait_for(asyncio.shield(reader), 2.0)
         except asyncio.TimeoutError:
-            await _kill_group(proc, grace=1.0)
+            await _kill_group(proc, grace=1.0, also=also())
             try:
                 await asyncio.wait_for(reader, 5.0)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 reader.cancel()
-        if _signal_group(proc.pid, 0):  # leftover group members (e.g. `cmd &`)
-            await _kill_group(proc, grace=1.0)
+        if _signal_group(proc.pid, 0) or any(_signal_group(g, 0) for g in also()):  # leftovers (`cmd &`)
+            await _kill_group(proc, grace=1.0, also=also())
         try:
             await asyncio.wait_for(waiter, 5.0)
         except asyncio.TimeoutError:
@@ -979,7 +1040,7 @@ async def _bash(ctx: ToolContext, a: dict[str, Any]) -> str:
     except BaseException:
         reader.cancel()
         waiter.cancel()
-        await _kill_group(proc)
+        await _kill_group(proc, also=also())
         sink.close()
         ctx.trace("bash", command=envpolicy.redact(command[:4000], secrets_env), exit_code=None,
                   interrupted=True, duration_s=round(time.time() - t0, 2))
@@ -988,12 +1049,17 @@ async def _bash(ctx: ToolContext, a: dict[str, Any]) -> str:
         sink.close()
     rel_spill = ctx.run.rel(spill)
     text = envpolicy.redact(sink.text(rel_spill), secrets_env)
+    if launched:
+        text, exit_reason = _strip_exit_marker(text)
+        if exit_reason == "memory_limit":
+            notes.append(f"the command reached the workspace memory limit (data.memory.workspace_mb = {limit_mb} MB)")
     truncated = sink.fh is not None
     ctx.trace("bash", command=envpolicy.redact(command[:4000], secrets_env), exit_code=proc.returncode,
               timed_out=timed_out, timeout_s=timeout, duration_s=round(time.time() - t0, 2),
               output_bytes=sink.total, output_path=rel_spill if truncated else None, notes=notes or None,
               network_isolation=iso if iso and (argv[0] == "unshare" or os_sandbox == "bwrap") else None,
-              os_sandbox=os_sandbox if os_sandbox == "bwrap" else None)
+              os_sandbox=os_sandbox if os_sandbox == "bwrap" else None,
+              workspace_mb=limit_mb if launched else None)
     prefix = "".join(f"[note: {n}]\n" for n in notes)
     if timed_out:
         raise ToolFailure(f"{prefix}[timed out after {timeout:g}s; process group killed]\n{text}")

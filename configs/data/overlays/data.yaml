@@ -1,0 +1,63 @@
+# Overlay for the harness's own data child (src/vbt/datalayer/service/server.py; docs/DATA_LAYER.md §10.6).
+# Phase 2 (F14): the public verbs of service/verbs/public.py are listed as mcp__data__<verb>.
+#
+# The data child answers from the descriptors itself (identifiers resolved by the same resolver the
+# gateway uses, honest totals, coverage, typed errors), so every binding is `serve: pass` without a
+# witness: the child is the source of truth, not an upstream tool to check. What the gateway adds is the
+# listing: the table enums of ready tables, minus `expose.native: false` tables and tables whose
+# `expose.withhold_from` names the agent, and the per-column `where` schemas (derive/tools.py).
+# Hidden verbs (`_serve`, `_witness`, ...) are never listed and need no binding.
+schema: vbt.overlay/1
+server: data
+sources: []
+tools:
+  resolve:
+    result: {rows: $.rows, total: $._vbt.total}
+    serve: pass
+    witness: false
+    text: {summary: "Resolve identifiers to one canonical key of an id_type by a recorded rule."}
+  describe:
+    result: {kind: record, rows: $}
+    serve: pass
+    witness: false
+    text: {summary: "Describe a data source or table: grain, key, column roles, rank, coverage and verbs."}
+  lookup:
+    result: {rows: $.rows, total: $._vbt.total}
+    serve: pass
+    witness: false
+    text: {summary: "The record of one complete key of a table."}
+  find:
+    result: {rows: $.rows, total: $._vbt.total}
+    serve: pass
+    witness: false
+    text: {summary: "Rows of a table matching resolved filters, ranked with honest totals."}
+  search:
+    result: {rows: $.rows, total: $._vbt.total}
+    serve: pass
+    witness: false
+    text: {summary: "Rows whose key, label or synonym matches a text, ordered by match class."}
+  vocab:
+    result: {rows: $.rows, total: $._vbt.total}
+    serve: pass
+    witness: false
+    text: {summary: "The distinct values of a category or scope column."}
+  members:
+    result: {rows: $.rows, total: $._vbt.total}
+    serve: pass
+    witness: false
+    text: {summary: "The direct members of one set."}
+  aggregate:
+    result: {rows: $.rows, total: $._vbt.total}
+    serve: pass
+    witness: false
+    text: {summary: "Grouped aggregation with per-group n, unknowns excluded and counted, and a minimum n."}
+  similar:
+    result: {rows: $.rows, total: $._vbt.total}
+    serve: pass
+    witness: false
+    text: {summary: "Cosine top-k around an anchor (excluded from the results and the total)."}
+  neighbors:
+    result: {rows: $.rows, total: $._vbt.total}
+    serve: pass
+    witness: false
+    text: {summary: "Edges touching a node on either side (one hop)."}

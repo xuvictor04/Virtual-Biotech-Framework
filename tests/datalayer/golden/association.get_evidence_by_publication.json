@@ -1,0 +1,59 @@
+{
+ "description": "Get evidence strings associated with a specific publication.\nData: Open Targets Platform 25.09 · table evidence — one record = one evidence string, i.e. one target-disease assertion from one data source.\nKey: sourceId, id.\nArguments: pmid accepts pmid (resolved; unknown -> error).\nResults: ranked by score desc within sourceId (verified by the harness); `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Evidence strings of the 23 OT 25.09 data sources; absence means no evidence in these sources, not a negative finding.",
+ "schema": {
+  "properties": {
+   "limit": {
+    "default": 50,
+    "maximum": 1000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "pmid": {
+    "description": "Accepts pmid; resolved to one identifier (unknown values are errors, never empty results).",
+    "examples": [
+     "30595370"
+    ],
+    "pattern": "^[1-9]\\d{0,8}$",
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:pmid"
+    ]
+   },
+   "sourceId": {
+    "description": "Results are listed per sourceId; pass one value to restrict them.",
+    "enum": [
+     "cancer_biomarkers",
+     "cancer_gene_census",
+     "chembl",
+     "clingen",
+     "crispr",
+     "crispr_screen",
+     "europepmc",
+     "eva",
+     "eva_somatic",
+     "expression_atlas",
+     "gene2phenotype",
+     "gene_burden",
+     "genomics_england",
+     "gwas_credible_sets",
+     "impc",
+     "intogen",
+     "orphanet",
+     "progeny",
+     "reactome",
+     "slapenrich",
+     "sysbio",
+     "uniprot_literature",
+     "uniprot_variants"
+    ],
+    "x-gateway": true
+   }
+  },
+  "required": [
+   "pmid"
+  ],
+  "type": "object"
+ },
+ "serve": "derived",
+ "tool": "association.get_evidence_by_publication"
+}

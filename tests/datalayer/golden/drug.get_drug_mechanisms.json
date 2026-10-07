@@ -1,0 +1,49 @@
+{
+ "description": "Get detailed drug mechanism of action information.\nData: Open Targets Platform 25.09 · table drug_mechanism_of_action — one record = one mechanism of action (action on one target) shared by one or more molecules.\nKey: mechanismOfAction, actionType, targetName (actionType and targetName may be null).\nArguments: drug_id accepts chembl molecule or drug name (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. ChEMBL mechanisms of action; absence means none curated.",
+ "schema": {
+  "description": "Pass at least one of: drug_id, mechanism. At most one of: drug_id, mechanism.",
+  "properties": {
+   "drug_id": {
+    "default": null,
+    "description": "Accepts chembl_molecule, drug_name; resolved to one chembl_molecule (unknown values are errors, never empty results).",
+    "examples": [
+     "CHEMBL25",
+     "erlotinib"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:chembl_molecule",
+     "open_targets:drug_name"
+    ],
+    "x-vbt-id-type": "open_targets:chembl_molecule"
+   },
+   "limit": {
+    "default": 20,
+    "maximum": 500,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "mechanism": {
+    "default": null,
+    "description": "Values of mechanismOfAction (see mcp__data__vocab).",
+    "type": "string",
+    "x-vbt-vocabulary": "open_targets.drug_mechanism_of_action.mechanismOfAction"
+   }
+  },
+  "type": "object",
+  "x-vbt-exclusive": [
+   [
+    "drug_id",
+    "mechanism"
+   ]
+  ],
+  "x-vbt-require-any": [
+   [
+    "drug_id",
+    "mechanism"
+   ]
+  ]
+ },
+ "serve": "pass",
+ "tool": "drug.get_drug_mechanisms"
+}

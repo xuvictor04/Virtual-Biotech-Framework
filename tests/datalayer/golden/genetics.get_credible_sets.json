@@ -1,0 +1,57 @@
+{
+ "description": "Get fine-mapped credible sets and save to parquet file.\nData: Open Targets Platform 25.09 · table credible_set — one record = one fine-mapped credible set (study locus) of one study.\nKey: studyLocusId.\nArguments: study_locus_id accepts study locus id (resolved; unknown -> error); study_id accepts gwas study (resolved; unknown -> error).\nResults: ranked by credibleSetlog10BF desc (upstream sorts every match); `_vbt.total` counts all matches.\nRows with unknown credibleSetlog10BF are excluded and counted in `_vbt.excluded_unknown`.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Fine-mapped credible sets of OT 25.09 GWAS and molecular-QTL studies; absence means no credible set.",
+ "schema": {
+  "properties": {
+   "limit": {
+    "default": 50,
+    "maximum": 10000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "min_confidence": {
+    "default": null,
+    "description": "Keeps rows with credibleSetlog10BF >= this value; unknown values never pass.",
+    "type": "number"
+   },
+   "output_path": {
+    "type": "string"
+   },
+   "study_id": {
+    "default": null,
+    "description": "Accepts gwas_study; resolved to one gwas_study (unknown values are errors, never empty results).",
+    "examples": [
+     "GCST004988"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:gwas_study"
+    ],
+    "x-vbt-id-type": "open_targets:gwas_study"
+   },
+   "study_locus_id": {
+    "default": null,
+    "description": "Accepts study_locus_id; resolved to one study_locus_id (unknown values are errors, never empty results).",
+    "examples": [
+     "0a1b2c3d4e5f60718293a4b5c6d7e8f9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:study_locus_id"
+    ],
+    "x-vbt-id-type": "open_targets:study_locus_id"
+   },
+   "study_type": {
+    "default": null,
+    "description": "Values of studyType (see mcp__data__vocab).",
+    "type": "string",
+    "x-vbt-vocabulary": "open_targets.credible_set.studyType"
+   }
+  },
+  "required": [
+   "output_path"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "genetics.get_credible_sets"
+}

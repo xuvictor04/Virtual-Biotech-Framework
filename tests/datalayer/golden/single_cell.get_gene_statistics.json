@@ -1,0 +1,48 @@
+{
+ "description": "Get detailed statistics for specific genes.\nData: CZ CELLxGENE Census (human) · table var — one record = one gene (feature) measured in the human Census.\nKey: feature_id.\nArguments: gene_symbols accepts hgnc symbol (resolved; unknown -> error); ensembl_ids accepts census feature (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence.",
+ "schema": {
+  "description": "Pass at least one of: gene_symbols, ensembl_ids.",
+  "properties": {
+   "ensembl_ids": {
+    "default": null,
+    "description": "Accepts census_feature; resolved to one census_feature (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174"
+    ],
+    "items": {
+     "pattern": "^ENSG\\d{11}$",
+     "type": "string"
+    },
+    "type": "array",
+    "x-vbt-accepts": [
+     "cellxgene_census:census_feature"
+    ],
+    "x-vbt-id-type": "cellxgene_census:census_feature"
+   },
+   "gene_symbols": {
+    "default": null,
+    "description": "Accepts hgnc_symbol; resolved to one hgnc_symbol (unknown values are errors, never empty results).",
+    "examples": [
+     "PCSK9"
+    ],
+    "items": {
+     "type": "string"
+    },
+    "type": "array",
+    "x-vbt-accepts": [
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:hgnc_symbol"
+   }
+  },
+  "type": "object",
+  "x-vbt-require-any": [
+   [
+    "gene_symbols",
+    "ensembl_ids"
+   ]
+  ]
+ },
+ "serve": "pass",
+ "tool": "single_cell.get_gene_statistics"
+}

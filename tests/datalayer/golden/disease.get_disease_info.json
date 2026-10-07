@@ -1,0 +1,26 @@
+{
+ "description": "Get comprehensive disease annotations from Open Targets.\nData: Open Targets Platform 25.09 · table disease — one record = one ontology term used by Open Targets as a disease, phenotype, measurement or process.\nKey: id.\nArguments: disease_id accepts ot disease or disease name (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Disease, phenotype and measurement terms of OT 25.09 (EFO/MONDO and imported ontologies).",
+ "schema": {
+  "properties": {
+   "disease_id": {
+    "description": "Accepts ot_disease, disease_name; resolved to one ot_disease (unknown values are errors, never empty results).",
+    "examples": [
+     "EFO_0000685",
+     "rheumatoid arthritis"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ot_disease",
+     "open_targets:disease_name"
+    ],
+    "x-vbt-id-type": "open_targets:ot_disease"
+   }
+  },
+  "required": [
+   "disease_id"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "disease.get_disease_info"
+}

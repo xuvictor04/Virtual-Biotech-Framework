@@ -1,0 +1,35 @@
+{
+ "description": "Compare gene essentiality across multiple diseases.\nData: Open Targets Platform 25.09 · table target_essentiality — one record = the DepMap essentiality of one gene across screened cell lines.\nKey: id.\nArguments: gene_id accepts ensembl gene or hgnc symbol (resolved; unknown -> error).\nResults: ranked by mean_gene_effect asc (verified by the harness); `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. DepMap CRISPR essentiality of genes screened in cancer cell lines; a missing gene means not screened.",
+ "schema": {
+  "properties": {
+   "diseases": {
+    "default": null,
+    "description": "Values of geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource (see mcp__data__vocab).",
+    "items": {
+     "type": "string"
+    },
+    "type": "array",
+    "x-vbt-vocabulary": "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource"
+   },
+   "gene_id": {
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   }
+  },
+  "required": [
+   "gene_id"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "functional_genomics.compare_essentiality_across_diseases"
+}

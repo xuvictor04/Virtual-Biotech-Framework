@@ -1,0 +1,68 @@
+{
+ "description": "UNAVAILABLE: Merges the two drugs' contrasts on gene_name only (a cartesian product over doses, lines and plates) and compares padj across families. A paired comparison verb arrives in phase 3.; use functional_genomics.query_drug_perturbation. Compare transcriptomic signatures between two drugs.",
+ "schema": {
+  "properties": {
+   "cell_line_id": {
+    "default": null,
+    "description": "Accepts depmap_cell_line; resolved to one depmap_cell_line (unknown values are errors, never empty results).",
+    "examples": [
+     "ACH-000001"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "tahoe_100m:depmap_cell_line"
+    ],
+    "x-vbt-id-type": "tahoe_100m:depmap_cell_line"
+   },
+   "concentration": {
+    "description": "Results are per concentration; pass one value, or the call fails with incomplete_key when several apply.",
+    "x-gateway": true
+   },
+   "concentration_unit": {
+    "description": "Results are per concentration_unit; pass one value, or the call fails with incomplete_key when several apply.",
+    "x-gateway": true
+   },
+   "drug_a": {
+    "description": "Accepts tahoe_drug; resolved to one tahoe_drug (unknown values are errors, never empty results).",
+    "examples": [
+     "Erdafitinib"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "tahoe_100m:tahoe_drug"
+    ],
+    "x-vbt-id-type": "tahoe_100m:tahoe_drug"
+   },
+   "drug_b": {
+    "description": "Accepts tahoe_drug; resolved to one tahoe_drug (unknown values are errors, never empty results).",
+    "examples": [
+     "Erdafitinib"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "tahoe_100m:tahoe_drug"
+    ],
+    "x-vbt-id-type": "tahoe_100m:tahoe_drug"
+   },
+   "max_padj": {
+    "default": 0.1,
+    "type": "number"
+   },
+   "min_abs_log2fc": {
+    "default": 0.5,
+    "type": "number"
+   },
+   "plate": {
+    "description": "Results are listed per plate; pass one value to restrict them.",
+    "x-gateway": true
+   }
+  },
+  "required": [
+   "drug_a",
+   "drug_b"
+  ],
+  "type": "object"
+ },
+ "serve": "block",
+ "tool": "functional_genomics.compare_drug_effects"
+}

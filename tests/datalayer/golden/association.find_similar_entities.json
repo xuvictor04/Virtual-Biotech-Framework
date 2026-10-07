@@ -1,0 +1,49 @@
+{
+ "description": "Find entities with similar semantic embeddings from biomedical literature.\nData: Open Targets Platform 25.09 · table literature_vector — one record = one word2vec embedding of one Open Targets entity ID learned from Europe PMC co-mentions.\nKey: word.\nArguments: entity_id accepts literature word or ensembl gene or hgnc symbol or ot disease or disease name or chembl molecule or drug name (resolved; unknown -> error).\nResults: ranked by similarity desc (upstream sorts every match); `_vbt.total` counts all matches.\nEvidence: Similarity means co-mention in the literature, not function, mechanism or causality.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Entities with a literature embedding in OT 25.09; an entity without one was too rarely mentioned.",
+ "schema": {
+  "properties": {
+   "category": {
+    "default": null,
+    "description": "disease: any ID that is not ENSG or CHEMBL, including phenotypes and measurements.",
+    "enum": [
+     "target",
+     "drug",
+     "disease",
+     null
+    ],
+    "type": "string"
+   },
+   "entity_id": {
+    "description": "Accepts literature_word, ensembl_gene, hgnc_symbol, ot_disease, disease_name, chembl_molecule, drug_name; resolved to one literature_word (unknown values are errors, never empty results). The reference entity; excluded from the results.",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9",
+     "EFO_0000685"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:literature_word",
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol",
+     "open_targets:ot_disease",
+     "open_targets:disease_name",
+     "open_targets:chembl_molecule",
+     "open_targets:drug_name"
+    ],
+    "x-vbt-id-type": "open_targets:literature_word"
+   },
+   "top_k": {
+    "default": 20,
+    "maximum": 500,
+    "minimum": 1,
+    "type": "integer"
+   }
+  },
+  "required": [
+   "entity_id"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "association.find_similar_entities"
+}

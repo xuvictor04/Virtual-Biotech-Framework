@@ -1,0 +1,33 @@
+{
+ "description": "Search Gene Ontology terms by GO ID.\nData: Open Targets Platform 25.09 · table target_go — one record = one direct GO annotation record of one gene.\nKey: id, go[].id, go[].aspect, go[].evidence, go[].source, go[].geneProduct.\nResults: ranked by gene_count desc (verified by the harness); one row = one item (one direct GO annotation record of one gene); `_vbt.total` counts items; `_vbt.grains.go_membership` counts go_memberships; `_vbt.grains.gene` counts genes; `_vbt.grains.term` counts terms.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Direct GO annotations, not propagated.",
+ "schema": {
+  "properties": {
+   "aspect": {
+    "default": null,
+    "description": "C: cellular component; F: molecular function; P: biological process.",
+    "enum": [
+     "C",
+     "F",
+     "P",
+     null
+    ],
+    "type": "string"
+   },
+   "limit": {
+    "default": 50,
+    "maximum": 5000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "query": {
+    "type": "string"
+   }
+  },
+  "required": [
+   "query"
+  ],
+  "type": "object"
+ },
+ "serve": "derived",
+ "tool": "pathway.search_go_terms"
+}

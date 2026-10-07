@@ -1,0 +1,85 @@
+{
+ "description": "Query detailed evidence strings linking targets to diseases.\nData: Open Targets Platform 25.09 · table evidence — one record = one evidence string, i.e. one target-disease assertion from one data source.\nKey: sourceId, id.\nArguments: target_id accepts ensembl gene or hgnc symbol (resolved; unknown -> error); disease_id accepts ot disease or disease name (resolved; unknown -> error); datasource_id accepts ot datasource (resolved; unknown -> error); datatype_id accepts ot datatype (resolved; unknown -> error).\nResults: ranked by score desc within sourceId (verified by the harness); `_vbt.total` counts all matches.\nRows with unknown score, publicationYear are excluded and counted in `_vbt.excluded_unknown`.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Evidence strings of the 23 OT 25.09 data sources; absence means no evidence in these sources, not a negative finding.",
+ "schema": {
+  "properties": {
+   "datasource_id": {
+    "default": null,
+    "description": "Accepts ot_datasource; resolved to one identifier (unknown values are errors, never empty results).",
+    "examples": [
+     "HALLMARK_APOPTOSIS"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ot_datasource"
+    ]
+   },
+   "datatype_id": {
+    "default": null,
+    "description": "Accepts ot_datatype; resolved to one identifier (unknown values are errors, never empty results).",
+    "examples": [
+     "HALLMARK_APOPTOSIS"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ot_datatype"
+    ]
+   },
+   "disease_id": {
+    "default": null,
+    "description": "Accepts ot_disease, disease_name; resolved to one ot_disease (unknown values are errors, never empty results).",
+    "examples": [
+     "EFO_0000685",
+     "rheumatoid arthritis"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ot_disease",
+     "open_targets:disease_name"
+    ],
+    "x-vbt-id-type": "open_targets:ot_disease"
+   },
+   "limit": {
+    "default": 50,
+    "maximum": 1000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "max_year": {
+    "default": null,
+    "type": "integer"
+   },
+   "min_score": {
+    "default": null,
+    "description": "Keeps rows with score >= this value; unknown values never pass.",
+    "maximum": 1.0,
+    "minimum": 0.0,
+    "type": "number"
+   },
+   "min_year": {
+    "default": null,
+    "type": "integer"
+   },
+   "require_pubmed": {
+    "default": false,
+    "type": "boolean"
+   },
+   "target_id": {
+    "default": null,
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   }
+  },
+  "type": "object"
+ },
+ "serve": "derived",
+ "tool": "association.query_evidence"
+}

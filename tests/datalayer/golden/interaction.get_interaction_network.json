@@ -1,0 +1,48 @@
+{
+ "description": "UNAVAILABLE: Breadth-first expansion over a set iteration order: edge counts differ between runs (2, 2, 4, 4, 3, 4 over six runs, VERIFIED) and scores of different sources are thresholded together. A deterministic network verb arrives in phase 3.; use interaction.get_interactions, interaction.search_interactions. Build multi-hop protein interaction network from seed targets.",
+ "schema": {
+  "properties": {
+   "max_hops": {
+    "default": 2,
+    "type": "integer"
+   },
+   "max_network_size": {
+    "default": 500,
+    "type": "integer"
+   },
+   "min_confidence": {
+    "default": 0.0,
+    "type": "number"
+   },
+   "seed_targets": {
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "array",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   },
+   "sourceDatabase": {
+    "description": "Results are listed per sourceDatabase; pass one value to restrict them.",
+    "enum": [
+     "intact",
+     "reactome",
+     "signor",
+     "string"
+    ],
+    "x-gateway": true
+   }
+  },
+  "required": [
+   "seed_targets"
+  ],
+  "type": "object"
+ },
+ "serve": "block",
+ "tool": "interaction.get_interaction_network"
+}

@@ -1,0 +1,33 @@
+{
+ "description": "Compare expression of a gene across multiple tissues.\nData: Open Targets Platform 25.09 · table expression_tissues — one record = one tissue's baseline expression of one gene.\nKey: id, tissues[].efo_code.\nArguments: gene_id accepts ensembl gene or hgnc symbol (resolved; unknown -> error).\nResults: ranked by tissues[].rna.value desc (verified by the harness); one row = one item (one tissue's baseline expression of one gene); `_vbt.total` counts items; `_vbt.grains.gene` counts genes; `_vbt.grains.tissue` counts tissues.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Tissues with a measurement for the gene; values of different units are not comparable.\nonly one unit is compared: TPM when any tissue has TPM values, otherwise unitless values; the unit used is reported",
+ "schema": {
+  "properties": {
+   "gene_id": {
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   },
+   "tissues": {
+    "default": null,
+    "items": {
+     "type": "string"
+    },
+    "type": "array"
+   }
+  },
+  "required": [
+   "gene_id"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "expression.compare_expression_across_tissues"
+}

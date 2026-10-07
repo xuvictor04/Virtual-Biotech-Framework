@@ -1,0 +1,26 @@
+{
+ "description": "Get comprehensive drug information including properties and clinical phase.\nData: Open Targets Platform 25.09 · table drug_molecule — one record = one ChEMBL molecule (a parent compound or one of its salt forms).\nKey: id.\nArguments: drug_id accepts chembl molecule or drug name (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches; `_vbt.grains.molecule` counts molecules; `_vbt.grains.parent_molecule` counts parent_molecules.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. ChEMBL molecules integrated by OT 25.09 (existence only).",
+ "schema": {
+  "properties": {
+   "drug_id": {
+    "description": "Accepts chembl_molecule, drug_name; resolved to one chembl_molecule (unknown values are errors, never empty results).",
+    "examples": [
+     "CHEMBL25",
+     "erlotinib"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:chembl_molecule",
+     "open_targets:drug_name"
+    ],
+    "x-vbt-id-type": "open_targets:chembl_molecule"
+   }
+  },
+  "required": [
+   "drug_id"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "drug.get_drug_info"
+}

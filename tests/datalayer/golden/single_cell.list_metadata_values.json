@@ -1,0 +1,33 @@
+{
+ "description": "List unique values for a cell metadata column with cell counts.\nData: CZ CELLxGENE Census (human) · table obs — one record = one cell in one dataset.\nKey: soma_joinid.\nResults: `_vbt.total` counts all matches; `_vbt.grains.donor` counts donors; `_vbt.grains.dataset` counts datasets; `_vbt.grains.cell_type` counts cell_types; `_vbt.grains.tissue` counts tissues.\nis_primary_data: rows excluded by default and counted.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Cells of the human Census release named in the result; absence means not in the Census, not absent from the tissue.",
+ "schema": {
+  "properties": {
+   "column_name": {
+    "type": "string"
+   },
+   "include_duplicates": {
+    "default": false,
+    "description": "Include duplicate records (cells counted in several datasets), which are excluded by default; their number is disclosed.",
+    "type": "boolean",
+    "x-gateway": true
+   },
+   "limit": {
+    "default": 1000,
+    "maximum": 100000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "value_filter": {
+    "default": null,
+    "description": "Matched by the source's search engine: SOMA value_filter over obs columns (==, !=, in, and, or); parsed by the gateway.",
+    "type": "string"
+   }
+  },
+  "required": [
+   "column_name"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "single_cell.list_metadata_values"
+}

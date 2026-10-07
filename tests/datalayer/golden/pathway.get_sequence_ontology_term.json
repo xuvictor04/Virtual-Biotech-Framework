@@ -1,0 +1,24 @@
+{
+ "description": "Get Sequence Ontology term definition.\nData: Open Targets Platform 25.09 · table so — one record = one Sequence Ontology term.\nKey: id.\nArguments: so_id accepts so term (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Sequence Ontology terms of OT 25.09 (existence only).",
+ "schema": {
+  "properties": {
+   "so_id": {
+    "description": "Accepts so_term; resolved to one so_term (unknown values are errors, never empty results).",
+    "examples": [
+     "SO:0001583"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:so_term"
+    ],
+    "x-vbt-id-type": "open_targets:so_term"
+   }
+  },
+  "required": [
+   "so_id"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "pathway.get_sequence_ontology_term"
+}

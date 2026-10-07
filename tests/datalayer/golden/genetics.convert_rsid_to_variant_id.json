@@ -1,0 +1,24 @@
+{
+ "description": "Convert rsID to variant_id format for use with get_variant_annotation.\nData: Open Targets Platform 25.09 · table variant — one record = one variant (chromosome, position, reference and alternate allele).\nKey: variantId.\nArguments: rs_id accepts rsid (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Variants of OT 25.09 (existence only).\none rsID can name several alleles; every matching variant is returned (more than one is reported as ambiguous by the resolver)",
+ "schema": {
+  "properties": {
+   "rs_id": {
+    "description": "Accepts rsid; resolved to one rsid (unknown values are errors, never empty results).",
+    "examples": [
+     "rs7412"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:rsid"
+    ],
+    "x-vbt-id-type": "open_targets:rsid"
+   }
+  },
+  "required": [
+   "rs_id"
+  ],
+  "type": "object"
+ },
+ "serve": "derived",
+ "tool": "genetics.convert_rsid_to_variant_id"
+}

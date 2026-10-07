@@ -1,0 +1,100 @@
+{
+ "description": "Search ClinicalTrials.gov for clinical trials matching criteria.\nData: ClinicalTrials.gov (API v2) · table studies — one record = one registered clinical study (its current registry record).\nKey: protocolSection.identificationModule.nctId.\nResults: ordered by the sort argument; `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Studies registered on ClinicalTrials.gov at the recorded data timestamp; registry search expands synonyms, so a match is not a literal text match.\nat most 1,000 trials are fetched (10 pages of 100); beyond that the result is truncated and total_count is the registry's count",
+ "schema": {
+  "properties": {
+   "advanced_filter": {
+    "default": null,
+    "description": "Matched by the source's search engine: an Essie expression ANDed with the other filters.",
+    "type": "string"
+   },
+   "condition": {
+    "default": null,
+    "description": "Matched by the source's search engine: registry search: synonym expansion and word match ('Korea' matches both Koreas).",
+    "type": "string"
+   },
+   "country": {
+    "default": "United States",
+    "description": "Values of protocolSection.contactsLocationsModule.locations[].country (see mcp__data__vocab). Defaults to 'United States'; pass null for no restriction.",
+    "type": "string",
+    "x-vbt-vocabulary": "clinicaltrials_gov.studies.protocolSection.contactsLocationsModule.locations[].country"
+   },
+   "eligibility_text": {
+    "default": null,
+    "description": "Matched by the source's search engine: each phrase is quoted into AREA[EligibilityCriteria]\"...\".",
+    "items": {
+     "type": "string"
+    },
+    "type": "array"
+   },
+   "intervention": {
+    "default": null,
+    "description": "Matched by the source's search engine: registry search over intervention names and synonyms.",
+    "type": "string"
+   },
+   "phase": {
+    "default": null,
+    "description": "Values of protocolSection.designModule.phases[] (see mcp__data__vocab).",
+    "items": {
+     "type": "string"
+    },
+    "type": "array",
+    "x-vbt-vocabulary": "clinicaltrials_gov.studies.protocolSection.designModule.phases[]"
+   },
+   "sort": {
+    "default": null,
+    "enum": [
+     "LastUpdatePostDate:desc",
+     "LastUpdatePostDate:asc",
+     "StudyFirstPostDate:desc",
+     "StudyFirstPostDate:asc",
+     "StartDate:desc",
+     "StartDate:asc",
+     "EnrollmentCount:desc",
+     "EnrollmentCount:asc"
+    ],
+    "type": "string"
+   },
+   "status": {
+    "default": null,
+    "items": {
+     "enum": [
+      "ACTIVE_NOT_RECRUITING",
+      "COMPLETED",
+      "ENROLLING_BY_INVITATION",
+      "NOT_YET_RECRUITING",
+      "RECRUITING",
+      "SUSPENDED",
+      "TERMINATED",
+      "WITHDRAWN",
+      "AVAILABLE",
+      "NO_LONGER_AVAILABLE",
+      "TEMPORARILY_NOT_AVAILABLE",
+      "APPROVED_FOR_MARKETING",
+      "WITHHELD",
+      "UNKNOWN"
+     ],
+     "type": "string"
+    },
+    "type": "array"
+   },
+   "study_type": {
+    "default": null,
+    "enum": [
+     "INTERVENTIONAL",
+     "OBSERVATIONAL",
+     "EXPANDED_ACCESS",
+     null
+    ],
+    "type": "string"
+   },
+   "term": {
+    "default": null,
+    "description": "Matched by the source's search engine: registry search over every indexed field.",
+    "type": "string"
+   }
+  },
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "clinicaltrials.search_clinical_trials"
+}

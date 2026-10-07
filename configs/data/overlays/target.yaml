@@ -1,5 +1,6 @@
 # Overlay for the upstream target server (target_mcp; docs/DATA_LAYER.md §8, Appendix A).
-# Phase 1: 11 pass, 4 derived (get_pharmacogenomics is bound in drug.yaml with same_as), 1 block.
+# Phase 2: 11 pass, 5 derived (get_pharmacogenomics is bound in drug.yaml with same_as), 0 block;
+# get_comprehensive_target_profile is served from the target-profile view.
 # `defects` document upstream bugs with file:line; each detector test imports the unmodified function.
 schema: vbt.overlay/1
 server: target
@@ -142,24 +143,44 @@ tools:
          where: "target_mcp/tools.py:808", test: test_dl_defect_detectors.py::test_ot_target_007, effect: false_empty}
 
   get_comprehensive_target_profile:
+    # Phase 2 (F14): served from the target-profile view. Each section is read on its own; a section
+    # whose table is not ready is {_vbt_unavailable: ...} (never [] and never a count of 0), and the
+    # result is partial. The upstream count fields do not exist in the derived answer.
     reads:
-      open_targets.target: {access: full_table}
-      open_targets.association_overall_direct: {access: full_table, when: {include_diseases: true}}
-      open_targets.known_drug: {access: full_table, when: {include_drugs: true}}
-      open_targets.expression: {access: full_table, when: {include_expression: true}}
-      open_targets.interaction: {access: full_table, when: {include_interactions: true}}
-      open_targets.openfda_significant_adverse_target_reactions: {access: full_table, when: {include_safety: true}}
-      open_targets.mouse_phenotype: {access: full_table, when: {include_safety: true}}
+      open_targets.target: {access: bounded_scan}
+      # the `when`s record upstream's conditions; the view reads every section (derived sections are always read)
+      open_targets.known_drug: {access: bounded_scan, when: {include_drugs: true}}
+      open_targets.openfda_significant_adverse_target_reactions: {access: bounded_scan, when: {include_safety: true}}
+      open_targets.mouse_phenotype: {access: bounded_scan, when: {include_safety: true}}
+      # read by the upstream function only (sections this view does not serve)
+      open_targets.association_overall_direct: {access: upstream, when: {include_diseases: true}}
+      open_targets.expression: {access: upstream, when: {include_expression: true}}
+      open_targets.interaction: {access: upstream, when: {include_interactions: true}}
     args:
-      target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
+      target_id:            {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
+      include_diseases:     {role: unbound}       # not part of the view: association.get_associations_for_target
+      include_drugs:        {role: unbound}       # sections cannot be dropped; leave the defaults
+      include_pathways:     {role: unbound}
+      include_expression:   {role: unbound}       # not part of the view: expression.query_expression_by_gene
+      include_interactions: {role: unbound}       # not part of the view: interaction.get_interactions
+      include_safety:       {role: unbound}
+      top_n:                {role: unbound}       # every section lists all its rows with its total
     result: {kind: record, rows: $}
-    serve: block
-    block:
-      reason: "Seven sections loaded whole; a failed section becomes [] with no section error, so an outage reads as 'no drugs' or 'no interactions'. A view with per-section status replaces it in phase 2."
-      alternatives: [target.get_target_info, drug.search_known_drugs, association.get_associations_for_target,
-                     expression.query_expression_by_gene, interaction.get_interactions, target.get_target_safety_profile,
-                     target.get_mouse_phenotype]
-      until_phase: 2
+    serve: derived
+    derived:
+      verb: lookup
+      table: open_targets.target
+      columns: [id, approvedSymbol, approvedName, biotype]
+      sections:
+        known_drugs:      {path: $.known_drugs, table: open_targets.known_drug, verb: find, key_from_args: {targetId: target_id}}
+        pathways:         {path: $.pathways, table: open_targets.target_pathways, verb: find, key_from_args: {id: target_id}}
+        adverse_events:   {path: $.adverse_events, table: open_targets.openfda_significant_adverse_target_reactions,
+                           verb: find, key_from_args: {targetId: target_id}}
+        mouse_phenotypes: {path: $.mouse_phenotypes, table: open_targets.mouse_phenotype, verb: find,
+                           key_from_args: {targetFromSourceId: target_id}}
+    text:
+      summary: "Target profile: the target record with its known drugs, pathways, significant adverse-event reactions and mouse phenotypes, each section read on its own."
+      notes: ["Diseases, expression and interactions are not part of this view: use association.get_associations_for_target, expression.query_expression_by_gene and interaction.get_interactions."]
     defects:
       - {id: OT-TARGET-011, what: "section failures become [] or an empty list with no section_errors",
          where: "target_mcp/tools.py:1382-1385,1471-1481", effect: false_empty}

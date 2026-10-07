@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -72,6 +73,8 @@ log = logging.getLogger(__name__)
 
 MANIFEST_SCHEMA = 2
 RUN_STATUSES = ("in_progress", "completed", "incomplete", "interrupted", "empty", "reconstructed")
+#: A data provenance record id (``vbt.datalayer.record.prov_id``).
+_PROV_ID = re.compile(r"^dp_[0-9a-f]{12}$")
 
 #: In-code defaults for the ``audit`` config section.
 AUDIT_DEFAULTS: dict[str, Any] = {
@@ -876,9 +879,40 @@ class Run:
     def _load(self, name: str, default):
         return st.read_json(self.dir / "evidence" / name, default)
 
+    def _derived_from(self, items: Any) -> tuple[list[dict[str, Any]] | None, list[str]]:
+        """``derived_from`` entries (data provenance ids ``dp_...`` or tool_use ids) as records, each with
+        whether this run holds its provenance record; ``(None, [error])`` for a malformed list."""
+        if items is None:
+            return [], []
+        if isinstance(items, str):
+            items = [items]
+        if not isinstance(items, (list, tuple)):
+            return None, ["'derived_from' is a list of data provenance ids (dp_...) or tool_use ids"]
+        out: list[dict[str, Any]] = []
+        prov_dir = self.dir / "logs" / "data_provenance"
+        for raw in items:
+            ident = str(raw or "").strip()
+            if not ident or len(ident) > 128 or any(c.isspace() or c in "/\\" for c in ident):
+                return None, [f"'derived_from' entry {raw!r} is not a provenance or tool_use id"]
+            if _PROV_ID.match(ident):
+                found = (prov_dir / "client" / f"{ident}.json").is_file() or any(
+                    ident in p.read_text(encoding="utf-8", errors="replace")[:400]
+                    for p in prov_dir.glob("*.json") if p.is_file())
+                out.append({"id": ident, "kind": "data_provenance", "found": found})
+            else:
+                out.append({"id": ident, "kind": "tool_use", "found": (prov_dir / f"{ident}.json").is_file()})
+        return out, []
+
     def register_artifact(self, path: str, description: str, agent: str, kind: str | None = None,
-                          workspace: str | Path | None = None) -> dict[str, Any]:
-        """Describe a file under work/ as citable evidence. Returns ok:false payloads."""
+                          workspace: str | Path | None = None, derived_from: Any = None) -> dict[str, Any]:
+        """Describe a file under work/ as citable evidence. Returns ok:false payloads.
+
+        ``derived_from`` names the inputs the file was built from: data provenance ids (``dp_...``, as
+        returned by ``vbt.datalayer.client``) or tool_use ids of data tool calls; each is recorded with
+        whether this run holds its provenance record (unknown ids are recorded and warned about)."""
+        lineage, problems = self._derived_from(derived_from)
+        if lineage is None:
+            return {"ok": False, "errors": problems}
         try:
             raw = os.path.expanduser(str(path or "").strip())
             if not raw:
@@ -925,12 +959,18 @@ class Run:
                 entry["registered_at"] = _now()
                 if kind:
                     entry["kind"] = str(kind).strip().lower()[:32]
+                if lineage:
+                    entry["derived_from"] = lineage
                 with self._guard("register_artifact records"):
                     self._write_registered_list()
                     self._write_manifest()
-            return {"ok": True, "artifact": {k: entry.get(k) for k in (
+            out: dict[str, Any] = {"ok": True, "artifact": {k: entry.get(k) for k in (
                 "path", "kind", "bytes", "sha256", "produced_by", "registered_by", "description",
-                "tool_use_id", "created_by")}}
+                "tool_use_id", "created_by", "derived_from") if k != "derived_from" or lineage}}
+            missing = [d["id"] for d in lineage if not d["found"]]
+            if missing:
+                out["warnings"] = [f"derived_from: no provenance record of {', '.join(missing)} in this run"]
+            return out
         except Exception as exc:  # noqa: BLE001
             self.note_audit_error(f"register_artifact: {type(exc).__name__}: {exc}")
             return {"ok": False, "errors": [f"internal error while registering {path}: {exc}"]}

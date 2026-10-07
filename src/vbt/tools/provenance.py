@@ -35,7 +35,7 @@ def _emit(ctx: ToolContext, kind: str, **data: Any) -> None:
 
 def _register(ctx: ToolContext, a: dict[str, Any]) -> Any:
     r = ctx.run.register_artifact(a.get("path", ""), a.get("description", ""), ctx.agent, a.get("kind"),
-                                  workspace=_workspace(ctx))
+                                  workspace=_workspace(ctx), derived_from=a.get("derived_from"))
     if r.get("ok"):
         _emit(ctx, "artifact_registered", path=r["artifact"]["path"], agent=ctx.agent)
     return r
@@ -113,7 +113,11 @@ def provenance_tools() -> list[Tool]:
              schema({"path": {"type": "string", "description": "file under work/ (absolute, run-relative or "
                                                                "relative to your workspace)"},
                      "description": {"type": "string"},
-                     "kind": {"type": "string", "description": "optional: figure | table | code | report | data"}},
+                     "kind": {"type": "string", "description": "optional: figure | table | code | report | data"},
+                     "derived_from": {"type": "array", "items": {"type": "string"},
+                                      "description": "optional: the inputs the file was built from: data "
+                                                     "provenance ids (dp_..., from vbt.datalayer.client) or "
+                                                     "tool_use ids of data tool calls"}},
                     ["path", "description"]), _register, source="provenance"),
         Tool("mcp__provenance__list_artifacts",
              "List what this run has produced so far — the exact citable paths — optionally by producing agent "

@@ -1,0 +1,37 @@
+{
+ "description": "Get colocalisation results for a chromosome.\nData: Open Targets Platform 25.09 · table colocalisation_coloc — one record = one COLOC colocalisation test between two credible sets.\nKey: leftStudyLocusId, rightStudyLocusId.\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. COLOC tests run by OT 25.09 between overlapping credible sets; absence means not tested.",
+ "schema": {
+  "properties": {
+   "chromosome": {
+    "type": "string"
+   },
+   "limit": {
+    "default": 50,
+    "maximum": 1000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "method": {
+    "default": "coloc",
+    "enum": [
+     "coloc",
+     "ecaviar"
+    ],
+    "type": "string"
+   },
+   "min_score": {
+    "default": 0.8,
+    "description": "Keeps rows with h4 >= this value; unknown values never pass. Defaults to 0.8; pass null for no restriction.",
+    "maximum": 1.0,
+    "minimum": 0.0,
+    "type": "number"
+   }
+  },
+  "required": [
+   "chromosome"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "genetics.get_colocalisation_by_chromosome"
+}

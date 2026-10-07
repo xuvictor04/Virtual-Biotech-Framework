@@ -1,0 +1,65 @@
+{
+ "description": "Get GWAS associations from credible sets and save to parquet file.\nData: Open Targets Platform 25.09 · table credible_set — one record = one fine-mapped credible set (study locus) of one study.\nKey: studyLocusId.\nArguments: study_id accepts gwas study (resolved; unknown -> error); variant_id accepts ot variant or rsid (resolved; unknown -> error).\nResults: ranked by pValueMantissa asc (upstream sorts every match); `_vbt.total` counts all matches.\nRows with unknown position are excluded and counted in `_vbt.excluded_unknown`.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Fine-mapped credible sets of OT 25.09 GWAS and molecular-QTL studies; absence means no credible set.",
+ "schema": {
+  "description": "Pass at least one of: study_id, variant_id, chromosome, region.",
+  "properties": {
+   "chromosome": {
+    "default": null,
+    "type": "string"
+   },
+   "limit": {
+    "default": 100,
+    "maximum": 10000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "output_path": {
+    "type": "string"
+   },
+   "region": {
+    "default": null,
+    "type": "string"
+   },
+   "study_id": {
+    "default": null,
+    "description": "Accepts gwas_study; resolved to one gwas_study (unknown values are errors, never empty results).",
+    "examples": [
+     "GCST004988"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:gwas_study"
+    ],
+    "x-vbt-id-type": "open_targets:gwas_study"
+   },
+   "variant_id": {
+    "default": null,
+    "description": "Accepts ot_variant, rsid; resolved to one ot_variant (unknown values are errors, never empty results).",
+    "examples": [
+     "19_44908822_C_T",
+     "rs7412"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ot_variant",
+     "open_targets:rsid"
+    ],
+    "x-vbt-id-type": "open_targets:ot_variant"
+   }
+  },
+  "required": [
+   "output_path"
+  ],
+  "type": "object",
+  "x-vbt-require-any": [
+   [
+    "study_id",
+    "variant_id",
+    "chromosome",
+    "region"
+   ]
+  ]
+ },
+ "serve": "pass",
+ "tool": "genetics.query_gwas_associations"
+}

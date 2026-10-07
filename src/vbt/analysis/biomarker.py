@@ -52,13 +52,20 @@ def load_processed_cohort(path, *, drug: str = "Infliximab", response_col: str =
     """Read an authors' processed cohort h5ad (``osmr/code/data/<GSE>.h5ad``;
     genes already collapsed) and return ``(expr samples x genes, labels)`` with
     labels 1 = non-responder, 0 = responder, restricted as in
-    ``03b_ifx_score_distributions.py``. Needs ``anndata`` (``pip install anndata``)."""
+    ``03b_ifx_score_distributions.py``. Needs ``anndata`` (``pip install anndata``).
+
+    The file is opened through the data client (``vbt.datalayer.client.open_matrix``): a cohort of the
+    archive (``zenodo_vbt.ibd_cohorts``) is checked ready and fingerprinted first, any file gets a
+    ``vbt.dataprov/1`` record; its id is in ``expr.attrs["vbt_prov"]``."""
     try:
         import anndata as ad
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise ImportError("load_processed_cohort needs anndata: pip install 'vbt-harness[singlecell]' "
                           "or pip install anndata") from exc
-    a = ad.read_h5ad(path)
+    from ..datalayer import client
+
+    handle = client.open_matrix(path=path)
+    a = ad.read_h5ad(handle.path)
     obs = a.obs
     mask = (obs["disease"] == disease) & (obs["drug"] == drug) & obs[response_col].isin(["R", "NR"])
     if baseline_only and "is_baseline" in obs:
@@ -69,6 +76,7 @@ def load_processed_cohort(path, *, drug: str = "Infliximab", response_col: str =
     expr = pd.DataFrame(X.astype(float), index=obs.index[mask], columns=list(map(str, a.var_names)))
     labels = (obs.loc[mask, response_col] == "NR").astype(int)
     labels.index = expr.index
+    expr.attrs["vbt_prov"] = handle.prov
     return expr, labels
 
 GP130_AXIS_GENES: list[str] = ["OSMR", "IL6ST", "LIFR", "IL6R", "IL11RA", "IL6", "IL11", "OSM",

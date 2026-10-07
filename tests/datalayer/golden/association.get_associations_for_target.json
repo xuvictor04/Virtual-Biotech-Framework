@@ -1,0 +1,51 @@
+{
+ "description": "Get all target-disease associations for a specific target and save to parquet file.\nData: Open Targets Platform 25.09 · table association_overall_direct — one record = one direct target-disease association score over all evidence.\nKey: diseaseId, targetId.\nArguments: target_id accepts ensembl gene or hgnc symbol (resolved; unknown -> error).\nResults: ranked by score desc (upstream sorts every match); `_vbt.total` counts all matches; `_vbt.grains.target` counts targets; `_vbt.grains.disease` counts diseases.\nRows with unknown score are excluded and counted in `_vbt.excluded_unknown`.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Direct OT 25.09 associations (evidence on the disease itself); absence means no evidence, not a negative finding.",
+ "schema": {
+  "properties": {
+   "include_indirect": {
+    "default": false,
+    "enum": [
+     "False",
+     "True"
+    ],
+    "type": "boolean"
+   },
+   "limit": {
+    "default": 100,
+    "maximum": 100000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "min_score": {
+    "default": 0.0,
+    "description": "Keeps rows with score >= this value; unknown values never pass. Defaults to 0.0; pass null for no restriction.",
+    "maximum": 1.0,
+    "minimum": 0.0,
+    "type": "number"
+   },
+   "output_path": {
+    "type": "string"
+   },
+   "target_id": {
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   }
+  },
+  "required": [
+   "output_path",
+   "target_id"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "association.get_associations_for_target"
+}

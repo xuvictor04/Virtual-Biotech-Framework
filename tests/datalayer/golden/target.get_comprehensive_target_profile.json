@@ -1,0 +1,54 @@
+{
+ "description": "Target profile: the target record with its known drugs, pathways, significant adverse-event reactions and mouse phenotypes, each section read on its own.\nData: Open Targets Platform 25.09 · table target — one record = one Ensembl human gene.\nKey: id.\nArguments: target_id accepts ensembl gene or hgnc symbol (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\npathways: mixed direct and propagated annotations.\ngo: direct annotations only.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Every Ensembl human gene in Open Targets 25.09 (existence only).\nDiseases, expression and interactions are not part of this view: use association.get_associations_for_target, expression.query_expression_by_gene and interaction.get_interactions.",
+ "schema": {
+  "properties": {
+   "include_diseases": {
+    "default": true,
+    "type": "boolean"
+   },
+   "include_drugs": {
+    "default": true,
+    "type": "boolean"
+   },
+   "include_expression": {
+    "default": true,
+    "type": "boolean"
+   },
+   "include_interactions": {
+    "default": true,
+    "type": "boolean"
+   },
+   "include_pathways": {
+    "default": true,
+    "type": "boolean"
+   },
+   "include_safety": {
+    "default": true,
+    "type": "boolean"
+   },
+   "target_id": {
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   },
+   "top_n": {
+    "default": 10,
+    "type": "integer"
+   }
+  },
+  "required": [
+   "target_id"
+  ],
+  "type": "object"
+ },
+ "serve": "derived",
+ "tool": "target.get_comprehensive_target_profile"
+}

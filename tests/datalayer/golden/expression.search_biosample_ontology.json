@@ -1,0 +1,45 @@
+{
+ "description": "Search biosample/tissue ontology or get specific biosample information.\nData: Open Targets Platform 25.09 · table biosample — one record = one biosample ontology term (tissue, cell type or cell line).\nKey: biosampleId.\nArguments: biosample_id accepts biosample (resolved; unknown -> error).\nResults: ranked by match_class asc (verified by the harness); `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Biosample terms integrated by OT 25.09 (existence only).",
+ "schema": {
+  "description": "Pass at least one of: query, biosample_id. At most one of: query, biosample_id.",
+  "properties": {
+   "biosample_id": {
+    "default": null,
+    "description": "Accepts biosample; resolved to one biosample (unknown values are errors, never empty results).",
+    "examples": [
+     "HALLMARK_APOPTOSIS"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:biosample"
+    ],
+    "x-vbt-id-type": "open_targets:biosample"
+   },
+   "limit": {
+    "default": 20,
+    "maximum": 500,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "query": {
+    "default": null,
+    "type": "string"
+   }
+  },
+  "type": "object",
+  "x-vbt-exclusive": [
+   [
+    "query",
+    "biosample_id"
+   ]
+  ],
+  "x-vbt-require-any": [
+   [
+    "query",
+    "biosample_id"
+   ]
+  ]
+ },
+ "serve": "derived",
+ "tool": "expression.search_biosample_ontology"
+}

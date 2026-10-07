@@ -1,0 +1,25 @@
+{
+ "description": "Get comprehensive clinical trial information from ClinicalTrials.gov.\nData: ClinicalTrials.gov (API v2) · table studies — one record = one registered clinical study (its current registry record).\nKey: protocolSection.identificationModule.nctId.\nArguments: nct_id accepts nct id (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Studies registered on ClinicalTrials.gov at the recorded data timestamp; registry search expands synonyms, so a match is not a literal text match.",
+ "schema": {
+  "properties": {
+   "nct_id": {
+    "description": "Accepts nct_id; resolved to one nct_id (unknown values are errors, never empty results).",
+    "examples": [
+     "NCT05653258"
+    ],
+    "pattern": "^NCT\\d{8}$",
+    "type": "string",
+    "x-vbt-accepts": [
+     "clinicaltrials_gov:nct_id"
+    ],
+    "x-vbt-id-type": "clinicaltrials_gov:nct_id"
+   }
+  },
+  "required": [
+   "nct_id"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "clinicaltrials.get_clinical_trial_details"
+}

@@ -1,0 +1,38 @@
+{
+ "description": "Get Human Phenotype Ontology (HPO) terms associated with a disease.\nData: Open Targets Platform 25.09 · table disease_phenotype — one record = one (disease, HPO phenotype) association with its evidence records.\nKey: disease, phenotype.\nArguments: disease_id accepts ot disease or disease name (resolved; unknown -> error).\nResults: ranked by phenotype asc (verified by the harness); `_vbt.total` counts all matches; `_vbt.grains.disease` counts diseases; `_vbt.grains.phenotype` counts phenotypes.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. HPO disease-phenotype annotations integrated by OT 25.09; negated (NOT) evidence is a negative finding, not support.",
+ "schema": {
+  "properties": {
+   "disease_id": {
+    "description": "Accepts ot_disease, disease_name; resolved to one ot_disease (unknown values are errors, never empty results).",
+    "examples": [
+     "EFO_0000685",
+     "rheumatoid arthritis"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ot_disease",
+     "open_targets:disease_name"
+    ],
+    "x-vbt-id-type": "open_targets:ot_disease"
+   },
+   "include_negated": {
+    "default": false,
+    "description": "Include negative findings (evidence that the relation does NOT hold), which are excluded by default; their number is disclosed.",
+    "type": "boolean",
+    "x-gateway": true
+   },
+   "limit": {
+    "default": 50,
+    "maximum": 500,
+    "minimum": 1,
+    "type": "integer"
+   }
+  },
+  "required": [
+   "disease_id"
+  ],
+  "type": "object"
+ },
+ "serve": "derived",
+ "tool": "disease.get_disease_phenotypes"
+}

@@ -1,0 +1,39 @@
+{
+ "description": "Get cross-species homologue information for a target.\nData: Open Targets Platform 25.09 · table target_homologues — one record = one homologue of one human gene in one species.\nKey: id, homologues[].speciesId, homologues[].targetGeneId, homologues[].homologyType.\nArguments: target_id accepts ensembl gene or hgnc symbol (resolved; unknown -> error).\nResults: one row = one item (one homologue of one human gene in one species); `_vbt.total` counts items.\nRows with unknown queryPercentageIdentity are excluded and counted in `_vbt.excluded_unknown`.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Ensembl Compara homologues integrated by OT 25.09; a missing species means no homologue listed.",
+ "schema": {
+  "properties": {
+   "min_identity": {
+    "default": null,
+    "description": "Keeps rows with homologues[].queryPercentageIdentity >= this value; unknown values never pass.",
+    "maximum": 100.0,
+    "minimum": 0.0,
+    "type": "number"
+   },
+   "species_filter": {
+    "default": null,
+    "description": "Values of homologues[].speciesName (see mcp__data__vocab).",
+    "type": "string",
+    "x-vbt-vocabulary": "open_targets.target.homologues[].speciesName"
+   },
+   "target_id": {
+    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
+    "examples": [
+     "ENSG00000169174",
+     "PCSK9"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "open_targets:ensembl_gene",
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:ensembl_gene"
+   }
+  },
+  "required": [
+   "target_id"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "target.get_homologues"
+}

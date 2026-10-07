@@ -1,0 +1,56 @@
+{
+ "description": "Get expression matrix for specific genes and save to .h5ad file.\nData: CZ CELLxGENE Census (human) · table var — one record = one gene (feature) measured in the human Census.\nKey: feature_id.\nArguments: gene_symbols accepts hgnc symbol (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence.\nwithout value_filter upstream keeps soma_joinid < max_cells: the first cells by join id, not a sample (disclosed in _vbt.scope)\nmax_cells truncates the matching cells; the number truncated is disclosed",
+ "schema": {
+  "properties": {
+   "gene_symbols": {
+    "description": "Accepts hgnc_symbol; resolved to one hgnc_symbol (unknown values are errors, never empty results).",
+    "examples": [
+     "PCSK9"
+    ],
+    "items": {
+     "type": "string"
+    },
+    "type": "array",
+    "x-vbt-accepts": [
+     "open_targets:hgnc_symbol"
+    ],
+    "x-vbt-id-type": "open_targets:hgnc_symbol"
+   },
+   "include_duplicates": {
+    "default": false,
+    "description": "Include duplicate records (cells counted in several datasets), which are excluded by default; their number is disclosed.",
+    "type": "boolean",
+    "x-gateway": true
+   },
+   "layer": {
+    "default": "raw",
+    "enum": [
+     "raw",
+     "normalized"
+    ],
+    "type": "string"
+   },
+   "max_cells": {
+    "default": 20000,
+    "maximum": 200000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "output_path": {
+    "type": "string"
+   },
+   "value_filter": {
+    "default": null,
+    "description": "Matched by the source's search engine: SOMA value_filter over obs columns; without one upstream takes soma_joinid < max_cells.",
+    "type": "string"
+   }
+  },
+  "required": [
+   "gene_symbols",
+   "output_path"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "single_cell.get_expression_for_genes"
+}

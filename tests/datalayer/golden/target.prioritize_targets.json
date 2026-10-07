@@ -1,0 +1,73 @@
+{
+ "description": "Multi-factor target prioritization for drug discovery.\nData: Open Targets Platform 25.09 · table target_prioritisation — one record = one gene's target-prioritisation factors.\nKey: targetId.\nResults: ordered by the sort_by argument; `_vbt.total` counts all matches.\nRows with unknown geneticConstraint, maxClinicalTrialPhase are excluded and counted in `_vbt.excluded_unknown`.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Prioritisation factors for genes OT 25.09 scored; a null factor means not assessed, never 0.",
+ "schema": {
+  "properties": {
+   "ascending": {
+    "default": false,
+    "type": "boolean"
+   },
+   "has_pocket": {
+    "default": null,
+    "type": "boolean"
+   },
+   "has_small_molecule_binder": {
+    "default": null,
+    "type": "boolean"
+   },
+   "is_membrane": {
+    "default": null,
+    "type": "boolean"
+   },
+   "is_secreted": {
+    "default": null,
+    "type": "boolean"
+   },
+   "limit": {
+    "default": 100,
+    "maximum": 1000,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "min_clinical_phase": {
+    "default": null,
+    "description": "Keeps rows with maxClinicalTrialPhase >= this value; unknown values never pass.",
+    "maximum": 4.0,
+    "minimum": 0.0,
+    "type": "integer"
+   },
+   "min_genetic_constraint": {
+    "default": null,
+    "description": "Keeps rows with geneticConstraint <= this value; unknown values never pass.",
+    "maximum": 1.0,
+    "minimum": -1.0,
+    "type": "number"
+   },
+   "no_safety_events": {
+    "default": false,
+    "type": "boolean"
+   },
+   "sort_by": {
+    "default": null,
+    "enum": [
+     "hasPocket",
+     "hasLigand",
+     "hasSmallMoleculeBinder",
+     "hasSafetyEvent",
+     "geneticConstraint",
+     "maxClinicalTrialPhase",
+     "isInMembrane",
+     "isSecreted",
+     "tissueSpecificity",
+     "tissueDistribution",
+     "mouseKOScore",
+     "paralogMaxIdentityPercentage",
+     "mouseOrthologMaxIdentityPercentage"
+    ],
+    "type": "string"
+   }
+  },
+  "type": "object"
+ },
+ "serve": "derived",
+ "tool": "target.prioritize_targets"
+}

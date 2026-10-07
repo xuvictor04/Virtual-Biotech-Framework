@@ -1,0 +1,31 @@
+{
+ "description": "Search PubMed.\nData: PubMed (NCBI E-utilities) · table records — one record = one PubMed citation record.\nKey: pmid.\nResults: ordered by the sort argument; `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. PubMed citations available at the time of the call (and before the run's literature ceiling when one is set).\na count of 0 is an unverified empty: PubMed search maps and expands terms, so no match is not evidence that nothing was published\nrecords after the literature ceiling (or with no date) are withheld and listed in 'withheld'",
+ "schema": {
+  "properties": {
+   "max_results": {
+    "default": 20,
+    "maximum": 200,
+    "minimum": 1,
+    "type": "integer"
+   },
+   "query": {
+    "description": "Matched by the source's search engine: PubMed query syntax: automatic term mapping, field tags ([tiab], [si]) and Boolean operators.",
+    "type": "string"
+   },
+   "sort": {
+    "default": "relevance",
+    "enum": [
+     "relevance",
+     "pub_date"
+    ],
+    "type": "string"
+   }
+  },
+  "required": [
+   "query"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "pubmed.search_pubmed"
+}

@@ -1,0 +1,40 @@
+{
+ "description": "Get clinical data for samples in a study.\nData: cBioPortal for Cancer Genomics (public studies) · table sample — one record = one specimen of one patient in one study.\nKey: studyId, sampleId.\nArguments: study_id accepts cbio study (resolved; unknown -> error); sample_ids accepts cbio sample (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches; `_vbt.grains.patient` counts patients.\nOS_MONTHS, OS_STATUS, DFS_MONTHS, DFS_STATUS ... are patient values repeated on each row; count patients with `_vbt.grains.patient`.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence.",
+ "schema": {
+  "properties": {
+   "sample_ids": {
+    "default": null,
+    "description": "Accepts cbio_sample; resolved to one cbio_sample (unknown values are errors, never empty results).",
+    "examples": [
+     "TCGA-A1-A0SB-01"
+    ],
+    "items": {
+     "type": "string"
+    },
+    "minItems": 1,
+    "type": "array",
+    "x-vbt-accepts": [
+     "cbioportal:cbio_sample"
+    ],
+    "x-vbt-id-type": "cbioportal:cbio_sample"
+   },
+   "study_id": {
+    "description": "Accepts cbio_study; resolved to one cbio_study (unknown values are errors, never empty results).",
+    "examples": [
+     "brca_tcga_pan_can_atlas_2018"
+    ],
+    "type": "string",
+    "x-vbt-accepts": [
+     "cbioportal:cbio_study"
+    ],
+    "x-vbt-id-type": "cbioportal:cbio_study"
+   }
+  },
+  "required": [
+   "study_id"
+  ],
+  "type": "object"
+ },
+ "serve": "pass",
+ "tool": "clinicaltrials.get_clinical_data"
+}

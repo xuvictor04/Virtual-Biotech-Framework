@@ -1,5 +1,5 @@
 # Overlay for the upstream association server (association_mcp; docs/DATA_LAYER.md §8.7, Appendix A).
-# Phase 1: 7 pass, 2 derived, 2 block.
+# Phase 2: 7 pass, 3 derived, 1 block (compare_direct_indirect is derived over complete key sets).
 schema: vbt.overlay/1
 server: association
 sources: [open_targets]
@@ -70,19 +70,36 @@ tools:
     serve: pass
 
   compare_direct_indirect:
+    # Phase 2 (F14): derived. Both key sets are read untruncated, so the counts are computed on the
+    # complete sets; limit bounds only the rows listed per part. No parquet file is written.
     reads:
-      open_targets.association_overall_direct: {access: full_table}
-      open_targets.association_by_overall_indirect: {access: full_table}
+      open_targets.association_overall_direct: {access: bounded_scan}
+      open_targets.association_by_overall_indirect: {access: bounded_scan}
     args:
       output_path: {role: output_path}
       target_id:   {binds: open_targets.association_overall_direct.targetId, accepts: [ensembl_gene, hgnc_symbol]}
       disease_id:  {binds: open_targets.association_overall_direct.diseaseId, accepts: [ot_disease, disease_name]}
-    result: {kind: record, rows: $}
-    serve: block
-    block:
-      reason: "Compares the top-limit prefixes of the direct and indirect tables, so 'direct only' and 'indirect only' depend on the limit, not on the data. A derived comparison over the complete keys arrives in phase 2."
-      alternatives: [association.query_associations]
-      until_phase: 2
+      min_score:   {binds: open_targets.association_overall_direct.score, op: ge, min: 0, max: 1}
+      limit:       {role: limit, min: 1, max: 1000}
+    require_any: [[target_id, disease_id]]
+    result:
+      rows: [$.direct_only, $.indirect_only, $.shared]
+      order: [{column: score, direction: desc, nulls: last}, {column: diseaseId, direction: asc}]
+    serve: derived
+    derived:
+      verb: find
+      table: open_targets.association_overall_direct
+      split:
+        compare_with: open_targets.association_by_overall_indirect
+        keys: [targetId, diseaseId]
+        into: {left_only: $.direct_only, right_only: $.indirect_only, both: $.shared}
+        counts: counts
+        count_names: {left: direct_count, right: indirect_count, left_only: unique_to_direct_count,
+                      right_only: unique_to_indirect_count, both: shared_count}
+      sections:
+        counts: {path: $.counts, table: open_targets.association_by_overall_indirect, verb: count}
+    text:
+      notes: ["Counts are over the complete direct and indirect key sets; limit bounds only the rows listed per part. No file is written (output_path is accepted and confined, nothing is saved to it)."]
     defects:
       - {id: OT-ASSOC-004, what: "set differences of two head(limit) prefixes are reported as direct-only and indirect-only associations",
          where: "association_mcp/tools.py:363-372", effect: silent_wrong}
@@ -217,7 +234,8 @@ tools:
       order: [{column: similarity, direction: desc, nulls: last}]
       order_source: upstream_full_sort            # detector test proves upstream sorts all candidates first
     serve: pass
-    on_contradiction: tool_defect                 # phase 2 (F14): derived: {verb: similar, table: open_targets.literature_vector}
+    on_contradiction: derived                     # phase 2 (F14): a contradicted top-k is repaired by the data child's cosine
+    derived: {verb: similar, table: open_targets.literature_vector, columns: [word, category, norm]}
     defects:
       - {id: OT-ASSOC-010, what: "a candidate with norm 0 gives a NaN cosine, and sorting a list holding NaN leaves it unordered (the top-k is not the most similar)",
          where: "association_mcp/tools.py:1111-1122", test: test_dl_defect_detectors.py::test_ot_assoc_010, effect: silent_wrong}
