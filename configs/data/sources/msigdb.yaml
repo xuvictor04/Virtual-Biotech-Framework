@@ -1,0 +1,52 @@
+# MSigDB Hallmark gene sets (h.all, GMT) with an enrichment contract (docs/DATA_LAYER.md §6.8 S9;
+# phase 2, strict: true; the enrich verb arrives in phase 3, F16).
+#
+# One row of the GMT file is one set: its name, a URL and its member symbols. Set names are a
+# YAML-configured local key (no Python per dataset, G2). Members are HGNC symbols mapped to Open
+# Targets genes; a gene list whose symbols resolve below `min_resolved_fraction` is
+# `insufficient_resolution`, never a silently shorter list. The enrichment universe is the protein-
+# coding genes of Open Targets, the family is every Hallmark set within the size bounds (zero-overlap
+# sets included), and the correction is BH over that family.
+schema: vbt.datasource/1
+source: msigdb
+title: MSigDB Hallmark gene sets (GMT)
+root: ${MSIGDB_DATA_PATH:-${vars.project_root}/data/msigdb}
+release: {expect: "2024.1.Hs", from: literal}
+defaults: {format: gmt, layout: single_file, missing: unknown}
+strict: true
+
+id_types:
+  msigdb_set: {plugin: local_key, options: {canonical: "^HALLMARK_[A-Z0-9_]+$", normalize: [strip, upper]},
+               universe: hallmark.set_id}
+
+tables:
+  hallmark:
+    kind: sets
+    path: h.all.v2024.1.Hs.symbols.gmt
+    format: gmt
+    # one collection per GMT file; its name is the file stem (gmt plugin default) or this pattern
+    fragment_key: {name: collection, from: filename_regex, pattern: "^(.+)\\.gmt$"}
+    grain: one (Hallmark gene set, member gene symbol) membership
+    key: {columns: [set_id, "members[]"], check: full}
+    grains: {set: [set_id], member: ["members[]"]}
+    coverage: {statement: "The 50 MSigDB Hallmark sets of release 2024.1.Hs; a gene outside a set is not a member of that set.",
+               absence_means: absent}
+    sentinels:
+      present: [{key: {set_id: HALLMARK_APOPTOSIS}, expect: {nonempty: [members]}}]
+      absent:  [{key: {set_id: HALLMARK_NOT_A_SET}}]
+    columns:
+      set_id:      {role: identifier, id_type: msigdb_set, self: true}
+      description: {role: reference, ref_kinds: [url]}
+      members:
+        role: member
+        item_key: {identity: value}
+        membership:
+          set: {parent: set_id, id_type: msigdb_set}
+          member: {path: "[]", id_type: "open_targets:hgnc_symbol", maps_to: "open_targets:ensembl_gene"}
+          propagation: direct
+          min_resolved_fraction: 0.95
+          enrichment:
+            universe: {table: open_targets.target, keys: [id], where: {eq: [biotype, protein_coding]}}
+            family: {include_zero_overlap: true, size_bounds: {min_arg: min_size, max_arg: max_size, counted_within: universe}}
+            test: hypergeom_enrichment
+            correction: fdr_bh

@@ -1,0 +1,151 @@
+# DepMap Public 24Q4 CRISPR (Chronos) gene effect, dependency probability and model annotations
+# (docs/DATA_LAYER.md §6.7 S4; phase 2, strict: true).
+#
+# The gene-effect and dependency files are wide matrices: one row per model (``ModelID``; older
+# releases name the column ``DepMap_ID`` or leave the header blank), one column per gene, headed
+# ``SYMBOL (ENTREZ)``. The header axis is parsed (every header must parse, R4), values are read by
+# position after the header checks, and the logical long view is (model, gene, value) with an
+# empty cell = not measured, never 0. Symbols in headers are the release's snapshot, not current
+# labels. Put the release files under ${DEPMAP_DATA_PATH} (figshare "DepMap Public 24Q4"); record
+# their sizes and md5 in an inline manifest with `vbt ds fingerprint --write` to catch truncation.
+schema: vbt.datasource/1
+source: depmap
+title: DepMap Public CRISPR (Chronos) gene effect and model annotations
+root: ${DEPMAP_DATA_PATH:-${vars.project_root}/data/depmap}
+release: {expect: "24Q4", from: literal}
+defaults: {format: csv, layout: single_file, missing: unknown}
+strict: true
+
+id_types:
+  depmap_model: {plugin: depmap_cell_line, universe: model.ModelID,
+                 resolve_via: [model.CellLineName, model.StrippedCellLineName, model.CCLEName],
+                 disambiguate_with: [OncotreeLineage, OncotreePrimaryDisease]}
+  ncbi_gene:    {plugin: ncbi_gene, options: {input_requires_prefix: true},          # "NCBIGene:3845"; bare digits look like PMIDs
+                 universe: {table: gene_effect, keys: ["@col.entrez_id"]}}
+                 # the HGNC crosswalk to open_targets:ensembl_gene arrives with an HGNC complete-set source
+
+tables:
+  gene_effect:
+    kind: matrix
+    path: CRISPRGeneEffect.csv
+    grain: one (model, gene) Chronos gene-effect estimate, integrated over all CRISPR screens of the model
+    key: {columns: ["@row.ModelID", "@col.entrez_id"], check: full}
+    aggregated_over: [{dimension: screen_library, how: chronos_integration, origin: "DepMap 24Q4 release notes"}]
+    rank: [{column: gene_effect, direction: asc, nulls: last}]
+    coverage:
+      statement: "Models that passed CRISPR QC in 24Q4 and genes whose guides passed filtering; an empty cell means not measured, never 0. Not comparable across releases."
+      absence_means: unknown
+      universe: {table: gene_effect, keys: ["@row.ModelID", "@col.entrez_id"], mode: tuple}
+    sentinels:
+      present: [{key: {ModelID: ACH-000001, entrez_id: "6122"}, expect: {gene_effect: {lt: -0.5}}}]   # RPL3
+      absent:  [{key: {ModelID: ACH-999999}}]
+    matrix:
+      storage: text
+      axes:
+        row: {name: model, from: column, column: {index: 0}, aliases: [ModelID, DepMap_ID, ""],
+              key: {columns: [ModelID]},
+              columns: {ModelID: {role: identifier, id_type: depmap_model, self: true, ref: model.ModelID}},
+              attributes_from: {table: model, key: ModelID, columns: [OncotreeLineage, OncotreePrimaryDisease]}}
+        col: {name: gene, from: header, exclude: [ModelID, DepMap_ID, ""],
+              parse: {pattern: '^(?P<symbol>\S+) \((?P<entrez_id>\d+)\)$',
+                      fields: {entrez_id: {role: identifier, id_type: ncbi_gene, self: true},
+                               symbol:    {role: label, of: entrez_id, unique: false, authority: release_snapshot}}},
+              key: {columns: [entrez_id]}}
+      values:
+        gene_effect: {role: measure, statistic: gene_effect, fallback: numeric, direction: lower_is_stronger,
+                      cutoff: {value: -0.5, op: le, meaning: dependency, origin: "DepMap convention"},
+                      comparable_within: [release], missing: unknown}
+
+  gene_dependency:
+    kind: matrix
+    path: CRISPRGeneDependency.csv
+    grain: one (model, gene) probability that the gene's knockout is a true dependency of the model
+    key: {columns: ["@row.ModelID", "@col.entrez_id"], check: full}
+    aggregated_over: [{dimension: screen_library, how: chronos_integration, origin: "DepMap 24Q4 release notes"}]
+    rank: [{column: dependency_probability, direction: desc, nulls: last}]
+    coverage:
+      statement: "Dependency probabilities from the 24Q4 Chronos model; an empty cell means not measured."
+      absence_means: unknown
+      universe: {table: gene_dependency, keys: ["@row.ModelID", "@col.entrez_id"], mode: tuple}
+    matrix:
+      storage: text
+      axes:
+        row: {name: model, from: column, column: {index: 0}, aliases: [ModelID, DepMap_ID, ""],
+              key: {columns: [ModelID]},
+              columns: {ModelID: {role: identifier, id_type: depmap_model, self: true, ref: model.ModelID}}}
+        col: {name: gene, from: header, exclude: [ModelID, DepMap_ID, ""],
+              parse: {pattern: '^(?P<symbol>\S+) \((?P<entrez_id>\d+)\)$',
+                      fields: {entrez_id: {role: identifier, id_type: ncbi_gene, self: true},
+                               symbol:    {role: label, of: entrez_id, unique: false, authority: release_snapshot}}},
+              key: {columns: [entrez_id]}}
+      values:
+        dependency_probability: {role: measure, statistic: score_0_1, scale: [0, 1], direction: higher_is_stronger,
+                                 cutoff: {value: 0.5, op: gt, meaning: dependency, origin: "DepMap convention"},
+                                 comparable_within: [release], missing: unknown}
+
+  model:
+    kind: entity
+    path: Model.csv
+    grain: one DepMap model (cell line, organoid or other model of one patient's tumour)
+    key: {columns: [ModelID], check: full}
+    coverage: {statement: "Every DepMap 24Q4 model (existence only).", absence_means: absent, applies_to: entity}
+    sentinels:
+      present: [{key: {ModelID: ACH-000001}}]
+      absent:  [{key: {ModelID: ACH-999999}}]
+    columns:
+      ModelID:              {role: identifier, id_type: depmap_model, self: true}
+      # release-dependent column names: older releases call the model ID DepMap_ID (an alias, `equals`)
+      DepMap_ID:            {role: identifier, id_type: depmap_model, equals: ModelID, optional: true}
+      PatientID:            {role: identifier, resolvable: false}
+      CellLineName:         {role: label, of: ModelID, unique: false}
+      StrippedCellLineName: {role: label, of: ModelID, unique: false}
+      CCLEName:             {role: label, of: ModelID, unique: false, missing: unknown}
+      DepmapModelType:      {role: category, vocab: data}
+      OncotreeLineage:      {role: category, vocab: data}
+      OncotreePrimaryDisease: {role: category, vocab: data}
+      OncotreeSubtype:      {role: category, vocab: data}
+      OncotreeCode:         {role: category, vocab: data}
+      LegacyMolecularSubtype: {role: category, vocab: data, optional: true}
+      PatientMolecularSubtype: {role: category, vocab: data, optional: true}
+      RRID:                 {role: identifier, id_type: "tahoe_100m:cellosaurus", resolvable: false}
+      Age:                  {role: measure, statistic: numeric, unit: years, missing: unknown}
+      AgeCategory:          {role: category, vocab: data}
+      Sex:                  {role: category, vocab: data, placeholders: [Unknown]}
+      PatientRace:          {role: category, vocab: data, placeholders: [unknown]}
+      PrimaryOrMetastasis:  {role: category, vocab: data}
+      SampleCollectionSite: {role: category, vocab: data}
+      SourceType:           {role: category, vocab: data}
+      SourceDetail:         {role: payload}
+      CatalogNumber:        {role: payload}
+      ModelType:            {role: category, vocab: data}
+      GrowthPattern:        {role: category, vocab: data}
+      OnboardedMedia:       {role: payload}
+      FormulationID:        {role: payload}
+      SerumFreeMedia:       {role: flag, missing: unknown, encoding: {"True": true, "False": false}, verified: false}
+      PlateCoating:         {role: category, vocab: data}
+      EngineeredModel:      {role: category, vocab: data}
+      EngineeredModelDetails: {role: text}
+      CulturedResistanceDrug: {role: category, vocab: data}
+      PublicComments:       {role: text}
+      HCMIID:               {role: identifier, resolvable: false}
+      ModelAvailableInDbgap: {role: category, vocab: data}
+      ModelSubtypeFeatures: {role: text}
+      WTSIMasterCellID:     {role: identifier, resolvable: false}
+      SangerModelID:        {role: identifier, resolvable: false}
+      COSMICID:             {role: identifier, resolvable: false}
+      LegacySubSubtype:     {role: category, vocab: data, optional: true}
+
+  common_essentials:
+    kind: sets
+    path: CRISPRInferredCommonEssentials.csv
+    # one set per file: the set name is a constant taken from the file name (InferredCommonEssentials)
+    fragment_key: {name: essential_set, from: filename_regex, pattern: "^CRISPR(\\w+)\\.csv$"}
+    grain: one gene DepMap 24Q4 infers to be a common essential across its CRISPR screens
+    key: {columns: [Essentials], check: full}
+    coverage: {statement: "Genes inferred common-essential by DepMap 24Q4 Chronos; absence means not inferred essential (the gene may be unscreened).",
+               absence_means: unknown}
+    columns:
+      Essentials: {role: identifier, resolvable: false,
+                   parse: {pattern: '^(?P<symbol>\S+) \((?P<entrez_id>\d+)\)$',
+                           fields: {entrez_id: {role: identifier, id_type: ncbi_gene},
+                                    symbol:    {role: label, of: entrez_id, unique: false, authority: release_snapshot}}}}
