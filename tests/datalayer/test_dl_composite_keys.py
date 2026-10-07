@@ -172,3 +172,33 @@ async def test_salt_family_fans_out_and_keeps_stored_ids(tmp_path) -> None:
     rows = res.obj["indications"]
     assert {(r["id"], r["disease"]) for r in rows} == {("CHEMBL553", "EFO_0000001"), ("CHEMBL1079742", "EFO_0000002")}
     assert any("family members" in n for n in res.header.get("notes", [])), res.header
+
+
+# ---------------------------------------------------------------------------- QTL colocalisation
+
+
+async def test_qtl_colocalisation_reads_the_colocalisation_table(tmp_path) -> None:
+    import dl_fixtures as F
+    from test_dl_native_tools import _derived, _gateway
+
+    from vbt.datalayer.errors import GatewayError
+
+    left = "0001c69f7e3cc7461e44e5b3c68bb446"
+    rights = {"a" * 32: ("eqtl", 0.9), "b" * 32: ("pqtl", 0.7), "c" * 32: ("eqtl", 0.2)}
+    ot = tmp_path / "ot" / "25.09"
+    F.write_table(ot, "colocalisation_ecaviar", F.table("colocalisation_ecaviar", [
+        {"leftStudyLocusId": left, "rightStudyLocusId": r, "chromosome": "1", "rightStudyType": t, "clpp": c,
+         "numberColocalisingVariants": 3, "colocalisationMethod": "eCAVIAR"} for r, (t, c) in rights.items()]))
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("OPEN_TARGETS_DATA_PATH", str(ot))
+        gw = _gateway(_ctx(tmp_path, {}), tmp_path)
+        res = await _derived(gw, "genetics", "get_qtl_colocalization",
+                             {"study_locus_id": left, "qtl_type": "eqtl", "min_clpp": 0.5})
+        assert [(r["rightStudyLocusId"], r["clpp"]) for r in res.obj["results"]] == [("a" * 32, 0.9)]
+        assert res.obj["num_results"] == 1
+        with pytest.raises(GatewayError) as e:
+            await _derived(gw, "genetics", "get_qtl_colocalization", {"study_locus_id": left, "qtl_type": "eQTL"})
+        assert e.value.kind.value == "invalid_argument", "the QTL type is an exact vocabulary value"
+        with pytest.raises(GatewayError) as e:
+            await _derived(gw, "genetics", "get_qtl_colocalization", {"study_locus_id": left, "gene_id": "PCSK9"})
+        assert e.value.kind.value == "unsupported_filter"

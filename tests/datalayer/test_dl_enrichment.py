@@ -304,3 +304,100 @@ async def test_pathway_tools_are_derived_with_upstream_fields(ctx, tmp_path) -> 
     assert all(r["go_aspect"] == "P" for r in terms.values())
     assert terms["GO:0000001"]["go_name"] == "term 01", "names come from the OT go table"
     assert go.obj["count"] == len(terms)
+
+
+# ---------------------------------------------------------------------------- DepMap essentiality aggregation
+
+LUNG, BREAST = ("UBERON_0002048", "lung"), ("UBERON_0000310", "breast")
+SCREENS = {  # gene -> [(tissue, line, disease, effect)]
+    1: [(LUNG, "A1", "Lung Cancer", -1.0), (LUNG, "A2", "Lung Cancer", -0.5), (LUNG, "A3", "Lung Cancer", None),
+        (LUNG, "C1", "Lung Adenocarcinoma", -2.0), (BREAST, "B1", "Breast Cancer", 0.1),
+        (BREAST, "B2", "Breast Cancer", -0.2)],
+    2: [(LUNG, "A1", "Lung Cancer", -0.1), (LUNG, "A2", "Lung Cancer", -0.2), (BREAST, "B1", "Breast Cancer", -0.9),
+        (BREAST, "B2", "Breast Cancer", -1.0)],
+}
+
+
+@pytest.fixture(scope="module")
+def depmap(ctx: Any) -> Any:
+    import dl_fixtures as F
+
+    ot = Path(ctx.catalog.source("open_targets").root)
+    rows = []
+    for gi, screens in SCREENS.items():
+        tissues: dict[str, dict[str, Any]] = {}
+        for (tid, tname), line, disease, effect in screens:
+            t = tissues.setdefault(tid, {"tissueId": tid, "tissueName": tname, "screens": []})
+            t["screens"].append({"depmapId": f"ACH-{line}", "cellLineName": line, "diseaseFromSource": disease,
+                                 "geneEffect": effect, "expression": 1.0})
+        rows.append({"id": G[gi], "geneEssentiality": [{"isEssential": gi == 1,
+                                                        "depMapEssentiality": list(tissues.values())}]})
+    F.write_table(ot, "target_essentiality", F.table("target_essentiality", rows))
+    return ctx
+
+
+async def test_essentiality_tools_use_exact_groups_and_the_declared_cutoff(depmap, tmp_path) -> None:
+    from test_dl_native_tools import _derived, _gateway
+
+    from vbt.datalayer.errors import GatewayError
+
+    gw = _gateway(depmap, tmp_path)
+    res = await _derived(gw, "functional_genomics", "query_gene_essentiality", {"gene_id": "GENEA"})
+    tissues = {t["tissue"]["id"]: t for t in res.obj["essentiality_by_tissue"]}
+    lung = tissues[LUNG[0]]
+    assert lung["num_cell_lines"] == 4 and lung["num_with_effect"] == 3
+    assert lung["mean_gene_effect"] == pytest.approx((-1.0 - 0.5 - 2.0) / 3)
+    assert lung["essential_fraction"] == 1.0, "-0.5 meets the inclusive cutoff (upstream's strict < missed it)"
+    assert tissues[BREAST[0]]["essential_fraction"] == 0.0 and res.obj["is_essential"] is True
+    only = await _derived(gw, "functional_genomics", "query_gene_essentiality",
+                          {"gene_id": G[1], "disease": "Lung Cancer"})
+    (t,) = only.obj["essentiality_by_tissue"]
+    assert t["num_cell_lines"] == 3 and t["mean_gene_effect"] == pytest.approx(-0.75), "no Lung Adenocarcinoma lines"
+    with pytest.raises(GatewayError) as e:
+        await _derived(gw, "functional_genomics", "query_gene_essentiality", {"gene_id": G[1], "disease": "lung"})
+    assert e.value.kind.value == "invalid_argument"
+    cmp = await _derived(gw, "functional_genomics", "compare_essentiality_across_diseases",
+                         {"gene_id": G[1], "diseases": ["Lung Cancer", "Breast Cancer"]})
+    rows = cmp.obj["disease_essentiality"]
+    assert [(r["disease"], r["num_cell_lines"], r["rank"]) for r in rows] == [("Lung Cancer", 2, 1),
+                                                                            ("Breast Cancer", 2, 2)]
+    assert cmp.obj["num_diseases_compared"] == 2
+    ess = await _derived(gw, "functional_genomics", "find_essential_genes", {"disease": "Lung Cancer",
+                                                                            "min_cell_lines": 2})
+    assert [g["gene_id"] for g in ess.obj["genes"]] == [G[1]] and ess.obj["genes"][0]["essential_fraction"] == 1.0
+    assert ess.obj["num_results"] == 1
+    sel = await _derived(gw, "functional_genomics", "find_selective_dependencies",
+                         {"target_disease": "Breast Cancer", "comparison_disease": "Lung Cancer", "min_cell_lines": 2})
+    (g,) = sel.obj["genes"]
+    assert g["gene_id"] == G[2] and g["effect_difference"] == pytest.approx(-0.95 + 0.15)
+
+
+# ---------------------------------------------------------------------------- tissue specificity (unit guard)
+
+
+async def test_tissue_specific_genes_compare_within_one_unit(ctx, tmp_path) -> None:
+    import dl_fixtures as F
+    from test_dl_native_tools import _derived, _gateway
+
+    def tissue(code: str, label: str, value: float | None, unit: str) -> dict[str, Any]:
+        return {"efo_code": code, "label": label, "rna": {"value": value, "zscore": 1, "level": 1, "unit": unit}}
+
+    liver, lung, brain, gut = ("UBERON_0002107", "liver"), ("UBERON_0002048", "lung"), ("UBERON_0000955", "brain"), \
+        ("UBERON_0000160", "intestine")
+    rows = [
+        {"id": G[1], "tissues": [tissue(*liver, 100.0, "TPM"), tissue(*lung, 10.0, "TPM"), tissue(*brain, 20.0, "TPM"),
+                                 tissue(*gut, 5000.0, "")]},            # the blank-unit value is never pooled
+        {"id": G[2], "tissues": [tissue(*liver, 8.0, "TPM"), tissue(*lung, 0.0, "TPM"), tissue(*brain, 0.0, "TPM")]},
+        {"id": G[3], "tissues": [tissue(*liver, 12.0, "TPM"), tissue(*lung, 10.0, "TPM"), tissue(*brain, 11.0, "TPM")]},
+        {"id": G[4], "tissues": [tissue(*liver, 50.0, ""), tissue(*lung, 1.0, "")]},
+    ]
+    F.write_table(Path(ctx.catalog.source("open_targets").root), "expression", F.table("expression", rows))
+    gw = _gateway(ctx, tmp_path)
+    res = await _derived(gw, "expression", "find_tissue_specific_genes",
+                         {"output_path": "liver.csv", "tissue": "Liver", "fold_change_threshold": 2.0})
+    genes = res.obj["top_genes"]
+    assert [g["gene_id"] for g in genes] == [G[2], G[1]], "only-in-target first, then fold change; G3 is not specific"
+    assert genes[0]["fold_change"] is None and genes[0]["expressed_only_in_target"] is True, "no 999.9 sentinel"
+    assert genes[1]["fold_change"] == pytest.approx(100.0 / 15.0) and genes[1]["median_other_tissues"] == 15.0
+    assert all(g["unit"] == "TPM" for g in genes), "G4 (blank unit) is excluded, not compared"
+    assert res.obj["num_results"] == 2

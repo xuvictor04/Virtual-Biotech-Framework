@@ -574,4 +574,233 @@ def serve_enrich(ctx: ServiceContext, req: Mapping[str, Any]) -> dict[str, Any]:
                          served_by="derived").model_dump(mode="json")
 
 
+# ---------------------------------------------------------------------------- grouped essentiality (DepMap)
+
+
+def _effect_stats(effects: Sequence[Any], spec: Any, threshold: Any = None) -> dict[str, Any]:
+    """``n``, ``n_unknown``, ``mean_gene_effect`` and ``essential_fraction`` of screen effects: unknown effects
+    are excluded and counted; the fraction uses the measure's declared cutoff (its inclusivity), or
+    ``<= threshold`` when the call gives one; ``None`` (never 0) without a known effect."""
+    from ...plugins.statistics.gene_effect import meets_cutoff
+
+    known = [float(e) for e in effects if isinstance(e, (int, float)) and not isinstance(e, bool) and e == e]
+    out: dict[str, Any] = {"n": len(known), "n_unknown": len(effects) - len(known),
+                           "mean_gene_effect": (sum(known) / len(known)) if known else None}
+    if threshold is not None:
+        flags = [e <= float(threshold) for e in known]
+    elif getattr(spec, "cutoff", None) is not None:
+        flags = [bool(meets_cutoff(e, spec)) for e in known]
+    else:
+        flags = []
+    out["essential_count"] = sum(flags) if flags or known else None
+    out["essential_fraction"] = (sum(flags) / len(flags)) if flags else None
+    return out
+
+
+def _screen_paths(opts: Mapping[str, Any]) -> dict[str, str]:
+    cols = dict(opts.get("columns") or {})
+    missing = [k for k in ("gene", "effect", "disease") if k not in cols]
+    if missing:
+        raise ServiceError(f"split.essentiality.columns needs {', '.join(missing)}")
+    return cols
+
+
+@serve_extension("essentiality", lambda req: bool((req.get("split") or {}).get("essentiality")))
+def serve_essentiality(ctx: ServiceContext, req: Mapping[str, Any]) -> dict[str, Any]:
+    """Grouped screen statistics for the DepMap essentiality tools (``split: {essentiality: {mode, columns,
+    args}}``) over the screens item table: ``by_tissue`` (one gene's tissues, with its screens),
+    ``by_disease`` (one gene per disease), ``by_gene`` (genes essential in one disease) and ``selective``
+    (genes whose mean effect in a target disease is lower than in a comparison disease). Diseases are exact
+    vocabulary values (the gateway checked them); groups below ``min_cell_lines`` known effects are dropped and
+    counted; unknown effects never count as non-essential."""
+    opts = dict((req.get("split") or {}).get("essentiality") or {})
+    params = dict(req.get("params") or {})
+    args = dict(opts.get("args") or {})
+    cols = _screen_paths(opts)
+
+    def p(name: str, default: Any) -> Any:
+        v = params.get(args.get(name, name))
+        return default if v is None else v
+
+    view = long_view(ctx, str(req.get("table")))
+    spec = view.column(cols["effect"].split(".")[-1]) or view.column(cols["effect"])
+    pred = from_json(req["predicate"]) if req.get("predicate") else None
+    mode = opts.get("mode")
+    want = list(dict.fromkeys(v for v in cols.values()))
+    if mode == "selective":
+        target, comparison = params.get(args.get("target", "target_disease")), params.get(
+            args.get("comparison", "comparison_disease"))
+        if target == comparison:
+            raise GatewayError(ErrorKind.invalid_argument, "the target and comparison diseases are the same group")
+        pred = In(cols["disease"], (target, comparison))
+    rows, _total, _eu = view.rows(pred, columns=want, order=[], limit=None, budget=req.get("budget_bytes"))
+    min_n = int(p("min_cell_lines", 1))
+    below = 0
+    out: list[dict[str, Any]] = []
+    if mode == "by_tissue":
+        genes = {r.get(cols["gene"]) for r in rows}
+        groups: dict[Any, list[dict[str, Any]]] = {}
+        for r in rows:
+            groups.setdefault(r.get(cols["tissue_id"]), []).append(r)
+        tissues = []
+        for tid in sorted(groups, key=lambda t: str(t)):
+            g = groups[tid]
+            st = _effect_stats([r.get(cols["effect"]) for r in g], spec)
+            screens = sorted(({k: r.get(v) for k, v in dict(opts.get("screen_fields") or {}).items()} for r in g),
+                             key=lambda s: str(s.get("depmapId")))
+            tissues.append({"tissue": {"id": tid, "name": g[0].get(cols.get("tissue_name", ""))},
+                            "num_cell_lines": len(g), "num_with_effect": st["n"],
+                            "mean_gene_effect": st["mean_gene_effect"], "essential_fraction": st["essential_fraction"],
+                            "cell_lines": screens})
+        flags = [r.get(cols["essential_flag"]) for r in rows if cols.get("essential_flag")]
+        known_flags = [f for f in flags if f is not None]
+        record = {"gene_id": next(iter(genes)) if len(genes) == 1 else None, "found": True,
+                  "is_essential": known_flags[0] if known_flags else None, "num_tissues": len(tissues),
+                  "num_cell_lines": sum(t["num_cell_lines"] for t in tissues), "essentiality_by_tissue": tissues}
+        return ServeResponse(rows=[json_value(record)], total=1, key_columns=[], served_by="derived",
+                             sections={"_essentiality": {"cutoff": _cutoff_text(spec)}}).model_dump(mode="json")
+    if mode == "by_disease":
+        groups = {}
+        for r in rows:
+            groups.setdefault(r.get(cols["disease"]), []).append(r.get(cols["effect"]))
+        for d, effects in groups.items():
+            st = _effect_stats(effects, spec)
+            if st["n"] < min_n:
+                below += 1
+                continue
+            out.append({"disease": d, "num_cell_lines": st["n"], "num_unknown": st["n_unknown"],
+                        "mean_gene_effect": st["mean_gene_effect"], "essential_fraction": st["essential_fraction"]})
+        out.sort(key=lambda r: (r["mean_gene_effect"] is None, r["mean_gene_effect"] or 0.0, str(r["disease"])))
+        for i, r in enumerate(out, start=1):
+            r["rank"] = i
+    elif mode == "by_gene":
+        threshold = p("min_effect_threshold", None)
+        groups = {}
+        for r in rows:
+            groups.setdefault(r.get(cols["gene"]), []).append(r)
+        for gene, g in groups.items():
+            st = _effect_stats([r.get(cols["effect"]) for r in g], spec, threshold)
+            if st["n"] < min_n:
+                below += 1
+                continue
+            if not st["essential_count"]:
+                continue
+            top = sorted((r for r in g if isinstance(r.get(cols["effect"]), (int, float))),
+                         key=lambda r: (r[cols["effect"]], str(r.get(cols.get("cell_line", "")))))[:5]
+            out.append({"gene_id": gene, "mean_gene_effect": st["mean_gene_effect"], "num_cell_lines": st["n"],
+                        "num_unknown": st["n_unknown"], "essential_fraction": st["essential_fraction"],
+                        "top_cell_lines": [{"cellLineName": r.get(cols.get("cell_line", "")),
+                                            "disease": r.get(cols["disease"]), "geneEffect": r.get(cols["effect"])}
+                                           for r in top]})
+        out.sort(key=lambda r: (r["mean_gene_effect"], str(r["gene_id"])))
+    elif mode == "selective":
+        min_diff = float(p("min_effect_difference", 0.3))
+        groups = {}
+        for r in rows:
+            side = "target" if r.get(cols["disease"]) == target else "comparison"
+            groups.setdefault(r.get(cols["gene"]), {"target": [], "comparison": []})[side].append(r.get(cols["effect"]))
+        for gene, sides in groups.items():
+            t, c = _effect_stats(sides["target"], spec), _effect_stats(sides["comparison"], spec)
+            if t["n"] < min_n or c["n"] < min_n:
+                below += 1
+                continue
+            diff = t["mean_gene_effect"] - c["mean_gene_effect"]
+            if diff >= -min_diff:
+                continue
+            out.append({"gene_id": gene, "target_effect": t["mean_gene_effect"], "comparison_effect": c["mean_gene_effect"],
+                        "effect_difference": diff, "target_cell_lines": t["n"], "comparison_cell_lines": c["n"]})
+        out.sort(key=lambda r: (r["effect_difference"], str(r["gene_id"])))
+    else:
+        raise ServiceError(f"unknown essentiality mode {mode!r}")
+    total = len(out)
+    limit = req.get("limit")
+    shown = out[: int(limit)] if limit is not None else out
+    meta = {"groups_below_min_cell_lines": below, "min_cell_lines": min_n, "cutoff": _cutoff_text(spec)}
+    return ServeResponse(rows=json_value(shown), total=total, truncated=len(shown) < total, served_by="derived",
+                         key_columns=["disease"] if mode == "by_disease" else ["gene_id"],
+                         sections={"_essentiality": meta}).model_dump(mode="json")
+
+
+@serve_extension("tissue_specificity", lambda req: bool((req.get("split") or {}).get("tissue_specificity")))
+def serve_tissue_specificity(ctx: ServiceContext, req: Mapping[str, Any]) -> dict[str, Any]:
+    """Genes expressed more in one tissue than in the median of the others (``find_tissue_specific_genes``).
+
+    Unit guard: each gene is compared within the unit of its target-tissue value (``rna.unit``); a blank unit
+    is not a unit (the gene is excluded and counted), values in other units are never pooled. When every
+    other tissue is 0 the fold change is undefined: the gene is reported as ``expressed_only_in_target`` with
+    ``fold_change: null`` (upstream wrote a 999.9 sentinel), ranked first."""
+    from statistics import median
+
+    opts = dict((req.get("split") or {}).get("tissue_specificity") or {})
+    params = dict(req.get("params") or {})
+    args = dict(opts.get("args") or {})
+    cols = dict(opts.get("columns") or {})
+    tissue = params.get(args.get("tissue", "tissue"))
+    if tissue in (None, ""):
+        raise GatewayError(ErrorKind.invalid_argument, "tissue is required")
+    threshold = float(params.get(args.get("threshold", "fold_change_threshold")) or 2.0)
+    view = long_view(ctx, str(req.get("table")))
+    want = [cols["gene"], cols["tissue_id"], cols["tissue_label"], cols["value"], cols["unit"]]
+    if cols.get("zscore"):
+        want.append(cols["zscore"])
+    rows, _t, _e = view.rows(None, columns=want, order=[], limit=None, budget=req.get("budget_bytes"))
+    key = str(tissue).strip().casefold()
+
+    def is_target(r: Mapping[str, Any]) -> bool:
+        return str(r.get(cols["tissue_id"]) or "").casefold() == key or \
+            str(r.get(cols["tissue_label"]) or "").strip().casefold() == key
+
+    by_gene: dict[str, list[Mapping[str, Any]]] = {}
+    for r in rows:
+        by_gene.setdefault(str(r.get(cols["gene"])), []).append(r)
+    if not any(is_target(r) for r in rows):
+        labels = sorted({str(r.get(cols["tissue_label"])) for r in rows if r.get(cols["tissue_label"])})
+        raise GatewayError(ErrorKind.invalid_argument, f"tissue {tissue!r} is not a tissue of this table (exact label "
+                           "or EFO code)", payload={"argument": "tissue", "valid_values": labels[:50]})
+    out: list[dict[str, Any]] = []
+    blank_unit = undefined = 0
+    for gene, entries in by_gene.items():
+        targets = [e for e in entries if is_target(e) and isinstance(e.get(cols["value"]), (int, float))]
+        if not targets:
+            continue
+        t = targets[0]
+        unit = t.get(cols["unit"])
+        if unit is None or not str(unit).strip():
+            blank_unit += 1
+            continue
+        others = [float(e[cols["value"]]) for e in entries if not is_target(e) and e.get(cols["unit"]) == unit and
+                  isinstance(e.get(cols["value"]), (int, float)) and e[cols["value"]] == e[cols["value"]]]
+        if not others:
+            continue
+        med = float(median(others))
+        value = float(t[cols["value"]])
+        if med == 0:
+            if value <= 0:
+                continue
+            undefined += 1
+            fold, only = None, True
+        else:
+            fold, only = value / med, False
+            if fold < threshold:
+                continue
+        out.append({"gene_id": gene, "tissue_expression": value, "median_other_tissues": med,
+                    "fold_change": fold, "expressed_only_in_target": only, "n_other_tissues": len(others),
+                    "zscore_in_tissue": t.get(cols["zscore"]) if cols.get("zscore") else None, "unit": unit})
+    out.sort(key=lambda r: (not r["expressed_only_in_target"], -(r["fold_change"] or 0.0),
+                            -r["tissue_expression"], r["gene_id"]))
+    total = len(out)
+    limit = req.get("limit")
+    shown = out[: int(limit)] if limit is not None else out
+    meta = {"blank_unit_excluded": blank_unit, "expressed_only_in_target": undefined, "threshold": threshold}
+    return ServeResponse(rows=json_value(shown), total=total, truncated=len(shown) < total, served_by="derived",
+                         key_columns=["gene_id"], sections={"_specificity": meta}).model_dump(mode="json")
+
+
+def _cutoff_text(spec: Any) -> str | None:
+    cutoff = getattr(spec, "cutoff", None)
+    if cutoff is None:
+        return None
+    return f"{cutoff.op} {cutoff.value} ({'inclusive' if cutoff.op in ('le', 'ge') else 'exclusive'})"
+
+
 VERBS = {VERB_ENRICH: guarded("enrich", enrich)}
