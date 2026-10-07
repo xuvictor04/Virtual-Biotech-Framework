@@ -6,6 +6,10 @@ this order (rev 2 fixes the precedence):
 
 1. memory signatures in the error text (``MemoryError``, ``Unable to allocate``,
    ``ArrowMemoryError``, ``bad_alloc``) -> ``oom``;
+1b. HTTP failures (phase 4, F21): the result's envelope plugin (``result.codec``, default the
+   JSONPath decoder) reads the HTTP status from the payload or the error text. A 5xx is
+   ``source_error`` (an outage is never a negative, CT-2); a 404 is a not-found only when the binding
+   (or the generic overlay) declares ``not_found_when``, else ``source_error`` naming the status;
 2. explicit not-found: the binding's (or the generic overlay's) ``not_found_when`` predicates and
    the bridge's ``_EMPTY_LOOKUP`` messages, **before** legacy envelopes become ``source_error``
    (cBioPortal's "Failed to retrieve ... status code: 404" is ``not_found``). For a reviewed
@@ -18,11 +22,14 @@ this order (rev 2 fixes the precedence):
      ``contradiction`` when it counted more, ``empty_unverified`` when it could not count;
    * a generic (unbound) tool -> ``not_found``;
 
-3. ``nested_errors`` present -> ``source_error``, unless ``total.partial_when`` matches (``partial``);
+3. ``nested_errors`` present (or nested errors a non-default codec surfaced) -> ``source_error``,
+   unless ``total.partial_when`` matches (``partial``);
 4. remaining ``legacy_error`` / ``is_error`` -> ``source_error``;
 5. otherwise ``ok``; for generic tools a structural empty (``count == 0``, ``num_results == 0``,
    an empty top-level list, or the generic ``empty_when``) is ``empty_unverified``: a success that
-   cannot be cited, either as support or as absence.
+   cannot be cited, either as support or as absence. On a **remote** bound table, an upstream total
+   that differs from the remote witness's independent count (``witness_total``, phase 4, §11.6) is a
+   ``contradiction`` (``count_clinical_trials`` reporting 0 for a reply without ``totalCount``).
 """
 
 from __future__ import annotations
@@ -33,9 +40,12 @@ from typing import Any, Iterable, Literal, Mapping
 from ..errors import ErrorKind, GatewayError, not_found_payload
 from ...tools.mcp_bridge import _EMPTY_LOOKUP
 from ..memory.crash import classify_error_text
+from ..plugins.base import ParsedResult
+from ..plugins.envelopes import DEFAULT_ENVELOPE, codec_of
 from .fields import jp_test, parse_payload
 
-__all__ = ["Outcome", "Classification", "classify", "structural_empty", "EMPTY_LOOKUP"]
+__all__ = ["Outcome", "Classification", "classify", "structural_empty", "EMPTY_LOOKUP", "decode", "envelope_for",
+           "use_registry"]
 
 Outcome = Literal["ok", "not_found", "empty", "empty_unverified", "contradiction", "partial", "source_error", "oom"]
 
@@ -54,6 +64,59 @@ class Classification:
     error: GatewayError | None = None                  # for not_found / source_error / oom
     explicit_not_found: bool = False
     matched: list[str] = field(default_factory=list)   # predicates that matched
+    parsed: ParsedResult | None = None                 # what the result's envelope plugin read
+
+
+_REGISTRY: list[Any] = []
+
+
+def use_registry(registry: Any) -> None:
+    """The plugin registry :func:`envelope_for` looks codecs up in (the gateway's, or a test's)."""
+    _REGISTRY[:] = [registry] if registry is not None else []
+
+
+def envelope_for(name: str | None, registry: Any = None) -> Any:
+    """The envelope plugin ``name``: from ``registry`` (else the one :func:`use_registry` set, else a
+    builtin-only discovery made once); the default codec needs no registry."""
+    reg = registry if registry is not None else (_REGISTRY[0] if _REGISTRY else None)
+    if reg is None and name not in (None, DEFAULT_ENVELOPE):
+        from ..plugins.registry import discover
+
+        reg = discover(entry_points=False)
+        _REGISTRY[:] = [reg]
+    if reg is None:
+        from ..plugins.envelopes import default_envelope
+
+        return default_envelope()
+    return reg.envelope(name)
+
+
+def decode(raw: Any, contract: Any, registry: Any = None) -> tuple[str, ParsedResult]:
+    """``(codec name, ParsedResult)`` of ``raw`` with the binding's codec (the generic overlay's
+    ``not_found_when`` for unbound tools). A codec that fails is ``unparsed``, never an error."""
+    binding = getattr(contract, "binding", None)
+    if binding is not None:
+        name, options = codec_of(binding.result)
+    else:
+        gspec = getattr(contract, "generic_spec", None)
+        name = getattr(gspec, "codec", None) or DEFAULT_ENVELOPE
+        options = dict(getattr(gspec, "codec_options", None) or {})
+        if gspec is not None:
+            options.setdefault("not_found_when", list(gspec.not_found_when))
+    text = getattr(raw, "text", None)
+    if getattr(raw, "envelope", "ok") == "is_error" and getattr(raw, "error_text", None):
+        text = text or raw.error_text
+    try:
+        parsed = envelope_for(name, registry).decode(text, getattr(raw, "structured", None), options)
+    except Exception as exc:  # noqa: BLE001 - a broken codec makes no claim
+        parsed = ParsedResult(unparsed=True, message=f"codec {name} failed: {exc}"[:300])
+    if parsed.http_status is None and getattr(raw, "error_text", None):
+        from ..plugins.envelopes import http_status
+
+        parsed = ParsedResult(rows=parsed.rows, total=parsed.total, found=parsed.found, message=parsed.message,
+                              unparsed=parsed.unparsed, errors=parsed.errors,
+                              http_status=http_status(None, raw.error_text))
+    return name, parsed
 
 
 def _texts(raw: Any) -> list[str]:
@@ -91,12 +154,12 @@ def structural_empty(obj: Any, empty_when: Iterable[str] = ()) -> bool:
 
 def classify(raw: Any, contract: Any, plan: Any = None, *,
              universe_tables: Mapping[str, Iterable[str]] | None = None,
-             witness_total: int | None = None, tool: str | None = None) -> Classification:
+             witness_total: int | None = None, tool: str | None = None, registry: Any = None) -> Classification:
     """Classify ``raw`` (see the module docstring).
 
     ``universe_tables`` maps each identifier argument to the ``source.table`` names of its
     identity universe; ``witness_total`` is the witness count under the bound predicate
-    (None: not counted)."""
+    (None: not counted); ``registry`` holds the envelope plugins (see :func:`envelope_for`)."""
     name = tool or (f"mcp__{contract.server}__{contract.tool}" if contract is not None else None)
     envelope = getattr(raw, "envelope", "ok")
     obj, is_json = parse_payload(getattr(raw, "text", None), getattr(raw, "structured", None))
@@ -109,7 +172,6 @@ def classify(raw: Any, contract: Any, plan: Any = None, *,
                                       GatewayError(ErrorKind.oom, f"the server ran out of memory: {t[:300]}",
                                                    tool=name, subkind="memory_error"))
 
-    # 2. explicit not-found, before legacy envelopes
     binding = getattr(contract, "binding", None)
     preds: list[str] = []
     if binding is not None:
@@ -117,19 +179,49 @@ def classify(raw: Any, contract: Any, plan: Any = None, *,
     gspec = getattr(contract, "generic_spec", None)
     if gspec is not None:
         preds.extend(gspec.not_found_when)
+    codec, parsed = decode(raw, contract, registry)
+
+    # 1b. HTTP failures: a 5xx is an outage; a 404 means not found only where a binding says so
+    failed = envelope in ("is_error", "legacy_error") or parsed.unparsed or not is_json or (
+        isinstance(obj, Mapping) and bool(obj.get("error")))
+    status = parsed.http_status
+    if failed and status is not None and status >= 500:
+        return Classification("source_error", f"HTTP {status} from the source", obj, is_json,
+                              GatewayError(ErrorKind.source_error, f"the source failed with HTTP {status}"
+                                           f"{': ' + parsed.message if parsed.message else ''}"[:600], tool=name,
+                                           payload={"http_status": status}, subkind="http_status",
+                                           retryable="later"), parsed=parsed)
+    codec_not_found = parsed.found is False and codec != DEFAULT_ENVELOPE    # the codec declares the meaning
+    if failed and status == 404 and not preds and not codec_not_found:
+        return Classification("source_error", "HTTP 404 without a declared not-found meaning", obj, is_json,
+                              GatewayError(ErrorKind.source_error, "the source answered HTTP 404; this tool's "
+                                           "binding does not declare what a 404 means (not_found_when), so it is "
+                                           "not read as 'no such record'", tool=name,
+                                           payload={"http_status": 404}, subkind="http_status"), parsed=parsed)
+
+    # 2. explicit not-found, before legacy envelopes
     probe = obj if is_json else {"error": obj, "message": obj}
     if envelope == "is_error" and not is_json:
         probe = {"error": getattr(raw, "error_text", None) or obj, "message": obj}
     matched = [p for p in preds if _safe_test(probe, p)]
+    if not matched and parsed.found is False and codec != DEFAULT_ENVELOPE:
+        matched = [f"codec {codec}: not found"]
+    if not matched and failed and status == 404:
+        matched = ["HTTP 404"]
     message = getattr(raw, "error_text", None) or _error_message(obj) or (obj if isinstance(obj, str) else None)
     lookup_miss = envelope == "empty_lookup" or bool(message and EMPTY_LOOKUP.fullmatch(str(message).strip()))
     if matched or lookup_miss:
         reason = f"explicit not-found ({matched[0] if matched else str(message or 'empty lookup')[:200]})"
-        return _not_found(contract, plan, obj, is_json, reason, matched, universe_tables, witness_total, name)
+        found = _not_found(contract, plan, obj, is_json, reason, matched, universe_tables, witness_total, name)
+        found.parsed = parsed
+        return found
 
-    # 3. nested errors
-    if binding is not None and binding.result.nested_errors and is_json:
-        hits = [p for p in binding.result.nested_errors if _safe_test(obj, p)]
+    # 3. nested errors (declared paths; a non-default codec's own nested errors)
+    if binding is not None and ((is_json and binding.result.nested_errors) or
+                                (codec != DEFAULT_ENVELOPE and parsed.errors)):
+        hits = [p for p in binding.result.nested_errors if is_json and _safe_test(obj, p)]
+        if not hits and codec != DEFAULT_ENVELOPE:
+            hits = [f"codec {codec}: {e}" for e in parsed.errors]
         if hits:
             total = binding.result.total
             partial_when = list(getattr(total, "partial_when", []) or []) if total is not None else []
@@ -151,8 +243,22 @@ def classify(raw: Any, contract: Any, plan: Any = None, *,
     if contract is None or getattr(contract, "generic", False) or binding is None:
         empty_when = list(gspec.empty_when) if gspec is not None else []
         if is_json and structural_empty(obj, empty_when):
-            return Classification("empty_unverified", "structural empty from an unbound tool", obj, is_json)
-    return Classification("ok", "", obj, is_json)
+            return Classification("empty_unverified", "structural empty from an unbound tool", obj, is_json,
+                                  parsed=parsed)
+        return Classification("ok", "", obj, is_json, parsed=parsed)
+    # a remote table's upstream total against the remote witness's independent count
+    if witness_total is not None and parsed.total is not None and parsed.total != witness_total and \
+            _remote_bound(contract, plan):
+        return Classification("contradiction", f"the source reported a total of {parsed.total}, but an independent "
+                              f"count request counted {witness_total}", obj, is_json, parsed=parsed)
+    return Classification("ok", "", obj, is_json, parsed=parsed)
+
+
+def _remote_bound(contract: Any, plan: Any) -> bool:
+    """True when the call's bound table belongs to a remote source (its witness is a count request)."""
+    bound = getattr(plan, "bound_table", None) or getattr(contract, "bound_table", None)
+    t = (getattr(contract, "tables", None) or {}).get(bound) if bound else None
+    return getattr(getattr(t, "descriptor", None), "kind", None) == "remote"
 
 
 def _safe_test(obj: Any, expr: str) -> bool:

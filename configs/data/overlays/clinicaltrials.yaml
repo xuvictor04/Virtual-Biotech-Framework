@@ -1,6 +1,11 @@
 # Overlay for the upstream clinicaltrials server (clinicaltrials_mcp: ClinicalTrials.gov API v2 and
 # cBioPortal through pybioportal; docs/DATA_LAYER.md §8.7, Appendix A). Phase 1: 7 pass, 1 block (hidden).
 #
+# Phase 4: clinicaltrials_gov.studies is a live_api table, so registry counts have a remote witness (one
+# countTotal=true&pageSize=0 request compiled from the bound predicates, within the descriptor's budget);
+# a reply whose total_count differs from it is a contradiction, not a count. The CT-GOV defects stay as
+# documentation and detector tests; they no longer are the only coverage of the counts.
+#
 # Free-text arguments are registry search expressions (Essie): the registry expands synonyms and
 # matches words, so a hit is not a literal match. Values are wrapped and characters that would change
 # the expression are rejected; an Essie quoting plugin replaces `forbid` when one is registered.

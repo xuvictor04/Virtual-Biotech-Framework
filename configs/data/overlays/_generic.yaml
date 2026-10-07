@@ -2,7 +2,10 @@
 # binding (third-party stdio or HTTP servers, new upstream tools, bindings marked status: unreviewed).
 #
 # * An explicit not-found shape -> not_found error, evaluated before legacy envelopes.
-# * Legacy error envelopes and isError keep today's semantics (source_error).
+# * Legacy error envelopes and isError keep today's semantics (source_error); an HTTP 5xx is
+#   source_error (an outage is never a negative) and an HTTP 404 is not_found only through the
+#   predicates below (phase 4, F21). A result shape JSONPaths cannot read is decoded by an envelope
+#   plugin (`vbt ds overlay init <server>` scaffolds a reviewed binding).
 # * A structural empty -> empty_unverified: a success that cannot be cited as support or as absence.
 # * Identifier-like parameters are linted in observe mode with every identifier plugin; a conflict
 #   becomes a _vbt.notes warning, never a rewrite.
@@ -14,6 +17,8 @@ generic:
     - "$.error =~ '(?i)\\bnot found\\b'"
     - "$.error =~ '(?i)status code: 404'"
     - "$.message =~ '(?i)^no .* found'"
+    - "$.status == 404"
+    - "$.statusCode == 404"
   empty_when:
     - "$.count == 0"
     - "$.num_results == 0"

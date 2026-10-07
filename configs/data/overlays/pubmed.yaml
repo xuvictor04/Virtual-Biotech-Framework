@@ -1,5 +1,7 @@
 # Overlay for the harness PubMed server (src/vbt/mcp_servers/pubmed_server.py; docs/DATA_LAYER.md
-# Appendix A). Phase 1: 2 pass.
+# Appendix A). Phase 1: 2 pass. Phase 4: the server (harness-owned, fixed in place) surfaces esearch's
+# errorlist (`errors`: terms PubMed ignored, so the count answers a different query: partial), warninglist
+# and querytranslation, and reconciles fetched PMIDs (not_returned, unrequested, not_fetched beyond the cap).
 schema: vbt.overlay/1
 server: pubmed
 sources: [pubmed]
@@ -15,7 +17,8 @@ tools:
     result:
       rows: $.results
       row_key: [pmid]
-      total: {path: $.count, method: upstream}
+      total: {path: $.count, method: upstream, partial_when: ["$.errors"]}
+      nested_errors: ["$.errors"]                 # errorlist: phrases or fields PubMed ignored
       order_from_arg: sort
       order_source: source_server_side
       drop_fields: {$.summary: "restates count and returned; the header carries both"}
@@ -32,9 +35,10 @@ tools:
       rows: $.articles
       row_key: [pmid]
       echo_set: {arg: pmids, path: "$.articles[*].pmid", mode: subset, withheld_path: "$.withheld[*].pmid"}
+      nested_errors: ["$.unrequested"]            # a record returned under a PMID nobody asked for
       drop_fields: {$.summary: "restates the counts; the header and echo_set carry them"}
     serve: pass
     defects:
       - {id: PUBMED-001, what: "PMC1234 passed as a PMID returns the record of PMID 1234 (VERIFIED); more than 50 PMIDs are silently truncated",
-         where: "src/vbt/mcp_servers/pubmed_server.py:231-235", test: test_dl_correctness_six.py::test_ct1_today_pmcid,
+         where: "src/vbt/mcp_servers/pubmed_server.py:283-284", test: test_dl_correctness_six.py::test_ct1_today_pmcid,
          effect: silent_wrong}

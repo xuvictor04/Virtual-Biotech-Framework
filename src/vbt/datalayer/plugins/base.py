@@ -1,6 +1,8 @@
 """Plugin protocols, their dataclasses and optional capabilities (§9.2). No pyarrow at import.
 
-Four kinds: ``format``, ``layout``, ``statistic``, ``identifier``. Each plugin class declares
+Five kinds: ``format``, ``layout``, ``statistic``, ``identifier`` and (phase 4, the worked example
+of adding a kind, §9.5) ``envelope``: decoders of third-party result shapes that an overlay's
+JSONPaths cannot describe. Each plugin class declares
 ``kind``, ``name``, ``version``, ``api == API_VERSION``, ``capabilities`` and ``requires``
 (importable modules probed by preflight). Protocol methods that only some plugins implement
 are **optional capabilities**: a plugin lists the capability in ``capabilities``, the
@@ -34,15 +36,16 @@ ArrowRecordBatch = Any
 
 __all__ = [
     "API_VERSION", "KIND_NAMES", "Fragment", "ColumnStats", "FragmentStats", "CheckItem", "Manifest", "LayoutSpec",
-    "Page", "ValueSnapshot", "ConfirmResult", "ConfirmedFacts", "AggResult", "FamilySpec", "Normalized", "Rejected",
+    "Page", "ParsedResult", "ValueSnapshot", "ConfirmResult", "ConfirmedFacts", "AggResult", "FamilySpec", "Normalized", "Rejected",
     "Candidate", "Resolution", "ResolutionStatus", "UnsupportedFilter", "FormatError", "PluginError",
     "NORMALIZE_STEPS", "CAPABILITIES", "CAPABILITY_METHODS", "REQUIRED_METHODS", "REQUIRED_ATTRS",
-    "FormatPlugin", "LayoutPlugin", "StatisticPlugin", "IdentifierPlugin", "PluginBase", "IdentifierBase",
+    "FormatPlugin", "LayoutPlugin", "StatisticPlugin", "IdentifierPlugin", "EnvelopePlugin", "PluginBase",
+    "IdentifierBase", "EnvelopeBase",
     "plugin_key", "ArrowSchema", "ArrowTable", "ArrowRecordBatch",
 ]
 
 API_VERSION = 1
-KIND_NAMES = ("format", "layout", "statistic", "identifier")
+KIND_NAMES = ("format", "layout", "statistic", "identifier", "envelope")
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +129,25 @@ class Page:
     total: int | None
     next: str | None
     as_of: str | None
+
+
+@dataclass(frozen=True)
+class ParsedResult:
+    """What an envelope plugin read from one tool result (§9.5, F21).
+
+    ``rows`` is None when the payload holds no row list the spec names (a record, a count, an
+    unknown shape); ``found`` is False only for an explicit not-found and None when the payload does
+    not say; ``unparsed`` marks a shape the plugin does not understand: the caller then makes no
+    claim from it and never invents rows. ``errors`` are nested error messages a success envelope
+    carried, and ``http_status`` the HTTP status the payload or its error text reports."""
+
+    rows: Sequence[Any] | None = None
+    total: int | None = None
+    found: bool | None = None
+    message: str | None = None
+    unparsed: bool = False
+    errors: tuple[str, ...] = ()
+    http_status: int | None = None
 
 
 @dataclass(frozen=True)
@@ -251,14 +273,16 @@ CAPABILITIES: dict[str, frozenset[str]] = {
     "layout": frozenset({"scan", "count", "live", "upstream_only"}),
     "statistic": frozenset({"test", "paired", "veto_labels"}),
     "identifier": frozenset({"label", "union", "options"}),
+    "envelope": frozenset({"rows", "totals", "nested_errors", "http_status"}),
 }
 
 #: Methods a declared capability requires.
 CAPABILITY_METHODS: dict[str, dict[str, tuple[str, ...]]] = {
     "format": {"leaf_projection": ("read_leaves",), "matrix": ("axis_values", "slice"), "string_compile": ("quote",)},
-    "layout": {"live": ("request",)},
+    "layout": {"live": ("request",), "count": ("count",)},
     "statistic": {"test": ("test",), "paired": ("aggregate_pair",), "veto_labels": ("vetoed_companions",)},
     "identifier": {},
+    "envelope": {},
 }
 
 #: Methods every plugin of a kind implements.
@@ -268,6 +292,7 @@ REQUIRED_METHODS: dict[str, tuple[str, ...]] = {
                "as_of"),
     "statistic": ("sort_key", "predicate", "bounds", "validate", "aggregate", "comparable", "describe", "family"),
     "identifier": ("configure", "normalize", "normalize_stored", "looks_like", "label_key", "describe"),
+    "envelope": ("decode",),
 }
 
 REQUIRED_ATTRS: dict[str, tuple[str, ...]] = {
@@ -275,6 +300,7 @@ REQUIRED_ATTRS: dict[str, tuple[str, ...]] = {
     "layout": ("kind", "name", "version", "capabilities"),
     "statistic": ("kind", "name", "version", "capabilities"),
     "identifier": ("kind", "name", "version", "id_type", "canonical", "examples"),
+    "envelope": ("kind", "name", "version", "capabilities"),
 }
 
 
@@ -351,6 +377,10 @@ class LayoutPlugin(Protocol):
     def request(self, spec: LayoutSpec, *, predicate: Predicate | None, projection: list[str],
                 page_token: str | None, budget: "RemoteBudget") -> Page: ...
 
+    # capability count (phase 4): an independent count request, the remote witness (§11.6); None when
+    # the predicate cannot be expressed to the source
+    def count(self, spec: LayoutSpec, *, predicate: Predicate | None, budget: "RemoteBudget") -> int | None: ...
+
     @classmethod
     def conformance_cases(cls) -> Any: ...
 
@@ -416,6 +446,25 @@ class IdentifierPlugin(Protocol):
     def looks_like(self, raw: str) -> float: ...                          # 0..1, for wrong-kind diagnostics
     def label_key(self, raw: str) -> str: ...                             # NFKC + casefold key for label lookup
     def describe(self) -> str: ...                                        # <= 200 chars, includes an example
+
+    @classmethod
+    def conformance_cases(cls) -> Any: ...
+
+
+class EnvelopePlugin(Protocol):
+    """Decodes one tool result into rows, a total and a not-found verdict (phase 4, F21).
+
+    ``spec`` holds the overlay's codec options (JSONPaths and predicates for the builtin ``jsonpath``
+    envelope). A plugin never invents rows: a shape it does not understand is ``unparsed``."""
+
+    kind: ClassVar[str] = "envelope"
+    name: ClassVar[str]
+    version: ClassVar[str]
+    api: ClassVar[int] = API_VERSION
+    capabilities: ClassVar[frozenset[str]]
+    requires: ClassVar[tuple[str, ...]] = ()
+
+    def decode(self, raw_text: str | None, structured: Any, spec: Mapping[str, Any]) -> ParsedResult: ...
 
     @classmethod
     def conformance_cases(cls) -> Any: ...
@@ -487,3 +536,9 @@ class IdentifierBase(PluginBase):
     def describe(self) -> str:
         example = self.examples[0] if self.examples else ""
         return f"{self.id_type} identifier, e.g. {example}"[:200]
+
+
+class EnvelopeBase(PluginBase):
+    """Defaults for envelope plugins."""
+
+    kind: ClassVar[str] = "envelope"

@@ -1,6 +1,10 @@
-# cBioPortal public studies through pybioportal (docs/DATA_LAYER.md §6.8 S10; phase 1, strict: false).
+# cBioPortal public studies through pybioportal (docs/DATA_LAYER.md §6.8 S10; phase 4, strict: false).
 #
-# Served upstream by the clinicaltrials server. Clinical data come at two levels: patient attributes
+# Served upstream by the clinicaltrials server. Phase 4 reads the REST API itself (live_api layout,
+# rest_json pages) for the remote witness (projection=META puts the total in the total-count header),
+# per-study importDate releases and the derived patient-level find (_live_find): patient_clinical is
+# pivoted to one row per (studyId, patientId) with one column per attribute, so a patient value is
+# counted once, never once per sample. Clinical data come at two levels: patient attributes
 # (OS_MONTHS, OS_STATUS, AGE, ...) and sample attributes (SAMPLE_TYPE, ...). Upstream get_clinical_data
 # copies patient values onto every sample of the patient, so they are counted once per patient (I15),
 # and unknown sample IDs come back as phantom rows with patientId null (C24).
@@ -10,7 +14,7 @@ title: cBioPortal for Cancer Genomics (public studies)
 kind: remote
 release: {from: as_of, per: {table: study, column: importDate}}
 defaults: {format: none, layout: upstream_only, missing: unknown}
-budget: {requests_per_min: 60}
+budget: {requests_per_min: 60, max_pages: 20, page_size: 500, timeout_s: 120}
 strict: false
 
 id_types:
@@ -39,8 +43,12 @@ tables:
   study:
     kind: entity
     path: studies
+    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}",
+                                         endpoint: studies, params: {projection: DETAILED},
+                                         count: {params: {projection: META}, header: total-count}}}
+    format: rest_json
     grain: one cBioPortal study
-    key: {columns: [studyId], check: none}
+    key: {columns: [studyId], check: none, version: importDate}     # a re-imported study is source_updated
     size_from: {table: study, column: allSampleCount, row_bytes: 2000}
     coverage: {statement: "Public cBioPortal studies at the time of the call (existence only).", absence_means: absent,
                applies_to: entity}
@@ -62,6 +70,10 @@ tables:
   patient:
     kind: entity_detail
     path: "studies/{studyId}/patients"
+    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}",
+                                         page_size_param: pageSize, offset_param: pageNumber,
+                                         count: {params: {projection: META}, header: total-count}}}
+    format: rest_json
     grain: one patient in one study
     key: {columns: [studyId, patientId], check: none}
     columns:
@@ -71,6 +83,9 @@ tables:
   sample:
     kind: entity_detail
     path: "studies/{studyId}/samples"
+    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}",
+                                         count: {params: {projection: META}, header: total-count}}}
+    format: rest_json
     grain: one specimen of one patient in one study
     key: {columns: [studyId, sampleId], check: none}
     grains: {patient: [studyId, patientId]}
@@ -99,6 +114,8 @@ tables:
   patient_clinical:
     kind: entity_detail
     path: "studies/{studyId}/clinical-data?clinicalDataType=PATIENT"
+    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}"}}
+    format: rest_json
     pivot: {index: [studyId, patientId], name_column: clinicalAttributeId, value_column: value}
     roles_from: {table: clinical_attribute, name: clinicalAttributeId, level_from: patientAttribute, type_from: datatype}
     grain: one patient's patient-level clinical attributes in one study

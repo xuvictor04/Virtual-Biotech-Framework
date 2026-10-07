@@ -8,6 +8,10 @@ modules or files listed in ``data.plugins.paths``. ``data.plugins.disabled`` dro
 ``data.plugins.override`` names the winner (matched against the plugin's ``module:Class``, its
 entry-point origin or its source file). A plugin whose ``api`` differs from :data:`~.base.API_VERSION`, that lacks
 a required attribute or method, or that declares an unknown capability is an error.
+
+Every kind of :data:`~vbt.datalayer.plugins.KINDS` is discovered the same way, so the fifth kind
+(``envelope``, phase 4) needed no change here beyond :meth:`PluginRegistry.envelope`, which falls back
+to the builtin default decoder when a registry was built without the kind.
 """
 
 from __future__ import annotations
@@ -145,6 +149,18 @@ class PluginRegistry:
 
     def origins(self) -> dict[str, str]:
         return dict(sorted(self._origins.items()))
+
+    def envelope(self, name: str | None = None) -> Any:
+        """The envelope plugin ``name`` (phase 4): the registered one, else the builtin default when
+        ``name`` is None or names the default; an unknown name is a ``KeyError``."""
+        from .envelopes import DEFAULT_ENVELOPE, default_envelope
+
+        found = self.find("envelope", name or DEFAULT_ENVELOPE) if "envelope" in self.kinds else None
+        if found is not None:
+            return found
+        if name in (None, DEFAULT_ENVELOPE):
+            return default_envelope()
+        return self.get("envelope", str(name))
 
     def capability(self, kind: str, name: str, cap: str) -> bool:
         p = self.find(kind, name)

@@ -17,6 +17,12 @@ tables whole (``reads.<table>.access: full_table``) or scans them (``bounded_sca
 
 ``commit`` records the outcome (cold tables become resident; an OOM becomes a learned refusal).
 :meth:`admit_remote` admits remote reads count-first (``total x est_row_bytes`` against a cap).
+
+Phase 4 (F19): with a :class:`~.host.HostBudget` (``host=`` or :meth:`AdmissionController.enable_host_budget`)
+the sum over servers is capped too, recycling the least recently used idle server before a cold load
+and refusing with ``too_large``/``host_busy`` when only busy servers hold the memory. With
+``feedback_dir`` (``data.cache_dir``), a committed cold load whose server has a fresh reaper status
+records ``(peak RSS - resident before) / estimate`` as measured feedback (:mod:`.calibrate`).
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from typing import Any, Awaitable, Callable, Iterable, Mapping
 from ..errors import ErrorKind, GatewayError, too_large_payload
 from ..launch import server_limit_mb
 from .estimate import MB, MemoryEstimator
+from .host import HostBudget
 from .ledger import ResidencyLedger
 
 __all__ = ["TableRead", "Admission", "AdmissionController", "RECYCLE_WINDOW_S"]
@@ -65,6 +72,10 @@ class Admission:
     peaks_mb: dict[str, float] = field(default_factory=dict)
     reservation: int | None = None
     committed: bool = False
+    fingerprints: dict[str, str] = field(default_factory=dict)
+    tiers: dict[str, str] = field(default_factory=dict)        # estimate tier per cold table (measured|sample|seed)
+    host_evicted: tuple[str, ...] = ()
+    host_held: bool = False
 
     @property
     def admitted(self) -> bool:
@@ -84,6 +95,10 @@ class Admission:
             out["recycled"] = True
         if self.unestimated:
             out["unestimated"] = list(self.unestimated)
+        if self.tiers:
+            out["estimate_tiers"] = dict(sorted(self.tiers.items()))
+        if self.host_evicted:
+            out["host_recycled"] = list(self.host_evicted)
         return out
 
 
@@ -111,7 +126,8 @@ class AdmissionController:
                  recycle: Callable[..., Awaitable[bool] | bool] | None = None,
                  limits: Mapping[str, float] | Callable[[str], float | None] | None = None, *,
                  generation: Callable[[str], int | None] | None = None,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic, host: HostBudget | None = None,
+                 feedback_dir: Any = None) -> None:
         self.settings = settings
         self.est = estimator or MemoryEstimator.from_settings(settings)
         self.ledger = ledger or ResidencyLedger()
@@ -126,6 +142,17 @@ class AdmissionController:
         self.learned_refusals: set[tuple[str, frozenset[str]]] = set()
         self._cold_locks: dict[str, asyncio.Lock] = {}
         self._recycles: dict[str, deque[float]] = {}
+        self.host = host
+        self.feedback_dir = feedback_dir
+        self._servers: Callable[[], Any] | None = None
+
+    def enable_host_budget(self, budget_mb: float | None = None) -> HostBudget:
+        """Cap the sum of resident memory over servers (``data.memory.host_budget_mb`` unless given)."""
+        host = HostBudget.from_settings(self.settings, self.ledger, recycle=self.recycle, servers=self._servers)
+        if budget_mb is not None:
+            host.budget_mb = float(budget_mb) if budget_mb > 0 else None
+        self.host = host
+        return host
 
     def bind_bridge(self, bridge: Any) -> None:
         """Take recycle, generations and status files from an ``MCPBridge``."""
@@ -134,7 +161,14 @@ class AdmissionController:
         def _generation(server: str) -> int | None:
             return (bridge.status().get(server) or {}).get("generation")
 
+        def _servers() -> list[str]:
+            return sorted(bridge.status())
+
         self.generation = _generation
+        self._servers = _servers
+        if self.host is not None:
+            self.host.recycle = bridge.recycle
+            self.host.servers = _servers
 
     # ------------------------------------------------------------------ limits and state
 
@@ -211,7 +245,11 @@ class AdmissionController:
         generation = self._sync(server)
         limit = self.limit_mb(server)
         safety = self.est.safety
-        peaks = {r.table: self.est.peak_upstream(r.stats) / MB for r in full if r.stats is not None}
+        peaks = {r.table: self.est.peak_upstream(r.stats, r.table) / MB for r in full if r.stats is not None}
+        fingerprints = {r.table: str(fp) for r in full if r.stats is not None
+                        and (fp := (r.stats.get("fingerprint") if isinstance(r.stats, Mapping)
+                                    else getattr(r.stats, "fingerprint", None)))}
+        tiers = {r.table: self.est.tier(r.stats, r.table) for r in full if r.stats is not None}
         unestimated = tuple(sorted({r.table for r in full + scans if r.stats is None}))
         transient = sum(self.est.transient(r.stats, r.selectivity) / MB for r in scans if r.stats is not None)
 
@@ -250,13 +288,23 @@ class AdmissionController:
             generation = self._sync(server)
             self.ledger.reset(server, generation)
 
+        evicted: list[str] = []
+        if self.host is not None and self.host.enabled and need > 0:
+            evicted = await self.host.reserve(server, need * safety, tool=tool)
         reservation = None
         if cold:
             reservation = self.ledger.reserve(server, {t: peaks.get(t, 0.0) for t in cold})
+        held = False
+        if self.host is not None:
+            self.host.begin(server)
+            held = True
         return Admission(server=server, cold_tables=cold, lock=self.cold_lock(server) if cold else None,
                          need_mb=need * safety, resident_mb=resident_mb, limit_mb=limit or None,
                          generation=generation, recycled=recycled, unestimated=unestimated,
-                         peaks_mb={t: round(peaks.get(t, 0.0), 1) for t in cold}, reservation=reservation)
+                         peaks_mb={t: round(peaks.get(t, 0.0), 1) for t in cold}, reservation=reservation,
+                         fingerprints={t: fingerprints[t] for t in cold if t in fingerprints},
+                         tiers={t: tiers[t] for t in cold if t in tiers}, host_evicted=tuple(evicted),
+                         host_held=held)
 
     async def recycle_after_oom(self, server: str) -> bool:
         """§14.4: restart ``server`` after an in-tool memory error (it may hold a partial cache near its
@@ -283,6 +331,8 @@ class AdmissionController:
             return
         admission.committed = True
         server = admission.server or ""
+        if admission.host_held and self.host is not None:
+            self.host.end(server)
         self.ledger.release(server, admission.reservation)
         if oom:
             self.learn_refusal(server, admission.cold_tables)
@@ -293,6 +343,31 @@ class AdmissionController:
                 return       # the server restarted during the call: what it loaded is gone
             self.ledger.add(server, {t: admission.peaks_mb.get(t, 0.0) for t in admission.cold_tables},
                             generation=gen)
+            self._record_feedback(admission)
+
+    def _record_feedback(self, admission: Admission) -> None:
+        """Measured feedback (§10.4 tier ``measured``): the server's peak RSS after a cold load over the
+        estimate of the tables it loaded. Needs a fresh reaper status and ``feedback_dir``."""
+        if not self.feedback_dir or admission.resident_mb is None:
+            return
+        from .calibrate import feedback_from_status, record_feedback
+
+        server = admission.server or ""
+        before = admission.resident_mb - self.ledger.reserved_mb(server)
+        measured = feedback_from_status(self.ledger.status(server), before)
+        tables = {t: {"estimated_mb": admission.peaks_mb.get(t, 0.0), "fingerprint": admission.fingerprints.get(t)}
+                  for t in admission.cold_tables if admission.peaks_mb.get(t)}
+        if measured is None or not tables:
+            return
+        try:
+            data = record_feedback(self.feedback_dir, tables, measured, server=server)
+        except OSError:
+            return
+        for t, info in tables.items():
+            key = str(info.get("fingerprint") or t)
+            entry = (data.get("tables") or {}).get(key)
+            if entry:
+                self.est.add_feedback(key, entry["factor"])
 
     def admit_remote(self, total: int | None, est_row_bytes: int | None, cap: int, *, tool: str | None = None,
                      table: str | None = None, alternative: str | None = None) -> int | None:
@@ -312,5 +387,8 @@ class AdmissionController:
         return need
 
     def snapshot(self) -> dict[str, Any]:
-        return {"ledger": self.ledger.snapshot(),
-                "learned_refusals": sorted([s, sorted(t)] for s, t in self.learned_refusals)}
+        out = {"ledger": self.ledger.snapshot(),
+               "learned_refusals": sorted([s, sorted(t)] for s, t in self.learned_refusals)}
+        if self.host is not None:
+            out["host"] = self.host.snapshot()
+        return out

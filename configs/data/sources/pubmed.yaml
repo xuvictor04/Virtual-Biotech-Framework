@@ -2,7 +2,10 @@
 #
 # A live index served upstream. PMIDs are digits, so the pmid plugin rejects PMCIDs and DOIs as
 # invalid_argument instead of letting PMC1234 read as PMID 1234 (VERIFIED). The server enforces the
-# literature ceiling itself and lists what it withheld.
+# literature ceiling itself and lists what it withheld, surfaces esearch's errorlist, warninglist and
+# querytranslation, and reconciles requested with returned PMIDs (phase 4, fixed in place).
+# Phase 4: the remote witness is one esearch request with rettype=count (live_api; the query is the
+# source's own engine syntax, sent as `term`; the literature ceiling becomes datetype=pdat&maxdate).
 schema: vbt.datasource/1
 source: pubmed
 title: PubMed (NCBI E-utilities)
@@ -21,6 +24,20 @@ tables:
   records:
     kind: records
     path: efetch
+    layout:
+      plugin: live_api
+      options:
+        base_url: "${VBT_EUTILS_BASE:-https://eutils.ncbi.nlm.nih.gov/entrez/eutils}"
+        endpoint: esearch.fcgi
+        params: {db: pubmed, retmode: json}
+        rows_path: $.esearchresult.idlist
+        total_path: $.esearchresult.count
+        text_params: {"*": term}
+        filters:
+          pubdate: {range: {lo: mindate, hi: maxdate, lo_default: "1800/01/01", hi_default: "3000/12/31",
+                            format: "%Y/%m/%d", extra: {datetype: pdat}}}
+        count: {params: {rettype: count}, total_path: $.esearchresult.count}
+    format: rest_json
     grain: one PubMed citation record
     key: {columns: [pmid], check: none}
     coverage: {statement: "PubMed citations available at the time of the call (and before the run's literature ceiling when one is set).",
