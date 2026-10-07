@@ -169,8 +169,9 @@ tools:
     args:
       target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
     result:
-      kind: record
-      rows: $.hallmarks
+      rows: $.hallmarks.cancerHallmarks              # attributes stay in the record as returned
+      rows_of: open_targets.target_cancer_hallmarks
+      parent_key: {id: $.target_id}
       drop_fields:
         $.num_hallmarks: "counts cancerHallmarks only, not attributes"
         $.message: "no hallmark annotation means not annotated, not 'no hallmark role'"
@@ -194,7 +195,7 @@ tools:
     result:
       rows: $.chemical_probes
       rows_of: open_targets.target_chemical_probes
-      parent_key: {id: $.target_id}
+      parent_key: {/id: $.target_id}                  # probes have their own id
       count_fields: [$.num_high_quality]
       drop_fields:
         $.num_probes: "a null list (not assessed) and an empty list (none listed) both read as 0"

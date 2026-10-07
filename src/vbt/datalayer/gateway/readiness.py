@@ -30,7 +30,7 @@ from ..plugins.base import LayoutSpec
 
 __all__ = ["READY_STATUSES", "TABLE_LEVEL_STATUSES", "CallReadiness", "ReadinessCache", "call_readiness",
            "layout_spec", "table_signature", "tables_read", "columns_read", "degraded_tools", "norm_path",
-           "parse_partition_label"]
+           "parse_partition_label", "table_status"]
 
 READY_STATUSES = frozenset({"ready", "awaiting_producer", "unbound"})
 #: Statuses that make the whole table unservable whatever part a call reads.
@@ -332,18 +332,31 @@ class ReadinessCache:
         return None if entry is None else entry.get("status") == "ready"
 
     def snapshot(self) -> dict[str, Any]:
-        """A JSON-able view: ``{tables: {ref: {table, status, columns, partitions, containers,
-        item_tables, failed_checks}}, indexes: {qualified id_type: {name (bare), id_type, status, ...}}}``."""
+        """A JSON-able view: ``{tables: {ref: {table, status (:func:`table_status`), worst_status, columns,
+        partitions, containers, item_tables, failed_checks}}, indexes: {qualified id_type: {name (bare), id_type, status, ...}}}``."""
         tables = {}
         for ref, m in sorted(self.tables.items()):
             failed = [c.model_dump(mode="json") for c in m.checks if not c.ok]
-            tables[ref] = {"table": ref, "status": m.status, "fingerprint": m.fingerprint,
+            tables[ref] = {"table": ref, "status": table_status(m), "worst_status": m.status,
+                           "fingerprint": m.fingerprint,
                            "columns": {k: v for k, v in m.columns.items() if v not in READY_STATUSES},
                            "containers": {k: v for k, v in m.containers.items() if v not in READY_STATUSES},
                            "partitions": {k: v for k, v in m.partitions.items() if v not in READY_STATUSES},
                            "item_tables": dict(m.item_tables), "failed_checks": failed}
         indexes = {k: {"name": k.partition(":")[2] or k, "id_type": k, **v} for k, v in sorted(self.indexes.items())}
         return {"tables": tables, "indexes": indexes, "hash_randomization": self.hash_randomization}
+
+
+def table_status(m: TableCheckModel) -> str:
+    """The table's own status: ``m.status`` when a table-level check failed (or the status is one
+    only a whole table has), else ready. Findings scoped to a column, container or partition block
+    only the calls that read that part (see :func:`call_readiness`), so they do not make the table
+    unready; ``m.status`` stays the worst status over every part."""
+    if m.status in READY_STATUSES or m.status in TABLE_LEVEL_STATUSES:
+        return m.status
+    if any(c.column is None and c.partition is None for c in _failed_checks(m)):
+        return m.status
+    return "ready"
 
 
 def _failed_checks(m: TableCheckModel) -> list[Any]:
@@ -401,9 +414,13 @@ def call_readiness(contract: Any, cache: ReadinessCache, *, bound_table: str | N
             t = cache._catalog_table(ref)
             prefix = norm_path(t.items_path or "") if t is not None else ""
             wanted = [f"{prefix}.{c}" if prefix else c for c in wanted]
-        bad_cols = {k: v for k, v in {**m.columns, **m.containers}.items() if v not in READY_STATUSES}
+        # a refuted or unconfirmed descriptor fact (R6) disables that fact, not the column: reading stays
+        # possible and filters that need the fact are refused by the contracts (unsupported_filter, I9)
+        facts_only = {c.column for c in failed if c.column} - {c.column for c in failed if c.column and c.name != "R6"}
+        bad_cols = {k: v for k, v in {**m.columns, **m.containers}.items()
+                    if v not in READY_STATUSES and k not in facts_only}
         for c in failed:
-            if c.column is not None and c.partition is None:
+            if c.column is not None and c.partition is None and c.column not in facts_only:
                 bad_cols.setdefault(c.column, status if status not in READY_STATUSES else "schema_drift")
         hit = False
         for col, st in sorted(bad_cols.items()):
@@ -428,8 +445,9 @@ def call_readiness(contract: Any, cache: ReadinessCache, *, bound_table: str | N
                                        detail, partition=lbl, status=bad_parts[lbl]))
             out.unavailable_partitions[phys] = blocking
             continue
-        if status not in READY_STATUSES and not bad_cols and not bad_parts and status != "partial":
-            out.reasons.append(_reason(phys, status, f"table is {status}", status=status))
+        own = table_status(m)                          # findings scoped to parts this call skips do not count
+        if own not in READY_STATUSES and not bad_cols and not bad_parts and own != "partial":
+            out.reasons.append(_reason(phys, own, f"table is {own}", status=own))
     out.ready = not out.reasons
     return out
 

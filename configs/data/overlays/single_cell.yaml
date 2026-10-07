@@ -1,5 +1,5 @@
 # Overlay for the upstream single_cell server (single_cell_mcp, CELLxGENE Census; docs/DATA_LAYER.md §6.7,
-# Appendix A). Phase 1: 11 pass. value_filter is a SOMA expression the gateway parses into the
+# Appendix A). Phase 1: 11 pass. value_filter (escape: soma) is a SOMA expression the gateway parses into the
 # Predicate IR (gateway/soma_filter.py), so is_primary_data and dataset scope are checked before the call.
 schema: vbt.overlay/1
 server: single_cell
@@ -19,7 +19,7 @@ tools:
     reads: {cellxgene_census.obs: {access: upstream, est_row_bytes: 64}}
     args:
       column_name:  {role: projection}
-      value_filter: {role: free_text, interpreted_as: engine,
+      value_filter: {role: free_text, interpreted_as: engine, escape: soma,
                      engine_doc: "SOMA value_filter over obs columns (==, !=, in, and, or); parsed by the gateway"}
       limit:        {role: limit, min: 1, max: 100000}
     result:
@@ -47,7 +47,7 @@ tools:
     reads: {cellxgene_census.obs: {access: upstream, est_row_bytes: 200}}
     args:
       output_path:  {role: output_path}
-      value_filter: {role: free_text, interpreted_as: engine,
+      value_filter: {role: free_text, interpreted_as: engine, escape: soma,
                      engine_doc: "SOMA value_filter over obs columns (==, !=, in, and, or); parsed by the gateway"}
       columns:      {role: projection}            # soma_joinid and dataset_id are added so rows keep their key
       limit:        {role: limit, min: 1, max: 1000000}
@@ -66,7 +66,7 @@ tools:
     reads: {cellxgene_census.obs: {access: upstream, est_row_bytes: 200}, cellxgene_census.var: {access: upstream}}
     args:
       output_path:  {role: output_path}
-      value_filter: {role: free_text, interpreted_as: engine,
+      value_filter: {role: free_text, interpreted_as: engine, escape: soma,
                      engine_doc: "SOMA value_filter over obs columns; is_primary_data == True is enforced unless include_duplicates"}
       gene_symbols: {binds: cellxgene_census.var.feature_name, op: in, each: true, accepts: ["open_targets:hgnc_symbol"],
                      existence: upstream, send_as: label}
@@ -84,7 +84,7 @@ tools:
   count_cells:
     reads: {cellxgene_census.obs: {access: upstream, est_row_bytes: 8}}
     args:
-      value_filter: {role: free_text, interpreted_as: engine,
+      value_filter: {role: free_text, interpreted_as: engine, escape: soma,
                      engine_doc: "SOMA value_filter over obs columns; is_primary_data == True is enforced unless include_duplicates"}
     result:
       kind: count
@@ -116,7 +116,7 @@ tools:
   summarize_datasets:
     reads: {cellxgene_census.obs: {access: upstream, est_row_bytes: 120}}
     args:
-      value_filter: {role: free_text, interpreted_as: engine,
+      value_filter: {role: free_text, interpreted_as: engine, escape: soma,
                      engine_doc: "SOMA value_filter over obs columns; parsed by the gateway"}
       limit:        {role: limit, min: 1, max: 10000}
     result:
@@ -149,7 +149,7 @@ tools:
       gene_symbols: {binds: cellxgene_census.var.feature_name, op: in, each: true, accepts: ["open_targets:hgnc_symbol"],
                      existence: upstream, send_as: label}
       output_path:  {role: output_path}
-      value_filter: {role: free_text, interpreted_as: engine,
+      value_filter: {role: free_text, interpreted_as: engine, escape: soma,
                      engine_doc: "SOMA value_filter over obs columns; without one upstream takes soma_joinid < max_cells"}
       layer:        {role: selector, values: {raw: cellxgene_census.anndata_outputs, normalized: cellxgene_census.anndata_outputs}}
       max_cells:    {role: limit, min: 1, max: 200000}
@@ -175,7 +175,7 @@ tools:
     reads: {cellxgene_census.obs: {access: upstream, est_row_bytes: 200}, cellxgene_census.var: {access: upstream}}
     args:
       output_path:  {role: output_path}
-      value_filter: {role: free_text, interpreted_as: engine,
+      value_filter: {role: free_text, interpreted_as: engine, escape: soma,
                      engine_doc: "SOMA value_filter over obs columns; it must fix one dataset_id (donor_id is unique only within a dataset)"}
       max_cells:    {role: limit, min: 1, max: 200000}
       gene_symbols: {binds: cellxgene_census.var.feature_name, op: in, each: true, accepts: ["open_targets:hgnc_symbol"],

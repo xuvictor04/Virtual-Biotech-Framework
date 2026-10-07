@@ -36,7 +36,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from ..errors import (
     ErrorKind,
@@ -66,6 +66,7 @@ from ..predicate import (
     merge_container_predicates,
 )
 from ..rowkey import render_float
+from . import soma_filter
 from .files import confine, write_once
 
 __all__ = [
@@ -315,6 +316,13 @@ def _quote_with(contract: Any, name: str, binding: Any, value: str, registry: An
     return value
 
 
+def _derived_search(contract: Any) -> bool:
+    """A derived ``search`` ranks every match (exact first), so several substring matches are expected."""
+    b = getattr(contract, "binding", None)
+    d = getattr(b, "derived", None)
+    return b is not None and b.serve == "derived" and d is not None and d.verb == "search"
+
+
 def _free_text(contract: Any, name: str, binding: Any, value: Any, snap: Any, registry: Any,
                notes: list[str]) -> Any:
     if not isinstance(value, str):
@@ -325,7 +333,8 @@ def _free_text(contract: Any, name: str, binding: Any, value: Any, snap: Any, re
     if binding.pattern and not re.fullmatch(binding.pattern, value):
         raise _invalid(contract, name, value, f"{name} does not match {binding.pattern}", reason="pattern")
     out = value
-    if binding.interpreted_as in ("substring", "casefold_substring") and snap is not None:
+    if binding.interpreted_as in ("substring", "casefold_substring") and snap is not None \
+            and not _derived_search(contract):
         fold = binding.interpreted_as == "casefold_substring"
         needle = value.casefold() if fold else value
         hits = sorted({str(v) for v in snap.values if isinstance(v, str)
@@ -338,7 +347,7 @@ def _free_text(contract: Any, name: str, binding: Any, value: Any, snap: Any, re
         out = re.escape(out)
         if out != value:
             notes.append(f"{name}: matched as literal text (regex characters escaped)")
-    if binding.escape:
+    if binding.escape and binding.escape != soma_filter.LANGUAGE:   # SOMA filters are parsed and recompiled
         out = _quote_with(contract, name, binding, out, registry, notes)
     if binding.wrap:
         out = binding.wrap.replace("{value}", out)
@@ -737,18 +746,25 @@ def _leaf(op: str, column: str, value: Any) -> Predicate | None:
 def arg_predicate(contract: Any, name: str, binding: Any, value: Any, *, selected: str | None = None,
                   selector_value: Any = None, registry: Any = None,
                   confirmed: Mapping[str, Any] | None = None,
-                  fixed_scope: Mapping[str, Any] | None = None) -> Predicate | None:
+                  fixed_scope: Mapping[str, Any] | None = None, default: bool = False) -> Predicate | None:
     """The predicate one bound argument contributes (None: no row predicate, e.g. an anchor, a
-    limit or an argument without a column)."""
+    limit or an argument without a column). A ``default`` (a schema default the caller did not
+    choose) is the tool's own per-row filter: the ``comparable_within`` guard applies only to
+    thresholds the caller passed."""
     if value is None or binding.role not in ("filter", "flag", "free_text"):
         return None
     if binding.role == "free_text":
-        if not binding.binds or binding.interpreted_as in ("engine", "regex"):
+        if not (binding.binds or binding.binds_any) or binding.interpreted_as in ("engine", "regex"):
             return None
         mode = {"exact": "exact", "substring": "substring", "casefold_substring": "casefold_substring"}[
             binding.interpreted_as]
-        table, column = bound_column(contract, name, binding, selected, selector_value)
-        return TextMatch(column, str(value), mode) if column else None
+        texts: list[str] = []
+        if binding.binds:
+            _table, column = bound_column(contract, name, binding, selected, selector_value)
+            texts.extend([column] if column else [])
+        texts.extend(".".join(str(c).split(".")[2:]) or str(c) for c in binding.binds_any)   # any column matches
+        matches = [TextMatch(c, str(value), mode) for c in dict.fromkeys(texts)]
+        return (matches[0] if len(matches) == 1 else Or(tuple(matches))) if matches else None
     columns: list[str] = []
     if binding.binds is not None:
         table, column = bound_column(contract, name, binding, selected, selector_value)
@@ -774,16 +790,19 @@ def arg_predicate(contract: Any, name: str, binding: Any, value: Any, *, selecte
                     p = plugin.predicate(column, binding.op, value, spec, (confirmed or {}).get(column),
                                          dict(fixed_scope or {}))
                 except UnsupportedFilter as exc:
-                    if exc.reason == "group":
+                    if exc.reason == "group" and default:
+                        p = None                       # the plain comparison below
+                    elif exc.reason == "group":
                         group = list(getattr(exc, "group", None) or [])
                         raise GatewayError(ErrorKind.unsupported_combination, str(exc), tool=_tool(contract),
                                            argument=name,
                                            payload=unsupported_combination_payload(
                                                [name], str(exc), group_argument=group[0] if group else None)) from None
-                    raise GatewayError(ErrorKind.unsupported_filter, str(exc), tool=_tool(contract), argument=name,
-                                       value=value, payload=unsupported_filter_payload(
-                                           name, column, exc.reason or "scale",
-                                           confirmed_range=getattr(exc, "confirmed_range", None))) from None
+                    else:
+                        raise GatewayError(ErrorKind.unsupported_filter, str(exc), tool=_tool(contract), argument=name,
+                                           value=value, payload=unsupported_filter_payload(
+                                               name, column, exc.reason or "scale",
+                                               confirmed_range=getattr(exc, "confirmed_range", None))) from None
         if p is None:
             p = _leaf(binding.op, column, value)
         if p is not None:
@@ -804,10 +823,34 @@ def _pairs(contract: Any) -> list[tuple[str, str, list[str]]]:
     return out
 
 
+def _compile_flag(contract: Any, name: str, binding: Any, pred: Predicate, *, selected: str | None,
+                  registry: Any, confirmed: Mapping[str, Any] | None,
+                  fixed_scope: Mapping[str, Any] | None) -> Predicate:
+    """A flag's ``when_true``/``when_false`` names meanings (``none_recorded``); on a measure column its
+    statistic turns them into stored codes, and refuses an encoding not confirmed from the data (I9)."""
+    if registry is None or not isinstance(pred, (Eq, In)):
+        return pred
+    table, column = bound_column(contract, name, binding, selected)
+    spec = column_spec(contract, table, column) if column else None
+    if _role(spec) != "measure":
+        return pred
+    plugin = registry.find("statistic", getattr(spec, "statistic", None) or "numeric")
+    if plugin is None:
+        return pred
+    op, value = ("in", list(pred.values)) if isinstance(pred, In) else ("eq", pred.value)
+    try:
+        return plugin.predicate(pred.column, op, value, spec, (confirmed or {}).get(column), dict(fixed_scope or {}))
+    except UnsupportedFilter as exc:
+        raise GatewayError(ErrorKind.unsupported_filter, str(exc), tool=_tool(contract), argument=name, value=True,
+                           payload=unsupported_filter_payload(name, column, exc.reason or "unconfirmed_encoding")
+                           ) from None
+
+
 def build_predicate(contract: Any, values: Mapping[str, Any], *, selected: str | None = None,
                     registry: Any = None, confirmed: Mapping[str, Any] | None = None,
                     fixed_scope: Mapping[str, Any] | None = None,
-                    flags: Mapping[str, Predicate] | None = None) -> tuple[Predicate | None, dict[str, Predicate]]:
+                    flags: Mapping[str, Predicate] | None = None,
+                    defaults: Iterable[str] = ()) -> tuple[Predicate | None, dict[str, Predicate]]:
     """``(predicate, {arg: predicate})`` for the bound arguments in ``values`` (resolved values).
     Conjuncts on one container are merged into one ``Any`` (C21)."""
     per_arg: dict[str, Predicate] = {}
@@ -824,12 +867,13 @@ def build_predicate(contract: Any, values: Mapping[str, Any], *, selected: str |
         if name in paired:
             continue
         if flags and name in flags:
-            per_arg[name] = flags[name]
+            per_arg[name] = _compile_flag(contract, name, binding, flags[name], selected=selected, registry=registry,
+                                          confirmed=confirmed, fixed_scope=fixed_scope)
             continue
         if binding.role == "flag":
             continue
         p = arg_predicate(contract, name, binding, values.get(name), selected=selected, selector_value=selector_value,
-                          registry=registry, confirmed=confirmed, fixed_scope=fixed_scope)
+                          registry=registry, confirmed=confirmed, fixed_scope=fixed_scope, default=name in defaults)
         if p is not None:
             per_arg[name] = p
     if not per_arg:

@@ -305,6 +305,14 @@ tables:
     coverage: {statement: "Probes listed by Probes & Drugs as integrated in OT 25.09; covered for genes whose list is present (empty = none listed).",
                absence_means: absent, verified: false}
 
+  target_cancer_hallmarks:                      # item table: the hallmarks get_target_hallmarks counts
+    kind: fact
+    items_of: {table: target, path: "hallmarks.cancerHallmarks[]"}
+    grain: one COSMIC cancer hallmark annotation of one gene
+    key: {columns: [], check: sampled}
+    coverage: {statement: "COSMIC cancer hallmark annotations; no annotation means not annotated, not that the gene has no hallmark role.",
+               absence_means: unknown}
+
   target_prioritisation:
     kind: entity_detail
     path: target_prioritisation
@@ -340,7 +348,7 @@ tables:
     grain: one FAERS adverse event significantly reported for drugs acting on one target
     key: {columns: [targetId, event], check: full, verified: false}
     rank: [{column: llr, direction: desc, nulls: last}, {column: event, direction: asc}]
-    coverage: {statement: "openFDA FAERS events with llr above the critical value for drugs on this target; absence means not significant or not reported, not safe.",
+    coverage: {statement: "openFDA FAERS events with llr above the critical value for drugs on this target; FAERS target signals exist only for targets of marketed drugs; absence means not significant or not reported and is not evidence of safety.",
                absence_means: unknown}
     columns:
       targetId:   {role: identifier, id_type: ensembl_gene, ref: target.id}
@@ -619,6 +627,7 @@ tables:
     path: disease_phenotype
     grain: one (disease, HPO phenotype) association with its evidence records
     key: {columns: [disease, phenotype], check: full}
+    grains: {disease: [disease], phenotype: [phenotype]}
     rank: [{column: disease, direction: asc}]
     coverage: {statement: "HPO disease-phenotype annotations integrated by OT 25.09; negated (NOT) evidence is a negative finding, not support.",
                absence_means: unknown}
@@ -776,7 +785,7 @@ tables:
     key: {columns: [sourceId, id], check: sampled}
     rank: [{column: score, direction: desc, nulls: last, within: [sourceId]}, {column: id, direction: asc}]
     coverage: {statement: "Evidence strings of the 23 OT 25.09 data sources; absence means no evidence in these sources, not a negative finding.",
-               absence_means: unknown}
+               absence_means: absent}   # partial_unknown when rows were excluded as unknown (CT-6)
     partitions:
       sourceId: {column: {role: category, vocab: [cancer_biomarkers, cancer_gene_census, chembl, clingen, crispr, crispr_screen,
                           europepmc, eva, eva_somatic, expression_atlas, gene2phenotype, gene_burden, genomics_england,

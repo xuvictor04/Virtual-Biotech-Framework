@@ -165,7 +165,8 @@ async def test_runtime_env_errors_timeout_images_and_logs(tmp_path, monkeypatch)
     monkeypatch.setenv("SOME_SERVICE_TOKEN", "tok-should-not-leak")
     monkeypatch.setenv("NCBI_API_KEY", "ncbi-passthrough-1234")
     monkeypatch.setenv("OPEN_TARGETS_DATA_PATH", str(tmp_path / "ot"))
-    config = load_config(["mock"], overrides={"paths": {"runs_dir": str(tmp_path / "runs")}})
+    # legacy result semantics: no data gateway in front of the echo server (the data layer has its own tests)
+    config = load_config(["mock"], overrides={"paths": {"runs_dir": str(tmp_path / "runs")}, "data": {"enabled": False}})
     config["mcp_servers"] = {"servers": [{
         "name": "echo", "command": sys.executable, "args": ["-E", ECHO], "timeout_s": 1.0,
         "env_passthrough": ["NCBI_API_KEY"], "enabled": True}]}

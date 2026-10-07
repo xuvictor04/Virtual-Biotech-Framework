@@ -169,6 +169,7 @@ tools:
       table: tahoe_100m.de_permissive
       split: {by_sign: log2FoldChange, into: {"+": $.top_upregulated, "-": $.top_downregulated}}   # top_n per list
       rename: {Cell_ID_DepMap: cell_line, n_cells_trt: n_cells_treatment, n_cells_ctrl: n_cells_control}
+      envelope: {num_total_significant: null}   # filled by its summary recompute (distinct genes)
       sections:
         drug_info:      {path: $.drug_info, table: tahoe_100m.drug_metadata, verb: lookup, single: true, key_from_args: {drug: drug_name}}
         cell_line_info: {path: $.cell_line_info, table: tahoe_100m.cell_line_metadata, verb: lookup, key_from_args: {Cell_ID_DepMap: cell_line_id}}

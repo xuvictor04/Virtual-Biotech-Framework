@@ -1,7 +1,8 @@
 """Load descriptors and overlays from YAML, with ``vbt.config`` variable expansion and digests. No pyarrow.
 
 Strings are expanded like ``vbt.config.load_config``: ``${VAR}``, ``${VAR:-x}``, ``${VAR-x}`` and
-``${vars.name}``; additionally ``${run.<name>}`` takes a value from the run mapping passed in
+``${vars.name}`` (``${VAR}`` takes an ``env.VAR`` entry of the variables first, see
+:func:`variables_from_config`); additionally ``${run.<name>}`` takes a value from the run mapping passed in
 (``${run.mcp_output_dir}`` for tables a tool call materialises during a run, rev 2). A
 ``${run.*}`` variable without a value is left in place, so the table stays a template until
 a run provides it. Overlay files whose name starts with ``_`` are generic overlays.
@@ -41,8 +42,12 @@ class DescriptorError(ValueError):
 
 
 def variables_from_config(config: Mapping[str, Any] | None) -> dict[str, str]:
-    """The ``vars.*`` mapping of a loaded config (``project_root`` always defined)."""
-    variables = {str(k): "" if v is None else str(v) for k, v in ((config or {}).get("vars") or {}).items()}
+    """The ``vars.*`` mapping of a loaded config (``project_root`` always defined), plus the
+    config's ``tool_env`` as ``env.<NAME>`` entries: the environment the tool children get, which
+    ``${NAME}`` prefers over this process's environment."""
+    config = config or {}
+    variables = {str(k): "" if v is None else str(v) for k, v in (config.get("vars") or {}).items()}
+    variables.update({f"env.{k}": str(v) for k, v in (config.get("tool_env") or {}).items() if v})
     variables.setdefault("project_root", str(_config.PROJECT_ROOT))
     return variables
 
@@ -58,7 +63,10 @@ def expand(value: Any, variables: Mapping[str, str] | None = None, run: Mapping[
                 if val is None:
                     return default if op in (":-", "-") else m.group(0)
                 return str(val)
-            val = variables.get(key[5:]) if key.startswith("vars.") else os.environ.get(key)
+            if key.startswith("vars."):
+                val = variables.get(key[5:])
+            else:
+                val = variables.get(f"env.{key}", os.environ.get(key))
             if op == ":-":
                 return default if not val else val
             if op == "-":

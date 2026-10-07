@@ -118,7 +118,8 @@ def test_t6_negation_rows_and_items():
     c = Counters()
     kept = t6_negation(rows, ["negated", "ev[].isNeg"], False, c, drop_empty_parents=True)
     assert [r["id"] for r in kept] == [2, 4] and kept[1]["ev"] == [{"x": 2}]
-    assert c.excluded_negated == 3 and c.dropped_parents == 1
+    # records withheld: row 1 (negated) and row 3 (no item left); the negated item of row 4 is an item count
+    assert c.excluded_negated == 2 and c.dropped_parents == 0 and c.items_removed == {"negated": 2}
     assert len(t6_negation(rows, ["negated"], True, Counters())) == 4
 
 

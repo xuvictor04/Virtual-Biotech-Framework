@@ -479,7 +479,8 @@ class Resolver:
                 unresolved.append(v)
                 reason = (r.reasons[0] if r.reasons else None) or (r.tried[-1] if r.tried else r.status)
                 reason = f"{r.status}: {reason}"
-            items.append({"index": i, "value": v, "reason": reason, "status": r.status})
+            items.append({"index": i, "value": v, "reason": reason, "status": r.status,
+                          "looks_like": list(r.looks_like)})
         requested = len(values) - len(duplicates)
         fraction = resolved / requested if requested else 1.0
         if min_resolved_fraction is not None and fraction < float(min_resolved_fraction):
@@ -952,7 +953,7 @@ class Resolver:
                                     hops=hops, notes=notes, existence=existence,
                                     suggestions=self._suggest(target, ctx.text))
         if rule not in ("exact", "raw_member") and canonical == first:
-            notes.insert(0, f"{ctx.text!r} resolved to {canonical} by {rule}")
+            notes.insert(0, f"{ctx.text!r} resolved to {canonical} ({target}) by {rule}")
         if rule == "synonym:related":
             notes.append(f"warning: {ctx.text!r} is a related (not exact) synonym of {canonical}; check that it is "
                          "the intended entity")
@@ -1251,8 +1252,10 @@ def list_error(summary: Mapping[str, Any], argument: str, *, tool: str | None = 
                             f"{argument}: {summary['resolved']} of {summary['requested']} values resolved", tool=tool,
                             payload=payload)
     if status == "failed":
-        payload = invalid_argument_payload(argument, [i["value"] for i in summary.get("items", ())], None,
-                                           items=list(summary.get("items", ())))
+        items = list(summary.get("items", ()))
+        looks = list(dict.fromkeys(k for i in items for k in i.get("looks_like") or ()))   # what the values look like
+        payload = invalid_argument_payload(argument, [i["value"] for i in items], None, looks_like=looks,
+                                           items=items)
         return GatewayError(ErrorKind.invalid_argument,
                             f"{argument}: {len(summary.get('items', ()))} element(s) did not resolve", tool=tool,
                             payload=payload)

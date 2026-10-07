@@ -11,7 +11,7 @@ release: {from: [manifest.source_revision, manifest.filters]}   # "<rev>@<sha256
 root: ${TAHOE_DATA_PATH}
 manifests:
   - {path: preparation_manifest.json, required: true, require: {complete: true},
-     checks: {rows: "$.rows.permissive", constraints: "$.filters.permissive"}}
+     checks: {de_permissive.rows: "$.rows.permissive", de_permissive.constraints: "$.filters.permissive"}}
 defaults: {format: parquet, layout: single_file, missing: unknown}
 strict: false
 concepts:

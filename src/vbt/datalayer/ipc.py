@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .settings import SETTINGS_ENV
 
 __all__ = [
-    "SETTINGS_ENV", "REQUEST_ARG", "VERB_STATS", "VERB_CHECK", "VERB_WITNESS", "VERB_SERVE", "VERB_BUILD_INDEX",
+    "SETTINGS_ENV", "REQUEST_ARG", "TABLE_ERRORS", "VERB_STATS", "VERB_CHECK", "VERB_WITNESS", "VERB_SERVE", "VERB_BUILD_INDEX",
     "VERB_RESOLVE_REMOTE", "VERB_VOCAB", "VERB_AGGREGATE", "VERB_SIMILAR", "VERB_EXPAND", "VERB_ENRICH",
     "PHASE1_VERBS", "ServeVerb", "IpcModel", "RankKeyModel", "StatsRequest", "ColumnStatsModel", "TableStatsModel",
     "StatsResponse", "CheckRequest", "CheckItemModel", "KeyCheckModel", "TableCheckModel", "CheckResponse",
@@ -26,6 +26,9 @@ __all__ = [
 ]
 
 REQUEST_ARG = "request"
+# Per-table failures of _stats and _check go on the wire under this name: the bridge reads a
+# top-level ``errors`` key as a failed call (legacy envelopes), which would hide every other table.
+TABLE_ERRORS = "table_errors"
 
 VERB_STATS = "_stats"
 VERB_CHECK = "_check"
@@ -89,7 +92,7 @@ class TableStatsModel(IpcModel):
 
 class StatsResponse(IpcModel):
     tables: dict[str, TableStatsModel] = {}
-    errors: dict[str, str] = {}
+    errors: dict[str, str] = Field(default_factory=dict, alias=TABLE_ERRORS)
 
 
 # --------------------------------------------------------------------------- _check
@@ -136,7 +139,7 @@ class CheckResponse(IpcModel):
     tables: dict[str, TableCheckModel] = {}
     depth: Depth = "standard"
     hash_randomization: int | None = None              # sys.flags.hash_randomization of the child
-    errors: dict[str, str] = {}
+    errors: dict[str, str] = Field(default_factory=dict, alias=TABLE_ERRORS)
 
 
 # --------------------------------------------------------------------------- _witness
@@ -190,6 +193,7 @@ class ServeRequest(IpcModel):
     rename: dict[str, str] = {}
     split: dict[str, Any] | None = None
     nest: dict[str, Any] | None = None
+    aggregate: dict[str, dict[str, str]] = {}          # aggregate: {output: {count_distinct|count|first|distinct: column}}
     sections: dict[str, dict[str, Any]] = {}
     anchor: dict[str, Any] | None = None               # {column, value} for similar
     search_text: str | None = None

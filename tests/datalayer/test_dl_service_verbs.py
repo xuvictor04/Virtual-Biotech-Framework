@@ -184,7 +184,7 @@ def test_every_phase1_verb_is_registered_and_schema_valid(ctx):
     assert kd.rows == len(F.ot_rows()["known_drug"]) and kd.fragments == 1 and kd.fingerprint.startswith("fp1:")
     assert kd.columns["phase"].null_count == 1 and kd.columns["urls[].url"].max_rep_level == 1
     assert stats.tables["ot.target"].row_bytes_p99["row"] > 0 and "target_go" in stats.tables["ot.target"].row_bytes_p99
-    assert stats.tables["ot.target_go"].rows == 2
+    assert stats.tables["ot.target_go"].rows == sum(len(r.get("go") or []) for r in F.ot_rows()["target"])
     assert call(ctx, "_check", tables=["ot.target"], depth="shallow").tables["ot.target"].status == "ready"
     w = call(ctx, "_witness", table="ot.known_drug", predicate={"eq": ["targetId", F.T]})
     assert w.total == 37 and w.total_method == "scan"
@@ -318,7 +318,7 @@ def test_resolve_remote_existence_states(ctx, tmp_path):
     tight = ServiceContext(DataSettings.from_dict({**{k: str(v) for k, v in (
         ("descriptors_dir", ctx.settings.descriptors_dir), ("overlays_dir", ctx.settings.overlays_dir),
         ("cache_dir", tmp_path))}, "witness": {"max_scan_bytes": 10}}, project_root=tmp_path))
-    inside = "ENSG00000100000"                         # inside every row group's id range: nothing prunes it
+    inside = "ENSG00000150000"                         # inside every row group's id range: nothing prunes it
     assert call(ctx, "_resolve_remote", source="ot", id_type="remote_gene", values=[inside]).existence == "absent"
     over = call(tight, "_resolve_remote", source="ot", id_type="remote_gene", values=[inside])
     assert over.existence == "unknown", "over budget is never absent"

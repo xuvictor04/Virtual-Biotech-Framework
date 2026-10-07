@@ -18,8 +18,8 @@ id_types:
                      universe_via: {tool: clinicaltrials.get_all_cancer_types, path: "$.cancer_types[*].cancerTypeId", ttl_s: 86400}}
   cbio_study:       {plugin: cbio_study,
                      universe_via: {tool: clinicaltrials.search_studies, path: "$.studies[*].studyId", ttl_s: 3600}}
-  cbio_sample:      {plugin: cbio_sample, universe: {table: sample, keys: [studyId, sampleId], mode: tuple}}
-  cbio_patient:     {plugin: cbio_patient, universe: {table: patient, keys: [studyId, patientId], mode: tuple}}
+  cbio_sample:      {plugin: cbio_sample, universe: {table: sample, keys: [studyId, sampleId], mode: tuple}, index: remote}
+  cbio_patient:     {plugin: cbio_patient, universe: {table: patient, keys: [studyId, patientId], mode: tuple}, index: remote}
   # No upstream tool lists a study's samples, so sample existence is decided per returned row by the
   # overlay's ResultSpec.exists_when (§8.1) and W6 (§11.6), not before the call.
 

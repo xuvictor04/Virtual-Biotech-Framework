@@ -424,7 +424,11 @@ def r2_manifest_checks(run: CheckRun) -> None:
     if manifest is None:
         return
     for spec in desc.manifests:
-        for what, path in (spec.checks or {}).items():
+        for key, path in (spec.checks or {}).items():
+            # "<table>.rows" scopes a check to one table; a bare "rows" applies to every table
+            table, _, what = key.rpartition(".")
+            if table and table != run.table.ref.table:
+                continue
             want = json_path(manifest.data, path)
             if what == "rows" and run.rows is not None and isinstance(want, int) and not isinstance(want, bool):
                 run.add("R2:checks.rows", want == run.rows, f"manifest {path} says {want} rows, the data has "
@@ -709,7 +713,7 @@ def r5b_item_keys(run: CheckRun) -> None:
     reader = run.reader
     assert reader is not None
     containers = [(p, c) for p, c in _walk_columns(reader.spec.columns) if is_container(c) and c.item_key is not None
-                  and c.item_key.check != "none"]
+                  and c.item_key.check != "none" and c.item_key.identity != "position"]   # positions never repeat
     if not containers:
         return
     paths = [p.split(".")[0] for p, _ in containers]
@@ -1095,12 +1099,15 @@ def r9_refs(run: CheckRun) -> None:
     reader = run.reader
     assert reader is not None
     max_values = None if run.depth == "deep" else SAMPLE_VALUES
+    # declared stored forms ('Erdafitinib ') are matched through normalize_stored in _stored_forms
+    stored = {r.partition(".")[2] for it in run.table.descriptor.id_types.values() for r in it.stored_forms
+              if r.partition(".")[0] == run.table.ref.table}
     for path, col in _walk_columns(reader.spec.columns):
         ref = getattr(col, "ref", None)
         if ref is None and getattr(col, "role", None) == "hierarchy" and getattr(col, "of", None):
             of = reader.spec.columns.get(col.of) if "." not in str(col.of) else None
             ref = getattr(of, "ref", None) if of is not None else None
-        if ref is None or _arrow_type_of(reader, path) is None:
+        if ref is None or _arrow_type_of(reader, path) is None or path in stored:
             continue
         if isinstance(ref, CompositeRef):
             _composite_ref(run, path, ref)

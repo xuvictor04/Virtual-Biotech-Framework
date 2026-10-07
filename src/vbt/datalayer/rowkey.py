@@ -57,7 +57,10 @@ def element_type(storage_type: str | None) -> str | None:
     name, sep, rest = inner.partition(":")
     if sep and name.strip() in {"item", "element", "elem", "value"}:
         inner = rest
-    return inner.strip() or None
+    inner = inner.strip()
+    if inner.endswith(" not null"):                 # list<element: string not null>
+        inner = inner[:-len(" not null")].strip()
+    return inner or None
 
 
 def _pack_roundtrip(fmt: str, value: float) -> float:

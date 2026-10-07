@@ -176,7 +176,9 @@ def _not_found(contract: Any, plan: Any, obj: Any, is_json: bool, reason: str, m
     id_args = [a for a in contract.identifier_args if args.get(a) is not None]
     universe_tables = universe_tables or {}
     on_universe = [a for a in id_args if bound and bound in set(universe_tables.get(a, ()))]
-    for a in on_universe:
+    # existence: upstream decides on the bound universe, or wherever no local universe table exists
+    # (a remote universe listed only by an upstream tool, cBioPortal studies)
+    for a in [a for a in id_args if a in on_universe or not universe_tables.get(a)]:
         if contract.args[a].existence == "upstream" and existence.get(a) != "exists":
             return Classification("not_found", reason, obj, is_json, _nf_error(name, args, a, reason, bound),
                                   explicit_not_found=True, matched=matched)

@@ -51,7 +51,7 @@ tools:
       verb: aggregate
       table: open_targets.target_pathways
       group_by: ["pathways[].pathwayId"]
-      aggregate: {gene_count: {count_distinct: id}, pathway: {first: "pathways[].pathway"},
+      aggregate: {gene_count: {count_distinct: /id}, pathway: {first: "pathways[].pathway"},
                   topLevelTerm: {distinct: "pathways[].topLevelTerm"}}
       rename: {"pathways[].pathwayId": pathwayId}
     defects:
@@ -67,7 +67,7 @@ tools:
     result:
       rows: $.go_terms
       rows_of: open_targets.target_go
-      parent_key: {id: $.target_id}
+      parent_key: {/id: $.target_id}                  # go items have their own id
       count_fields: [$.count]
       order: [{column: "go[].id", direction: asc}]
     serve: derived
@@ -103,7 +103,7 @@ tools:
       verb: aggregate
       table: open_targets.target_go
       group_by: ["go[].id", "go[].aspect"]
-      aggregate: {gene_count: {count_distinct: id}}
+      aggregate: {gene_count: {count_distinct: /id}}
       rename: {"go[].id": goId, "go[].aspect": aspect}
     defects:
       - {id: OT-PATH-004, what: "go is an ndarray: isinstance(row['go'], list) is False, so every search returns no terms",

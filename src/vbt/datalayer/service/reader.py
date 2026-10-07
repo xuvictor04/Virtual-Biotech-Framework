@@ -42,6 +42,7 @@ from ..plugins.base import Fragment, Normalized, ValueSnapshot
 from ..plugins.formats import conjuncts, round_to_storage, storage_typed
 from ..plugins.layouts import prune_fragments
 from ..predicate import (
+    map_columns,
     All,
     And,
     Any as AnyItem,
@@ -69,7 +70,7 @@ from ..predicate import (
     kleene_and,
 )
 from ..roles import parse_path
-from ..rowkey import canonical, render_value
+from ..rowkey import canonical, element_type, render_value
 from . import ServiceContext, ServiceError, layout_spec
 from . import items as _items
 from .sidecar import FooterInfo, build_access_index, footer_reader
@@ -153,39 +154,7 @@ def predicate_paths(p: Predicate | None, stack: list[str] | None = None) -> list
     return list(out)
 
 
-def _map_pred(p: Predicate, fn: Callable[[str], str]) -> Predicate:
-    """``p`` with every top-level column path passed through ``fn`` (quantifier bodies untouched)."""
-    if isinstance(p, And):
-        return And(tuple(_map_pred(q, fn) for q in p.preds))
-    if isinstance(p, Or):
-        return Or(tuple(_map_pred(q, fn) for q in p.preds))
-    if isinstance(p, Not):
-        return Not(_map_pred(p.pred, fn))
-    if isinstance(p, (AnyItem, All)):
-        return type(p)(fn(p.path), p.pred, p.skip_null_items)
-    if isinstance(p, (Contains,)):
-        return Contains(fn(p.path), p.value)
-    if isinstance(p, NonEmpty):
-        return NonEmpty(fn(p.path))
-    if isinstance(p, KindMatch):
-        return KindMatch(fn(p.path), p.id_type)
-    if isinstance(p, CensoredCmp):
-        return CensoredCmp(fn(p.time), fn(p.event), p.op, p.value)
-    if isinstance(p, Eq):
-        return Eq(fn(p.column), p.value)
-    if isinstance(p, In):
-        return In(fn(p.column), p.values)
-    if isinstance(p, Cmp):
-        return Cmp(fn(p.column), p.op, p.value)
-    if isinstance(p, CmpAbs):
-        return CmpAbs(fn(p.column), p.op, p.value)
-    if isinstance(p, Range):
-        return Range(fn(p.column), p.lo, p.hi, p.lo_inclusive, p.hi_inclusive)
-    if isinstance(p, TextMatch):
-        return TextMatch(fn(p.column), p.text, p.mode)
-    if isinstance(p, IsNull):
-        return IsNull(fn(p.column))
-    return p
+_map_pred = map_columns
 
 
 def bind_params(p: Predicate | None, params: Mapping[str, Any] | None) -> Predicate | None:
@@ -709,11 +678,9 @@ class TableReader:
                 continue
             leaf = self.leaf(physical)
             chunk = group.chunks.get(leaf) if leaf else None
-            if chunk is None:
+            # rows where this comparison is unknown (nulls, in-band codes) are attributed, never pruned
+            if chunk is None or chunk.null_count is None or chunk.null_count > 0 or self._in_band_codes(physical):
                 continue
-            if chunk.null_count is not None and chunk.null_count >= group.rows and group.rows > 0:
-                if isinstance(c, (Eq, In, Cmp, Range)):
-                    return False                       # every value null: no comparison can be true
             if not chunk.has_minmax:
                 continue
             st = self.storage_type(physical)
@@ -838,6 +805,17 @@ class TableReader:
                 continue
             out.append((c, paths))
         return out
+
+    def _in_band_codes(self, path: str) -> bool:
+        """Does the column store unknowns as values (codes, placeholders), which min/max cannot tell apart?"""
+        spec = self.column_spec(path)
+        if spec is None:
+            return False
+        if any(getattr(spec, f, None) for f in ("missing_values", "unknown_when", "placeholders", "placeholder_when")):
+            return True
+        plugin = self.ctx.statistic(getattr(spec, "statistic", None)) if getattr(spec, "role", None) == "measure" \
+            else None
+        return bool(plugin is not None and hasattr(plugin, "missing_codes") and plugin.missing_codes(spec))
 
     def _unclean(self, path: str) -> bool:
         spec = self.column_spec(path)
@@ -975,14 +953,16 @@ class TableReader:
         if any(t is False for t in truths):
             return
         attributed = False
+        seen: set[str] = set()                         # one count per column, however many conjuncts read it
         for i, t in enumerate(truths):
             if t is not None:
                 continue
             cols = conj_paths[i]
             null_cols = [c for c in cols if all(is_null(v) for v in _items.path_values(view, c) or [None])]
             for col in (null_cols or cols):
-                if tracked is not None and col not in tracked:
+                if (tracked is not None and col not in tracked) or col in seen:
                     continue
+                seen.add(col)
                 name = names.get(col, col)
                 if self._not_applicable(view, col):
                     stats.excluded_not_applicable[name] = stats.excluded_not_applicable.get(name, 0) + 1
@@ -1386,6 +1366,8 @@ class TableReader:
 
         physical = self.physical_path(path)
         storage = self.partitions.get(physical) or self.storage_type(physical)
+        while element_type(storage):
+            storage = element_type(storage)     # a list column's values are its elements (see below)
         fast = self._single_valued(physical)
         if fast is not None:
             values = tuple(sorted(fast, key=lambda v: render_value(v, storage)))
@@ -1405,14 +1387,15 @@ class TableReader:
                 if spent > limit:
                     complete = False
                     break
+            while pa.types.is_list(arr.type) or pa.types.is_large_list(arr.type) \
+                    or pa.types.is_fixed_size_list(arr.type):
+                arr = pc.list_flatten(arr)          # a list column's values are its elements
             nulls += arr.null_count
             if pa.types.is_floating(arr.type):
                 nan_mask = pc.is_nan(arr)
                 nans += int(pc.sum(nan_mask).as_py() or 0)
                 arr = arr.filter(pc.invert(pc.fill_null(nan_mask, True)))
-            vc = pc.value_counts(arr.drop_null())
-            for item in vc.to_pylist():
-                v, n = item["values"], int(item["counts"])
+            for v, n in _value_counts(arr.drop_null()):
                 r = render_value(v, storage)
                 if r not in raw:
                     if len(raw) >= cap:
@@ -1462,6 +1445,24 @@ class TableReader:
             if len(out) >= n:
                 break
         return out
+
+
+def _value_counts(arr: Any) -> list[tuple[Any, int]]:
+    """``(value, count)`` pairs of an Arrow array; types without a ``value_counts`` kernel (structs of
+    lists, maps) are counted on their rendered Python values."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    try:
+        return [(item["values"], int(item["counts"])) for item in pc.value_counts(arr).to_pylist()]
+    except (pa.ArrowNotImplementedError, pa.ArrowTypeError):
+        first: dict[str, Any] = {}
+        counts: dict[str, int] = {}
+        for v in arr.to_pylist():
+            r = render_value(v)
+            first.setdefault(r, v)
+            counts[r] = counts.get(r, 0) + 1
+        return [(first[r], counts[r]) for r in first]
 
 
 class _Neg:

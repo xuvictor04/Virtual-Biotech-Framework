@@ -458,9 +458,19 @@ def _target_rows() -> list[dict[str, Any]]:
          "homologues": [{"speciesId": "10090", "speciesName": "Mouse", "homologyType": "ortholog_one2one",
                          "targetGeneId": PCSK9_MOUSE, "isHighConfidence": "1", "targetGeneSymbol": "Pcsk9",
                          "queryPercentageIdentity": 77.0, "targetPercentageIdentity": 78.0, "priority": 1}]},
+        # NDE1 carries the declared codes no other row shows (readiness R6 confirms every declared
+        # code from the data): GO aspect C, a low-confidence homologue and the three constraint types.
         {"id": G_L2G, "approvedSymbol": "NDE1", "approvedName": "nudE neurodevelopment protein 1",
-         "biotype": "protein_coding", "genomicLocation": loc("16", 15643267), "go": [], "pathways": [],
-         "chemicalProbes": [], "tractability": []},
+         "biotype": "protein_coding", "genomicLocation": loc("16", 15643267),
+         "go": [{"id": "GO:0005813", "source": "UniProt", "evidence": "IDA", "aspect": "C", "geneProduct": "Q9NXR1",
+                 "ecoId": "ECO_0000314"}],
+         "pathways": [], "chemicalProbes": [], "tractability": [],
+         "homologues": [{"speciesId": "7955", "speciesName": "Zebrafish", "homologyType": "ortholog_one2many",
+                         "targetGeneId": "ENSDARG00000001234", "isHighConfidence": "0", "targetGeneSymbol": "nde1",
+                         "queryPercentageIdentity": 55.0, "targetPercentageIdentity": 54.0, "priority": 2}],
+         "constraint": [{"constraintType": t, "score": sc, "exp": 10.0, "obs": 8, "oe": 0.8, "oeLower": 0.5,
+                         "oeUpper": 1.2, "upperRank": 100, "upperBin": 3, "upperBin6": 2}
+                        for t, sc in (("syn", 0.1), ("mis", 0.4), ("lof", 0.9))]},
     ]
 
 
@@ -642,9 +652,13 @@ def _prioritisation_rows(variant: str) -> list[dict[str, Any]]:
               "refuted": {"A": 1.0, "B": None, "C": 0.0, "D": None}}[variant]
     rows = []
     for i, (k, tgt) in enumerate(PRIO.items()):
+        # every binary factor shows both codes, as in the release (readiness confirms them)
         rows.append({"targetId": tgt, "hasSafetyEvent": values[k], "isInMembrane": float(i % 2),
-                     "isSecreted": 1.0 if k == "A" else 0.0, "hasPocket": 1.0 if i < 2 else 0.0, "hasLigand": 1.0,
-                     "hasSmallMoleculeBinder": 0.0, "geneticConstraint": -0.5 + 0.3 * i, "maxClinicalTrialPhase":
+                     "isSecreted": 1.0 if k == "A" else 0.0, "hasPocket": 1.0 if i < 2 else 0.0,
+                     "hasLigand": 1.0 if i < 3 else 0.0, "hasSmallMoleculeBinder": 1.0 if i == 0 else 0.0,
+                     "isCancerDriverGene": float(i % 2), "hasTEP": 1.0 if i == 1 else 0.0,
+                     "hasHighQualityChemicalProbes": 1.0 if i == 2 else 0.0,
+                     "geneticConstraint": -0.5 + 0.3 * i, "maxClinicalTrialPhase":
                      [1.0, 0.75, 0.25, 0.0][i], "tissueSpecificity": 0.1, "tissueDistribution": -0.2})
     return rows
 
@@ -749,7 +763,34 @@ def ot_rows(*, safety_variant: str = "default", interaction_sources: Sequence[st
              "rna": {"value": 120.0, "zscore": 4, "level": 3, "unit": "TPM"}, "protein": None}]}],
     }
     rows.update(_association_rows())
+    _close_references(rows)
     return rows
+
+
+def _close_references(rows: dict[str, list[dict[str, Any]]]) -> None:
+    """Add minimal ``disease`` and ``target`` rows for every id the other tables reference, as the
+    release has them (readiness R9 samples references with full integrity); retired ids stay absent."""
+    retired = {t for r in rows["disease"] for t in r.get("obsoleteTerms") or []}
+    have = {r["id"] for r in rows["disease"]}
+    refs = {r["diseaseId"] for name in ("association_overall_direct", "association_by_overall_indirect",
+                                        "association_by_datasource_direct", "association_by_datasource_indirect",
+                                        "known_drug") for r in rows[name]}
+    refs |= {ta for r in rows["disease"] for ta in r.get("therapeuticAreas") or []}
+    for did in sorted(refs - have - retired):
+        rows["disease"].append({"id": did, "code": f"http://www.ebi.ac.uk/efo/{did}", "name": f"fixture disease {did}",
+                                "description": "fixture", "parents": [], "children": [], "ancestors": [],
+                                "descendants": [], "therapeuticAreas": [],
+                                "synonyms": {"hasBroadSynonym": [], "hasExactSynonym": [], "hasNarrowSynonym": [],
+                                             "hasRelatedSynonym": []},
+                                "ontology": {"isTherapeuticArea": False, "leaf": True, "name": None,
+                                             "sources": {"name": "EFO", "url": "http://www.ebi.ac.uk/efo"}}})
+    genes = {r["id"] for r in rows["target"]}
+    partners = {r[side] for r in rows["interaction"] for side in ("targetA", "targetB") if r.get(side)}
+    for gid in sorted(partners - genes):
+        rows["target"].append({"id": gid, "approvedSymbol": f"FX{gid[-5:]}", "approvedName": f"fixture gene {gid}",
+                               "biotype": "protein_coding", "genomicLocation": {"chromosome": "3", "start": int(gid[-6:]),
+                                                                                "end": int(gid[-6:]) + 1000, "strand": 1},
+                               "go": [], "pathways": [], "chemicalProbes": [], "tractability": []})
 
 
 TABLE_SHARDS = {"known_drug": 2, "l2g_prediction": 2, "target": 2, "interaction": 2}

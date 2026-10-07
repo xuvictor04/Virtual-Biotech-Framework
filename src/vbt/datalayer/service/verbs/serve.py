@@ -13,9 +13,12 @@ Verbs (phase 1):
   per section; a section over an ``entity_detail`` table is always a list.
 * ``search``: ``search_text`` against the key, label and synonym leaves, ranked by match class
   (exact > casefold > previous symbol > alias > other synonym > prefix > word > substring), then
-  the table's rank, then the key; each row carries ``_match: {class, column, value}``; broad and
-  narrow synonyms are labelled ``broad_synonym``/``narrow_synonym``.
+  the table's rank, then the key; each row carries ``match`` (the class) and ``_match: {class, column,
+  value, rule}`` (``synonym:<kind>`` for a whole-synonym match); broad and narrow synonyms are labelled
+  ``broad_synonym``/``narrow_synonym``.
 * ``count``: the total (and every declared grain's distinct count) with the unknown attribution.
+* ``aggregate`` (phase 1 subset): one row per ``group_by`` value with ``count_distinct``, ``count``,
+  ``first`` and ``distinct`` outputs (``gene_count`` of ``search_go_terms``), sorted by ``order``.
 
 ``served_by`` is ``derived``. Over the scan budget the response has no rows, ``total: null`` and a
 ``reason`` starting with ``too_large:`` (never a partial answer presented as complete). Counters that
@@ -38,7 +41,7 @@ from .. import items as _items
 from ..reader import BudgetExceeded, ScanStats, TableReader, UnboundParameter
 from .index_build import text_leaf
 
-__all__ = ["serve", "search", "VERBS", "MATCH_CLASSES"]
+__all__ = ["serve", "search", "aggregate_rows", "VERBS", "MATCH_CLASSES"]
 
 MATCH_CLASSES = ("exact", "casefold", "previous_synonym", "alias", "related_synonym", "broad_synonym",
                  "narrow_synonym", "prefix", "word", "substring")
@@ -94,6 +97,9 @@ def _nest(rows: list[dict[str, Any]], spec: Mapping[str, Any], negate: Sequence[
         if g is None:
             g = groups[gkey] = {c: r.get(c) for c in group_by}
             g[name] = []
+        if cols is None and isinstance(r.get(name), list):
+            g[name].extend(r[name])                    # items is a list field of the rows: merge the lists
+            continue
         item = {k: v for k, v in r.items() if k not in group_by} if cols is None else {c: r.get(c) for c in cols}
         g[name].append(item)
     out = []
@@ -121,11 +127,26 @@ def _having_ok(n: int, having: Mapping[str, Any]) -> bool:
     return True
 
 
-def _split(rows: list[dict[str, Any]], spec: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+def _split(rows: list[dict[str, Any]], spec: Mapping[str, Any], per_list: int | None = None
+           ) -> dict[str, list[dict[str, Any]]]:
+    """Rows into named lists: ``by_sign`` (``"+"``/``"-"`` by the sign of a column; zero and unknown values
+    go to neither list) or ``by`` (the column's values name the lists). ``per_list`` (the request limit)
+    or ``spec.limit`` caps each list."""
+    sign = spec.get("by_sign")
+    if sign:
+        out_sign: dict[str, list[dict[str, Any]]] = {"+": [], "-": []}
+        for r in rows:
+            v = r.get(sign)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v == 0:
+                continue
+            bucket = out_sign["+" if v > 0 else "-"]
+            if per_list is None or len(bucket) < int(per_list):
+                bucket.append(r)
+        return out_sign
     by = spec.get("by") or spec.get("column")
     if not by:
-        raise ServiceError("split needs `by` (the column whose values name the lists)")
-    limit = spec.get("limit")
+        raise ServiceError("split needs `by_sign` or `by` (the column whose values name the lists)")
+    limit = spec.get("limit", per_list)
     values = spec.get("values")
     out: dict[str, list[dict[str, Any]]] = {str(v): [] for v in values} if values else {}
     for r in rows:
@@ -203,7 +224,8 @@ def search(reader: TableReader, text: str, predicate: Any, limit: int | None, pa
                     continue
                 rank = MATCH_CLASSES.index(cls)
                 if best is None or rank < best[0]:
-                    best = (rank, cls, path, s)
+                    best = (rank, cls, path, s, f"synonym:{kind}" if kind not in ("key", "label") and
+                            f == needle else cls)
         if best is None:
             continue
         ckey = reader.canonical_key(m.key)
@@ -215,7 +237,8 @@ def search(reader: TableReader, text: str, predicate: Any, limit: int | None, pa
     rows, keys = [], []
     for _r, _sk, ckey, m, best in scored:
         row = reader.output_row(m)
-        row["_match"] = {"class": best[1], "column": best[2], "value": best[3]}
+        row["match"] = best[1]                  # §10.6: each row carries its match class
+        row["_match"] = {"class": best[1], "column": best[2], "value": best[3], "rule": best[4]}
         rows.append(row)
         keys.append(json.loads(ckey))
     return rows, keys, total
@@ -240,6 +263,58 @@ def _grain_counts(reader: TableReader, pred: Any, params: Mapping[str, Any], row
     return out
 
 
+_AGGREGATES = ("count_distinct", "count", "first", "distinct")
+
+
+def aggregate_rows(reader: TableReader, req: ServeRequest, params: Mapping[str, Any],
+                   order: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """One row per ``group_by`` value with the ``aggregate`` outputs (phase 1: ``count_distinct``, ``count``,
+    ``first``, ``distinct``), sorted by ``order`` (nulls last) and renamed; ``(rows, groups)``."""
+    specs: dict[str, tuple[str, str]] = {}
+    for name, spec in req.aggregate.items():
+        if len(spec) != 1 or next(iter(spec)) not in _AGGREGATES:
+            raise ServiceError(f"aggregate {name}: one of {', '.join(_AGGREGATES)} per output (got {dict(spec)})")
+        fn, col = next(iter(spec.items()))
+        specs[name] = (fn, col)
+    cols = list(dict.fromkeys([*req.group_by, *(c for _, c in specs.values())]))
+    rows, _keys, _stats = reader.rows(req.predicate, cols, [], None, None, params=params,
+                                      budget_bytes=req.budget_bytes)
+
+    def canon(v: Any) -> str:
+        return json.dumps(v, default=str, sort_keys=True)
+
+    groups: dict[tuple[str, ...], dict[str, Any]] = {}
+    for r in rows:
+        k = tuple(canon(r.get(c)) for c in req.group_by)
+        g = groups.setdefault(k, {"row": {c: r.get(c) for c in req.group_by}, "vals": {n: [] for n in specs}})
+        for n, (_fn, c) in specs.items():
+            g["vals"][n].append(r.get(c))
+    out: list[dict[str, Any]] = []
+    for g in groups.values():
+        row = dict(g["row"])
+        for n, (fn, _c) in specs.items():
+            vals = [v for v in g["vals"][n] if v is not None]
+            if fn == "count_distinct":
+                row[n] = len({canon(v) for v in vals})
+            elif fn == "count":
+                row[n] = len(vals)
+            elif fn == "first":
+                row[n] = vals[0] if vals else None
+            else:
+                row[n] = [json.loads(v) for v in sorted({canon(v) for v in vals})]
+        out.append(row)
+    for o in reversed(list(order)):                   # stable sorts, last key first
+        col, desc = o.get("column"), str(o.get("direction", "asc")).startswith("desc")
+        present = [r for r in out if r.get(col) is not None]
+        missing = [r for r in out if r.get(col) is None]
+        present.sort(key=lambda r: (canon(r.get(col)) if not isinstance(r.get(col), (int, float)) else r.get(col)),
+                     reverse=desc)
+        out = present + missing                       # nulls last
+    if req.rename:
+        out = [{req.rename.get(k, k): v for k, v in r.items()} for r in out]
+    return out, len(groups)
+
+
 def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     req = ServeRequest.model_validate(dict(payload))
     reader = ctx.reader(req.table)
@@ -261,11 +336,17 @@ def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
             resp = ServeResponse(rows=rows, total=total, truncated=total > len(rows), key_columns=list(reader.key),
                                  row_keys=keys)
             return resp.model_dump(mode="json")
+        if req.verb == "aggregate":
+            rows, total = aggregate_rows(reader, req, params, order)
+            out = rows[: int(req.limit)] if req.limit is not None else rows
+            resp = ServeResponse(rows=out, total=total, truncated=total > len(out),
+                                 key_columns=[req.rename.get(c, c) for c in req.group_by])
+            return resp.model_dump(mode="json")
         if req.verb not in ("lookup", "find", "members"):
             raise ServiceError(f"_serve verb {req.verb!r} arrives in a later phase (phase 1: lookup, find, search, "
-                               "members, count)")
+                               "members, count, aggregate)")
         stats = ScanStats()
-        limit = None if req.nest else req.limit
+        limit = None if (req.nest or req.split) else req.limit   # nest and split limit per group / list
         rows, keys, stats = reader.rows(req.predicate, req.columns, order, limit, req.limit_grain,
                                         explode=req.explode, carry=req.carry, rename=req.rename, params=params,
                                         budget_bytes=req.budget_bytes, stats=stats, group_by=req.group_by,
@@ -275,14 +356,17 @@ def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
         truncated = total > len(rows)
         out_rows: Any = rows
         if req.nest:
-            nested, negated = _nest(rows, req.nest, _negate_columns(reader))
+            nest = dict(req.nest)
+            nest["group_by"] = [req.rename.get(c, c) for c in nest.get("group_by") or []]   # rows are renamed
+            nested, negated = _nest(rows, nest, _negate_columns(reader))
             total = len(nested)
             truncated = req.limit is not None and total > int(req.limit)
             out_rows = nested[: int(req.limit)] if req.limit is not None else nested
             keys = []
             sections["_excluded"] = {"negated": negated}
         if req.split:
-            out_rows = _split(out_rows, req.split)
+            out_rows = _split(out_rows, req.split, req.limit)
+            truncated = sum(len(v) for v in out_rows.values()) < len(rows)
         for name, sec in req.sections.items():
             sections[name] = _section(ctx, name, sec, params)
         grains = _grain_counts(reader, req.predicate, params, rows) if not req.nest else {}

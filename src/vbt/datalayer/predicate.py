@@ -43,7 +43,7 @@ __all__ = [
     "Predicate", "Eq", "In", "Cmp", "CmpAbs", "Range", "Contains", "Any", "All", "NonEmpty", "KindMatch",
     "CensoredCmp", "TextMatch", "IsNull", "Not", "And", "Or", "Param", "RankKey", "CMP_OPS", "TEXT_MODES",
     "evaluate", "columns", "to_json", "from_json", "facet_predicate", "merge_container_predicates",
-    "kleene_and", "kleene_or", "kleene_not", "is_null", "PredicateError",
+    "kleene_and", "kleene_or", "kleene_not", "is_null", "PredicateError", "map_columns",
 ]
 
 Truth = t.Optional[bool]
@@ -586,6 +586,41 @@ def columns(p: Predicate | None) -> set[str]:
     return {p.column}  # type: ignore[union-attr]
 
 
+def map_columns(p: Predicate, fn: t.Callable[[str], str]) -> Predicate:
+    """``p`` with every top-level column path passed through ``fn`` (quantifier bodies untouched)."""
+    if isinstance(p, And):
+        return And(tuple(map_columns(q, fn) for q in p.preds))
+    if isinstance(p, Or):
+        return Or(tuple(map_columns(q, fn) for q in p.preds))
+    if isinstance(p, Not):
+        return Not(map_columns(p.pred, fn))
+    if isinstance(p, (Any, All)):
+        return type(p)(fn(p.path), p.pred, p.skip_null_items)
+    if isinstance(p, (Contains,)):
+        return Contains(fn(p.path), p.value)
+    if isinstance(p, NonEmpty):
+        return NonEmpty(fn(p.path))
+    if isinstance(p, KindMatch):
+        return KindMatch(fn(p.path), p.id_type)
+    if isinstance(p, CensoredCmp):
+        return CensoredCmp(fn(p.time), fn(p.event), p.op, p.value)
+    if isinstance(p, Eq):
+        return Eq(fn(p.column), p.value)
+    if isinstance(p, In):
+        return In(fn(p.column), p.values)
+    if isinstance(p, Cmp):
+        return Cmp(fn(p.column), p.op, p.value)
+    if isinstance(p, CmpAbs):
+        return CmpAbs(fn(p.column), p.op, p.value)
+    if isinstance(p, Range):
+        return Range(fn(p.column), p.lo, p.hi, p.lo_inclusive, p.hi_inclusive)
+    if isinstance(p, TextMatch):
+        return TextMatch(fn(p.column), p.text, p.mode)
+    if isinstance(p, IsNull):
+        return IsNull(fn(p.column))
+    return p
+
+
 def _value_json(v: t.Any) -> t.Any:
     if isinstance(v, Param):
         return {"param": v.name}
@@ -755,7 +790,7 @@ def _container_form(p: Predicate) -> tuple[str | None, Predicate]:
         col = p.path if isinstance(p, KindMatch) else p.column
     elif isinstance(p, Contains):
         col = p.path
-    if col is None:
+    if col is None or col == LIST:                     # the item itself (a re-rooted Contains) is a leaf
         return None, p
     path = parse_path(col)
     if path.absolute or path.up or path.axis:

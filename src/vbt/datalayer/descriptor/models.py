@@ -102,7 +102,8 @@ class ManifestSpec(Strict):
     entries: str = "$.files"
     required: bool = False
     require: dict[str, Any] = {}                       # {complete: true}
-    checks: dict[str, str] = {}                        # {rows: "$.<jsonpath>"}: compared with the data
+    checks: dict[str, str] = {}                        # {rows: "$.<jsonpath>"}: compared with the data;
+                                                       # "<table>.rows" scopes a check to one table
 
     @model_validator(mode="after")
     def _has_source(self) -> "ManifestSpec":

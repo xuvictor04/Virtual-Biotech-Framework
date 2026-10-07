@@ -235,6 +235,8 @@ def _plain_parts(column: str) -> list[str] | None:
 
 
 def get_path(row: Any, column: str) -> Any:
+    if column.startswith("/") and isinstance(row, Mapping) and column in row:
+        return row[column]                             # "/id": a parent key part named apart from the item's id
     parts = _plain_parts(column)
     if parts is None:
         return row.get(column) if isinstance(row, Mapping) else None
@@ -323,6 +325,10 @@ class FieldMapper:
         mapped: dict[str, str] = {}
 
         def add(column: str, value: Any) -> None:
+            if column.startswith("/"):                 # a parent key part kept apart from the item's fields
+                out[column] = value
+                created.add(column)
+                return
             top = column_name(column).split(".")[0].split("[")[0]
             if top not in row:
                 created.add(top)
@@ -356,7 +362,7 @@ class FieldMapper:
             else:
                 out[field] = value
         for col, path in self.parent_key.items():
-            if get_path(out, col) is None:
+            if (out.get(col) if col.startswith("/") else get_path(out, col)) is None:
                 add(col, jp_first(payload, path))
         for col, arg in self.key_from_args.items():
             if get_path(out, col) is None and args is not None:

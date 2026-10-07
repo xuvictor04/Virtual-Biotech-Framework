@@ -427,7 +427,7 @@ class ManifestSpec(BaseModel):
     entries: str = "$.files"                      # JSONPath of the {relpath: {bytes, sha256|md5}} map
     required: bool = False                        # absent manifest: warning + release_verified false (rev 2)
     require: dict[str, Any] = {}                  # {complete: true}
-    checks: dict[str, str] = {}                   # {rows: "$.rows.permissive", constraints: "$.filters.permissive"}
+    checks: dict[str, str] = {}                   # {rows: "$..."}; "<table>.rows" scopes a check to one table
 
 class IdTypeSpec(BaseModel):
     plugin: str                                   # identifier plugin = identity space ("ensembl_gene")
@@ -1009,7 +1009,7 @@ release: {from: [manifest.source_revision, manifest.filters]}   # "<rev>@<sha256
 root: ${TAHOE_DATA_PATH}
 manifests:
   - {path: preparation_manifest.json, required: true, require: {complete: true},
-     checks: {rows: "$.rows.permissive", constraints: "$.filters.permissive"}}
+     checks: {de_permissive.rows: "$.rows.permissive", de_permissive.constraints: "$.filters.permissive"}}
 id_types:
   tahoe_drug:       {plugin: tahoe_drug, universe: drug_metadata.drug,
                      stored_forms: {de_permissive.drug: as_stored, sample_metadata.drug: as_stored}}

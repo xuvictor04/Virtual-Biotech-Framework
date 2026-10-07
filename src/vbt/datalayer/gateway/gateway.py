@@ -34,6 +34,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from ...config import base_tool_env
 from ..api import CallPlan, CrashDecision, LaunchSpec, ListingDecision, RawResult
 from ..catalog import Catalog, CatalogError, ToolContract, build_catalog
 from ..descriptor.columns import is_container
@@ -50,7 +51,7 @@ from ..errors import (
 from ..ipc import RankKeyModel, ServeRequest, ServeResponse, WitnessRequest, WitnessResponse
 from ..launch import build_launch_spec
 from ..memory import AdmissionController, MemoryEstimator, ResidencyLedger, TableRead, crash_decision, read_status
-from ..predicate import And, Eq, Not, Predicate, to_json
+from ..predicate import And, Eq, IsNull, Not, Predicate, map_columns, to_json
 from ..record import (
     DataProvenance,
     OrderInfo,
@@ -129,6 +130,7 @@ class _CallState:
     resolution_summary: dict[str, Any] = field(default_factory=dict)
     per_arg: dict[str, Predicate] = field(default_factory=dict)
     predicate: Predicate | None = None
+    search_text: str | None = None                                  # derived search: the free-text argument
     witness: WitnessResponse | None = None
     witness_reason: str | None = None
     decision: ScopeDecision | None = None
@@ -153,6 +155,9 @@ class _CallState:
     resolved_columns: dict[str, str] = field(default_factory=dict)   # identifier argument -> bound column
     force_partial: bool = False
     in_universe: bool | None = None
+    null_container: bool = False                                    # the rows' list is null (not assessed)
+    derived_withheld: int = 0                                       # derived rows dropped by T4/T6 in the gateway
+    engine_matched: bool = False                                    # the source's engine matches an argument
     order_verified: bool | None = None
     not_found_items: list[Any] | None = None
     short_page: str | None = None
@@ -232,8 +237,10 @@ class DataGateway:
             log.warning("data child script %s is missing; data-layer checks run without the data child", script)
             return []
         svc = self.settings.service
+        # the harness tool env (data paths such as OPEN_TARGETS_DATA_PATH) expands descriptor roots
+        env = {**base_tool_env(dict(self.config or {})), "VBT_DATA_SETTINGS": self.settings.to_json()}
         return [{"name": DATA_SERVER, "command": python, "args": ["-E", str(script)],
-                 "env": {"VBT_DATA_SETTINGS": self.settings.to_json()}, "timeout_s": float(svc.timeout_s),
+                 "env": env, "timeout_s": float(svc.timeout_s),
                  "max_concurrency": int(svc.max_concurrency), "mem_limit_mb": int(svc.mem_limit_mb)}]
 
     def launch_spec(self, cfg: Any) -> LaunchSpec | None:
@@ -461,8 +468,9 @@ class DataGateway:
             st.per_arg[f"@{column}"] = Eq(column, value)
         pred, per_arg = build_predicate(contract, values, selected=selected, registry=self.registry,
                                         confirmed=self._confirmed(selected), fixed_scope=self._fixed(st, prepared),
-                                        flags=prepared.flags)
+                                        flags=prepared.flags, defaults=set(prepared.defaults))
         st.per_arg.update(per_arg)
+        self._search_text(plan, st, contract)
         conjuncts = list(st.per_arg.values())
         for arg, (column, value) in st.anchors.items():
             conjuncts.append(Not(Eq(column, value)))
@@ -480,6 +488,7 @@ class DataGateway:
         await self._witness(plan, st, contract, selected, derived=derived)
         if st.witness is not None and st.witness.total == 0 and st.witness.total_method != "unknown":
             st.in_universe = await self._in_coverage_universe(st, self._rows_table(plan, contract))
+            st.null_container = await self._null_container(st, contract)
         # 7. scope completeness
         inflatable = self._inflatable(plan, st, contract)
         st.decision = scope_completeness(
@@ -935,10 +944,25 @@ class DataGateway:
         rs = contract.binding.reads.get(table) if contract.binding is not None else None
         return not (rs is not None and rs.access in ("remote", "upstream"))
 
+    def _search_text(self, plan: CallPlan, st: _CallState, contract: ToolContract) -> None:
+        """A derived ``search`` matches its free-text argument itself (ranked by match class), so that
+        argument becomes ``search_text`` instead of a substring conjunct."""
+        b = contract.binding
+        d = b.derived if b is not None else None
+        if d is None or d.verb != "search" or b.serve != "derived" or self.profile == "fidelity":
+            return
+        for name, a in contract.args.items():
+            value = plan.args_raw.get(name)
+            if a.role == "free_text" and isinstance(value, str) and value.strip():
+                st.search_text = value
+                st.per_arg.pop(name, None)
+                return
+
     def _inexpressible(self, plan: CallPlan, contract: ToolContract) -> str | None:
         for name, a in contract.args.items():
             if not is_present(plan.args_raw.get(name)):
                 continue
+            # text matched over several columns (binds_any) is the source's matching, not one column's
             if a.role == "free_text" and (a.interpreted_as in ("engine", "regex") or not a.binds):
                 return f"{name} is matched by the source's engine"
             if a.role == "unbound":
@@ -959,11 +983,18 @@ class DataGateway:
         why = self._inexpressible(plan, contract)
         if why:
             st.witness_reason = why
+            st.engine_matched = True
             return
         dims = [d for d in self._scope_dims(contract, table)
                 if _last(d) not in {_last(k) for k in self._fixed(st, st.prepared)}]
         if derived and not dims:
             return                                     # derived serving counts itself (one scan)
+        predicate = st.predicate
+        it = contract.tables.get(b.result.rows_of) if b.result.rows_of else None
+        if it is not None and it.is_item_table and str(it.physical) == table:
+            # the rows are items of the bound table: count those
+            table, t = str(b.result.rows_of), it
+            predicate = _on_items(predicate, contract, table, selected)
         await self._storage_types(table, st)
         key = [k for k in t.key if not k.endswith("#")]
         order = [RankKeyModel(**_rank_json(o)) for o in st.order] if not derived else []
@@ -979,7 +1010,7 @@ class DataGateway:
             unit_from = getattr(col, "unit_from", None)
             if unit_from:
                 distinct.append(unit_from)
-        req = WitnessRequest(table=table, grain=b.result.grain, predicate=to_json(st.predicate) if st.predicate
+        req = WitnessRequest(table=table, grain=b.result.grain, predicate=to_json(predicate) if predicate
                              else None, key=key, order=order, k=k, group_by=within, distinct=distinct, grains=grains,
                              unknown_columns=unknown_cols, key_set_max=self.settings.witness.max_key_set,
                              budget_bytes=t.spec.max_scan_bytes or self.settings.witness.max_scan_bytes,
@@ -1053,8 +1084,8 @@ class DataGateway:
                 st.transforms.append(f"limit_inflation {st.requested_limit}->{target}")
             return
         ordered = bool(st.order) and b.result.order_source == "witness" and b.witness
-        if not ordered or st.lenient:
-            return
+        if not ordered or st.lenient or st.engine_matched:
+            return                                    # engine-matched text: the source's order, disclosed unverified
         if w is not None and w.total is not None and w.total_method != "unknown" and \
                 int(w.total) + int(w.unknown_total or 0) <= st.requested_limit:
             return                                    # nothing can be truncated
@@ -1282,6 +1313,12 @@ class DataGateway:
         rows_now = [r for _, rs in processed for r in rs]
         # witness checks W1-W6
         w = st.witness
+        violated = {a: n for a, n in counters.excluded.items() if n}
+        if violated and w is not None and (b.on_contradiction == "tool_defect" or self.profile == "fidelity"):
+            # W2 after T4: upstream returned rows its own arguments exclude (rows outside the witness)
+            detail = ", ".join(f"{n} row(s) violating {a}" for a, n in sorted(violated.items()))
+            return await self._contradiction(plan, st, contract, "W2", len(rows_now) + sum(violated.values()),
+                                             f"returned rows are not in the witness key set: {detail}")
         defect = self._witness_checks(plan, st, contract, t, rows_now, returned_raw, obj)
         if defect is not None:
             check, detail = defect
@@ -1349,6 +1386,25 @@ class DataGateway:
                            drop_empty_parents=drop_empty)
         return rows
 
+    def _derived_items(self, plan: CallPlan, st: _CallState, contract: ToolContract, t: Any, rows: list[Any],
+                       counters: Counters) -> list[Any]:
+        """Derived rows: the data child selected parents; per-item filters (``item_filter``) and negated
+        items (T4, T6) are applied here, so nested lists hold only qualifying, non-negated items."""
+        preds = {arg: (pred, contract.args[arg]) for arg, pred in st.per_arg.items()
+                 if arg in contract.args and contract.args[arg].item_filter}
+        if preds:
+            before = len(rows)
+            rows = honour_arguments(rows, preds, lambda col: t.columns.get(col) if t is not None else None, counters,
+                                    params=plan.args_raw)
+            st.derived_withheld += before - len(rows)
+        include_neg = bool(plan.args_raw.get(_INCLUDE_NEGATED) or plan.gateway_args.get(_INCLUDE_NEGATED))
+        drop_empty = any(a.drop_empty_parents for a in contract.args.values())
+        before = len(rows)
+        rows = t6_negation(rows, [p for p in self._qualifier_paths(t, "negate") if "[]" in p], include_neg, counters,
+                           drop_empty_parents=drop_empty)
+        st.derived_withheld += before - len(rows)
+        return rows
+
     def _nonnull_refs(self, t: Any) -> list[str]:
         if t is None:
             return []
@@ -1383,7 +1439,12 @@ class DataGateway:
         if t is None:
             return []
         if t.is_item_table:
-            return [k.split("[].")[-1] if "[]." in k else k for k in t.key if not k.endswith("#")]
+            # item parts by their field name; parent parts by theirs, or as "/<path>" when an item field has
+            # that name (the data child's output rows use the same names)
+            keys = [k for k in t.key if not k.endswith("#")]
+            item = {k.split("[].")[-1] for k in keys if "[]." in k}
+            return [k.split("[].")[-1] if "[]." in k else ("/" + k if k.split(".")[-1] in item else k)
+                    for k in keys]
         return [k for k in t.key if not k.endswith("#")]
 
     def _keys_of(self, rows: Sequence[Any], cols: Sequence[str], st: _CallState) -> list[str]:
@@ -1543,14 +1604,21 @@ class DataGateway:
         if st.anchors:
             arg, (column, value) = next(iter(st.anchors.items()))
             anchor = {"column": column, "value": json_value(value)}
-        req = ServeRequest(table=d.table, verb=d.verb, predicate=to_json(st.predicate) if st.predicate else None,
+        pred = _on_items(st.predicate, contract, d.table, plan.bound_table)
+        req = ServeRequest(table=d.table, verb=d.verb, predicate=to_json(pred) if pred else None,
                            columns=list(d.columns), order=[RankKeyModel(**_rank_json(o)) for o in st.order],
                            limit=limit, limit_grain=limit_grain, group_by=within + list(d.group_by),
                            explode=list(d.explode), carry=list(d.carry), rename=dict(d.rename), split=d.split,
-                           nest=d.nest, sections=sections, anchor=anchor,
+                           nest=d.nest, aggregate=dict(d.aggregate), sections=sections, anchor=anchor,
+                           search_text=st.search_text,
                            params={n: v for n, v in plan.args_raw.items() if isinstance(v, (str, int, float, bool))},
                            budget_bytes=self.settings.witness.repair_max_bytes)
         resp = await self.service.serve(req)
+        first = resp.rows[0] if isinstance(resp.rows, list) and resp.rows else None
+        match = first.get("_match") if isinstance(first, Mapping) else None
+        if st.search_text and isinstance(match, Mapping) and match.get("class") != "exact":
+            st.notes.append(f"{st.search_text!r} matched the first row by {match.get('rule') or match.get('class')} "
+                            f"on {match.get('column')} ({match.get('value')!r})")
         obj: dict[str, Any] = {}
         for k, v in d.envelope.items():
             obj[k] = _template(v, plan.args_raw)
@@ -1605,6 +1673,8 @@ class DataGateway:
         sections_out: dict[str, list[Any]] = {}
         level_grains: dict[str, int] = {}
         for path, grows in groups:
+            if not upstream:
+                grows = self._derived_items(plan, st, contract, t, grows, counters)
             if upstream:
                 # T7 duplicates
                 include_dup = bool(plan.args_raw.get(_INCLUDE_DUPLICATES) or plan.gateway_args.get(_INCLUDE_DUPLICATES))
@@ -1671,8 +1741,8 @@ class DataGateway:
                     trims[name] = self.settings.results.relation_list_max
             if trims:
                 t12_trim(rows_out, trims, counters, orders=orders, item_keys=item_keys)
-        # place rows back (derived rows are already placed by _serve)
-        if upstream and isinstance(obj, (dict, list)):
+        # place rows back (derived rows are already placed by _serve, unless the gateway withheld some)
+        if (upstream or st.derived_withheld) and isinstance(obj, (dict, list)):
             for path, grows in new_groups:
                 out_rows = mapper.output_rows(grows) if upstream else grows
                 if path == "$" and not isinstance(obj, dict):
@@ -1721,6 +1791,8 @@ class DataGateway:
         total: int | None
         if serve is not None:
             total, total_method = serve.total, "data_child"
+            if total is not None and st.derived_withheld:
+                total = max(int(total) - st.derived_withheld, 0)   # parents the item filters or negation emptied
             truncated = bool(serve.truncated) or (total is not None and total > len(rows_out))
         elif w is not None and w.total is not None and w.total_method != "unknown":
             total, total_method = int(w.total), "witness_scan"
@@ -1816,7 +1888,8 @@ class DataGateway:
 
     # ---------------------------------------------------------------- result, header, record
 
-    def _coverage(self, t: Any, status: str, counters: Counters, in_universe: bool | None) -> tuple[str, str | None]:
+    def _coverage(self, t: Any, status: str, counters: Counters, in_universe: bool | None, *,
+                  extra_unknown: int = 0) -> tuple[str, str | None]:
         cov = getattr(getattr(t, "spec", None), "coverage", None) if t is not None else None
         if cov is None:
             return "unknown", None
@@ -1825,7 +1898,8 @@ class DataGateway:
             return "unknown", statement
         if cov.absence_means == "censored":
             return "censored", statement
-        excluded = sum(counters.excluded_unknown.values()) + counters.excluded_negated
+        excluded = max(sum(counters.excluded_unknown.values()), extra_unknown) + counters.excluded_negated + \
+            counters.items_removed.get("negated", 0)
         if cov.universe is not None:
             if in_universe is False:
                 return "not_covered", statement
@@ -1834,6 +1908,19 @@ class DataGateway:
         if excluded:
             return "partial_unknown", statement
         return "covered", statement
+
+    async def _null_container(self, st: _CallState, contract: ToolContract) -> bool:
+        """For rows that are items of a list (``rows_of``) declared ``null_means: unknown``: is the list
+        null in the matching parent row? Then an empty answer means not assessed, not none listed."""
+        b = contract.binding
+        it = contract.tables.get(b.result.rows_of) if b.result.rows_of else None
+        if it is None or not it.is_item_table or st.predicate is None or not it.items_path:
+            return False
+        if getattr(it.container, "null_means", None) not in ("unknown", "not_assessed"):
+            return False
+        path = it.items_path[:-2] if it.items_path.endswith("[]") else it.items_path
+        n = await self._count(str(it.physical), And((st.predicate, IsNull(path))), st)
+        return bool(n)
 
     async def _in_coverage_universe(self, st: _CallState, t: Any) -> bool | None:
         cov = getattr(getattr(t, "spec", None), "coverage", None) if t is not None else None
@@ -1857,11 +1944,6 @@ class DataGateway:
         t = self._rows_table(plan, contract)
         cols = list(cols if cols is not None else self._key_columns(contract, t))
         types = [st.storage_types.get(c) for c in cols]
-        in_universe = st.in_universe
-        coverage, statement = self._coverage(t, status, counters, in_universe)
-        if t is not None and t.spec.coverage is not None and t.spec.coverage.universe is not None and \
-                in_universe is None and status == "empty":
-            st.notes.append("coverage universe not checked")
         desc = t.descriptor if t is not None else None
         release = desc.release.expect if desc is not None else None
         source = f"{desc.source}@{release}" if desc is not None and release else (desc.source if desc else None)
@@ -1874,6 +1956,19 @@ class DataGateway:
         for k, v in st.serve_excluded_unknown.items():
             if k != "_rows":
                 excluded_unknown[k] = max(int(v), excluded_unknown.get(k, 0))
+        in_universe = st.in_universe
+        # rows the witness or the data child excluded as unknown count like the transforms' own (partial_unknown)
+        coverage, statement = self._coverage(t, status, counters, in_universe,
+                                             extra_unknown=sum(excluded_unknown.values()))
+        if b.result.parent_key and not b.result.rows_of:
+            # items of a container with no item table: the table's coverage is not theirs, none is declared
+            coverage, statement = "unknown", None
+        if st.null_container and status == "empty" and coverage != "not_covered":
+            coverage = "unknown"
+            st.notes.append("the list is null in the source (not assessed); empty does not mean none listed")
+        if t is not None and t.spec.coverage is not None and t.spec.coverage.universe is not None and \
+                in_universe is None and status == "empty":
+            st.notes.append("coverage universe not checked")
         excluded_na = dict(counters.excluded_not_applicable)
         if w is not None:
             for k, v in (w.excluded_not_applicable or {}).items():
@@ -1923,6 +2018,9 @@ class DataGateway:
                                                                                 for k, v in counters.excluded.items()))
         if counters.dropped_parents:
             notes.append(f"{counters.dropped_parents} record(s) left without qualifying items removed")
+        if counters.items_removed.get("negated"):
+            notes.append(f"{counters.items_removed['negated']} negated item(s) removed (pass include_negated=true "
+                         "to keep them)")
         # provenance
         prov = self._record(plan, st, contract, t, status=status, rows=rows, cols=cols, types=types, total=total,
                             total_method=total_method, truncated=truncated, coverage=coverage, statement=statement,
@@ -2166,6 +2264,17 @@ def _phantom_label(row: Any, contract: ToolContract) -> Any:
     if isinstance(rk, list) and rk:
         return get_path(row, rk[0][2:] if rk[0].startswith("$.") else rk[0])
     return next((v for v in row.values() if isinstance(v, (str, int))), None)
+
+
+def _on_items(pred: Predicate | None, contract: ToolContract, table: str, bound: str | None) -> Predicate | None:
+    """``pred`` (over the bound table's columns) for reading ``table``: when ``table`` is an item table of
+    the bound table, a bare name there is the item's field, so bound columns become parent paths ``/c``
+    (§6.4)."""
+    t = contract.tables.get(table)
+    bound = bound or contract.bound_table
+    if pred is None or t is None or not t.is_item_table or table == bound or str(t.physical) != bound:
+        return pred
+    return map_columns(pred, lambda c: c if c.startswith(("/", "^")) else "/" + c)
 
 
 def build_gateway(config: Mapping[str, Any] | None = None, run: Mapping[str, Any] | None = None, *,

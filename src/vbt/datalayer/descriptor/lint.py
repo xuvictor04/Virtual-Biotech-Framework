@@ -868,6 +868,13 @@ class _DescriptorLinter:
         return False
 
 
+def _gateway_languages() -> frozenset[str]:
+    """``escape`` values the gateway parses itself instead of quoting through a format plugin
+    (SOMA value filters, §11.4)."""
+    from ..gateway.soma_filter import LANGUAGE
+    return frozenset({LANGUAGE})
+
+
 def _strip(path: str) -> str:
     try:
         return parse_path(path).strip_brackets().text
@@ -1138,7 +1145,8 @@ class _OverlayLinter:
                 re.compile(a.pattern)
             except re.error as exc:
                 self.add("error", f"{w}.pattern", f"pattern does not compile: {exc}", "binding")
-        if a.escape and self.registry is not None and not self.registry.has("format", a.escape):
+        if a.escape and a.escape not in _gateway_languages() and self.registry is not None \
+                and not self.registry.has("format", a.escape):
             self.add("error", f"{w}.escape", f"unknown format plugin {a.escape!r}", "plugin", a.escape)
         for flag_key in ("when_true", "when_false"):
             pred = getattr(a, flag_key)

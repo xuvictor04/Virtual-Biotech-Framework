@@ -647,6 +647,13 @@ def order_rows(rows: Iterable[Mapping[str, Any]], keys: Sequence[tuple[RankKey, 
     def key(row: Mapping[str, Any]) -> tuple[Any, ...]:
         parts: list[Any] = []
         for rk, plugin, spec in keys:
+            if plugin is None:                         # not a measure: its plain value (labels, identifiers)
+                raw = _lookup(row, rk.column)
+                if is_null(raw):
+                    parts.append((1 if rk.nulls == "last" else -1, _Plain(None, False)))
+                else:
+                    parts.append((0, _Plain(raw, rk.direction.startswith("desc"))))
+                continue
             v = rank_value_of(plugin, row, rk.column, spec)
             if v is None:
                 parts.append((1 if rk.nulls == "last" else -1, 0.0))
@@ -660,3 +667,20 @@ def order_rows(rows: Iterable[Mapping[str, Any]], keys: Sequence[tuple[RankKey, 
         return tuple(parts)
 
     return sorted(rows, key=key)
+
+
+class _Plain:
+    """A plain (non-statistic) sort value: numbers numerically, everything else by its string form,
+    reversed for descending keys."""
+
+    __slots__ = ("v", "desc")
+
+    def __init__(self, v: Any, desc: bool) -> None:
+        self.v = (0, float(v), "") if is_number(v) and not isinstance(v, bool) else (1, 0.0, str(v))
+        self.desc = desc
+
+    def __lt__(self, other: "_Plain") -> bool:
+        return other.v < self.v if self.desc else self.v < other.v
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _Plain) and self.v == other.v

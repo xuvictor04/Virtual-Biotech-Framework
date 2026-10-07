@@ -302,7 +302,9 @@ def _truthy_flag(v: Any) -> bool:
 def t6_negation(rows: Iterable[Any], negate_paths: Sequence[str], include_negated: bool,
                 counters: Counters, *, drop_empty_parents: bool = False) -> list[Any]:
     """Rows (top-level qualifier) or nested items (``container[].qualifier``) whose negating
-    qualifier is true are removed unless ``include_negated``."""
+    qualifier is true are removed unless ``include_negated``. ``excluded_negated`` counts the records
+    withheld: negated rows, and parents left without items by negation (with ``drop_empty_parents``,
+    §19 CT-6); negated items of kept parents are counted in ``items_removed["negated"]``."""
     rows = list(rows)
     if include_negated or not negate_paths:
         return rows
@@ -321,15 +323,13 @@ def t6_negation(rows: Iterable[Any], negate_paths: Sequence[str], include_negate
                     good = [i for i in items
                             if not (isinstance(i, Mapping) and _truthy_flag(get_path(i, leaf.lstrip("."))))]
                     if len(good) != len(items):
-                        counters.excluded_negated += len(items) - len(good)
+                        Counters.bump(counters.items_removed, "negated", len(items) - len(good))
                         set_path(row, container, good)  # type: ignore[arg-type]
                         emptied = emptied or (not good and drop_empty_parents)
             elif _truthy_flag(get_path(row, path)):
                 negated = True
-        if negated:
+        if negated or emptied:
             counters.excluded_negated += 1
-        elif emptied:
-            counters.dropped_parents += 1
         else:
             kept.append(row)
     return kept
@@ -422,9 +422,12 @@ def rank_keys(order: Sequence[Any], table: Any, registry: Any) -> list[tuple[Ran
         spec = None
         if table is not None:
             spec = table.columns.get(str(col).split(".")[0])
-        stat = get("statistic") or getattr(spec, "statistic", None) or "numeric"
-        plugin = registry.find("statistic", stat) if registry is not None else None
-        if plugin is None and registry is not None:
+        stat = get("statistic") or getattr(spec, "statistic", None)
+        measure = getattr(spec, "role", None) in ("measure", "count") or spec is None
+        if stat is None and measure:
+            stat = "numeric"
+        plugin = registry.find("statistic", stat) if registry is not None and stat else None
+        if plugin is None and registry is not None and measure:
             plugin = registry.find("statistic", getattr(spec, "fallback", None) or "numeric")
         rk = RankKey(column=str(col), direction=get("direction") or "desc", nulls=get("nulls") or "last",
                      statistic=stat, within=tuple(get("within") or ()))

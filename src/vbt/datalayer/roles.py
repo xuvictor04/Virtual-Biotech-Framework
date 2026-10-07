@@ -165,7 +165,8 @@ def _list_element(t: str) -> str:
     name, sep, rest = inner.partition(":")
     if sep and name.strip() in {"item", "element", "elem", "value"}:
         inner = rest
-    return inner.strip()
+    inner = inner.strip()
+    return inner[:-len(" not null")].strip() if inner.endswith(" not null") else inner   # non-nullable elements
 
 
 def type_family(arrow_type: str) -> str:
