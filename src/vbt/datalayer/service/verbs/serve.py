@@ -396,15 +396,22 @@ def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
         total = stats.total
         truncated = total > len(rows)
         out_rows: Any = rows
+        nest_grains: dict[str, dict[str, int | None]] = {}
         if req.nest:
             nest = dict(req.nest)
-            nest["group_by"] = [req.rename.get(c, c) for c in nest.get("group_by") or []]   # rows are renamed
+            group_by = list(nest.get("group_by") or [])
+            nest["group_by"] = [req.rename.get(c, c) for c in group_by]   # rows are renamed
             nested, negated, filtered = _nest(rows, nest, _negate_columns(reader), params)
             total = len(nested)
             truncated = req.limit is not None and total > int(req.limit)
             out_rows = nested[: int(req.limit)] if req.limit is not None else nested
             keys = []
             sections["_excluded"] = {"negated": negated, "filtered": filtered}
+            # the grain the nest groups by is counted exactly: one row per qualifying group
+            for name, g in reader.table.spec.grains.items():
+                cols = g if isinstance(g, list) else list(g.columns) + list(g.unordered) + list(g.by)
+                if cols and sorted(cols) == sorted(group_by):
+                    nest_grains[name] = {"returned": len(out_rows), "total": total}
         if req.split:
             out_rows = _split(out_rows, req.split, req.limit)
             truncated = sum(len(v) for v in out_rows.values()) < len(rows)
@@ -412,7 +419,7 @@ def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
             from .views import serve_sections
 
             sections.update(serve_sections(ctx, req.sections, params))
-        grains = _grain_counts(reader, req.predicate, params, rows) if not req.nest else {}
+        grains = _grain_counts(reader, req.predicate, params, rows) if not req.nest else nest_grains
         resp = ServeResponse(rows=out_rows, total=total, truncated=truncated, key_columns=list(reader.key),
                              grains=grains, excluded_unknown=dict(stats.excluded_unknown),
                              excluded_not_applicable=dict(stats.excluded_not_applicable), served_by="derived",

@@ -190,6 +190,20 @@ def describe_tool(contract: Any, description: str | None, *, catalog: Any = None
         if ev is not None:
             lines.append(f"Evidence: {ev.caveat.rstrip('.')}.")
         cov = t.spec.coverage
+        nested = None
+        if b.result.kind == "record" and not b.result.rows_of and len(b.result.row_paths) == 1 and \
+                b.result.row_paths[0].startswith("$."):
+            nested = t.columns.get(b.result.row_paths[0][2:].split(".")[0].split("[")[0])
+            nested = nested if getattr(nested, "role", None) == "nested" else None
+        if nested is not None:
+            # a record read from a nested column has that column's coverage, never the table's (rev 2)
+            cov = getattr(nested, "coverage", None)
+            if cov is None or cov.absence_means != "absent":
+                statement = cov.statement.rstrip(".") if cov is not None else None
+                lines.append("Empty vs not found: unknown identifiers are errors; an empty (null) result is not "
+                             "evidence of absence." + (f" {statement}." if statement else ""))
+                lines.extend(n.strip() for n in b.text.notes if n.strip())
+                return _cap("\n".join(lines), max_chars)
         if cov is not None and cov.absence_means == "censored" and cov.censor is not None:
             lines.append(f"Missing rows are censored ({cov.censor.column} {cov.censor.op} {cov.censor.value}): "
                          "not significant or not tested.")

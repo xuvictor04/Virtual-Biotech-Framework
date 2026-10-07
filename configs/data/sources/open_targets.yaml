@@ -258,6 +258,9 @@ tables:
           upperBin6: {role: measure, statistic: ordinal, missing: unknown}
       tep:
         role: nested
+        null_means: not_assessed
+        coverage: {statement: "Target Enabling Packages (SGC); null means the gene has no TEP in the programme or is not curated, not a verified absence.",
+                   absence_means: unknown}
         fields:
           targetFromSourceId: {role: payload}
           description:     {role: text}

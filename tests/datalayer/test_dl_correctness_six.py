@@ -138,6 +138,7 @@ CALLS: dict[str, tuple[str, str, dict[str, Any]]] = {
     "probes_tp53": ("target", "get_chemical_probes", {"target_id": F.TP53}),
     "probes_null": ("target", "get_chemical_probes", {"target_id": F.TP53BP1}),
     "hallmarks_tp53": ("target", "get_target_hallmarks", {"target_id": F.TP53}),
+    "tep_tp53": ("target", "get_target_tep", {"target_id": F.TP53}),
     # items of a parent record that carry their own `id`: the parent's target_id never filters them
     "probes_pcsk9": ("target", "get_chemical_probes", {"target_id": F.PCSK9}),
     "tract_pcsk9": ("target", "get_target_tractability", {"target_id": F.PCSK9}),
@@ -198,6 +199,9 @@ CALLS: dict[str, tuple[str, str, dict[str, Any]]] = {
     "phenotype_all": ("disease", "find_diseases_by_phenotype", {"phenotype_id": F.SEIZURE}),
     "phenotype_curie": ("disease", "find_diseases_by_phenotype", {"phenotype_id": "HP:0001250"}),
     "phenotype_unknown": ("disease", "find_diseases_by_phenotype", {"phenotype_id": F.UNKNOWN_HP}),
+    "pheno_x": ("disease", "get_disease_phenotypes", {"disease_id": F.PHENO["X"]}),
+    "pheno_w": ("disease", "get_disease_phenotypes", {"disease_id": F.PHENO["W"]}),
+    "pheno_z": ("disease", "get_disease_phenotypes", {"disease_id": F.PHENO["Z"]}),
     "study_min_size": ("genetics", "get_study_metadata", {"min_sample_size": 100000, "limit": 20}),
     # positive controls
     "control_target": ("target", "get_target_info", {"target_id": F.PCSK9}),
@@ -402,6 +406,13 @@ def _ct2_coverage_unknown(r: CallResult, root: Path) -> None:
     empty(r, coverage="unknown")
 
 
+def _ct2_tep(r: CallResult, root: Path) -> None:
+    """A null nested tep is not a verified absence: the gene table's existence coverage is not its own."""
+    header = empty(r, coverage="unknown")
+    assert "citable only as an absence" not in str(header.get("cite") or ""), header
+    assert "message" not in r.obj and "has_tep" not in r.obj, show(r)
+
+
 def _ct2_items(path: str, ids: list[Any]) -> Check:
     """A target that has items gets every one back (status ok, nothing excluded by its own target_id)."""
     def check(r: CallResult, root: Path) -> None:
@@ -443,6 +454,7 @@ CT2: dict[str, Check] = {
     "probes_tp53": _ct2_probes_tp53,
     "probes_null": _ct2_coverage_unknown,
     "hallmarks_tp53": _ct2_coverage_unknown,
+    "tep_tp53": _ct2_tep,
     "probes_pcsk9": _ct2_items("chemical_probes", ["PROBE-1"]),
     "tract_pcsk9": _ct2_items("tractability", ["Approved Drug", "Approved Drug"]),
     "tract_drug_symbol": _ct2_items("tractability", ["Approved Drug", "Approved Drug"]),
@@ -499,6 +511,13 @@ CT2_CLAIM_CASES = {"safety_presence": _claims_safety_presence, "safety_absence":
 async def test_ct2_claims(case, mode, tmp_path_factory, data_env) -> None:
     out = await runtime_outcome("ct2", mode, tmp_path_factory, data_env, CT2_CLAIM_CALLS, CT2_CLAIMS)
     CT2_CLAIM_CASES[case](out)
+
+
+@pytest.mark.parametrize("case,mode", cases(["tep_absence"]))
+async def test_ct2_tep_absence_claim_is_rejected(case, mode, tmp_path_factory, data_env) -> None:
+    out = await runtime_outcome("ct2tep", mode, tmp_path_factory, data_env, [CALLS["tep_tp53"]],
+                                [[claim(0, "absence", "TP53 has no Target Enabling Package")]])
+    rejected(out.claim(0), "coverage unknown")
 
 
 async def test_ct2_today_claims(tmp_path_factory, data_env) -> None:
@@ -1157,7 +1176,24 @@ def _ct6_phenotype(evidence_type: str | None) -> Check:
                 assert all(e.get("evidenceType") == evidence_type for e in d.get("evidence") or []), d
         negated = r.header.get("excluded_negated")
         assert negated and (negated == len(oracle["excluded_negated"]) or mentions(negated, F.PHENO["X"])), r.header
+        n = len(oracle["diseases"])
+        assert grain(r.header, "disease") == {"returned": n, "total": n}, r.header   # grains read the renamed rows
     return check
+
+
+def _ct6_pair_negated(r: CallResult, root: Path) -> None:
+    """A disease-phenotype pair whose every evidence item is negated has no support (X: PCS NOT; W: IEA NOT)."""
+    header = empty(r)
+    assert header.get("coverage") != "covered", header
+    assert r.rows("phenotypes") == [], show(r)
+    assert header.get("excluded_negated") == 1, header
+
+
+def _ct6_pair_partly_negated(r: CallResult, root: Path) -> None:
+    ok(r)
+    (pair,) = r.rows("phenotypes")
+    ev = pair.get("evidence") or []
+    assert len(ev) == 2 and all(e.get("qualifierNot") is not True for e in ev), show(r)
 
 
 def _ct6_phenotype_curie(r: CallResult, root: Path) -> None:
@@ -1183,6 +1219,9 @@ CT6: dict[str, Check] = {
     "phenotype_all": _ct6_phenotype(None),
     "phenotype_curie": _ct6_phenotype_curie,
     "phenotype_unknown": lambda r, root: _not_found(r, root),
+    "pheno_x": _ct6_pair_negated,
+    "pheno_w": _ct6_pair_negated,
+    "pheno_z": _ct6_pair_partly_negated,
     "study_min_size": _ct6_study,
 }
 
@@ -1218,6 +1257,14 @@ async def test_ct6_partial_unknown_empty_is_not_absence(case, mode, tmp_path_fac
                                 [[claim(0, "absence")]])
     assert out.end(0).get("is_error") is False, out.end(0)
     rejected(out.claim(0), "coverage partial_unknown")
+
+
+@pytest.mark.parametrize("case,mode", cases(["negated_pair_presence"]))
+async def test_ct6_negated_pair_is_not_presence(case, mode, tmp_path_factory, data_env) -> None:
+    out = await runtime_outcome("ct6pair", mode, tmp_path_factory, data_env, [CALLS["pheno_x"]],
+                                [[claim(0, "presence", "Disease X presents with seizure")]])
+    assert out.claim(0).get("ok") is False, out.claim(0)
+    assert stored_evidence(out, "C0-presence").get("evidence_status") != "verified"
 
 
 async def test_ct6_today_claim(tmp_path_factory, data_env) -> None:

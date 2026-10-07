@@ -205,7 +205,10 @@ tools:
       target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
     result:
       kind: record
-      rows: $.tep
+      rows: $.tep                                   # coverage: the tep column's own (unknown), never the gene table's
+      drop_fields:
+        $.message: "a null tep means no TEP in the programme or not curated, not a verified absence"
+        $.has_tep: "false reads as a verified absence; the coverage is unknown"
       not_found_when: ["$.error =~ '(?i)not found'"]
     serve: pass
 

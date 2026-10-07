@@ -215,6 +215,16 @@ def _record_versions(t: Any, rows: Sequence[Any], cols: Sequence[str]) -> dict[s
     return {str(t.physical): out} if out else None
 
 
+
+def _nested_coverage(column: Any, table_coverage: str) -> tuple[str, str | None]:
+    """Coverage of a record read from a nested column: its own declared coverage, else unknown."""
+    cov = getattr(column, "coverage", None)
+    if cov is None or getattr(column, "null_means", None) in ("unknown", "not_assessed"):
+        return "unknown", getattr(cov, "statement", None)
+    if cov.absence_means == "absent":
+        return ("covered" if table_coverage in ("covered", "partial_unknown") else table_coverage), cov.statement
+    return ("censored" if cov.absence_means == "censored" else "unknown"), cov.statement
+
 class DataGateway:
     """The harness-side gateway (see the module docstring)."""
 
@@ -1532,6 +1542,18 @@ class DataGateway:
         prefix = it.items_path if it is not None and it.is_item_table else None
         return FieldMapper(r.fields, parent_key=r.parent_key, key_from_args=r.key_from_args, item_prefix=prefix)
 
+    @staticmethod
+    def _nested_record_column(contract: ToolContract, t: Any) -> Any:
+        """The nested column a ``kind: record`` result reads (``rows: $.<column>``) without an item table."""
+        b = contract.binding
+        if t is None or b.result.kind != "record" or b.result.rows_of or len(b.result.row_paths) != 1:
+            return None
+        path = b.result.row_paths[0]
+        if not path.startswith("$.") or path == "$":
+            return None
+        c = t.columns.get(path[2:].split(".")[0].split("[")[0])
+        return c if c is not None and is_container(c) else None
+
     def _rows_table(self, plan: CallPlan, contract: ToolContract) -> Any:
         b = contract.binding
         ref = b.result.rows_of or plan.bound_table or contract.bound_table
@@ -2317,6 +2339,11 @@ class DataGateway:
         if b.result.parent_key and not b.result.rows_of:
             # items of a container with no item table: the table's coverage is not theirs, none is declared
             coverage, statement = "unknown", None
+        nested = self._nested_record_column(contract, t)
+        if nested is not None:
+            # a record read from a nested column (``rows: $.tep``) never inherits its table's coverage (rev 2:
+            # nested containers default to unknown); a coverage the column declares applies instead
+            coverage, statement = _nested_coverage(nested, coverage)
         text = [n for n, a in contract.args.items() if a.role == "free_text" and is_present(plan.args_raw.get(n))
                 and a.interpreted_as != "exact"]
         if text and status == "empty" and coverage in ("covered", "partial_unknown"):
@@ -2334,12 +2361,16 @@ class DataGateway:
             for k, v in (w.excluded_not_applicable or {}).items():
                 excluded_na[k] = max(int(v), excluded_na.get(k, 0))
         grains: dict[str, dict[str, int | None]] = {}
+        # derived rows carry the renamed columns (``rename: {disease: disease_id}``): read the grain there
+        rename = dict(getattr(b.derived, "rename", None) or {}) if b is not None and b.derived is not None and \
+            served_by == "derived" else {}
         if t is not None:
             for g, spec in t.spec.grains.items():
                 gcols = list(spec) if isinstance(spec, list) else list(spec.columns or [])
                 if not gcols:
                     continue
-                returned_g = len({canonical([get_path(r, c) for c in gcols]) for r in rows if isinstance(r, Mapping)})
+                rcols = [rename.get(c, c) for c in gcols]
+                returned_g = len({canonical([get_path(r, c) for c in rcols]) for r in rows if isinstance(r, Mapping)})
                 total_g = None
                 if serve is not None and g in serve.grains:
                     total_g = serve.grains[g].get("total")

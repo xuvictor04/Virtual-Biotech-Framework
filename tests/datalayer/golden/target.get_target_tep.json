@@ -1,5 +1,5 @@
 {
- "description": "Get Target Enabling Package (TEP) information.\nData: Open Targets Platform 25.09 · table target — one record = one Ensembl human gene.\nKey: id.\nArguments: target_id accepts ensembl gene or hgnc symbol (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\npathways: mixed direct and propagated annotations.\ngo: direct annotations only.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Every Ensembl human gene in Open Targets 25.09 (existence only).",
+ "description": "Get Target Enabling Package (TEP) information.\nData: Open Targets Platform 25.09 · table target — one record = one Ensembl human gene.\nKey: id.\nArguments: target_id accepts ensembl gene or hgnc symbol (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\npathways: mixed direct and propagated annotations.\ngo: direct annotations only.\nEmpty vs not found: unknown identifiers are errors; an empty (null) result is not evidence of absence. Target Enabling Packages (SGC); null means the gene has no TEP in the programme or is not curated, not a verified absence.",
  "schema": {
   "properties": {
    "target_id": {

@@ -351,8 +351,10 @@ def t6_negation(rows: Iterable[Any], negate_paths: Sequence[str], include_negate
                 counters: Counters, *, drop_empty_parents: bool = False) -> list[Any]:
     """Rows (top-level qualifier) or nested items (``container[].qualifier``) whose negating
     qualifier is true are removed unless ``include_negated``. ``excluded_negated`` counts the records
-    withheld: negated rows, and parents left without items by negation (with ``drop_empty_parents``,
-    §19 CT-6); negated items of kept parents are counted in ``items_removed["negated"]``."""
+    withheld: negated rows, and parents that negation alone left without items (§0 item 4, §19 CT-6:
+    a pair whose every evidence record is negated has no support, whatever the tool; the argument
+    flag ``drop_empty_parents`` governs only T4 item filters and is accepted here for compatibility);
+    negated items of kept parents are counted in ``items_removed["negated"]``."""
     rows = list(rows)
     if include_negated or not negate_paths:
         return rows
@@ -373,7 +375,7 @@ def t6_negation(rows: Iterable[Any], negate_paths: Sequence[str], include_negate
                     if len(good) != len(items):
                         Counters.bump(counters.items_removed, "negated", len(items) - len(good))
                         set_path(row, container, good)  # type: ignore[arg-type]
-                        emptied = emptied or (not good and drop_empty_parents)
+                        emptied = emptied or not good
             elif _truthy_flag(get_path(row, path)):
                 negated = True
         if negated or emptied:
