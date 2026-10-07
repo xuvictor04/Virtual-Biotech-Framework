@@ -271,6 +271,11 @@ def test_hierarchies_and_propagation(catalog) -> None:
     cl = catalog.source("cell_ontology")
     assert cl.id_types["cell_ontology"].hierarchy.predicates == ["is_a"]
     assert cl.tables["term"].path.endswith("tests/fixtures/mini_cl.obo")
+    # indirect associations are already propagated over the disease DAG (§11.5); direct ones are not
+    for name, spec in ot.tables.items():
+        if name.startswith("association_by_"):
+            expected = "disease.descendants" if name.endswith("_indirect") else None
+            assert spec.columns["diseaseId"].propagated_over == expected, name
 
 
 def test_literature_sidecar_and_interaction_evidence_identity(catalog) -> None:

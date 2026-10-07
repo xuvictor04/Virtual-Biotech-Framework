@@ -821,8 +821,7 @@ tables:
       evidenceCount: {role: count, counts: "evidence strings behind the association"}
 
   # Indirect associations already include every descendant disease's evidence: their diseaseId is
-  # propagated over disease.descendants, so include_descendants is refused on them (§11.5; the
-  # identifier facet `propagated_over` is requested from the column model, see the phase-2 report).
+  # propagated over disease.descendants, so include_descendants is refused on them (§11.5).
   association_by_overall_indirect:
     kind: fact
     path: association_by_overall_indirect
@@ -833,7 +832,7 @@ tables:
     coverage: {statement: "Indirect OT 25.09 associations (evidence propagated up the ontology); absence means no evidence.",
                absence_means: unknown}
     columns:
-      diseaseId:     {role: identifier, id_type: ot_disease, ref: disease.id}
+      diseaseId:     {role: identifier, id_type: ot_disease, ref: disease.id, propagated_over: disease.descendants}
       targetId:      {role: identifier, id_type: ensembl_gene, ref: target.id}
       score:         {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown}
       evidenceCount: {role: count, counts: "evidence strings behind the association"}
@@ -862,7 +861,7 @@ tables:
     coverage: {statement: "Indirect OT 25.09 associations per data type; scores are comparable only within one data type.",
                absence_means: unknown}
     columns:
-      diseaseId:     {role: identifier, id_type: ot_disease, ref: disease.id}
+      diseaseId:     {role: identifier, id_type: ot_disease, ref: disease.id, propagated_over: disease.descendants}
       targetId:      {role: identifier, id_type: ensembl_gene, ref: target.id}
       datatypeId:    {role: category, vocab: data, scope: {kind: stratum, pooling: forbid, pool_ok_for: [exists, count, distinct]}}
       score:         {role: measure, statistic: score_0_1, scale: [0, 1], comparable_within: [datatypeId], missing: unknown}
@@ -893,7 +892,7 @@ tables:
     coverage: {statement: "Indirect OT 25.09 associations per data source; scores are comparable only within one data source.",
                absence_means: unknown}
     columns:
-      diseaseId:     {role: identifier, id_type: ot_disease, ref: disease.id}
+      diseaseId:     {role: identifier, id_type: ot_disease, ref: disease.id, propagated_over: disease.descendants}
       targetId:      {role: identifier, id_type: ensembl_gene, ref: target.id}
       datasourceId:  {role: category, vocab: data, scope: {kind: stratum, pooling: forbid, pool_ok_for: [exists, count, distinct]}}
       datatypeId:    {role: category, vocab: data, scope: {kind: stratum, pooling: group, determined_by: [datasourceId]}}

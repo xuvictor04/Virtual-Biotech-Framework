@@ -494,6 +494,36 @@ def r4_types(run: CheckRun) -> None:
                     status="schema_drift")
 
 
+#: Matrix findings (``fmt.matrix_checks``) that are key violations (R5); every other error is schema drift (R4).
+MATRIX_KEY_FINDINGS = frozenset({"duplicate_key", "row_key_null", "null_key"})
+
+
+def is_matrix(reader: TableReader) -> bool:
+    return reader.spec.matrix is not None and callable(getattr(reader.fmt, "matrix_checks", None))
+
+
+def r4_r5_matrix(run: CheckRun) -> None:
+    """R4/R5 of a matrix table (§6.7): the format's header-axis findings per fragment (unparseable or
+    duplicate headers, positional indexes, missing values; duplicate or null axis keys). Matrix columns
+    are axis members, never declared columns, so the strict undeclared-column check does not apply."""
+    reader = run.reader
+    assert reader is not None
+    n = 0
+    for frag in reader.fragments():
+        part = partition_label(frag.partition) or None
+        where = reader.fragment_name(frag)
+        for item in reader.fmt.matrix_checks(frag):
+            n += 1
+            key = item.name in MATRIX_KEY_FINDINGS
+            run.add(f"{'R5' if key else 'R4'}:{item.name}", item.ok, f"{where}: {item.detail}",
+                    status="key_violation" if key else "schema_drift", level=item.level, hint=item.hint,
+                    column=item.column, partition=part)
+    bad = [c for c in run.checks if not c.ok and c.name.startswith(("R4:", "R5:"))]
+    if not bad:
+        run.add("R4", True, f"matrix axes of {len(reader.fragments())} fragment(s) parse"
+                + ("" if n else " with no findings"))
+
+
 def _universe_columns(run: CheckRun) -> list[tuple[str, str, Any]]:
     """``(qualified id_type, physical column, IdTypeSpec)`` whose identity universe is a column of this table."""
     t = run.table
@@ -1471,6 +1501,9 @@ def check_table(ctx: ServiceContext, ref: str, depth: str = "standard", *,
             return run.model()
         run.stats, run.rows, _ = aggregate_stats(run.reader)
         r2_manifest_checks(run)
+        if is_matrix(run.reader):
+            r4_r5_matrix(run)                       # the long view's keys are axis members, not columns
+            return run.model()
         r4_types(run)
         if depth == "standard_files":
             return run.model()

@@ -382,7 +382,7 @@ class TableReader:
         self.layout = ctx.plugin("layout", layout_name)
         if "scan" not in (getattr(self.layout, "capabilities", ()) or ()):
             raise ServiceError(f"{self.ref} is served upstream only (layout {layout_name!r} has nothing to scan)")
-        self.fmt = ctx.plugin("format", format_name)
+        self.fmt = ctx.format_plugin(self.table)     # FormatRef options and the matrix spec applied
         self.lspec = layout_spec(self.table)
         self.root = self.desc.root or ""
         self.levels = _items.levels(self.table.items_path) if self.table.is_item_table else []

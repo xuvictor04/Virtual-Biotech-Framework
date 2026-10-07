@@ -1,8 +1,8 @@
 """``geo_gsm``: GEO sample accessions (``GSM1234567``), the obs index of the Zenodo GEO cohort files (phase 2).
 
 Case folds to the canonical upper case (``gsm1234567`` -> ``GSM1234567``, ``upper``); series (``GSE``)
-and platform (``GPL``) accessions are other kinds and are rejected. A ``GSM`` accession is also a
-syntactically valid gene-symbol or free-text string, so the free-syntax kinds are declared overlaps.
+and platform (``GPL``) accessions are other kinds and are rejected. The ``GSM`` syntax is in
+:data:`~vbt.datalayer.plugins.identifiers.STRUCTURED`, so the free-syntax kinds reject it.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import re
 
 from ..base import Normalized, Rejected
 from ..registry import register
-from . import TEXT_KINDS, KeyIdentifier, Trace
+from . import KeyIdentifier, Trace
 
 
 @register
@@ -19,7 +19,6 @@ class GeoGsm(KeyIdentifier):
     name = id_type = "geo_gsm"
     canonical = r"^GSM\d+$"
     examples = ("GSM1234567", "GSM1798004")
-    overlaps = TEXT_KINDS
     description = "GEO sample accession GSMnnnnnnn (GSE series and GPL platforms are other kinds)"
     cases = (
         {"raw": "GSM1234567", "expected": "GSM1234567", "steps": []},

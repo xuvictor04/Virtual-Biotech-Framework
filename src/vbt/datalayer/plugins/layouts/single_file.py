@@ -16,7 +16,8 @@ from typing import Any, ClassVar
 
 from ..base import CheckItem, LayoutSpec
 from ..registry import register
-from . import PARTIAL_SUFFIXES, FileLayout, glob_files, is_data_name, is_hidden, table_location, walk_files
+from . import (PARTIAL_SUFFIXES, FileLayout, glob_files, is_data_name, is_hidden, is_store_format, store_files,
+               table_location, walk_files)
 
 _GLOB_CHARS = "*?["
 
@@ -34,10 +35,12 @@ class SingleFileLayout(FileLayout):
 
     def files(self, root: str, spec: LayoutSpec) -> list[str]:
         location = table_location(root, spec)
+        store = is_store_format(spec)
         if _is_glob(location):
-            return glob_files(location)
-        if os.path.isfile(location) and is_data_name(os.path.basename(location), "*"):
-            return [location]
+            return glob_files(location, stores=store)
+        if (os.path.isfile(location) or (store and os.path.isdir(location))) and \
+                is_data_name(os.path.basename(location), "*"):
+            return [location]                           # a file, or one directory store (``x.zarr``)
         return []
 
     def location_exists(self, root: str, spec: LayoutSpec) -> bool:
@@ -48,6 +51,18 @@ class SingleFileLayout(FileLayout):
 
     def signature_files(self, root: str, spec: LayoutSpec) -> list[tuple[str, int, int]]:
         location = table_location(root, spec)
+        if is_store_format(spec) and os.path.isdir(location):
+            return super().signature_files(root, spec)  # a directory store: every file in it
+        if is_store_format(spec) and _is_glob(location):
+            out = []
+            for path in glob_files(location, stores=True):
+                rel = os.path.relpath(path, _glob_base(location)).replace(os.sep, "/")
+                if os.path.isdir(path):
+                    out.extend((f"{rel}/{r}", size, mtime) for r, size, mtime in store_files(path))
+                else:
+                    st = os.stat(path)
+                    out.append((rel, st.st_size, st.st_mtime_ns))
+            return out
         if not _is_glob(location):
             out = []
             for path in (location, *(location + s for s in PARTIAL_SUFFIXES)):

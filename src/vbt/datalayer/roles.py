@@ -72,7 +72,8 @@ _CONTAINER = frozenset({"fields", "item_key", "null_means", "empty_means", "null
 #: container facets plus ``ref`` (member keys checked against their universe, R9).
 ROLE_FACETS: dict[Role, frozenset[str]] = {
     Role.identifier: frozenset({"id_type", "self", "ref", "maps_to", "cardinality", "form", "alternate_key",
-                                "retired_into", "xref", "id_type_from", "kind_from", "resolvable", "authority"}),
+                                "retired_into", "xref", "id_type_from", "kind_from", "resolvable", "authority",
+                                "propagated_over"}),
     Role.label: frozenset({"of", "id_type", "unique", "authority"}),
     Role.synonym: frozenset({"of", "synonym_kind", "synonym_kind_from"}),
     Role.category: _CATEGORY,

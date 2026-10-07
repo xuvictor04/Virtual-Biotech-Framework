@@ -40,6 +40,7 @@ __all__ = [
     "FileLayout", "PROBE_STATUS", "PARTIAL_SUFFIXES", "JUNK_NAMES", "CONTENT_HASH_MAX_BYTES", "FORMAT_PATTERNS",
     "is_partial", "is_hidden", "is_data_name", "table_location", "prune_fragments", "partition_label",
     "manifest_entry", "attributed_entries", "file_sha256", "footer_sha256", "glob_files", "walk_files",
+    "DIRECTORY_FORMATS", "is_store_format", "walk_stores", "store_files", "tree_sha256",
 ]
 
 PARTIAL_SUFFIXES = (".part", ".part.json")
@@ -48,7 +49,10 @@ CONTENT_HASH_MAX_BYTES = 64 * 1024 * 1024
 FOOTER_TAIL_BYTES = 64 * 1024
 #: Data file pattern by format when ``options.pattern`` is not given.
 FORMAT_PATTERNS = {"parquet": "*.parquet", "csv": "*.csv", "tsv": "*.tsv", "jsonl": "*.jsonl", "h5ad": "*.h5ad",
-                   "zarr": "*.zarr", "obo": "*.obo", "gmt": "*.gmt", "npy": "*.npy"}
+                   "zarr": "*.zarr", "obo": "*.obo", "gmt": "*.gmt", "npy": "*.npy", "safetensors": "*.safetensors"}
+#: Formats whose fragment may be a directory store (a ``*.zarr`` directory is one fragment, never walked into);
+#: their single-file form (``*.zarr.zip``) is listed as well.
+DIRECTORY_FORMATS = frozenset({"zarr"})
 
 #: Probe finding name -> the readiness status a failed finding implies (§13).
 PROBE_STATUS = {
@@ -83,6 +87,10 @@ def is_data_name(name: str, pattern: str = "*.parquet") -> bool:
     return fnmatch.fnmatchcase(name, pattern)
 
 
+def is_store_format(spec: LayoutSpec) -> bool:
+    return str(spec.format or "") in DIRECTORY_FORMATS
+
+
 def table_location(root: str | None, spec: LayoutSpec) -> str:
     """The table's path: ``spec.path`` under ``root`` (an absolute ``spec.path`` stands alone)."""
     path = spec.path or ""
@@ -95,8 +103,9 @@ def _skip_dir(name: str) -> bool:
     return name.startswith((".", "_"))
 
 
-def _walk(base: str, *, recursive: bool = True) -> Iterator[tuple[str, os.DirEntry]]:
-    """``(relpath, entry)`` of files under ``base``, hidden and ``_``-prefixed directories skipped."""
+def _walk(base: str, *, recursive: bool = True, stores: str | None = None) -> Iterator[tuple[str, os.DirEntry]]:
+    """``(relpath, entry)`` of files under ``base``, hidden and ``_``-prefixed directories skipped. With
+    ``stores`` (a name pattern), directories matching it are yielded as entries and not walked into."""
     stack = [""]
     while stack:
         rel = stack.pop()
@@ -112,7 +121,9 @@ def _walk(base: str, *, recursive: bool = True) -> Iterator[tuple[str, os.DirEnt
             except OSError:
                 is_dir = False
             if is_dir:
-                if recursive and not _skip_dir(e.name):
+                if stores is not None and not _skip_dir(e.name) and fnmatch.fnmatchcase(e.name, stores):
+                    yield relpath, e
+                elif recursive and not _skip_dir(e.name):
                     stack.append(relpath)
                 continue
             yield relpath, e
@@ -282,7 +293,13 @@ class FileLayout(PluginBase):
             return out
         if not os.path.isdir(location):
             return [(os.path.basename(location), st.st_size, st.st_mtime_ns)]
-        for rel, entry in _walk(location):
+        if is_store_format(spec) and fnmatch.fnmatchcase(os.path.basename(location), self.pattern(spec)):
+            return store_files(location)                # the location is one directory store
+        stores = self.pattern(spec) if is_store_format(spec) else None
+        for rel, entry in _walk(location, stores=stores):
+            if entry.is_dir():
+                out.extend((f"{rel}/{r}", size, mtime) for r, size, mtime in store_files(os.path.join(location, rel)))
+                continue
             if is_hidden(os.path.basename(rel)):
                 continue
             try:
@@ -314,6 +331,8 @@ class FileLayout(PluginBase):
             return "stat", "absent"
         if sha:
             return "manifest", f"{sha}:{size}"
+        if os.path.isdir(path):                             # a directory store (zarr)
+            return tree_sha256(path, max_bytes)
         if size <= max_bytes:
             return "sha256", file_sha256(path)
         return "stat", f"{size}:{mtime}:{footer_sha256(path)}"
@@ -439,12 +458,50 @@ class FileLayout(PluginBase):
         return items
 
 
-def glob_files(pattern_path: str) -> list[str]:
-    """Data files matching a glob (``**`` recursive), sorted; hidden, partial and junk names excluded."""
+def glob_files(pattern_path: str, *, stores: bool = False) -> list[str]:
+    """Data files matching a glob (``**`` recursive), sorted; hidden, partial and junk names excluded.
+    With ``stores``, matching directories (``*.zarr`` stores) are data as well."""
     return sorted(p for p in _glob.glob(pattern_path, recursive=True)
-                  if os.path.isfile(p) and is_data_name(os.path.basename(p), "*"))
+                  if (os.path.isfile(p) or (stores and os.path.isdir(p))) and is_data_name(os.path.basename(p), "*"))
 
 
 def walk_files(base: str, *, recursive: bool = True) -> Iterator[tuple[str, os.DirEntry]]:
     """``(relpath, DirEntry)`` of the files under ``base`` (stat-only listing)."""
     return _walk(base, recursive=recursive)
+
+
+def walk_stores(base: str, pattern: str, *, recursive: bool = True) -> Iterator[tuple[str, os.DirEntry]]:
+    """``(relpath, DirEntry)`` of the files under ``base`` plus the directory stores matching ``pattern``
+    (``*.zarr``), which are listed as one entry each and not walked into."""
+    return _walk(base, recursive=recursive, stores=pattern)
+
+
+def store_files(path: str) -> list[tuple[str, int, int]]:
+    """``(relpath, size, mtime_ns)`` of every file of a directory store. Store metadata is hidden
+    (``.zattrs``) or ``_``-prefixed (``_index``), so nothing inside a store is skipped."""
+    out = []
+    for dirpath, _dirs, names in os.walk(path, followlinks=True):
+        for name in names:
+            full = os.path.join(dirpath, name)
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            out.append((os.path.relpath(full, path).replace(os.sep, "/"), st.st_size, st.st_mtime_ns))
+    return sorted(out)
+
+
+def tree_sha256(path: str, max_bytes: int = CONTENT_HASH_MAX_BYTES) -> tuple[str, str]:
+    """``(method, token)`` of a directory store: content hashes of every file when the store holds at most
+    ``max_bytes``, else each file's size, mtime and footer hash (``stat``)."""
+    files = store_files(path)
+    content = sum(size for _rel, size, _mtime in files) <= max_bytes
+    h = hashlib.sha256()
+    for rel, size, mtime in files:
+        full = os.path.join(path, rel)
+        try:
+            token = file_sha256(full) if content else f"{size}:{mtime}:{footer_sha256(full)}"
+        except OSError:
+            token = "absent"
+        h.update(f"{rel}\t{token}\n".encode())
+    return ("sha256" if content else "stat"), h.hexdigest()

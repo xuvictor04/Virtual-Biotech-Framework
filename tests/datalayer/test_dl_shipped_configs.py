@@ -33,7 +33,10 @@ OVERLAYS_DIR = REPO / "configs" / "data" / "overlays"
 SERVERS_DIR = upstream_root() / "src" / "mcp_servers"
 DETECTORS = Path(__file__).resolve().parent / "test_dl_defect_detectors.py"
 
-SOURCES = {"open_targets", "tahoe_100m", "zenodo_vbt", "cellxgene_census", "clinicaltrials_gov", "cbioportal", "pubmed"}
+SOURCES = {"open_targets", "tahoe_100m", "zenodo_vbt", "cellxgene_census", "clinicaltrials_gov", "cbioportal", "pubmed",
+           "depmap", "gene_ontology", "msigdb", "cell_ontology"}
+#: Phase 2 makes these descriptors strict (§6): undeclared columns are drift, not passthrough.
+STRICT = {"open_targets", "tahoe_100m", "zenodo_vbt", "depmap", "gene_ontology", "msigdb", "cell_ontology"}
 SERVERS = {"target", "disease", "drug", "association", "genetics", "expression", "interaction", "functional_genomics",
            "pathway", "single_cell", "clinicaltrials", "pubmed"}
 # Appendix A, per server: (pass, derived, block); same_as tools count on the server that registers them.
@@ -131,9 +134,9 @@ def test_overlays_name_the_recorded_upstream_commit(catalog) -> None:
             assert ov.upstream_commit == out[2], server
 
 
-def test_every_descriptor_is_phase1_non_strict(catalog) -> None:
+def test_descriptor_strictness_and_statistics(catalog) -> None:
     for name, desc in catalog.sources.items():
-        assert desc.strict is False, name
+        assert desc.strict is (name in STRICT), name
         for table, spec in desc.tables.items():
             for col in _all_columns(spec.columns):
                 if getattr(col, "role", None) == "measure":
@@ -368,12 +371,12 @@ def test_open_targets_fixture_schemas_conform(catalog) -> None:
 
 
 def test_tahoe_fixture_schemas_conform(catalog, tahoe_root) -> None:
-    import pyarrow.parquet as pq
+    import pyarrow.dataset as ds
 
     tahoe = catalog.source("tahoe_100m")
     problems: list[str] = []
     for name, spec in tahoe.tables.items():
-        schema = pq.read_schema(tahoe_root / spec.path)
+        schema = ds.dataset(tahoe_root / spec.path).schema      # a file, or a sharded_dir directory
         problems.extend(_conform(spec.columns, {f.name: f.type for f in schema}, name))
     assert not problems, "\n".join(problems)
 

@@ -20,7 +20,6 @@ import functools
 from typing import Any
 
 from ..registry import register
-from . import TEXT_KINDS
 from .go import OboTerm
 
 __all__ = ["CellOntologyTerm", "UberonTerm"]
@@ -39,7 +38,6 @@ class CellOntologyTerm(OboTerm):
     prefix = "CL"
     canonical = r"^CL:\d{7}$"
     examples = ("CL:0000057", "CL:0000084")
-    overlaps = TEXT_KINDS
     description = "Cell Ontology term CL:NNNNNNN (CL_ and OBO PURLs folded)"
     cases = (
         {"raw": "CL:0000057", "expected": "CL:0000057", "steps": []},
@@ -79,7 +77,7 @@ class UberonTerm(OboTerm):
     prefix = "UBERON"
     canonical = r"^UBERON:\d{7}$"
     examples = ("UBERON:0002048", "UBERON:0000955")
-    overlaps = frozenset({"ot_disease", "ot_entity_any"}) | TEXT_KINDS
+    overlaps = frozenset({"ot_disease", "ot_entity_any"})
     description = "UBERON anatomy term UBERON:NNNNNNN (UBERON_ and OBO PURLs folded)"
     cases = (
         {"raw": "UBERON:0002048", "expected": "UBERON:0002048", "steps": []},

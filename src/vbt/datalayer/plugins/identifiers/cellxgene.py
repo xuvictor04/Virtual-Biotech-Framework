@@ -7,7 +7,8 @@
 * ``cell_barcode``: a droplet barcode, 10x style ``AAACCTGAGAAACCAT-1`` (bases ``ACGTN``, an optional
   ``-<gem well>`` suffix), canonical upper case. ``options.canonical`` replaces the pattern for other
   barcoding schemes (``cell_barcode`` keys are unique only within a dataset: descriptors declare
-  ``unique_within``). Barcodes are syntactically valid free text, so the free-syntax kinds overlap.
+  ``unique_within``). The 10x syntax is in :data:`~vbt.datalayer.plugins.identifiers.STRUCTURED`, so the
+  free-syntax kinds reject barcodes.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from typing import Any, Mapping, Self, Sequence
 
 from ..base import Normalized, Rejected
 from ..registry import register
-from . import TEXT_KINDS, KeyIdentifier, Trace, configured_examples, set_attr
+from . import KeyIdentifier, Trace, configured_examples, set_attr
 
 
 @register
@@ -43,7 +44,6 @@ class CellBarcode(KeyIdentifier):
     canonical = r"^[ACGTN]{8,}(?:-\d+)?$"
     examples = ("AAACCTGAGAAACCAT-1", "TTTGTCATCTTGCAGA-2")
     capabilities = frozenset({"options"})
-    overlaps = TEXT_KINDS
     description = "droplet cell barcode (10x style ACGT bases with an optional -N gem-well suffix)"
     cases = (
         {"raw": "AAACCTGAGAAACCAT-1", "expected": "AAACCTGAGAAACCAT-1", "steps": []},

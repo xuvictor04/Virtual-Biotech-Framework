@@ -475,3 +475,39 @@ def test_zarr_zip_store(reg, tmp_path) -> None:
                               budget_bytes=None):
         cells.extend(plugin.to_native(pa.Table.from_batches([batch])))
     assert len(cells) == len(case.col_ids)
+
+
+@pytest.mark.parametrize("layout_name", ["single_file", "sharded_dir"])
+def test_zarr_directory_stores_are_fragments(reg, tmp_path, layout_name) -> None:
+    """A ``*.zarr`` directory store is one fragment (never walked into) and ``*.zarr.zip`` archives are
+    listed too; the fingerprint hashes the store's files, so editing a chunk changes it."""
+    pytest.importorskip("zarr")
+    pytest.importorskip("anndata")
+    from vbt.datalayer.plugins.base import LayoutSpec
+    from vbt.datalayer.plugins.conformance.golden import matrix_golden
+    from vbt.datalayer.plugins.formats.zarr import write_matrix_zarr
+
+    case = matrix_golden("anndata_dense")
+    data = tmp_path / "stores"
+    data.mkdir()
+    cfg = write_matrix_zarr(case, str(data / "a.zarr"))
+    shutil.make_archive(str(data / "b.zarr"), "zip", root_dir=data / "a.zarr")
+    layout = reg.get("layout", layout_name)
+    path = "stores/*" if layout_name == "single_file" else "stores"
+    lspec = LayoutSpec(table="t.m", path=path, format="zarr")
+    frags = layout.fragments(str(tmp_path), lspec)
+    assert [os.path.basename(f.uri) for f in frags] == ["a.zarr", "b.zarr.zip"]
+    plugin = reg.get("format", "zarr").configure(cfg["options"], cfg["matrix"])
+    for f in frags:
+        rows = plugin.to_native(plugin.axis_values(f, "row"))
+        assert [r["sample_id"] for r in rows] == list(case.row_ids)
+    one = LayoutSpec(table="t.m", path="stores/a.zarr", format="zarr")
+    assert [f.uri for f in reg.get("layout", "single_file").fragments(str(tmp_path), one)] == \
+        [str(data / "a.zarr")]
+    fp = layout.fingerprint(frags, None)
+    sig = layout.signature(str(tmp_path), lspec)
+    chunk = next(p for p in sorted((data / "a.zarr").rglob("*")) if p.is_file() and p.stat().st_size > 0
+                 and p.name not in (".zattrs", ".zgroup", ".zarray", "zarr.json"))
+    chunk.write_bytes(chunk.read_bytes() + b"\0")
+    assert layout.signature(str(tmp_path), lspec) != sig
+    assert layout.fingerprint(layout.fragments(str(tmp_path), lspec), None) != fp

@@ -162,6 +162,18 @@ class ServiceContext:
             raise ServiceError(f"{kind} plugin {name!r} is not registered (plugin_unavailable)")
         return p
 
+    def format_plugin(self, table: CatalogTable) -> Any:
+        """The format plugin of a table, configured with its ``FormatRef.options`` and matrix spec (§6.7)
+        when the plugin takes configuration (``configure(options, matrix=...)``)."""
+        plugin = self.plugin("format", table.format)
+        spec = table.physical_spec
+        ref = spec.format if spec.format is not None else table.descriptor.defaults.format
+        options = dict(getattr(ref, "options", {}) or {})
+        matrix = spec.matrix
+        if (options or matrix is not None) and callable(getattr(plugin, "configure", None)):
+            plugin = plugin.configure(options, matrix=matrix)
+        return plugin
+
     def identifier(self, qualified: str, sample: Any = None) -> Any:
         """The configured identifier plugin of an id_type (``source:name`` or bare with a unique source)."""
         src, spec = self.catalog.id_type(qualified)

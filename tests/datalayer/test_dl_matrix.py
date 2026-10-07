@@ -307,3 +307,48 @@ def test_ibd_cohorts_long_view_matches_a_dense_oracle(reg, sources, cohorts) -> 
         assert [s for s, _g, _v in some] == [s for s, t in zip(c["samples"], c["obs"]["timepoint"]) if t == "W0"]
         st = h5ad.stats(f)
         assert st.shape == (len(c["samples"]), len(c["genes"])) and st.rows == st.shape[0] * st.shape[1]
+
+
+# ---------------------------------------------------------------------------- service checks on matrices
+
+
+def _depmap_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    import shutil
+
+    from vbt.datalayer.service import ServiceContext
+    from vbt.datalayer.settings import DataSettings
+
+    (tmp_path / "sources").mkdir()
+    (tmp_path / "overlays").mkdir()
+    (tmp_path / "depmap").mkdir()
+    shutil.copy(REPO / "configs" / "data" / "sources" / "depmap.yaml", tmp_path / "sources" / "depmap.yaml")
+    monkeypatch.setenv("DEPMAP_DATA_PATH", str(tmp_path / "depmap"))
+    settings = DataSettings.from_dict({"descriptors_dir": str(tmp_path / "sources"),
+                                       "overlays_dir": str(tmp_path / "overlays"),
+                                       "cache_dir": str(tmp_path / "cache")}, project_root=tmp_path)
+    return ServiceContext(settings)
+
+
+def test_the_reader_configures_the_matrix_and_strict_checks_read_the_axes(tmp_path, monkeypatch) -> None:
+    """The service configures the format with ``FormatRef.options`` and the matrix spec, so a strict
+    matrix table's gene headers are axis members (never undeclared drift) and R4/R5 come from the
+    format's matrix checks."""
+    from vbt.datalayer.service.checks import check_table
+
+    ctx = _depmap_context(tmp_path, monkeypatch)
+    write_depmap(tmp_path / "depmap" / "CRISPRGeneEffect.csv")
+    reader = ctx.reader("depmap.gene_effect")
+    assert reader.fmt.matrix is not None
+    model = check_table(ctx, "depmap.gene_effect")
+    failed = [c for c in model.checks if not c.ok]
+    assert model.status == "ready", failed
+    assert not [c for c in model.checks if c.name == "R4:undeclared"]
+    assert any(c.name == "R4" and c.ok for c in model.checks)
+    # a duplicated gene: the duplicate header is drift and the repeated axis key a key violation
+    write_depmap(tmp_path / "depmap" / "CRISPRGeneEffect.csv", genes=(*GENES[:3], GENES[0]))
+    model = check_table(ctx, "depmap.gene_effect")
+    failed = {c.name for c in model.checks if not c.ok}
+    assert model.status == "schema_drift" and {"R4:duplicate_header", "R5:duplicate_key"} <= failed
+    write_depmap(tmp_path / "depmap" / "CRISPRGeneEffect.csv", genes=(*GENES[:3], ("SEPTIN9", "not-entrez")))
+    model = check_table(ctx, "depmap.gene_effect")
+    assert model.status == "schema_drift" and any(c.name == "R4:header_parse" for c in model.checks if not c.ok)

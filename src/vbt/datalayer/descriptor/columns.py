@@ -279,6 +279,9 @@ class IdentifierCol(_Common):
     kind_from: KindFrom | None = None
     resolvable: bool | None = None
     authority: Literal["current", "release_snapshot"] | None = None
+    #: The hierarchy the rows are already propagated over (OT indirect associations: ``disease.descendants``);
+    #: ``include_descendants`` on such a column is refused (§11.5).
+    propagated_over: str | list[str] | None = None
 
 
 class LabelCol(_Common):

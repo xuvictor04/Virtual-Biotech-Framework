@@ -70,6 +70,12 @@ STRUCTURED: tuple[tuple[str, re.Pattern[str]], ...] = tuple((kind, re.compile(rx
     ("cellosaurus", r"CVCL[_:][A-Z0-9]{4}"),
     ("chromosome", r"(?:chr)?(?:\d{1,2}|X|Y|MT?)"),
     ("ncbi_taxon", r"(?:NCBITaxon[:_]|taxon:)?\d+"),
+    # phase 2 (bare NCBI Gene digits are the pmid/ncbi_taxon syntax; only the prefixed form is distinctive)
+    ("ncbi_gene", r"(?:NCBIGene|entrez):\s*\d+"),
+    ("geo_gsm", r"GSM\d+"),
+    ("cell_ontology", r"(?:https?://\S+/)?CL[_:]\d{7}"),
+    ("uberon", r"(?:https?://\S+/)?UBERON[_:]\d{7}"),
+    ("cell_barcode", r"[ACGTN]{8,}-\d+|[ACGTN]{12,}"),
 ))
 
 
