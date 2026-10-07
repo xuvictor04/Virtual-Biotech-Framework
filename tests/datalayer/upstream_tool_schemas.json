@@ -1,0 +1,2413 @@
+{
+ "schema": "vbt.upstream_tool_schemas/1",
+ "tools": {
+  "association.compare_direct_indirect": {
+   "input_schema": {
+    "properties": {
+     "disease_id": {
+      "default": null,
+      "type": "string"
+     },
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "min_score": {
+      "default": 0.0,
+      "type": "number"
+     },
+     "output_path": {
+      "type": "string"
+     },
+     "target_id": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "required": [
+     "output_path"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:c33641314df6828437b35d065dd3f729cf8f730f07d6a8db54b76544d1baa739"
+  },
+  "association.compute_entity_similarity": {
+   "input_schema": {
+    "properties": {
+     "entity_a": {
+      "type": "string"
+     },
+     "entity_b": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "entity_a",
+     "entity_b"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:fb2b2b7827b0545487a683f3615e7fe1f8bd63e6c662dc1b7742cca80f922a60"
+  },
+  "association.filter_by_datasource": {
+   "input_schema": {
+    "properties": {
+     "datasource": {
+      "default": null,
+      "type": "string"
+     },
+     "disease_id": {
+      "default": null,
+      "type": "string"
+     },
+     "include_indirect": {
+      "default": false,
+      "type": "boolean"
+     },
+     "limit": {
+      "default": 100,
+      "type": "integer"
+     },
+     "min_score": {
+      "default": 0.0,
+      "type": "number"
+     },
+     "output_path": {
+      "type": "string"
+     },
+     "target_id": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "required": [
+     "output_path"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:77478c53af9b4ba6f718bc756be79a5286dfde5c04d69868952af1983eb2d47d"
+  },
+  "association.filter_by_datatype": {
+   "input_schema": {
+    "properties": {
+     "datatype": {
+      "default": null,
+      "type": "string"
+     },
+     "disease_id": {
+      "default": null,
+      "type": "string"
+     },
+     "include_indirect": {
+      "default": false,
+      "type": "boolean"
+     },
+     "limit": {
+      "default": 100,
+      "type": "integer"
+     },
+     "min_score": {
+      "default": 0.0,
+      "type": "number"
+     },
+     "output_path": {
+      "type": "string"
+     },
+     "target_id": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "required": [
+     "output_path"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:acf169ce88a5c0ecf6ca6226c869d22e103e0916009c8f5c4f8d98843057a973"
+  },
+  "association.find_similar_entities": {
+   "input_schema": {
+    "properties": {
+     "category": {
+      "default": null,
+      "type": "string"
+     },
+     "entity_id": {
+      "type": "string"
+     },
+     "top_k": {
+      "default": 20,
+      "type": "integer"
+     }
+    },
+    "required": [
+     "entity_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:e0b811fcd253c2625dd5c5556ad397c2db378738f899d311efcfd4f1395390e9"
+  },
+  "association.get_associations_for_disease": {
+   "input_schema": {
+    "properties": {
+     "disease_id": {
+      "type": "string"
+     },
+     "include_indirect": {
+      "default": false,
+      "type": "boolean"
+     },
+     "limit": {
+      "default": 100,
+      "type": "integer"
+     },
+     "min_score": {
+      "default": 0.0,
+      "type": "number"
+     },
+     "output_path": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "output_path",
+     "disease_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:eac9fbd066d64968ccb2cdcfda452e58a79a568ca4d8fb99ee97ac71ef74a06d"
+  },
+  "association.get_associations_for_target": {
+   "input_schema": {
+    "properties": {
+     "include_indirect": {
+      "default": false,
+      "type": "boolean"
+     },
+     "limit": {
+      "default": 100,
+      "type": "integer"
+     },
+     "min_score": {
+      "default": 0.0,
+      "type": "number"
+     },
+     "output_path": {
+      "type": "string"
+     },
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "output_path",
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:2db18e35d520177cb9b004a60dc7d0830d231afc339b9b91c5a2c7997993e92e"
+  },
+  "association.get_evidence_by_publication": {
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "pmid": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "pmid"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:5f5e856d57d06a4cd2fe7b81902ed8498b8821c261f4ed5a561e3d155ced6aa5"
+  },
+  "association.query_associations": {
+   "input_schema": {
+    "properties": {
+     "disease_id": {
+      "default": null,
+      "type": "string"
+     },
+     "include_indirect": {
+      "default": false,
+      "type": "boolean"
+     },
+     "limit": {
+      "default": 100,
+      "type": "integer"
+     },
+     "min_score": {
+      "default": 0.0,
+      "type": "number"
+     },
+     "output_path": {
+      "type": "string"
+     },
+     "target_id": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "required": [
+     "output_path"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:e04bf15d0be415ebd009b5609749565653ce2d66c791d415a71d7eabbb1a6da7"
+  },
+  "association.query_evidence": {
+   "input_schema": {
+    "properties": {
+     "datasource_id": {
+      "default": null,
+      "type": "string"
+     },
+     "datatype_id": {
+      "default": null,
+      "type": "string"
+     },
+     "disease_id": {
+      "default": null,
+      "type": "string"
+     },
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "max_year": {
+      "default": null,
+      "type": "integer"
+     },
+     "min_score": {
+      "default": null,
+      "type": "number"
+     },
+     "min_year": {
+      "default": null,
+      "type": "integer"
+     },
+     "require_pubmed": {
+      "default": false,
+      "type": "boolean"
+     },
+     "target_id": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:ddcde22803195903b77aaeb50380656b96d48e9da57a2d71311e721ef0d4257b"
+  },
+  "association.search_literature": {
+   "input_schema": {
+    "properties": {
+     "keyword_id": {
+      "default": null,
+      "type": "string"
+     },
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "pmid": {
+      "default": null,
+      "type": "string"
+     },
+     "year": {
+      "default": null,
+      "type": "integer"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:fb1f0a196b1e3135922e14d3b7713df0d1659cc26ff9df5bbf21548bf7c792c0"
+  },
+  "clinicaltrials.clear_trial_cache": {
+   "input_schema": {
+    "properties": {},
+    "type": "object"
+   },
+   "input_sha256": "sha256:efddc7bd8bbcef73a14eb1ace1ffdaec81e518ef1e13c1e9271d0b8acb694a49"
+  },
+  "clinicaltrials.count_clinical_trials": {
+   "input_schema": {
+    "properties": {
+     "advanced_filter": {
+      "default": null,
+      "type": "string"
+     },
+     "condition": {
+      "default": null,
+      "type": "string"
+     },
+     "country": {
+      "default": "United States",
+      "type": "string"
+     },
+     "eligibility_text": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "intervention": {
+      "default": null,
+      "type": "string"
+     },
+     "phase": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "status": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "study_type": {
+      "default": null,
+      "type": "string"
+     },
+     "term": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:9b1f1245e96ed9da42fb10ba32107bc5062cf4841c9fcc37e473f611172375eb"
+  },
+  "clinicaltrials.get_all_cancer_types": {
+   "input_schema": {
+    "properties": {},
+    "type": "object"
+   },
+   "input_sha256": "sha256:efddc7bd8bbcef73a14eb1ace1ffdaec81e518ef1e13c1e9271d0b8acb694a49"
+  },
+  "clinicaltrials.get_clinical_data": {
+   "input_schema": {
+    "properties": {
+     "sample_ids": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "study_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "study_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:a586010297485335081d75a16937ab5f1b0ee53c782b8e7ccc7549df4a1d3b74"
+  },
+  "clinicaltrials.get_clinical_trial_details": {
+   "input_schema": {
+    "properties": {
+     "nct_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "nct_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:15e05942bbcd8c21b60212ca8278fe34f7d92d8d5db971a868f19a70d0cce0f6"
+  },
+  "clinicaltrials.get_study_details": {
+   "input_schema": {
+    "properties": {
+     "study_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "study_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:b38ebd4b97298bf027cb9c7282c32343c97b44db8b2d309bc78b51d2b59c4e6b"
+  },
+  "clinicaltrials.search_clinical_trials": {
+   "input_schema": {
+    "properties": {
+     "advanced_filter": {
+      "default": null,
+      "type": "string"
+     },
+     "condition": {
+      "default": null,
+      "type": "string"
+     },
+     "country": {
+      "default": "United States",
+      "type": "string"
+     },
+     "eligibility_text": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "intervention": {
+      "default": null,
+      "type": "string"
+     },
+     "phase": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "sort": {
+      "default": null,
+      "type": "string"
+     },
+     "status": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "study_type": {
+      "default": null,
+      "type": "string"
+     },
+     "term": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:2edee752c81245195cc3c4028a21ec61cde970d94a2b23cf6a1742bae198ef09"
+  },
+  "clinicaltrials.search_studies": {
+   "input_schema": {
+    "properties": {
+     "cancer_type": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:e2d0573aab8ebdde15841abcf8d698ba501fc0a15f12218e68e608393c828b90"
+  },
+  "disease.find_diseases_by_phenotype": {
+   "input_schema": {
+    "properties": {
+     "evidence_type": {
+      "default": null,
+      "type": "string"
+     },
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "min_evidence": {
+      "default": null,
+      "type": "integer"
+     },
+     "phenotype_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "phenotype_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:e82d8eabe81b32c8b3c60641cfa23c5af09fefa252a4a0d47178a7c12b4bf03d"
+  },
+  "disease.find_diseases_by_therapeutic_area": {
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 100,
+      "type": "integer"
+     },
+     "list_therapeutic_areas": {
+      "default": false,
+      "type": "boolean"
+     },
+     "therapeutic_area": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:add5803a04af746ad688a4fcbea40c7516f65ab2d4587467263c4ee1aade746c"
+  },
+  "disease.get_disease_hierarchy": {
+   "input_schema": {
+    "properties": {
+     "disease_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "disease_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:6b7785746b9306662bbd07d01892ec0f0705c3728d9082e6eee69db817e39e9d"
+  },
+  "disease.get_disease_info": {
+   "input_schema": {
+    "properties": {
+     "disease_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "disease_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:6b7785746b9306662bbd07d01892ec0f0705c3728d9082e6eee69db817e39e9d"
+  },
+  "disease.get_disease_phenotypes": {
+   "input_schema": {
+    "properties": {
+     "disease_id": {
+      "type": "string"
+     },
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     }
+    },
+    "required": [
+     "disease_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:0b07f4e250bd92472be115c01df8c242df978210c2067220007182ab7737eceb"
+  },
+  "disease.search_diseases_by_name": {
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 20,
+      "type": "integer"
+     },
+     "query": {
+      "type": "string"
+     },
+     "therapeutic_area": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:9695c041745901750a80c9c3288e53d144a10a0c57edc59aa3bce8a58dda9548"
+  },
+  "drug.get_drug_adverse_events": {
+   "input_schema": {
+    "properties": {
+     "drug_id": {
+      "type": "string"
+     },
+     "limit": {
+      "default": 20,
+      "type": "integer"
+     }
+    },
+    "required": [
+     "drug_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:36991ef5d8355e42b77bfc7f8b502708076caa67722afc43d3a79aa9a85edc8d"
+  },
+  "drug.get_drug_indications": {
+   "input_schema": {
+    "properties": {
+     "drug_id": {
+      "type": "string"
+     },
+     "limit": {
+      "default": 20,
+      "type": "integer"
+     }
+    },
+    "required": [
+     "drug_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:36991ef5d8355e42b77bfc7f8b502708076caa67722afc43d3a79aa9a85edc8d"
+  },
+  "drug.get_drug_info": {
+   "input_schema": {
+    "properties": {
+     "drug_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "drug_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:a9c8413661499751096162fd9c187a4d85feaa5a397a9697b9dbbb1fd6ffddd3"
+  },
+  "drug.get_drug_mechanisms": {
+   "input_schema": {
+    "properties": {
+     "drug_id": {
+      "default": null,
+      "type": "string"
+     },
+     "limit": {
+      "default": 20,
+      "type": "integer"
+     },
+     "mechanism": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:cd47199d43700216f2371eaa73aa6f189415e93f811df357dcb21a9fb6f4e412"
+  },
+  "drug.get_drug_warnings": {
+   "input_schema": {
+    "properties": {
+     "drug_id": {
+      "type": "string"
+     },
+     "limit": {
+      "default": 20,
+      "type": "integer"
+     }
+    },
+    "required": [
+     "drug_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:36991ef5d8355e42b77bfc7f8b502708076caa67722afc43d3a79aa9a85edc8d"
+  },
+  "drug.get_pharmacogenomics": {
+   "input_schema": {
+    "properties": {
+     "drug_id": {
+      "default": null,
+      "type": "string"
+     },
+     "limit": {
+      "default": 20,
+      "type": "integer"
+     },
+     "target_id": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:e3e0381f23f0dfeef0f9628f4bc7f5950bf6c97ae7a228a727a987274b05d4dd"
+  },
+  "drug.get_target_tractability": {
+   "input_schema": {
+    "properties": {
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:c2f352da6f75dc57ed35526e7edcb8c540d0f4e9a824140931bc8b1b552c8600"
+  },
+  "drug.search_drugs": {
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 20,
+      "type": "integer"
+     },
+     "mechanism": {
+      "default": null,
+      "type": "string"
+     },
+     "query": {
+      "default": null,
+      "type": "string"
+     },
+     "target_id": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:0bc6d84314cc79b76bc1187a91895d618280e2621f00c608e4dc13c4d62e6da8"
+  },
+  "drug.search_known_drugs": {
+   "input_schema": {
+    "properties": {
+     "disease_id": {
+      "default": null,
+      "type": "string"
+     },
+     "limit": {
+      "default": 20,
+      "type": "integer"
+     },
+     "min_phase": {
+      "default": 0,
+      "type": "integer"
+     },
+     "target_id": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:cd7e71299eebecbc5ff195abae2a7347da76a50941e5fa5d3658918f5ab01365"
+  },
+  "expression.compare_expression_across_tissues": {
+   "input_schema": {
+    "properties": {
+     "gene_id": {
+      "type": "string"
+     },
+     "tissues": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "gene_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:353f8a702ad3e3dd719054d781f903a5619345f9d3e85d43213460f904975cba"
+  },
+  "expression.find_tissue_specific_genes": {
+   "input_schema": {
+    "properties": {
+     "fold_change_threshold": {
+      "default": 2.0,
+      "type": "number"
+     },
+     "limit": {
+      "default": 100,
+      "type": "integer"
+     },
+     "output_path": {
+      "type": "string"
+     },
+     "tissue": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "output_path",
+     "tissue"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:3fc0a9e7b51f32845c283bc877da129958bf7020ce959e6216466d28ea5444a4"
+  },
+  "expression.list_available_tissues": {
+   "input_schema": {
+    "properties": {},
+    "type": "object"
+   },
+   "input_sha256": "sha256:efddc7bd8bbcef73a14eb1ace1ffdaec81e518ef1e13c1e9271d0b8acb694a49"
+  },
+  "expression.query_expression_by_gene": {
+   "input_schema": {
+    "properties": {
+     "gene_id": {
+      "type": "string"
+     },
+     "tissue": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "required": [
+     "gene_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:5760328e57ccff9241a2c944ec597a58951d77f70029836895f40d5a6db95f52"
+  },
+  "expression.query_expression_by_tissue": {
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 100,
+      "type": "integer"
+     },
+     "min_expression": {
+      "default": null,
+      "type": "number"
+     },
+     "output_path": {
+      "type": "string"
+     },
+     "tissue": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "output_path",
+     "tissue"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:bb5e84a8962615e22236169d8ea4c8a457cd9e599773b3a630cac450e735ce22"
+  },
+  "expression.search_biosample_ontology": {
+   "input_schema": {
+    "properties": {
+     "biosample_id": {
+      "default": null,
+      "type": "string"
+     },
+     "limit": {
+      "default": 20,
+      "type": "integer"
+     },
+     "query": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:cbadbf5e3e8e60dfae38541a503c31e1a6cca533c137a2d0822c754356d7dc82"
+  },
+  "functional_genomics.compare_drug_effects": {
+   "input_schema": {
+    "properties": {
+     "cell_line_id": {
+      "default": null,
+      "type": "string"
+     },
+     "drug_a": {
+      "type": "string"
+     },
+     "drug_b": {
+      "type": "string"
+     },
+     "max_padj": {
+      "default": 0.1,
+      "type": "number"
+     },
+     "min_abs_log2fc": {
+      "default": 0.5,
+      "type": "number"
+     }
+    },
+    "required": [
+     "drug_a",
+     "drug_b"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:0f950c98cad7f0c00ff8e916e6433d9658bdac92d16ec6cc96e9b87cae2688fa"
+  },
+  "functional_genomics.compare_essentiality_across_diseases": {
+   "input_schema": {
+    "properties": {
+     "diseases": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "gene_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "gene_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:9faec74bbe0fc1191950778ba8100ca4fc4598b6763a101df3d24f14c322947b"
+  },
+  "functional_genomics.find_cell_line_selective_effects": {
+   "input_schema": {
+    "properties": {
+     "cell_line_of_interest": {
+      "type": "string"
+     },
+     "comparison_cell_lines": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "drug_name": {
+      "type": "string"
+     },
+     "max_padj": {
+      "default": 0.1,
+      "type": "number"
+     },
+     "min_abs_log2fc": {
+      "default": 0.5,
+      "type": "number"
+     },
+     "selectivity_threshold": {
+      "default": 2.0,
+      "type": "number"
+     },
+     "top_n": {
+      "default": 30,
+      "type": "integer"
+     }
+    },
+    "required": [
+     "drug_name",
+     "cell_line_of_interest"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:029c0076b425fbd786c9e5d51792a978b6ef55c0fd9e973f946612b40534d02b"
+  },
+  "functional_genomics.find_drugs_affecting_gene": {
+   "input_schema": {
+    "properties": {
+     "cell_line_filter": {
+      "default": null,
+      "type": "string"
+     },
+     "gene_name": {
+      "type": "string"
+     },
+     "max_padj": {
+      "default": 0.1,
+      "type": "number"
+     },
+     "min_abs_log2fc": {
+      "default": 0.5,
+      "type": "number"
+     },
+     "top_n": {
+      "default": 20,
+      "type": "integer"
+     }
+    },
+    "required": [
+     "gene_name"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:47f44559462ffb76840f774f07581f74719b53b404e1d67d50f1598c193ecafb"
+  },
+  "functional_genomics.find_essential_genes": {
+   "input_schema": {
+    "properties": {
+     "disease": {
+      "type": "string"
+     },
+     "limit": {
+      "default": 100,
+      "type": "integer"
+     },
+     "min_cell_lines": {
+      "default": 3,
+      "type": "integer"
+     },
+     "min_effect_threshold": {
+      "default": -0.5,
+      "type": "number"
+     }
+    },
+    "required": [
+     "disease"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:768f70c5af9309f472fee38f40d28ed985395fbd3cacb7ff9cf2d83aaf97eea2"
+  },
+  "functional_genomics.find_selective_dependencies": {
+   "input_schema": {
+    "properties": {
+     "comparison_disease": {
+      "type": "string"
+     },
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "min_cell_lines": {
+      "default": 3,
+      "type": "integer"
+     },
+     "min_effect_difference": {
+      "default": 0.3,
+      "type": "number"
+     },
+     "target_disease": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_disease",
+     "comparison_disease"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:0a69c6efd6e6598014434c080e84d7245a4964a367ecfe52d2c2e05c5387381e"
+  },
+  "functional_genomics.query_cell_line_dependency": {
+   "input_schema": {
+    "properties": {
+     "cell_line_name": {
+      "type": "string"
+     },
+     "limit": {
+      "default": 100,
+      "type": "integer"
+     },
+     "min_effect_threshold": {
+      "default": -0.5,
+      "type": "number"
+     }
+    },
+    "required": [
+     "cell_line_name"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:142cc285a0150fb5e0f5b4f1d5db7b10e15623c54537baf8d25c00cf62da48e2"
+  },
+  "functional_genomics.query_drug_perturbation": {
+   "input_schema": {
+    "properties": {
+     "cell_line_id": {
+      "default": null,
+      "type": "string"
+     },
+     "drug_name": {
+      "type": "string"
+     },
+     "max_padj": {
+      "default": 0.1,
+      "type": "number"
+     },
+     "min_abs_log2fc": {
+      "default": 0.0,
+      "type": "number"
+     },
+     "top_n": {
+      "default": 50,
+      "type": "integer"
+     }
+    },
+    "required": [
+     "drug_name"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:1bcee1c59dc8aaa04c5fe3489f7f434747ab3f6d9012240b301d533484e32040"
+  },
+  "functional_genomics.query_gene_essentiality": {
+   "input_schema": {
+    "properties": {
+     "disease": {
+      "default": null,
+      "type": "string"
+     },
+     "gene_id": {
+      "type": "string"
+     },
+     "tissue": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "required": [
+     "gene_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:c17bb7b32286b80b13e447fcfff0db52691798d943d38153fc5f791f109d3c43"
+  },
+  "genetics.convert_rsid_to_variant_id": {
+   "input_schema": {
+    "properties": {
+     "rs_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "rs_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:6e1c8d6b12600a7dee9bc6f836c6bf265a3e60332fe8f793e7b156b6672fd766"
+  },
+  "genetics.get_colocalisation_by_chromosome": {
+   "input_schema": {
+    "properties": {
+     "chromosome": {
+      "type": "string"
+     },
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "method": {
+      "default": "coloc",
+      "type": "string"
+     },
+     "min_score": {
+      "default": 0.8,
+      "type": "number"
+     }
+    },
+    "required": [
+     "chromosome"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:db8b89ec2c8216c700514ea8c2e21973dff17accf981553c00074bb2851e9bb1"
+  },
+  "genetics.get_credible_sets": {
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "min_confidence": {
+      "default": null,
+      "type": "number"
+     },
+     "output_path": {
+      "type": "string"
+     },
+     "study_id": {
+      "default": null,
+      "type": "string"
+     },
+     "study_locus_id": {
+      "default": null,
+      "type": "string"
+     },
+     "study_type": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "required": [
+     "output_path"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:0a21f7a4a4c230428cbdbc26ee2dea46f48f19ead49ec7d6d0b35f09af8e6736"
+  },
+  "genetics.get_qtl_colocalization": {
+   "input_schema": {
+    "properties": {
+     "gene_id": {
+      "default": null,
+      "type": "string"
+     },
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "min_clpp": {
+      "default": 0.5,
+      "type": "number"
+     },
+     "qtl_type": {
+      "default": null,
+      "type": "string"
+     },
+     "study_locus_id": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:7bdce060944884a00427af08f0ba68cd17d9124d14e49f73a80f0ada2f41879a"
+  },
+  "genetics.get_study_metadata": {
+   "input_schema": {
+    "properties": {
+     "gene_id": {
+      "default": null,
+      "type": "string"
+     },
+     "limit": {
+      "default": 20,
+      "type": "integer"
+     },
+     "min_sample_size": {
+      "default": null,
+      "type": "integer"
+     },
+     "project_id": {
+      "default": null,
+      "type": "string"
+     },
+     "study_id": {
+      "default": null,
+      "type": "string"
+     },
+     "study_type": {
+      "default": null,
+      "type": "string"
+     },
+     "trait": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:8ae95d7253dc7d1d32f9e06f58aa9e6d10a357a8fef20d6c196e8cca36ab69d4"
+  },
+  "genetics.get_variant_annotation": {
+   "input_schema": {
+    "properties": {
+     "chromosome": {
+      "default": null,
+      "type": "string"
+     },
+     "position": {
+      "default": null,
+      "type": "integer"
+     },
+     "variant_id": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:094cce2af6fd39921c3bbe5842944f705122315d297faa76885419a3cbffd228"
+  },
+  "genetics.query_colocalisation": {
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "method": {
+      "default": null,
+      "type": "string"
+     },
+     "min_clpp": {
+      "default": null,
+      "type": "number"
+     },
+     "min_h4": {
+      "default": null,
+      "type": "number"
+     },
+     "study_locus_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "study_locus_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:cd26e0e13fc95661f0d6b66c42f2aacfd4c35b1a590fcdf4bca869df087753d7"
+  },
+  "genetics.query_gwas_associations": {
+   "input_schema": {
+    "properties": {
+     "chromosome": {
+      "default": null,
+      "type": "string"
+     },
+     "limit": {
+      "default": 100,
+      "type": "integer"
+     },
+     "output_path": {
+      "type": "string"
+     },
+     "region": {
+      "default": null,
+      "type": "string"
+     },
+     "study_id": {
+      "default": null,
+      "type": "string"
+     },
+     "variant_id": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "required": [
+     "output_path"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:1cb43640f338407a4fd99c1178b46cc9ddca5f94eb7f7de6384d3b505b49acab"
+  },
+  "genetics.query_l2g_predictions": {
+   "input_schema": {
+    "properties": {
+     "gene_id": {
+      "default": null,
+      "type": "string"
+     },
+     "limit": {
+      "default": 100,
+      "type": "integer"
+     },
+     "min_score": {
+      "default": 0.5,
+      "type": "number"
+     },
+     "study_locus_id": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:c801fffa29f0c2cb24f4a069d514a42a07d43de080cba15b8ceb50a01fc08bb0"
+  },
+  "genetics.query_regulatory_regions": {
+   "input_schema": {
+    "properties": {
+     "biosample": {
+      "default": null,
+      "type": "string"
+     },
+     "chromosome": {
+      "default": null,
+      "type": "string"
+     },
+     "end": {
+      "default": null,
+      "type": "integer"
+     },
+     "gene_id": {
+      "default": null,
+      "type": "string"
+     },
+     "interval_type": {
+      "default": null,
+      "type": "string"
+     },
+     "limit": {
+      "default": 100,
+      "type": "integer"
+     },
+     "max_distance_to_tss": {
+      "default": null,
+      "type": "integer"
+     },
+     "min_score": {
+      "default": null,
+      "type": "number"
+     },
+     "output_path": {
+      "type": "string"
+     },
+     "start": {
+      "default": null,
+      "type": "integer"
+     }
+    },
+    "required": [
+     "output_path"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:91553c13fc60df58115c2e8ba6f5e67870c979cbd4aa18acc08ec8f31d7edcb6"
+  },
+  "interaction.find_common_interactors": {
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "min_confidence": {
+      "default": 0.0,
+      "type": "number"
+     },
+     "min_targets": {
+      "default": 2,
+      "type": "integer"
+     },
+     "target_ids": {
+      "type": "array"
+     }
+    },
+    "required": [
+     "target_ids"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:43a704e956823c7d975c4453943d7a0384a0ae804e08521ceed9762452fe1a62"
+  },
+  "interaction.get_interaction_evidence": {
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:455f605c076094c16f7b4a104e00560aa5173a222c6808f5fd4ed069dd73d03c"
+  },
+  "interaction.get_interaction_network": {
+   "input_schema": {
+    "properties": {
+     "max_hops": {
+      "default": 2,
+      "type": "integer"
+     },
+     "max_network_size": {
+      "default": 500,
+      "type": "integer"
+     },
+     "min_confidence": {
+      "default": 0.0,
+      "type": "number"
+     },
+     "seed_targets": {
+      "type": "array"
+     }
+    },
+    "required": [
+     "seed_targets"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:81a886a227089bda96db0e512d70c50a3f1269fe9440c5f17ba3b8287709a8af"
+  },
+  "interaction.get_interactions": {
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "source_database": {
+      "default": null,
+      "type": "string"
+     },
+     "species": {
+      "default": null,
+      "type": "string"
+     },
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:9e3877923c480562f3c385ab61dbe26b05cfe9206bfec77a3af491f097498a58"
+  },
+  "interaction.search_interactions": {
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "min_count": {
+      "default": null,
+      "type": "integer"
+     },
+     "source_database": {
+      "default": null,
+      "type": "string"
+     },
+     "target_a": {
+      "default": null,
+      "type": "string"
+     },
+     "target_b": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:b698f0020b045ce97f1601e1194ac99afb3e5225c231ce4ff1f0aa126292e32e"
+  },
+  "pathway.find_genes_in_pathway": {
+   "input_schema": {
+    "properties": {
+     "pathway_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "pathway_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:f7adf4e1bea6727071bdcbf22ce34fd32c0e108c2d2e85e16e4ad9a35c4086ad"
+  },
+  "pathway.get_gene_ontology": {
+   "input_schema": {
+    "properties": {
+     "aspect": {
+      "default": null,
+      "type": "string"
+     },
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:35e6a8be9192cdc53439baf33e33d2f19b5a1e1c6532ee6c65081ccb154d8cc9"
+  },
+  "pathway.get_gene_pathways": {
+   "input_schema": {
+    "properties": {
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:c2f352da6f75dc57ed35526e7edcb8c540d0f4e9a824140931bc8b1b552c8600"
+  },
+  "pathway.get_go_enrichment": {
+   "input_schema": {
+    "properties": {
+     "gene_list": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "go_type": {
+      "default": null,
+      "type": "string"
+     },
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "pvalue_threshold": {
+      "default": 0.05,
+      "type": "number"
+     }
+    },
+    "required": [
+     "gene_list"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:0e0bd013fb24e5e058ffaeb4fc157eeb9dfd606b9a2022d0a7c07ce32a9f69aa"
+  },
+  "pathway.get_go_term_info": {
+   "input_schema": {
+    "properties": {
+     "go_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "go_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:9a18b7e3f117b00ecaffebc5ef11165333e6da6934966d3ceb4c9c0d74a152df"
+  },
+  "pathway.get_pathway_enrichment": {
+   "input_schema": {
+    "properties": {
+     "gene_list": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "max_pathway_size": {
+      "default": 500,
+      "type": "integer"
+     },
+     "min_pathway_size": {
+      "default": 5,
+      "type": "integer"
+     },
+     "pvalue_threshold": {
+      "default": 0.05,
+      "type": "number"
+     }
+    },
+    "required": [
+     "gene_list"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:fe11a3eafb021027c8c3431d128d12d3b2ffc82f9707f57fb5425fb655337cfb"
+  },
+  "pathway.get_pathway_info": {
+   "input_schema": {
+    "properties": {
+     "pathway_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "pathway_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:f7adf4e1bea6727071bdcbf22ce34fd32c0e108c2d2e85e16e4ad9a35c4086ad"
+  },
+  "pathway.get_sequence_ontology_term": {
+   "input_schema": {
+    "properties": {
+     "so_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "so_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:2affe69f14f091b0f62ceb8bc24f341aafa5dacbe59f5cb6eeb53266e692257d"
+  },
+  "pathway.search_go_terms": {
+   "input_schema": {
+    "properties": {
+     "aspect": {
+      "default": null,
+      "type": "string"
+     },
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "query": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:9134aefce657adcfe2868636b2ccd08d517446e58cda03c3fea3dece6b8959b2"
+  },
+  "pathway.search_pathways": {
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 50,
+      "type": "integer"
+     },
+     "query": {
+      "default": null,
+      "type": "string"
+     },
+     "top_level_term": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:0750ae9766b01a47a0ad6e46258f412e516bcf55843be8ccbeb2a756437bead5"
+  },
+  "pubmed.fetch_abstracts": {
+   "input_schema": {
+    "properties": {
+     "pmids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "pmids"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:b0415eaf553b3ec69230124f84f400146935746894adccca9fedfbdde9e53199"
+  },
+  "pubmed.search_pubmed": {
+   "input_schema": {
+    "properties": {
+     "max_results": {
+      "default": 20,
+      "type": "integer"
+     },
+     "query": {
+      "type": "string"
+     },
+     "sort": {
+      "default": "relevance",
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:617e42a7c281a9b47037e5401f3a5a54c0036ae2633574d6cd0f6d27ccf9d7e9"
+  },
+  "single_cell.count_cells": {
+   "input_schema": {
+    "properties": {
+     "value_filter": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:46931258d1ebf8b6e4ec5c1d74801f0287f0f449da2c525122893f12dc6564fd"
+  },
+  "single_cell.get_anndata": {
+   "input_schema": {
+    "properties": {
+     "ensembl_ids": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "gene_symbols": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "layer": {
+      "default": "raw",
+      "type": "string"
+     },
+     "obs_columns": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "output_path": {
+      "type": "string"
+     },
+     "value_filter": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "required": [
+     "output_path"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:298180cb640cb7d56fbf4cb04199b9a8caa3891fd5ebd7be95b0857d8157bf44"
+  },
+  "single_cell.get_anndata_donor_balanced": {
+   "input_schema": {
+    "properties": {
+     "ensembl_ids": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "gene_symbols": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "layer": {
+      "default": "raw",
+      "type": "string"
+     },
+     "max_cells": {
+      "default": 20000,
+      "type": "integer"
+     },
+     "obs_columns": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "output_path": {
+      "type": "string"
+     },
+     "value_filter": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "output_path",
+     "value_filter"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:1424f9992768fafd8b043781e8f02e32b0e44f00d4e6f1090aa9926b592a6f13"
+  },
+  "single_cell.get_cell_type_tissue_matrix": {
+   "input_schema": {
+    "properties": {
+     "output_path": {
+      "type": "string"
+     },
+     "top_n_cell_types": {
+      "default": 50,
+      "type": "integer"
+     },
+     "top_n_tissues": {
+      "default": 50,
+      "type": "integer"
+     },
+     "value_filter": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "required": [
+     "output_path"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:af49b7e4a1c5686c62005033d7c0a9148284b72202bba395052fe890563ae64e"
+  },
+  "single_cell.get_census_info": {
+   "input_schema": {
+    "properties": {},
+    "type": "object"
+   },
+   "input_sha256": "sha256:efddc7bd8bbcef73a14eb1ace1ffdaec81e518ef1e13c1e9271d0b8acb694a49"
+  },
+  "single_cell.get_expression_for_genes": {
+   "input_schema": {
+    "properties": {
+     "gene_symbols": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "layer": {
+      "default": "raw",
+      "type": "string"
+     },
+     "max_cells": {
+      "default": 20000,
+      "type": "integer"
+     },
+     "output_path": {
+      "type": "string"
+     },
+     "value_filter": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "required": [
+     "gene_symbols",
+     "output_path"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:2b20b8195ac99637446a7e092665bc0bf59b3b1c55f1c137cbe74cf31c23e96d"
+  },
+  "single_cell.get_gene_statistics": {
+   "input_schema": {
+    "properties": {
+     "ensembl_ids": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "gene_symbols": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:802b6d5bed2e03277b6ddd1f086660202105cabc6f64fa246a7c8533ddc37b97"
+  },
+  "single_cell.list_metadata_values": {
+   "input_schema": {
+    "properties": {
+     "column_name": {
+      "type": "string"
+     },
+     "limit": {
+      "default": 1000,
+      "type": "integer"
+     },
+     "value_filter": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "required": [
+     "column_name"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:5a3423a80851c58d536882c6f91b66139a529dacf8a18c9ddf69e28f096f5ca7"
+  },
+  "single_cell.query_cell_metadata": {
+   "input_schema": {
+    "properties": {
+     "columns": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "limit": {
+      "default": 50000,
+      "type": "integer"
+     },
+     "output_path": {
+      "type": "string"
+     },
+     "value_filter": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "required": [
+     "output_path"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:c9f6f451bbfdf1dbb4b0da4bb4db3ba1289d309e62e00f4a32c422d7acfb8c2d"
+  },
+  "single_cell.search_genes": {
+   "input_schema": {
+    "properties": {
+     "ensembl_ids": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "gene_symbols": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:802b6d5bed2e03277b6ddd1f086660202105cabc6f64fa246a7c8533ddc37b97"
+  },
+  "single_cell.summarize_datasets": {
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 100,
+      "type": "integer"
+     },
+     "value_filter": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:7068403c1358990bc685404a440a11c24ea94c03789668885294a8785f2c42c4"
+  },
+  "target.get_chemical_probes": {
+   "input_schema": {
+    "properties": {
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:c2f352da6f75dc57ed35526e7edcb8c540d0f4e9a824140931bc8b1b552c8600"
+  },
+  "target.get_comprehensive_target_profile": {
+   "input_schema": {
+    "properties": {
+     "include_diseases": {
+      "default": true,
+      "type": "boolean"
+     },
+     "include_drugs": {
+      "default": true,
+      "type": "boolean"
+     },
+     "include_expression": {
+      "default": true,
+      "type": "boolean"
+     },
+     "include_interactions": {
+      "default": true,
+      "type": "boolean"
+     },
+     "include_pathways": {
+      "default": true,
+      "type": "boolean"
+     },
+     "include_safety": {
+      "default": true,
+      "type": "boolean"
+     },
+     "target_id": {
+      "type": "string"
+     },
+     "top_n": {
+      "default": 10,
+      "type": "integer"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:36c4454ca722a9e69050f3db7195375ee7e197d50d11921be298e0a921d38875"
+  },
+  "target.get_genetic_constraint": {
+   "input_schema": {
+    "properties": {
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:c2f352da6f75dc57ed35526e7edcb8c540d0f4e9a824140931bc8b1b552c8600"
+  },
+  "target.get_homologues": {
+   "input_schema": {
+    "properties": {
+     "min_identity": {
+      "default": null,
+      "type": "number"
+     },
+     "species_filter": {
+      "default": null,
+      "type": "string"
+     },
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:ceaed22cf0f0e665632cc0ae069c5afdaa18b5091be36a3d9892c039b9bf3df4"
+  },
+  "target.get_mouse_phenotype": {
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 20,
+      "type": "integer"
+     },
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:42e7654702d6a8101a28959e89effc9c3ab9793a8a9d95b93784a2d653404b01"
+  },
+  "target.get_pharmacogenomics": {
+   "input_schema": {
+    "properties": {
+     "drug_id": {
+      "default": null,
+      "type": "string"
+     },
+     "limit": {
+      "default": 20,
+      "type": "integer"
+     },
+     "target_id": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:e3e0381f23f0dfeef0f9628f4bc7f5950bf6c97ae7a228a727a987274b05d4dd"
+  },
+  "target.get_subcellular_locations": {
+   "input_schema": {
+    "properties": {
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:c2f352da6f75dc57ed35526e7edcb8c540d0f4e9a824140931bc8b1b552c8600"
+  },
+  "target.get_target_class": {
+   "input_schema": {
+    "properties": {
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:c2f352da6f75dc57ed35526e7edcb8c540d0f4e9a824140931bc8b1b552c8600"
+  },
+  "target.get_target_hallmarks": {
+   "input_schema": {
+    "properties": {
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:c2f352da6f75dc57ed35526e7edcb8c540d0f4e9a824140931bc8b1b552c8600"
+  },
+  "target.get_target_info": {
+   "input_schema": {
+    "properties": {
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:c2f352da6f75dc57ed35526e7edcb8c540d0f4e9a824140931bc8b1b552c8600"
+  },
+  "target.get_target_prioritisation_scores": {
+   "input_schema": {
+    "properties": {
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:c2f352da6f75dc57ed35526e7edcb8c540d0f4e9a824140931bc8b1b552c8600"
+  },
+  "target.get_target_safety_profile": {
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 20,
+      "type": "integer"
+     },
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:42e7654702d6a8101a28959e89effc9c3ab9793a8a9d95b93784a2d653404b01"
+  },
+  "target.get_target_tep": {
+   "input_schema": {
+    "properties": {
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:c2f352da6f75dc57ed35526e7edcb8c540d0f4e9a824140931bc8b1b552c8600"
+  },
+  "target.get_target_tractability": {
+   "input_schema": {
+    "properties": {
+     "target_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "target_id"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:c2f352da6f75dc57ed35526e7edcb8c540d0f4e9a824140931bc8b1b552c8600"
+  },
+  "target.prioritize_targets": {
+   "input_schema": {
+    "properties": {
+     "ascending": {
+      "default": false,
+      "type": "boolean"
+     },
+     "has_pocket": {
+      "default": null,
+      "type": "boolean"
+     },
+     "has_small_molecule_binder": {
+      "default": null,
+      "type": "boolean"
+     },
+     "is_membrane": {
+      "default": null,
+      "type": "boolean"
+     },
+     "is_secreted": {
+      "default": null,
+      "type": "boolean"
+     },
+     "limit": {
+      "default": 100,
+      "type": "integer"
+     },
+     "min_clinical_phase": {
+      "default": null,
+      "type": "integer"
+     },
+     "min_genetic_constraint": {
+      "default": null,
+      "type": "number"
+     },
+     "no_safety_events": {
+      "default": false,
+      "type": "boolean"
+     },
+     "sort_by": {
+      "default": null,
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "input_sha256": "sha256:cd165adb189cc4005efd1b0cce23c5c1a9566438ffa6727bcba3e7e058b4e56a"
+  },
+  "target.search_targets_by_name": {
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 10,
+      "type": "integer"
+     },
+     "query": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "type": "object"
+   },
+   "input_sha256": "sha256:b1caa3ba2c27e147fb336c5b2ccb546b42276d01b803b77e4cfc23ecf4ec35ab"
+  }
+ },
+ "upstream_commit": "71f9da68c95c5ee0ef4c1d9b8f45f10693de022d"
+}

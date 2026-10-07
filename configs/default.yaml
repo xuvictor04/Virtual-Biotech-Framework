@@ -199,7 +199,14 @@ data:
   cache_dir: ${VBT_DATA_DIR:-data}/.vbt-datalayer   # index/, readiness/, stats/; always safe to delete
   gateway:
     mode: enforce                 # "off" | observe | enforce ("off" quoted: YAML reads a bare off as false)
-    enforce_servers: all          # or a list, for staged rollout
+    # Servers that graduated from observe to enforce (docs/DATA_LAYER.md §22; `vbt ds graduate`): an
+    # overlay that lints clean, every tool reviewed, every blocked tool naming an alternative, and the
+    # correctness tests passing on the fixtures. Retro-audit evidence comes from recorded observe runs
+    # (`vbt ds graduate <server> --run <run>`); a server whose review finds false positives leaves the
+    # list. A server not listed (any third-party server until its overlay is reviewed) runs in observe
+    # mode: decisions are traced, upstream answers are returned. `all` enforces every server.
+    enforce_servers: [target, disease, drug, association, genetics, interaction, pathway, expression,
+                      functional_genomics, single_cell, clinicaltrials, pubmed, data]
     profile: safe                 # safe | fidelity (paper-replication runs)
     when_service_down: strict     # strict: guarded tools not_ready; lenient: generic guard
     unbound_empty: empty_unverified   # empty_unverified | error

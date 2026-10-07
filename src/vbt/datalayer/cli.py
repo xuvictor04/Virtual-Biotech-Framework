@@ -20,6 +20,17 @@ Phase 4::
     vbt ds calibrate --table S.T [--row-groups N]  sample-and-scale memory calibration (data child)
     vbt ds overlay init <server> [--from-json F]   scaffold an overlay for a third-party MCP server
 
+Phase 5::
+
+    vbt ds replay <run> <tool_use_id...> | --all   re-execute recorded data calls on current data and compare
+                                                   row keys, output rows, computed values, fingerprints
+    vbt ds diff-release --from A --to B [--source S] role columns, types, encodings, vocabularies and
+                                                   matrix axes between two releases (data child)
+    vbt ds explain --all --json [--schemas]        bindings and upstream input schemas as JSON (the CI
+                                                   snapshot tests/datalayer/upstream_tool_schemas.json)
+    vbt ds graduate [server...] [--run R...]       the observe -> enforce checklist per server, with
+                                                   retro-audit evidence from recorded runs
+
 Handlers follow the repo convention ``handler(args, config) -> int``. Nothing here imports pyarrow:
 commands that read data (``check``, ``fingerprint``, ``index build``, ``estimate``) run the data
 child's command line (``<mcp_python> -E src/vbt/datalayer/service/server.py ...``) as a subprocess.
@@ -505,8 +516,168 @@ def explain_tool(catalog: Any, registry: Any, server: str, tool: str, *, descrip
     return lines
 
 
+#: Upstream parameter annotations as JSON schema types (the subset FastMCP derives for these signatures).
+_SIMPLE_TYPES = {"str": "string", "int": "integer", "float": "number", "bool": "boolean", "dict": "object",
+                 "Dict": "object", "Any": None}
+
+
+def _annotation_schema(node: Any) -> dict[str, Any]:
+    import ast
+
+    if node is None:
+        return {}
+    text = ast.unparse(node).replace("typing.", "")
+    if text.startswith("Optional[") and text.endswith("]"):
+        return _annotation_schema(ast.parse(text[len("Optional["):-1], mode="eval").body)
+    if " | None" in text:
+        return _annotation_schema(ast.parse(text.replace(" | None", ""), mode="eval").body)
+    base = text.split("[")[0]
+    if base in _SIMPLE_TYPES:
+        return {"type": _SIMPLE_TYPES[base]} if _SIMPLE_TYPES[base] else {}
+    if base in ("list", "List", "Sequence", "tuple", "Tuple"):
+        inner = text[len(base) + 1:-1] if "[" in text else ""
+        items = _annotation_schema(ast.parse(inner, mode="eval").body) if inner else {}
+        return {"type": "array", "items": items} if items else {"type": "array"}
+    return {}
+
+
+def _function_schema(fn: Any) -> dict[str, Any]:
+    import ast
+
+    args = fn.args.args
+    defaults = [None] * (len(args) - len(fn.args.defaults)) + list(fn.args.defaults)
+    props: dict[str, Any] = {}
+    required = []
+    for a, d in zip(args, defaults):
+        if a.arg in ("self", "ctx"):
+            continue
+        prop = _annotation_schema(a.annotation)
+        if d is None:
+            required.append(a.arg)
+        else:
+            try:
+                prop["default"] = ast.literal_eval(d)
+            except ValueError:
+                pass
+        props[a.arg] = prop
+    out: dict[str, Any] = {"type": "object", "properties": props}
+    if required:
+        out["required"] = required
+    return out
+
+
+def upstream_tool_schemas(upstream: str | Path | None, project_root: str | Path | None = None
+                          ) -> dict[str, dict[str, Any]]:
+    """``{"server.tool": input schema}`` of every bridged tool, parsed from the upstream ``server.py``
+    ``register_tool`` calls and the harness PubMed server (AST only: nothing is imported or run)."""
+    import ast
+
+    out: dict[str, dict[str, Any]] = {}
+    root = Path(upstream) if upstream else None
+    servers = root / "src" / "mcp_servers" if root else None
+    if servers is not None and servers.is_dir():
+        for server_dir in sorted(p for p in servers.iterdir() if (p / "server.py").is_file()):
+            if server_dir.name == "provenance_mcp":
+                continue
+            tree = ast.parse((server_dir / "server.py").read_text(encoding="utf-8"))
+            imports: dict[str, tuple[str, str]] = {}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("src.mcp_servers"):
+                    for alias in node.names:
+                        imports[alias.asname or alias.name] = (node.module, alias.name)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "register_tool":
+                    ref = getattr(node.args[1], "id", None) if len(node.args) > 1 else None
+                    if ref not in imports:
+                        continue
+                    module, name = imports[ref]
+                    path = root / (module.replace(".", "/") + ".py")  # type: ignore[operator]
+                    fn = next((n for n in ast.parse(path.read_text(encoding="utf-8")).body
+                               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name), None)
+                    if fn is not None:
+                        out[f"{server_dir.name.removesuffix('_mcp')}.{name}"] = _function_schema(fn)
+    pubmed = Path(project_root or Path(__file__).resolve().parents[3]) / "src" / "vbt" / "mcp_servers" / "pubmed_server.py"
+    if pubmed.is_file():
+        for fn in ast.parse(pubmed.read_text(encoding="utf-8")).body:
+            if isinstance(fn, ast.FunctionDef) and any(
+                    isinstance(d, ast.Call) and getattr(d.func, "attr", None) == "tool" for d in fn.decorator_list):
+                out[f"pubmed.{fn.name}"] = _function_schema(fn)
+    return dict(sorted(out.items()))
+
+
+def schema_sha256(schema: Mapping[str, Any]) -> str:
+    import hashlib
+
+    text = json.dumps(schema, sort_keys=True, separators=(",", ":"), default=str)
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _upstream_root(config: Mapping[str, Any]) -> str | None:
+    from .catalog import variables_from_config
+
+    return variables_from_config(dict(config)).get("upstream")
+
+
+def explain_json(config: Mapping[str, Any], catalog: Any, *, upstream: str | Path | None = None,
+                 project_root: str | Path | None = None, schemas_only: bool = False) -> dict[str, Any]:
+    """``vbt ds explain --all --json``: per tool its binding (status, serve mode, bound table, bound
+    arguments, upstream parameters no argument binds) and the upstream input schema with its hash.
+    ``schemas_only`` keeps the schemas (the CI drift snapshot ``upstream_tool_schemas.json``)."""
+    from ..pinning import git_info
+
+    root = upstream if upstream is not None else _upstream_root(config)
+    schemas = upstream_tool_schemas(root, project_root)
+    commit = None
+    if root and Path(root).is_dir():
+        commit = git_info(str(root)).get("upstream_commit")
+    tools: dict[str, Any] = {}
+    names = {f"{s}.{t}" for s in catalog.servers() for t in catalog.tools(s)} | set(schemas)
+    for name in sorted(names):
+        server, _, tool = name.partition(".")
+        schema = schemas.get(name)
+        entry: dict[str, Any] = {}
+        if schema is not None:
+            entry["input_schema"] = schema
+            entry["input_sha256"] = schema_sha256(schema)
+        if schemas_only:
+            if schema is not None:
+                tools[name] = entry
+            continue
+        try:
+            contract = catalog.contract(server, tool)
+        except Exception:  # noqa: BLE001 - an unknown server: no binding
+            contract = None
+        b = getattr(contract, "binding", None)
+        bound = b is not None and not getattr(contract, "generic", False)
+        entry["bound"] = bound
+        if bound:
+            entry.update({"status": b.status, "serve": b.serve, "bound_table": contract.bound_table,
+                          "args": sorted(contract.args)})
+            if schema is not None:
+                entry["unbound_params"] = sorted(set(schema.get("properties") or {}) - set(contract.args))
+        tools[name] = entry
+    head = {"schema": "vbt.upstream_tool_schemas/1" if schemas_only else "vbt.explain/1",
+            "upstream_commit": commit}
+    return {**head, "tools": tools}
+
+
 def cmd_explain(args: argparse.Namespace, config: dict[str, Any]) -> int:
     settings, catalog, registry = _catalog(config)
+    if getattr(args, "json", False):
+        if not args.all and not args.target:
+            _err("error: name a tool (<server>.<tool>) or pass --all")
+            return 2
+        body = explain_json(config, catalog, project_root=getattr(settings, "project_root", None),
+                            schemas_only=bool(getattr(args, "schemas", False)))
+        if args.target and not args.all:
+            try:
+                server, tool = _split_tool(args.target)
+            except ValueError as exc:
+                _err(f"error: {exc}")
+                return 2
+            body["tools"] = {k: v for k, v in body["tools"].items() if k == f"{server}.{tool}"}
+        _out(json.dumps(body, indent=1, sort_keys=True, default=str))
+        return 0
     if args.all:
         targets = [(s, t) for s in catalog.servers() for t in catalog.tools(s)]
     elif args.target:
@@ -1074,13 +1245,127 @@ def cmd_replay(args: argparse.Namespace, config: dict[str, Any]) -> int:
     return 2 if any(r.status == "unavailable" for r in results) else 0
 
 
+def cmd_diff_release(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    """Compare two releases of a source in the data child (``diff_release.py``); exit 1 when a change
+    makes some tool not_ready or changes its answers."""
+    from .diff_release import format_report
+
+    payload = {"from": args.from_, "to": args.to, "sources": list(args.source or []),
+               "tables": list(args.table or []), "vocab": not args.quick, "axes": not args.quick}
+    try:
+        body = _call_child(config, "vbt.datalayer.diff_release:diff_release_child", payload)
+    except Exception as exc:  # noqa: BLE001
+        _err(f"error: the data child failed: {exc}")
+        return 2
+    if body.get("error"):
+        _err(f"error: {body['error']}")
+        return 2
+    if args.json:
+        _out(json.dumps(body, sort_keys=True, default=str))
+    else:
+        for line in format_report(body):
+            _out(line)
+    return 1 if (body.get("summary") or {}).get("breaking_tables") else 0
+
+
+# ---------------------------------------------------------------------------- phase 5: graduation
+
+#: The checklist items of :func:`graduation_checklist`, in order.
+GRADUATION_ITEMS = ("overlay", "lint", "reviewed", "blocked_alternatives", "observe_evidence")
+
+
+def graduation_checklist(config: Mapping[str, Any], servers: Iterable[str] | None = None,
+                         runs: Iterable[str | Path] = (), *, catalog: Any = None, registry: Any = None
+                         ) -> dict[str, dict[str, Any]]:
+    """The observe -> enforce checklist (§22) per server: an overlay exists and lints without errors,
+    every tool is reviewed, every blocked tool names an alternative, and recorded runs give retro-audit
+    evidence (calls observed, calls the gateway would now refuse or qualify, and how many of those a
+    claim cited). ``graduated`` is True only when every item passed; ``observe_evidence`` is None (not
+    passed) without recorded runs."""
+    from .descriptor.lint import lint_overlay
+    from .retro_audit import retro_audit
+
+    if catalog is None or registry is None:
+        _settings, catalog, registry = _catalog(dict(config))
+    wanted = list(servers or catalog.servers())
+    audits = []
+    for run in runs:
+        try:
+            audits.append(retro_audit(Path(run), dict(config), catalog=catalog,
+                                      resolver=_resolver_or_none(config, catalog)))
+        except Exception as exc:  # noqa: BLE001 - one unreadable run does not hide the others
+            audits.append({"run": str(run), "calls": [], "error": str(exc)})
+    out: dict[str, dict[str, Any]] = {}
+    for server in wanted:
+        items: dict[str, dict[str, Any]] = {}
+        ov = catalog.overlays.get(server)
+        items["overlay"] = {"ok": ov is not None, "detail": "configs/data/overlays/" + server + ".yaml"
+                            if ov is not None else "no overlay: the generic guard applies"}
+        if ov is None:
+            out[server] = {"graduated": False, "items": items}
+            continue
+        errors = [str(f) for f in lint_overlay(ov, catalog, registry) if f.level == "error"]
+        items["lint"] = {"ok": not errors, "detail": f"{len(errors)} error(s)", "errors": errors[:10]}
+        unreviewed = sorted(t for t, b in ov.tools.items() if b.status != "reviewed")
+        items["reviewed"] = {"ok": not unreviewed, "detail": f"{len(ov.tools) - len(unreviewed)}/{len(ov.tools)} "
+                             "tools reviewed", "unreviewed": unreviewed}
+        bad_blocks = sorted(t for t, b in ov.tools.items() if b.serve == "block" and b.block is not None
+                            and not (b.block.alternatives or b.hidden or b.block.hidden))
+        items["blocked_alternatives"] = {"ok": not bad_blocks, "detail": "every blocked tool names an alternative"
+                                         if not bad_blocks else f"no alternative: {', '.join(bad_blocks)}"}
+        calls = [c for a in audits for c in a.get("calls") or [] if str(c.get("tool", "")).startswith(
+            f"mcp__{server}__")]
+        changed = [c for c in calls if c.get("changed")]
+        cited = [c for c in changed if c.get("cited_by")]
+        if not audits:
+            items["observe_evidence"] = {"ok": None, "detail": "no recorded runs given (vbt ds graduate --run R)"}
+        else:
+            items["observe_evidence"] = {
+                "ok": bool(calls), "calls": len(calls), "changed": len(changed), "cited_changed": len(cited),
+                "detail": f"{len(calls)} recorded call(s); {len(changed)} would now be refused or qualified, "
+                          f"{len(cited)} of them cited" if calls else "no recorded call of this server"}
+        out[server] = {"graduated": all(i.get("ok") is True for i in items.values()), "items": items}
+    return out
+
+
+def _resolver_or_none(config: Mapping[str, Any], catalog: Any) -> Any:
+    try:
+        resolver, _catalog_ = resolver_for(dict(config))
+        return resolver
+    except Exception:  # noqa: BLE001 - retro-audit then keeps existence unknown
+        return None
+
+
+def cmd_graduate(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    from .retro_audit import resolve_run
+
+    runs = []
+    for r in args.run or []:
+        try:
+            runs.append(resolve_run(r, config))
+        except FileNotFoundError as exc:
+            _err(f"error: {exc}")
+            return 2
+    report = graduation_checklist(config, args.server or None, runs)
+    if args.json:
+        _out(json.dumps(report, sort_keys=True, default=str))
+    else:
+        for server, entry in report.items():
+            _out(f"{server}: {'graduated' if entry['graduated'] else 'not graduated'}")
+            for name, item in entry["items"].items():
+                mark = {True: "ok", False: "FAIL", None: "--"}[item.get("ok")]
+                _out(f"  {name:<22} {mark:<5} {item.get('detail', '')}")
+    return 0 if all(e["graduated"] for e in report.values()) else 1
+
+
 # ---------------------------------------------------------------------------- parser
 
 COMMANDS: dict[str, Callable[[argparse.Namespace, dict[str, Any]], int]] = {
     "list": cmd_list, "describe": cmd_describe, "lint": cmd_lint, "check": cmd_check, "resolve": cmd_resolve,
     "explain": cmd_explain, "fingerprint": cmd_fingerprint, "index build": cmd_index_build,
     "estimate": cmd_estimate, "retro-audit": cmd_retro_audit, "status": cmd_status, "calibrate": cmd_calibrate,
-    "overlay init": cmd_overlay_init, "replay": cmd_replay,
+    "overlay init": cmd_overlay_init, "replay": cmd_replay, "diff-release": cmd_diff_release,
+    "graduate": cmd_graduate,
 }
 
 
@@ -1128,6 +1413,9 @@ def add_datasource_parsers(sub: Any) -> Any:
     p = ds.add_parser("explain", help="binding, serve mode, reads, derived schema and text, defects of a tool")
     p.add_argument("target", nargs="?", help="<server>.<tool>")
     p.add_argument("--all", action="store_true", help="every bound tool")
+    p.add_argument("--schemas", action="store_true",
+                   help="with --json: only the upstream input schemas (the CI snapshot upstream_tool_schemas.json)")
+    _add_common(p, "json")
     p.set_defaults(handler=cmd_explain)
 
     p = ds.add_parser("fingerprint", help="table fingerprints (what gets pinned)")
@@ -1192,4 +1480,21 @@ def add_datasource_parsers(sub: Any) -> Any:
                         "temporary MCP bridge with the call's server; auto: inprocess when it can answer")
     _add_common(p, "json")
     p.set_defaults(handler=cmd_replay)
+
+    p = ds.add_parser("diff-release", help="role columns, types, encodings, vocabularies and matrix axes between "
+                                           "two releases (runs the data child)")
+    p.add_argument("--from", dest="from_", required=True, help="data root or release label of the old release")
+    p.add_argument("--to", required=True, help="data root or release label of the new release")
+    p.add_argument("--source", action="append", help="source to compare (repeatable; default: the sources whose "
+                                                     "configured release is --from)")
+    p.add_argument("--table", action="append", help="source.table (repeatable)")
+    p.add_argument("--quick", action="store_true", help="footers only: no vocabulary snapshots or matrix axes")
+    _add_common(p, "json")
+    p.set_defaults(handler=cmd_diff_release)
+
+    p = ds.add_parser("graduate", help="observe -> enforce checklist per server with retro-audit evidence")
+    p.add_argument("server", nargs="*", help="servers (default: every overlay)")
+    p.add_argument("--run", action="append", help="recorded run (observe mode) to retro-audit (repeatable)")
+    _add_common(p, "json")
+    p.set_defaults(handler=cmd_graduate)
     return d
