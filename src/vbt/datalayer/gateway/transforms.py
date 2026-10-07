@@ -31,11 +31,14 @@ from ..predicate import (
     Any as AnyItem,
 )
 from ..predicate import (
+    And,
     Cmp,
     CmpAbs,
     Contains,
     Eq,
     In,
+    Not,
+    Or,
     Predicate,
     Range,
     RankKey,
@@ -44,15 +47,16 @@ from ..predicate import (
     evaluate,
     facet_predicate,
     is_null,
+    map_columns,
 )
 from ..rowkey import canonical
-from .fields import get_path, jp_get, jp_set, parse_jsonpath, recount, set_path
+from .fields import concrete_paths, get_path, jp_get, jp_set, parse_jsonpath, recount, set_path
 from .leakage import withhold_rows
 
 __all__ = [
     "Counters", "t1_leakage", "t2_unknowns", "t3_existence", "t4_honour", "t5_unknown", "honour_arguments",
     "t6_negation", "t7_duplicates", "t8_pooled_over", "t9_levels", "t10_order_cut", "t11_counts", "t12_trim",
-    "t13_flag_partition", "t14_validity", "row_key", "split_container", "rank_keys",
+    "t13_flag_partition", "t14_validity", "row_key", "split_container", "rank_keys", "on_item_rows",
 ]
 
 
@@ -235,12 +239,47 @@ def _first_column(pred: Predicate) -> str:
     return cols[0].replace("[]", "").split(".")[-1] if cols else "?"
 
 
+def on_item_rows(pred: Predicate, items_path: str, rename: Mapping[str, str] | None = None) -> Predicate:
+    """``pred`` (over the physical table's column paths) for **flat item rows** of the item table at
+    ``items_path`` (``tissues[]``): item columns become item-relative (``tissues[].label`` ->
+    ``label``, or their ``rename``), an ``Any`` over the container becomes its body, and parent
+    columns are left as they are (the caller reads them from the row's parent key)."""
+    prefix = items_path.rstrip(".") + "."
+    rename = dict(rename or {})
+
+    def col(c: str) -> str:
+        if c in rename:
+            return rename[c]
+        return c[len(prefix):] if c.startswith(prefix) else c
+
+    if isinstance(pred, AnyItem):
+        # Any(a[], Any(b[], p)) down to the items' list: the body is a predicate on the item itself
+        path, body = pred.path, pred.pred
+        while isinstance(body, AnyItem) and path != items_path:
+            path, body = f"{path}.{body.path}", body.pred
+        if path == items_path:
+            full = {c: f"{items_path}.{c}" for c in columns(body)}
+            return map_columns(body, lambda c: rename.get(full.get(c, c), c))
+    if isinstance(pred, (And, Or)):
+        return type(pred)(tuple(on_item_rows(q, items_path, rename) for q in pred.preds))
+    if isinstance(pred, Not):
+        return Not(on_item_rows(pred.pred, items_path, rename))
+    return map_columns(pred, col)
+
+
 def honour_arguments(rows: Iterable[Any], preds: Mapping[str, tuple[Predicate, Any]],
                      column_specs: Callable[[str], Any], counters: Counters, *,
-                     params: Mapping[str, Any] | None = None) -> list[Any]:
+                     params: Mapping[str, Any] | None = None, parents: Mapping[str, str | None] | None = None
+                     ) -> list[Any]:
     """T4 + T5: re-apply each bound argument's predicate; ``preds`` is ``{arg: (predicate, binding)}``.
-    Unknown (null) beats false: such rows count in ``excluded_unknown``/``excluded_not_applicable``."""
+    Unknown (null) beats false: such rows count in ``excluded_unknown``/``excluded_not_applicable``.
+
+    ``parents`` (rows that are items of a parent record) maps each parent column to the row field that
+    holds it (the ``parent_key`` part, e.g. ``id`` -> ``/id``, since an item can have its own ``id``):
+    a predicate over parent columns is evaluated on those values, never on the item's own fields; a
+    parent column with no such field is not re-checked (upstream scoped the items to their parent)."""
     kept = []
+    parents = dict(parents or {})
     for row in rows:
         if not isinstance(row, Mapping):
             kept.append(row)
@@ -263,7 +302,15 @@ def honour_arguments(rows: Iterable[Any], preds: Mapping[str, tuple[Predicate, A
                         if not good and getattr(binding, "drop_empty_parents", False):
                             drop_parent = True
                         continue
-            v = evaluate(pred, row, params)
+            target: Mapping[str, Any] = row
+            if parents:
+                cols = {c for c in columns(pred) if "[" not in c}
+                hit = cols & parents.keys()
+                if hit:
+                    if any(parents[c] is None for c in hit):
+                        continue                       # the item does not carry its parent's key
+                    target = {**row, **{c: row.get(parents[c]) for c in hit}}  # type: ignore[arg-type]
+            v = evaluate(pred, target, params)
             if v is True:
                 continue
             if v is None and unknown_col is None:
@@ -504,16 +551,25 @@ def _aggregate(values: list[Any], agg: str) -> Any:
     return None
 
 
+def _value(row: Any, column: str) -> Any:
+    """``column`` on a row; a container path (``screens[].geneEffect``) also as the item's own field, since
+    the rows of an item table are the items."""
+    v = get_path(row, column)
+    if v is None and "[]." in column:
+        v = get_path(row, column.rpartition("[].")[2])
+    return v
+
+
 def _recompute(rows: Sequence[Any], spec: Any) -> Any:
     of = getattr(spec, "of", None)
     group_by = list(getattr(spec, "group_by", []) or [])
     if not group_by:
-        values = [get_path(r, of) if of else 1 for r in rows]
+        values = [_value(r, of) if of else 1 for r in rows]
         return _aggregate(values, spec.agg)
     groups: dict[str, list[Any]] = {}
     for r in rows:
-        k = "/".join(str(get_path(r, g)) for g in group_by)
-        groups.setdefault(k, []).append(get_path(r, of) if of else 1)
+        k = "/".join(str(_value(r, g)) for g in group_by)
+        groups.setdefault(k, []).append(_value(r, of) if of else 1)
     return {k: _aggregate(v, spec.agg) for k, v in sorted(groups.items())}
 
 
@@ -548,9 +604,20 @@ def t11_counts(obj: Any, rows: Sequence[Any], *, count_fields: Sequence[str] | M
                 counters.removed_fields[path] = ("dropped: computed by upstream over a truncated or unverified "
                                                  "row set" if spec != "drop" else "dropped by the overlay")
             continue
+        targets = concrete_paths(obj, path)
+        wildcard = targets != [path]
+        if len(targets) > 1:
+            # one summary per group ([*]): the rows are not attributed to their groups here, so none is kept
+            if _remove(obj, path):
+                counters.removed_fields[path] = "dropped: a per-group summary the gateway cannot recompute per group"
+            continue
         value = _recompute(full_rows, spec)
-        if jp_get(obj, path):
-            jp_set(obj, path, value)
+        if wildcard and isinstance(value, dict):
+            # the one group's value (the rows need not carry the group column: they sit under it)
+            value = next(iter(value.values())) if len(value) == 1 else None
+        for target in targets:
+            if jp_get(obj, target):
+                jp_set(obj, target, value)
     for path, reason in (drop_fields or {}).items():
         if _remove(obj, path):
             counters.removed_fields[path] = reason

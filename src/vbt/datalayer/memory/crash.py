@@ -4,6 +4,7 @@
 |---|---|---|
 | error text with a memory signature | ``oom`` | no |
 | transport error + ``VBT_CHILD_EXIT`` with signal 9, rc 137 or ``reason: memory_limit`` | ``oom`` (``oom_killed``) | no |
+| transport error + a memory signature in the server's stderr before its exit (an uncaught ``MemoryError`` or ``std::bad_alloc`` under ``RLIMIT_DATA``, which fails the allocation instead of killing) | ``oom`` | no |
 | transport error otherwise | ``server_crashed`` | once |
 
 The exit marker is written by the reaper (:mod:`vbt.datalayer.launch.reaper`) to the server
@@ -56,6 +57,31 @@ def parse_exit_marker(text: str | None) -> dict[str, Any] | None:
     return None
 
 
+def _before_exit(text: str | None) -> str:
+    """The log tail up to its last exit marker: this start's stderr (an exit marker of an earlier start
+    precedes it only when the tail spans a restart, and then the latest one ends the current start)."""
+    if not text:
+        return ""
+    text = str(text)
+    hits = list(_MARKER_RE.finditer(text))
+    if not hits:
+        return text
+    end = hits[-1].start()
+    start = hits[-2].end() if len(hits) > 1 else 0
+    return text[start:end]
+
+
+def died_of_memory(marker: dict[str, Any] | None, log_tail: str | None) -> bool:
+    """The child died (rc != 0 or a signal) and the last stderr lines before its exit carry a memory
+    signature: an uncaught ``MemoryError`` or ``std::bad_alloc`` (SIGABRT) under ``RLIMIT_DATA``, which
+    fails the allocation instead of killing. A memory error a tool survived (more output followed it)
+    is not the cause."""
+    if not marker or (marker.get("code") in (0, None) and not marker.get("signal")):
+        return False
+    lines = [ln for ln in _before_exit(log_tail).splitlines() if ln.strip()]
+    return bool(lines) and classify_error_text(lines[-1]) == "oom"   # the exception that ended the process
+
+
 def is_memory_exit(marker: dict[str, Any] | None) -> bool:
     """True when an exit record means the child was killed for memory (signal 9, rc 137, limit)."""
     if not marker:
@@ -76,10 +102,11 @@ def crash_decision(reason: str, log_tail: str | None = None, *, server: str | No
     name = f"mcp__{server}__{tool}" if server and tool else tool
     where = f"{server}.{tool}" if server and tool else (server or tool or "server")
     marker = parse_exit_marker(log_tail)
-    if is_memory_exit(marker) or classify_error_text(reason):
+    killed = is_memory_exit(marker)
+    if killed or classify_error_text(reason) or died_of_memory(marker, log_tail):
         detail = {k: marker.get(k) for k in ("pid", "code", "signal", "maxrss_kb", "reason")} if marker else {}
         payload = {"server": server, "exit": detail} if detail else {"server": server}
-        how = (f"was killed (signal {marker.get('signal')})" if marker and marker.get("signal")
+        how = (f"was killed (signal {marker.get('signal')})" if killed and marker and marker.get("signal")
                else "ran out of memory")
         return CrashDecision(retry=False, oom=True, error=GatewayError(
             ErrorKind.oom, f"{where}: the server {how} while answering this call; it is not retried and "

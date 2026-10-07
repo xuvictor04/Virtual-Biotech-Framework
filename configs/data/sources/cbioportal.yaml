@@ -74,6 +74,8 @@ tables:
     grain: one specimen of one patient in one study
     key: {columns: [studyId, sampleId], check: none}
     grains: {patient: [studyId, patientId]}
+    size_from: &study_size {table: study, column: allSampleCount, row_bytes: 2000, via: clinicaltrials.get_study_details,
+                            arg: study_id, path: $.sample_counts}   # the largest per-profile count (allSampleCount is not returned)
     columns:
       studyId:    {role: identifier, id_type: cbio_study, ref: study.studyId}
       sampleId:   {role: identifier, id_type: cbio_sample, unique_within: [studyId]}
@@ -101,6 +103,7 @@ tables:
     roles_from: {table: clinical_attribute, name: clinicalAttributeId, level_from: patientAttribute, type_from: datatype}
     grain: one patient's patient-level clinical attributes in one study
     key: {columns: [studyId, patientId], check: none}
+    size_from: *study_size
     coverage: {statement: "Patient attributes the study curated; a missing attribute means not reported.", absence_means: unknown}
     column_patterns:
       "{stem}_MONTHS": {role: time, unit: months, parse: number, level: patient,
@@ -123,6 +126,7 @@ tables:
     roles_from: {table: clinical_attribute, name: clinicalAttributeId, level_from: patientAttribute, type_from: datatype}
     grain: one sample's sample-level clinical attributes in one study
     key: {columns: [studyId, sampleId], check: none}
+    size_from: *study_size
     grains: {patient: [studyId, patientId]}
     columns:
       studyId:     {role: identifier, id_type: cbio_study, ref: study.studyId}

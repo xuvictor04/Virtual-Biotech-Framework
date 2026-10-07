@@ -314,3 +314,198 @@ def test_ct_cbio_002(tmp_path: Path) -> None:
     os_months = [r.get("OS_MONTHS") for r in out["data"] if r.get("patientId") == "P-01"]
     assert os_months == ["24.5", "24.5"]                         # two samples, one patient
     assert len({r["patientId"] for r in out["data"]}) < out["sample_count"]
+
+
+# ---------------------------------------------------------------------------- order_source: upstream_full_sort
+# The ranking refusal is skipped only for a full upstream sort proven here (§11.6): the strongest row is
+# put last in file order and must come back first with limit 1.
+
+def _best_last(root: Path, table: str, best: dict[str, Any]) -> list[dict[str, Any]]:
+    import dl_fixtures as F
+
+    return [*F.read_rows(root, table), best]
+
+
+@pytest.mark.parametrize("func,kwargs", [
+    ("query_associations", {"target_id": "ENSG00000169174"}),
+    ("get_associations_for_target", {"target_id": "ENSG00000169174"}),
+    ("get_associations_for_disease", {"disease_id": "EFO_0099999"}),
+])
+def test_full_sort_associations(func: str, kwargs: dict[str, Any], ot_root: Path, ot_copy, tmp_path: Path) -> None:
+    rows = _best_last(ot_root, "association_overall_direct",
+                      {"diseaseId": "EFO_0099999", "targetId": "ENSG00000169174", "score": 0.999, "evidenceCount": 1})
+    root = ot_copy(association_overall_direct=rows)
+    out = ot_call(root, tmp_path, "association", func, output_path=str(tmp_path / f"{func}.parquet"), limit=1,
+                  **kwargs)
+    assert [(r["diseaseId"], r["score"]) for r in out["top_associations"]] == [("EFO_0099999", 0.999)], out
+
+
+@pytest.mark.parametrize("func,table,column", [("filter_by_datatype", "association_by_datatype_direct", "datatypeId"),
+                                               ("filter_by_datasource", "association_by_datasource_direct",
+                                                "datasourceId")])
+def test_full_sort_filters(func: str, table: str, column: str, ot_copy, tmp_path: Path) -> None:
+    value = "literature" if column == "datatypeId" else "europepmc"
+    rows = [{"diseaseId": f"EFO_00{60000 + i:05d}", "targetId": "ENSG00000169174", column: value, "score": sc,
+             "evidenceCount": 1} for i, sc in enumerate([0.2, 0.5, 0.3])]
+    first = rows[0]
+    root = ot_copy(**{table: [*rows, {**first, "diseaseId": "EFO_0099999", "score": 0.999}]})
+    arg = "datatype" if column == "datatypeId" else "datasource"
+    out = ot_call(root, tmp_path, "association", func, output_path=str(tmp_path / f"{func}.parquet"), limit=1,
+                  **{arg: first[column]})
+    assert [r["diseaseId"] for r in out["top_associations"]] == ["EFO_0099999"], out
+
+
+def test_full_sort_similar(ot_copy, tmp_path: Path) -> None:
+    """find_similar_entities scores every candidate before top_k (finite cosines: the true nearest wins)."""
+    import dl_fixtures as F
+
+    anchor = {"category": "target", "word": F.PCSK9, "norm": 1.0, "vector": _unit(1.0)}
+    cands = [("ENSG00000200001", 0.2), ("ENSG00000200002", 0.5), ("ENSG00000200003", 0.9)]   # best last
+    rows = [anchor] + [{"category": "target", "word": w, "norm": 1.0, "vector": _unit(s)} for w, s in cands]
+    root = ot_copy(literature_vector=rows)
+    out = ot_call(root, tmp_path, "association", "find_similar_entities", entity_id=F.PCSK9, top_k=1)
+    assert [e["entity_id"] for e in out["similar_entities"]] == ["ENSG00000200003"], out
+
+
+@pytest.mark.parametrize("func,top,best", [
+    ("query_gwas_associations", "top_associations", {"pValueMantissa": 1.0, "pValueExponent": -300}),
+    ("get_credible_sets", "top_credible_sets", {"credibleSetlog10BF": 1.0e6}),
+])
+def test_full_sort_genetics(func: str, top: str, best: dict[str, Any], ot_root: Path, ot_copy,
+                            tmp_path: Path) -> None:
+    import dl_fixtures as F
+
+    first = F.read_rows(ot_root, "credible_set")[0]
+    root = ot_copy(credible_set=_best_last(ot_root, "credible_set",
+                                           {**first, "studyLocusId": "f" * 32, **best}))
+    out = ot_call(root, tmp_path, "genetics", func, output_path=str(tmp_path / f"{func}.parquet"), limit=1,
+                  study_id=first["studyId"])
+    assert [r["studyLocusId"] for r in out[top]] == ["f" * 32], out
+
+
+# ---------------------------------------------------------------------------- ClinicalTrials.gov (stubbed requests)
+
+CTGOV_STUB = STUBS_DIR / "ctgov"
+
+
+def ctgov_call(tmp: Path, monkeypatch: pytest.MonkeyPatch, pages: list[dict[str, Any]], func: str,
+               **kwargs: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Run an upstream clinicaltrials tool against canned registry replies; returns (result, requests)."""
+    pf, log = tmp / "ctgov_pages.json", tmp / "ctgov_requests.jsonl"
+    pf.write_text(json.dumps(pages))
+    monkeypatch.setenv("VBT_CTGOV_PAGES", str(pf))
+    monkeypatch.setenv("VBT_CTGOV_LOG", str(log))
+    out = call_upstream("src.mcp_servers.clinicaltrials_mcp.tools", func, tmp,
+                        extra_paths=(str(CTGOV_STUB), str(STUBS_DIR)), **kwargs)
+    reqs = [json.loads(ln) for ln in log.read_text().splitlines()] if log.exists() else []
+    return out, reqs
+
+
+def _studies(n: int, start: int = 0) -> list[dict[str, Any]]:
+    return [{"protocolSection": {"identificationModule": {"nctId": f"NCT{start + i:08d}"}}} for i in range(n)]
+
+
+def test_ct_gov_001(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """country defaults to 'United States': a count with no country is narrowed to US sites."""
+    out, reqs = ctgov_call(tmp_path, monkeypatch, [{"json": {"totalCount": 89}}], "count_clinical_trials",
+                           condition="melanoma")
+    assert out["total_count"] == 89
+    assert 'AREA[LocationCountry]"United States"' in reqs[0]["params"]["filter.advanced"]
+
+
+def test_ct_gov_002(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """eligibility_text is pasted inside double quotes unescaped: a quote in it ends the phrase."""
+    _out, reqs = ctgov_call(tmp_path, monkeypatch, [{"json": {"totalCount": 1}}], "count_clinical_trials",
+                            eligibility_text=['ECOG "0-1'], country=None)
+    assert 'AREA[EligibilityCriteria]"ECOG "0-1"' in reqs[0]["params"]["filter.advanced"]
+
+
+def test_ct_gov_003(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pagination stops at 1,000 trials and the result is not marked truncated (total 5,000)."""
+    pages = [{"json": {"totalCount": 5000, "studies": _studies(500, 500 * p), "nextPageToken": f"t{p}"}}
+             for p in range(3)]
+    out, reqs = ctgov_call(tmp_path, monkeypatch, pages, "search_clinical_trials", condition="cancer", country=None)
+    assert out["trials_returned"] == 1000 and out["total_count"] == 5000 and len(reqs) == 2
+    assert "truncated" not in out and "warning" not in out
+
+
+def test_ct_gov_004(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reply without totalCount is reported as total_count 0, a definite count of none."""
+    out, _reqs = ctgov_call(tmp_path, monkeypatch, [{"json": {"studies": []}}], "count_clinical_trials",
+                            condition="melanoma", country=None)
+    assert out["success"] is True and out["total_count"] == 0
+
+
+def test_ct_gov_005(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """search: without totalCount the rows fetched become total_count while more pages exist."""
+    pages = [{"json": {"studies": _studies(600, 600 * p), "nextPageToken": f"t{p}"}} for p in range(3)]
+    out, _reqs = ctgov_call(tmp_path, monkeypatch, pages, "search_clinical_trials", condition="cancer", country=None)
+    assert out["total_count"] == out["trials_returned"] == 1200 and "truncated" not in out
+
+
+# ---------------------------------------------------------------------------- CELLxGENE Census (stubbed)
+
+CENSUS_STUB = STUBS_DIR / "census"
+
+
+def census_call(tmp: Path, monkeypatch: pytest.MonkeyPatch, data: dict[str, Any], func: str,
+                **kwargs: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    pytest.importorskip("anndata")
+    df, log = tmp / "census.json", tmp / "census_log.jsonl"
+    df.write_text(json.dumps(data))
+    monkeypatch.setenv("VBT_CENSUS_DATA", str(df))
+    monkeypatch.setenv("VBT_CENSUS_LOG", str(log))
+    out = call_upstream("src.mcp_servers.single_cell_mcp.tools", func, tmp, extra_paths=(str(CENSUS_STUB),), **kwargs)
+    return out, [json.loads(ln) for ln in log.read_text().splitlines()] if log.exists() else []
+
+
+def _cells(spec: list[tuple[str, str, int]]) -> list[dict[str, Any]]:
+    """``(dataset_id, donor_id, n)`` blocks of T cells in lung, numbered by soma_joinid in that order."""
+    out = []
+    for dataset, donor, n in spec:
+        for _ in range(n):
+            out.append({"soma_joinid": len(out), "dataset_id": dataset, "donor_id": donor, "cell_type": "T cell",
+                        "tissue": "lung", "disease": "normal", "assay": "10x", "sex": "female",
+                        "development_stage": "adult", "suspension_type": "cell", "is_primary_data": True})
+    return out
+
+
+GENES = [{"feature_id": "ENSG00000000001", "feature_name": "G1", "feature_length": 1000, "n_measured_obs": 10,
+          "nnz": 4},
+         {"feature_id": "ENSG00000000002", "feature_name": "G0", "feature_length": 900, "n_measured_obs": 0, "nnz": 0}]
+
+
+def test_sc_001(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Donors are grouped by donor_id alone: D1 of dataset d1 and D1 of dataset d2 count as one donor."""
+    data = {"obs": _cells([("d1", "D1", 2), ("d2", "D1", 2)]), "var": GENES}
+    out, _log = census_call(tmp_path, monkeypatch, data, "get_anndata_donor_balanced",
+                            output_path=str(tmp_path / "b.h5ad"), value_filter="cell_type == 'T cell'")
+    assert out["n_cells_sampled"] == 4 and out["n_donors"] == 1      # two donors in truth
+    assert out["donor_summary"] == {"D1": 4}
+
+
+def test_sc_002(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """query_cell_metadata keeps the first cells by join id: with limit 3 only the first dataset remains."""
+    import pandas as pd
+
+    data = {"obs": _cells([("d1", "A", 3), ("d2", "B", 3)]), "var": GENES}
+    out, _log = census_call(tmp_path, monkeypatch, data, "query_cell_metadata",
+                            output_path=str(tmp_path / "m.parquet"), value_filter="tissue == 'lung'", limit=3)
+    assert out["n_cells_total"] == 6 and out["limited"] is True
+    assert set(pd.read_parquet(out["output_path"])["dataset_id"]) == {"d1"}
+
+
+def test_sc_003(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A gene measured in no cell gets sparsity 1.0 (all zeros) instead of undefined."""
+    out, _log = census_call(tmp_path, monkeypatch, {"obs": _cells([("d1", "A", 1)]), "var": GENES},
+                            "get_gene_statistics", gene_symbols=["G0"])
+    assert out["gene_statistics"][0]["n_measured_obs"] == 0 and out["gene_statistics"][0]["sparsity"] == 1.0
+
+
+def test_sc_004(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without value_filter get_expression_for_genes reads 'soma_joinid < max_cells': the first cells only."""
+    data = {"obs": _cells([("d1", "A", 3), ("d2", "B", 3)]), "var": GENES}
+    out, log = census_call(tmp_path, monkeypatch, data, "get_expression_for_genes", gene_symbols=["G1"],
+                           output_path=str(tmp_path / "e.h5ad"), max_cells=3)
+    assert out["n_cells"] == 3
+    assert any(e.get("obs_value_filter") == "soma_joinid < 3" for e in log if e["kind"] == "get_anndata"), log

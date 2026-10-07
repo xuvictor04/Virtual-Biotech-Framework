@@ -26,7 +26,7 @@ fingerprint** (the first table of a list universe): ``<cache>/<source>/<fp>/inde
 from __future__ import annotations
 
 import json
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from ...descriptor.columns import UniverseSpec, is_container
 from ...ipc import VERB_BUILD_INDEX, BuildIndexRequest, BuildIndexResponse
@@ -106,6 +106,24 @@ def _owner_column(reader: Any, label_col: str, id_type: str) -> str:
         if getattr(c, "role", None) == "identifier" and getattr(c, "id_type", None) == id_type:
             return name
     return reader.key[0]
+
+
+def _sibling_key(unis: Sequence[Mapping[str, Any]], table: str, column: str) -> tuple[str, str, str] | None:
+    """``(container, label field, key field)`` when ``column`` is a field of the items of a list whose items
+    also hold the id_type's universe key (both under the same ``a[].b[]`` container), else None."""
+    if "[]" not in column:
+        return None
+    container, _, label_field = column.rpartition("[].")
+    if not container or "[" in label_field:
+        return None
+    for u in unis:
+        if u["table"] != table:
+            continue
+        for k in u["keys"]:
+            kc, _, key_field = str(k).rpartition("[].")
+            if kc == container and key_field and "[" not in key_field:
+                return container + "[]", label_field, key_field
+    return None
 
 
 def _leaves_of(reader: Any, column: str) -> list[tuple[str, str]]:
@@ -213,6 +231,25 @@ def resolver_rows(ctx: ServiceContext, source: str, id_type: str) -> tuple[list[
         table, column = _split_ref(src, ref)
         reader = ctx.reader(table)
         leaves = _leaves_of(reader, column)
+        sibling = _sibling_key(unis, table, column)
+        if sibling is not None:
+            # a label on a nested item (screens[].cellLineName) names the identifier on the same item
+            # (screens[].depmapId), not the row's key
+            container, label_field, key_field = sibling
+            seen: set[tuple[str, str]] = set()
+            for m in reader.scan(None, columns=[f"{container}.{label_field}", f"{container}.{key_field}"],
+                                 attribute_unknown=False):
+                for item in _items.path_values(m.row, container):
+                    if not isinstance(item, Mapping) or item.get(key_field) in (None, ""):
+                        continue
+                    for v in _values(item, label_field):
+                        s = _text(v)
+                        if (s, str(item[key_field])) in seen:
+                            continue                   # the same line screened for many genes
+                        seen.add((s, str(item[key_field])))
+                        rows.append(Entry(lk(s), str(item[key_field]), f"label_exact:{_arg(column)}", s,
+                                          stored_table=table if table not in universe_tables else ""))
+            continue
         owner = _owner_column(reader, column, id_type)
         for m in reader.scan(None, columns=[owner, *(p for p, _ in leaves)], attribute_unknown=False):
             k = _items.path_value(m.row, owner)

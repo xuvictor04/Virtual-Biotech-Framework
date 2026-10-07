@@ -58,6 +58,7 @@ changed (a restarted or late-starting server), so they reach the agents' registr
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -830,8 +831,16 @@ class MCPBridge:
         plan = await gw.prepare(server, tool, args, ctx)
         raw: RawResult | None = None
         if plan.route == "upstream":
-            async with plan.hold():
-                raw = await self._attempts(server, tool, plan.args_sent, plan=plan, classify_only=True)
+            try:
+                async with plan.hold():
+                    raw = await self._attempts(server, tool, plan.args_sent, plan=plan, classify_only=True)
+            except BaseException:
+                # the call never reached finish(): the gateway releases what prepare reserved
+                abandon = getattr(gw, "abandon", None)
+                if callable(abandon):
+                    with contextlib.suppress(Exception):
+                        abandon(plan)
+                raise
         return await gw.finish(plan, raw)
 
     async def call_raw(self, server: str, tool: str, args: dict[str, Any]) -> Any:

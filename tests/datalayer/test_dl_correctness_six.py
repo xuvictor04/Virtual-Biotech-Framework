@@ -138,6 +138,10 @@ CALLS: dict[str, tuple[str, str, dict[str, Any]]] = {
     "probes_tp53": ("target", "get_chemical_probes", {"target_id": F.TP53}),
     "probes_null": ("target", "get_chemical_probes", {"target_id": F.TP53BP1}),
     "hallmarks_tp53": ("target", "get_target_hallmarks", {"target_id": F.TP53}),
+    # items of a parent record that carry their own `id`: the parent's target_id never filters them
+    "probes_pcsk9": ("target", "get_chemical_probes", {"target_id": F.PCSK9}),
+    "tract_pcsk9": ("target", "get_target_tractability", {"target_id": F.PCSK9}),
+    "tract_drug_symbol": ("drug", "get_target_tractability", {"target_id": "pcsk9"}),
     "cbio_phantom": ("clinicaltrials", "get_clinical_data", {"study_id": "study_x", "sample_ids": ["S-01", "NOPE-01"]}),
     "cbio_empty_list": ("clinicaltrials", "get_clinical_data", {"study_id": "study_x", "sample_ids": []}),
     "cbio_unknown_study": ("clinicaltrials", "get_clinical_data", {"study_id": "nope_study"}),
@@ -402,6 +406,17 @@ def _ct2_coverage_unknown(r: CallResult, root: Path) -> None:
     empty(r, coverage="unknown")
 
 
+def _ct2_items(path: str, ids: list[Any]) -> Check:
+    """A target that has items gets every one back (status ok, nothing excluded by its own target_id)."""
+    def check(r: CallResult, root: Path) -> None:
+        ok(r)
+        assert status(r) == "ok", r.header
+        assert not r.header.get("excluded"), r.header
+        assert [dig(x, "id") for x in r.rows(path)] == ids, show(r)
+        assert r.header.get("returned") == len(ids) == r.header.get("total"), r.header
+    return check
+
+
 def _ct2_phantom(r: CallResult, root: Path) -> None:
     payload = err(r, "not_found")
     assert mentions(payload, "NOPE-01"), payload
@@ -432,6 +447,9 @@ CT2: dict[str, Check] = {
     "probes_tp53": _ct2_probes_tp53,
     "probes_null": _ct2_coverage_unknown,
     "hallmarks_tp53": _ct2_coverage_unknown,
+    "probes_pcsk9": _ct2_items("chemical_probes", ["PROBE-1"]),
+    "tract_pcsk9": _ct2_items("tractability", ["Approved Drug", "Approved Drug"]),
+    "tract_drug_symbol": _ct2_items("tractability", ["Approved Drug", "Approved Drug"]),
     "cbio_phantom": _ct2_phantom,
     "cbio_empty_list": _ct2_empty_list,
     "cbio_unknown_study": _ct2_unknown_study,
@@ -444,12 +462,13 @@ def test_ct2_unknown_empty_and_outage(case: str, mode: str, live, fixture_ready,
     CT2[case](run_case(live, fixture_ready, mode, case), ot_root)
 
 
-CT2_CLAIM_CALLS = [CALLS["safety_tp53"], CALLS["probes_tp53"]]
-CT2_CLAIMS = [[claim(0, "presence")], [claim(0, "absence")], [claim(1, "absence")], [claim(1, "presence")]]
+CT2_CLAIM_CALLS = [CALLS["safety_tp53"], CALLS["probes_tp53"], CALLS["probes_pcsk9"]]
+CT2_CLAIMS = [[claim(0, "presence")], [claim(0, "absence")], [claim(1, "absence")], [claim(1, "presence")],
+              [claim(2, "absence", "PCSK9 has no chemical probes")]]
 
 
 def _claims_safety_presence(out: Any) -> None:
-    rejected(out.claim(0), "")
+    rejected(out.claim(0), "cannot support a positive finding")
 
 
 def _claims_safety_absence(out: Any) -> None:
@@ -464,11 +483,20 @@ def _claims_probes_absence(out: Any) -> None:
 
 
 def _claims_probes_presence(out: Any) -> None:
-    rejected(out.claim(3), "")
+    rejected(out.claim(3), "cannot support a positive finding")
+
+
+def _claims_probes_pcsk9_absence(out: Any) -> None:
+    """PCSK9 has a probe: citing that call never records a verified absence."""
+    assert out.end(2).get("is_error") is False, out.end(2)
+    ev = stored_evidence(out, "C2-absence")
+    assert ev.get("evidence_status") != "absence", ev
+    assert any("absence claim cites rows" in str(w) for w in out.claim(4).get("warnings") or []), out.claim(4)
 
 
 CT2_CLAIM_CASES = {"safety_presence": _claims_safety_presence, "safety_absence": _claims_safety_absence,
-                   "probes_absence": _claims_probes_absence, "probes_presence": _claims_probes_presence}
+                   "probes_absence": _claims_probes_absence, "probes_presence": _claims_probes_presence,
+                   "probes_pcsk9_absence": _claims_probes_pcsk9_absence}
 
 
 @pytest.mark.parametrize("case,mode", cases(CT2_CLAIM_CASES))
@@ -479,7 +507,7 @@ async def test_ct2_claims(case, mode, tmp_path_factory, data_env) -> None:
 
 async def test_ct2_today_claims(tmp_path_factory, data_env) -> None:
     out = await runtime_outcome("ct2", "off", tmp_path_factory, data_env, CT2_CLAIM_CALLS, CT2_CLAIMS)
-    assert [c.get("ok") for c in out.claim_results] == [True, True, True, True], out.claim_results
+    assert [c.get("ok") for c in out.claim_results] == [True, True, True, True, True], out.claim_results
 
 
 CT2_PINS: dict[str, Callable[[CallResult], None]] = {
@@ -1186,7 +1214,7 @@ async def test_ct6_partial_unknown_empty_is_not_absence(case, mode, tmp_path_fac
     out = await runtime_outcome("ct6", mode, tmp_path_factory, data_env, [CALLS["year_min_2030"]],
                                 [[claim(0, "absence")]])
     assert out.end(0).get("is_error") is False, out.end(0)
-    rejected(out.claim(0), "")
+    rejected(out.claim(0), "coverage partial_unknown")
 
 
 async def test_ct6_today_claim(tmp_path_factory, data_env) -> None:

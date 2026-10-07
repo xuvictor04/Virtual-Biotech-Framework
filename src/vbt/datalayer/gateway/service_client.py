@@ -49,11 +49,25 @@ __all__ = ["DATA_SERVER", "ServiceError", "ServiceClient"]
 DATA_SERVER = "data"
 
 
-class ServiceError(GatewayError):
-    """The data child could not answer (``service_unavailable``)."""
+#: The data child answered, with an error: a request it cannot serve (a configuration or contract fault),
+#: not an outage. Retrying the same call cannot help.
+_REJECTED_INSTRUCTION = ("The data-layer service rejected this request (a configuration fault, not an outage). "
+                         "This call did not produce evidence; do not retry it unchanged. Report the failure.")
+#: The bridge gave up on the data child (its restart budget is spent): down for the rest of the session.
+_DOWN_INSTRUCTION = ("The data-layer service is down for the rest of this session, so this tool cannot be "
+                     "guarded. This call did not produce evidence; do not retry it. Report the outage.")
 
-    def __init__(self, message: str, *, verb: str | None = None, tool: str | None = None) -> None:
-        super().__init__(ErrorKind.service_unavailable, message, tool=tool, payload={"verb": verb} if verb else None)
+
+class ServiceError(GatewayError):
+    """The data child could not answer (``service_unavailable``). ``subkind`` ``rejected`` (the child
+    answered with an error) and ``down`` (the bridge gave up on it) are not retryable."""
+
+    def __init__(self, message: str, *, verb: str | None = None, tool: str | None = None,
+                 subkind: str | None = None) -> None:
+        retryable = "no" if subkind in ("rejected", "down") else None
+        instruction = {"rejected": _REJECTED_INSTRUCTION, "down": _DOWN_INSTRUCTION}.get(subkind or "")
+        super().__init__(ErrorKind.service_unavailable, message, tool=tool, payload={"verb": verb} if verb else None,
+                         retryable=retryable, subkind=subkind, instruction=instruction)
         self.verb = verb
 
 
@@ -103,11 +117,13 @@ class ServiceClient:
         except GatewayError as exc:
             self.failures += 1
             self.last_error = exc.message
-            raise ServiceError(f"data child failed on {verb}: {exc.message}", verb=verb) from exc
+            raise ServiceError(f"data child failed on {verb}: {exc.message}", verb=verb,
+                               subkind=self._failure_kind(exc.message)) from exc
         except Exception as exc:  # noqa: BLE001 - every child failure is service_unavailable
             self.failures += 1
             self.last_error = f"{type(exc).__name__}: {exc}"[:500]
-            raise ServiceError(f"data child failed on {verb}: {self.last_error}", verb=verb) from exc
+            raise ServiceError(f"data child failed on {verb}: {self.last_error}", verb=verb,
+                               subkind=self._failure_kind(str(exc))) from exc
         body = _text_of(result)
         try:
             if isinstance(body, str):
@@ -117,6 +133,20 @@ class ServiceClient:
             self.failures += 1
             self.last_error = f"malformed {verb} reply: {exc}"[:500]
             raise ServiceError(f"data child returned a malformed {verb} reply: {exc}"[:500], verb=verb) from exc
+
+    @property
+    def down_for_session(self) -> bool:
+        """The bridge gave up on the data child (its restart budget is spent): no call can succeed."""
+        b = self.bridge
+        failures = getattr(b, "failures", None) or {} if b is not None else {}
+        return isinstance(failures, Mapping) and self.server in failures
+
+    def _failure_kind(self, text: str) -> str | None:
+        if self.down_for_session:
+            return "down"
+        if "Error calling tool" in text:
+            return "rejected"                          # the child is up and answered with an error
+        return None
 
     async def try_call(self, verb: str, request: IpcModel) -> IpcModel | None:
         """:meth:`call`, with None instead of :class:`ServiceError`."""

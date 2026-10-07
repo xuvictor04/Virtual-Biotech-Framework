@@ -127,7 +127,8 @@ def prepare_leakage(contract: Any, args_sent: dict[str, Any], ceiling: date | No
     if lf is not None:
         fragment = lf.template.replace("{ceiling}", text)
         existing = args_sent.get(lf.arg)
-        args_sent[lf.arg] = f"{existing} AND {fragment}" if existing not in (None, "") else fragment
+        # both sides parenthesised: AND binds tighter than OR, so "x OR y AND <ceiling>" would leave x unbounded
+        args_sent[lf.arg] = f"({existing}) AND ({fragment})" if existing not in (None, "") else fragment
         plan.injected = lf.arg
         plan.notes.append(f"evidence ceiling {text} applied upstream through {lf.arg}")
         return plan

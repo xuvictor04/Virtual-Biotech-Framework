@@ -13,7 +13,7 @@ tools:
     reads: {clinicaltrials_gov.studies: {access: upstream}}
     args:
       nct_id: {binds: clinicaltrials_gov.studies.protocolSection.identificationModule.nctId, accepts: [nct_id],
-               existence: upstream}
+               existence: upstream}            # the registry decides existence (classify: the tool's own table)
     result:
       kind: record
       rows: $
@@ -69,9 +69,11 @@ tools:
     serve: pass
     defects:
       - {id: CT-GOV-001, what: "country defaults to 'United States', silently narrowing every count (89 vs 274 trials, VERIFIED)",
-         where: "clinicaltrials_mcp/tools.py:791,764-765", effect: silent_wrong}
+         where: "clinicaltrials_mcp/tools.py:791,764-765", test: test_dl_defect_detectors.py::test_ct_gov_001, effect: silent_wrong}
       - {id: CT-GOV-002, what: "eligibility_text is pasted inside double quotes unescaped; a quote in the value changes the expression",
-         where: "clinicaltrials_mcp/tools.py:761-763", effect: silent_wrong}
+         where: "clinicaltrials_mcp/tools.py:761-763", test: test_dl_defect_detectors.py::test_ct_gov_002, effect: silent_wrong}
+      - {id: CT-GOV-004, what: "a reply without totalCount is reported as total_count 0, a definite count of none",
+         where: "clinicaltrials_mcp/tools.py:892", test: test_dl_defect_detectors.py::test_ct_gov_004, effect: silent_wrong}
 
   search_clinical_trials:
     reads: {clinicaltrials_gov.studies: {access: upstream}}
@@ -114,7 +116,9 @@ tools:
       notes: ["at most 1,000 trials are fetched (10 pages of 100); beyond that the result is truncated and total_count is the registry's count"]
     defects:
       - {id: CT-GOV-003, what: "pagination stops at 1,000 trials without marking the result truncated; a mid-pagination error returns partial rows with total_count set to the rows returned",
-         where: "clinicaltrials_mcp/tools.py:1094-1112", effect: silent_wrong}
+         where: "clinicaltrials_mcp/tools.py:1094-1112", test: test_dl_defect_detectors.py::test_ct_gov_003, effect: silent_wrong}
+      - {id: CT-GOV-005, what: "a reply without totalCount makes the rows fetched the total_count while more pages exist",
+         where: "clinicaltrials_mcp/tools.py:1081,1101", test: test_dl_defect_detectors.py::test_ct_gov_005, effect: silent_wrong}
 
   get_all_cancer_types:
     reads: {cbioportal.cancer_type: {access: upstream}}

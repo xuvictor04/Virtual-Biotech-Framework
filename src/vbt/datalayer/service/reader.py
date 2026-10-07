@@ -1304,6 +1304,8 @@ class TableReader:
             ordered = ordered[: int(limit)]
         out_rows: list[dict[str, Any]] = []
         keys: list[list[Any]] = []
+        if self.levels:
+            explode = ()                               # rows of an item table already are the items
         for _sk, _s, m, ckey in ordered:
             row = self.output_row(m, columns)
             for r in _explode_rows(row, m.row, explode, carry, self):
@@ -1604,7 +1606,10 @@ def _clean_dict(d: dict[str, Any], tree: Sequence[Any]) -> None:
 def _renamed(row: dict[str, Any], rename: Mapping[str, str] | None) -> dict[str, Any]:
     if not rename:
         return row
-    return {rename.get(k, k): v for k, v in row.items()}
+    # an item row (exploded, or a row of an item table) holds the item's own field names: a container
+    # path ("screens[].geneEffect") renames that field too
+    names = {**{k.rpartition("[].")[2]: v for k, v in rename.items() if "[]." in k}, **rename}
+    return {names.get(k, k): v for k, v in row.items()}
 
 
 def _explode_rows(row: dict[str, Any], view: Mapping[str, Any], explode: Sequence[str], carry: Sequence[str],

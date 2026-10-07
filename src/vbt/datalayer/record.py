@@ -124,6 +124,7 @@ class UpstreamInfo:
     server: str | None = None
     hash_seed: int | None = None
     flags_stripped: list[str] = field(default_factory=list)
+    reviewed_commit: str | None = None                 # the commit the overlay's bindings were reviewed against
 
 
 @dataclass

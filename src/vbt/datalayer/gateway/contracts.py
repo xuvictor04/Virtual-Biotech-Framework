@@ -72,7 +72,8 @@ from .files import confine, write_once
 
 __all__ = [
     "VocabSnapshot", "ArgRequest", "PreparedArgs", "apply_arg_contracts", "arg_predicate", "build_predicate",
-    "column_spec", "bound_column", "THRESHOLD_OPS", "snap_number", "REL_TOL", "is_present", "vocab_key",
+    "column_spec", "bound_column", "qualifier_args", "THRESHOLD_OPS", "snap_number", "REL_TOL", "is_present",
+    "vocab_key",
 ]
 
 THRESHOLD_OPS = frozenset({"ge", "gt", "le", "lt", "range", "ge_abs", "gt_abs", "le_abs", "lt_abs"})
@@ -324,6 +325,22 @@ def _derived_search(contract: Any) -> bool:
     return b is not None and b.serve == "derived" and d is not None and d.verb == "search"
 
 
+def substring_hits(contract: Any, name: str, binding: Any, value: Any, snap: Any) -> list[str]:
+    """The stored values ``value`` matches when upstream matches it as a substring; more than one is a
+    collision (``invalid_argument``: upstream would pool them). ``[]`` for exact matching or no snapshot."""
+    if binding.interpreted_as not in ("substring", "casefold_substring") or snap is None or \
+            not isinstance(value, str):
+        return []
+    fold = binding.interpreted_as == "casefold_substring"
+    needle = value.casefold() if fold else value
+    hits = sorted({str(v) for v in snap.values if isinstance(v, str) and needle in (v.casefold() if fold else v)})
+    if len(hits) > 1:
+        raise _invalid(contract, name, value,
+                       f"{name}={value!r} matches several values as a substring ({', '.join(hits[:5])}); "
+                       "pass the exact value", list(snap.values), near=hits[:10], reason="substring_collision")
+    return hits
+
+
 def _free_text(contract: Any, name: str, binding: Any, value: Any, snap: Any, registry: Any,
                notes: list[str]) -> Any:
     if not isinstance(value, str):
@@ -334,16 +351,8 @@ def _free_text(contract: Any, name: str, binding: Any, value: Any, snap: Any, re
     if binding.pattern and not re.fullmatch(binding.pattern, value):
         raise _invalid(contract, name, value, f"{name} does not match {binding.pattern}", reason="pattern")
     out = value
-    if binding.interpreted_as in ("substring", "casefold_substring") and snap is not None \
-            and not _derived_search(contract):
-        fold = binding.interpreted_as == "casefold_substring"
-        needle = value.casefold() if fold else value
-        hits = sorted({str(v) for v in snap.values if isinstance(v, str)
-                       and needle in (v.casefold() if fold else v)})
-        if len(hits) > 1:
-            raise _invalid(contract, name, value,
-                           f"{name}={value!r} matches several values as a substring ({', '.join(hits[:5])}); "
-                           "pass the exact value", list(snap.values), near=hits[:10], reason="substring_collision")
+    if not _derived_search(contract):
+        substring_hits(contract, name, binding, value, snap)
     if binding.interpreted_as == "regex":
         out = re.escape(out)
         if out != value:
@@ -351,8 +360,28 @@ def _free_text(contract: Any, name: str, binding: Any, value: Any, snap: Any, re
     if binding.escape and binding.escape != soma_filter.LANGUAGE:   # SOMA filters are parsed and recompiled
         out = _quote_with(contract, name, binding, out, registry, notes)
     if binding.wrap:
+        if not _balanced(out):
+            # a ")" that closes the wrap early would let the rest of the value escape it
+            raise _invalid(contract, name, value, f"{name} has unbalanced parentheses; it is wrapped as "
+                           f"{binding.wrap!r} and may not close the wrap", reason="unbalanced_parentheses")
         out = binding.wrap.replace("{value}", out)
     return out
+
+
+def _balanced(text: str) -> bool:
+    """Parentheses outside double-quoted phrases never close more than they opened, and all close."""
+    depth = 0
+    quoted = False
+    for ch in text:
+        if ch == '"':
+            quoted = not quoted
+        elif not quoted and ch == "(":
+            depth += 1
+        elif not quoted and ch == ")":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +494,7 @@ def apply_arg_contracts(contract: Any, args: Mapping[str, Any], vocab: Mapping[s
     # unknown names
     props = _schema_props(schema)
     if (schema or {}).get("additionalProperties") is False and props:
-        allowed = set(props) | {n for n, b in bindings.items() if b.gateway_only}
+        allowed = set(props) | {n for n, b in bindings.items() if b.gateway_only} | set(qualifier_args(contract))
         for name in args:
             if name not in allowed:
                 raise _invalid(contract, name, args[name], f"unknown argument {name!r}", sorted(allowed),
@@ -521,6 +550,10 @@ def apply_arg_contracts(contract: Any, args: Mapping[str, Any], vocab: Mapping[s
         if binding.role == "output_path":
             target = confine(value, output_dir, argument=name, tool=tool)
             out.output_paths[name] = target
+            if output_dir:
+                # upstream resolves a relative path under its own dated folder: send the confined absolute
+                # path, so the file that is confined and kept write-once is the file upstream writes
+                out.args_sent[name] = str(target)
             renamed = write_once(target) if output_dir else None
             if renamed is not None:
                 out.renamed_outputs[name] = {"from": str(target), "to": str(renamed)}
@@ -610,6 +643,8 @@ def apply_arg_contracts(contract: Any, args: Mapping[str, Any], vocab: Mapping[s
                 items = deduped
             value = items
             out.args_sent[name] = items
+            for v in items:                            # each element is matched by upstream on its own
+                substring_hits(contract, name, binding, v, snap)
 
         if isinstance(value, str) and (binding.forbid or binding.pattern):
             for ch in binding.forbid:
@@ -704,10 +739,98 @@ def apply_arg_contracts(contract: Any, args: Mapping[str, Any], vocab: Mapping[s
         if binding.op == "eq" and column:
             out.fixed[column] = default
 
+    _overlapping_groups(contract, args, vocab, selected, selector_value)
     for name, binding in bindings.items():
         if binding.gateway_only and name in out.args_sent:
             out.gateway_args[name] = out.args_sent.pop(name)
+    for name in qualifier_args(contract):
+        if name in out.args_sent and name not in bindings:
+            value = out.args_sent.pop(name)
+            if not isinstance(value, bool):
+                raise _invalid(contract, name, value, f"{name} must be true or false", [True, False],
+                               reason="boolean")
+            out.gateway_args[name] = value
     return out
+
+
+#: Gateway-only override of a qualifier the gateway enforces by default (§7, §11.3).
+QUALIFIER_ARGS = {"duplicate": "include_duplicates", "negate": "include_negated"}
+
+
+def qualifier_args(contract: Any) -> dict[str, str]:
+    """``{argument: effect}`` for the default qualifier filters this tool's tables carry (a ``duplicate`` or
+    ``negate`` qualifier, at the top or in a container): ``include_duplicates`` / ``include_negated`` are then
+    gateway-only arguments, advertised ``x-gateway`` and never sent upstream (upstream rejects them)."""
+    out: dict[str, str] = {}
+    b = getattr(contract, "binding", None)
+    if b is None or getattr(contract, "generic", False):
+        return out
+    refs = {contract.bound_table, b.result.rows_of, b.derived.table if b.derived is not None else None,
+            *b.reads.keys()}
+
+    def walk(cols: Mapping[str, Any]) -> None:
+        for col in cols.values():
+            effect = getattr(col, "effect", None)
+            if getattr(col, "role", None) == "qualifier" and effect in QUALIFIER_ARGS:
+                out[QUALIFIER_ARGS[effect]] = effect
+            fields = getattr(col, "fields", None)
+            if fields:
+                walk(fields)
+
+    for ref in refs:
+        t = contract.tables.get(ref) if ref else None
+        if t is not None:
+            walk(t.physical_spec.columns if t.is_item_table else t.spec.columns)
+    return out
+
+
+def _group_args(contract: Any) -> list[str]:
+    """Arguments whose values each select a group of rows that are compared or pooled separately: the
+    ``groups`` of a computed field and list arguments upstream matches element by element as text."""
+    names: list[str] = []
+    b = getattr(contract, "binding", None)
+    for fm in (b.result.fields.values() if b is not None else ()):
+        for g in (fm.computed or {}).get("groups") or ():
+            if g in contract.args and g not in names:
+                names.append(str(g))
+    for n, a in contract.args.items():
+        if a.each and a.interpreted_as in ("substring", "casefold_substring") and n not in names:
+            names.append(n)
+    return names
+
+
+def _overlapping_groups(contract: Any, args: Mapping[str, Any], vocab: Mapping[str, Any], selected: str | None,
+                        selector_value: Any) -> None:
+    """Two groups (or two elements of one list) whose text matches share a stored value would count the
+    same rows twice, or in the first group only (upstream's if/elif): ``invalid_argument``."""
+    groups: list[tuple[str, Any, set[str]]] = []
+    for name in _group_args(contract):
+        binding = contract.args[name]
+        value = args.get(name)
+        if not is_present(value):
+            continue
+        table, column = bound_column(contract, name, binding, selected, selector_value)
+        snap = vocab.get(vocab_key(table, column)) if table and column else None
+        fold = binding.interpreted_as == "casefold_substring" or binding.match == "casefold"
+        sub = binding.interpreted_as in ("substring", "casefold_substring")
+        for v in (value if isinstance(value, (list, tuple)) else [value]):
+            if not isinstance(v, str):
+                continue
+            needle = v.casefold() if fold else v
+            if snap is not None:
+                stored = [str(x) for x in snap.values if isinstance(x, str)]
+                hits = {x for x in stored if sub and needle in (x.casefold() if fold else x)} or \
+                    {x for x in stored if (x.casefold() if fold else x) == needle}
+            else:
+                hits = {needle}
+            groups.append((name, v, {h.casefold() if fold else h for h in hits} or {needle}))
+    for i, (n1, v1, h1) in enumerate(groups):
+        for n2, v2, h2 in groups[i + 1:]:
+            shared = sorted(h1 & h2)
+            if shared:
+                raise _invalid(contract, n2, v2,
+                               f"{n1}={v1!r} and {n2}={v2!r} select overlapping groups ({', '.join(shared[:5])}); "
+                               "pass groups that share no value", list(shared), reason="overlapping_groups")
 
 
 # ---------------------------------------------------------------------------

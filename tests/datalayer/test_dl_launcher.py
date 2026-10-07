@@ -374,3 +374,18 @@ async def test_reaper_exits_when_stdin_closes(tmp_path):
     rc = await asyncio.wait_for(proc.wait(), 20)
     err = (await proc.stderr.read()).decode()
     assert rc == 0 and parse_exit_marker(err)["code"] == 0
+
+
+@linux_only
+def test_startup_memory_error_under_rlimit_is_oom(tmp_path):
+    """RLIMIT_DATA fails the allocation (no SIGKILL, RSS stays low): an uncaught MemoryError outside a tool
+    handler ends the child with rc 1, and the crash is still oom, never retried (INV-1)."""
+    from vbt.datalayer.memory.crash import crash_decision
+
+    proc = subprocess.run([sys.executable, "-E", str(REAPER), "--limit-mb", "300", "--status", str(tmp_path / "s.json"),
+                           "--server", "x", "--", sys.executable, "-E", "-c", "b = bytearray(600 * 2**20)"],
+                          capture_output=True, text=True, timeout=60)
+    marker = parse_exit_marker(proc.stderr)
+    assert marker["code"] == 1 and "MemoryError" in proc.stderr
+    d = crash_decision("McpError: Connection closed", proc.stderr, server="x", tool="t")
+    assert d.oom and not d.retry

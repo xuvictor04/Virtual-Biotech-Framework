@@ -299,11 +299,15 @@ def invalid_argument_payload(argument: str, value: Any, valid_values: Sequence[A
 
 
 def unsupported_combination_payload(arguments: Sequence[str], reason: str, *,
-                                    group_argument: str | None = None) -> dict[str, Any]:
-    """``arguments, reason, group_argument?`` (the argument that would fix a comparable group)."""
+                                    group_argument: str | None = None,
+                                    alternative: str | None = None) -> dict[str, Any]:
+    """``arguments, reason, group_argument?`` (the argument that would fix a comparable group)
+    ``, alternative?`` (a tool that answers the call)."""
     out: dict[str, Any] = {"arguments": list(arguments), "reason": reason}
     if group_argument is not None:
         out["group_argument"] = group_argument
+    if alternative is not None:
+        out["alternative"] = alternative
     return out
 
 

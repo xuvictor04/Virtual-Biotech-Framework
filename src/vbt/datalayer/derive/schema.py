@@ -273,6 +273,14 @@ def annotate_schema(contract: Any, schema: Mapping[str, Any] | None, *, catalog:
         else:
             prop["description"] = f"Results are listed per {name}; pass one value to restrict them."
         props[name] = prop
+    from ..gateway.contracts import qualifier_args
+    for name, effect in qualifier_args(contract).items():
+        if name in props or name in contract.args:
+            continue
+        what = "duplicate records (cells counted in several datasets)" if effect == "duplicate" else \
+            "negative findings (evidence that the relation does NOT hold)"
+        props[name] = {"type": "boolean", "default": False, "x-gateway": True,
+                       "description": f"Include {what}, which are excluded by default; their number is disclosed."}
     if b.require_any:
         out["x-vbt-require-any"] = [list(g) for g in b.require_any]
         _append(out, "Pass at least one of: " + "; ".join(", ".join(g) for g in b.require_any) + ".")

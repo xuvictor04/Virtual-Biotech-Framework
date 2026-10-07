@@ -388,7 +388,7 @@ def check_reference_data(config: dict[str, Any], *, per_turn: bool = False) -> l
         return []
     if data_layer_active(config):
         try:
-            return check_data_readiness(config, per_turn=per_turn)
+            return [*check_data_readiness(config, per_turn=per_turn), *_leakage_ceiling(config)]
         except DataCheckUnavailable as exc:
             note = CheckResult("data layer readiness (tool-scoped)", False, required=False, kind="data",
                                detail=f"the data child's check could not run ({exc}); falling back to the "
@@ -397,6 +397,26 @@ def check_reference_data(config: dict[str, Any], *, per_turn: bool = False) -> l
                                     "(`vbt doctor` lists the data child's imports)")
             return [*_legacy_reference_data(config), note]
     return _legacy_reference_data(config)
+
+
+def _leakage_ceiling(config: dict[str, Any]) -> list[CheckResult]:
+    """A no-web run (``web.enabled: false``) whose sources can return records past the evidence ceiling
+    (a descriptor declares ``leakage``) while ``data.leakage.ceiling`` is unset: the ceiling is not applied."""
+    if (config.get("web") or {}).get("enabled", True) is not False:
+        return []
+    if ((config.get("data") or {}).get("leakage") or {}).get("ceiling"):
+        return []
+    try:
+        _settings, catalog, _registry = data_catalog(config)
+    except Exception:  # noqa: BLE001 - the catalog's own failure is reported elsewhere
+        return []
+    leaky = sorted(src for src, d in catalog.sources.items() if getattr(d, "leakage", None) is not None)
+    if not leaky:
+        return []
+    return [CheckResult("data: evidence ceiling", False, required=False, kind="data",
+                        detail=f"web is disabled but data.leakage.ceiling is unset: {', '.join(leaky)} can return "
+                               "records past the evidence ceiling",
+                        hint="set data.leakage.ceiling (ISO date, e.g. the web.literature_max_date)")]
 
 
 def _legacy_reference_data(config: dict[str, Any]) -> list[CheckResult]:
@@ -565,6 +585,11 @@ def data_catalog(config: dict[str, Any]) -> tuple[Any, Any, Any]:
 
     settings = DataSettings.from_config(config)
     variables = variables_from_config(config)
+    for what, d in (("descriptors_dir", settings.descriptors_dir), ("overlays_dir", settings.overlays_dir)):
+        # a missing or empty catalog would make every tool look ready and silence the legacy checks
+        if not Path(d).is_dir() or not any(Path(d).glob("*.y*ml")):
+            raise DataCheckUnavailable(f"data.{what} {d} is missing or holds no YAML files: the data catalog "
+                                       "cannot be loaded")
     stamps = []
     for d in (settings.descriptors_dir, settings.overlays_dir):
         for p in sorted(Path(d).glob("*.y*ml")) if Path(d).is_dir() else []:
@@ -669,7 +694,17 @@ def load_data_readiness(config: dict[str, Any], *, per_turn: bool = False,
         if stale:
             response = run_data_check(config, tables=stale, depth=settings.readiness.session_depth)
     elif response is None:
-        response = run_data_check(config, depth=settings.readiness.session_depth)
+        # session start and doctor: only the tables the enabled servers' tools read, and only those
+        # without a persisted result whose descriptor digest and layout signature still match
+        cache.load()
+        todo = sorted(wanted - set(cache.tables))
+        if todo:
+            response = run_data_check(config, tables=todo, depth=settings.readiness.session_depth)
+        reused = {ref: cache.tables[ref].model_dump(mode="json") for ref in sorted(wanted & set(cache.tables))
+                  if ref not in todo}
+        if reused:
+            response = dict(response or {})
+            response["tables"] = {**reused, **dict(response.get("tables") or {})}
     awaiting: set[str] = set()
     if response is not None:
         response = json.loads(json.dumps(response))
@@ -791,7 +826,13 @@ def _data_aggregates(config: dict[str, Any], dr: DataReadiness) -> list[CheckRes
         detail = f"{value}: {len(ready)} of {len(tools)} granted tools reading {source} ready"
         if bad:
             detail += f"; not ready: {', '.join(bad[:6])}" + (f" (+{len(bad) - 6})" if len(bad) > 6 else "")
-        out.append(CheckResult(label, bool(ready) or not tools, hint=hint, detail=detail, kind="data",
+        if not tools:
+            # no granted tool binds the source (a mis-set catalog, an unbound server): the tool-scoped
+            # view says nothing about the data, so the whole-release check decides
+            out.append(check_open_targets(config) if source == "open_targets" else (check_tahoe(config) or
+                       CheckResult(label, True, hint=hint, detail=detail, kind="data", scope={"source": source})))
+            continue
+        out.append(CheckResult(label, bool(ready), hint=hint, detail=detail, kind="data",
                                scope={"source": source}))
     block_when = DataSettings.from_config(config).readiness.block_when
     granted = sorted(dr.granted)

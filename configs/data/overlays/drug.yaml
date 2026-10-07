@@ -9,7 +9,9 @@ tools:
     reads: {open_targets.drug_molecule: {access: projection,
                                          columns: [id, name, drugType, maximumClinicalTrialPhase, linkedTargets, synonyms, tradeNames]}}
     args:
-      query:     {role: free_text, binds_any: [open_targets.drug_molecule.name], interpreted_as: casefold_substring}
+      query:     {role: free_text, interpreted_as: casefold_substring,
+                  binds_any: [open_targets.drug_molecule.name, open_targets.drug_molecule.synonyms,
+                              open_targets.drug_molecule.tradeNames]}   # a drug is found by any of its names
       target_id: {binds: "open_targets.drug_molecule.linkedTargets.rows[]", op: contains, accepts: [ensembl_gene, hgnc_symbol]}
       mechanism: {role: unbound}             # drug_molecule has no mechanismOfAction column in 25.09
       limit:     {role: limit, min: 1, max: 500}

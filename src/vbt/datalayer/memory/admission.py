@@ -258,6 +258,13 @@ class AdmissionController:
                          generation=generation, recycled=recycled, unestimated=unestimated,
                          peaks_mb={t: round(peaks.get(t, 0.0), 1) for t in cold}, reservation=reservation)
 
+    async def recycle_after_oom(self, server: str) -> bool:
+        """§14.4: restart ``server`` after an in-tool memory error (it may hold a partial cache near its
+        limit), within the thrash guard. False when recycling is off, guarded or failed."""
+        if not self.can_recycle(server):
+            return False
+        return await self._recycle(server)
+
     async def _recycle(self, server: str) -> bool:
         """Recycle ``server`` (counted by the thrash guard). False when it could not be done."""
         self._recycles.setdefault(server, deque()).append(self.clock())

@@ -178,8 +178,14 @@ def _not_found(contract: Any, plan: Any, obj: Any, is_json: bool, reason: str, m
     on_universe = [a for a in id_args if bound and bound in set(universe_tables.get(a, ()))]
     # existence: upstream decides on the bound universe, or wherever no local universe table exists
     # (a remote universe listed only by an upstream tool, cBioPortal studies)
-    for a in [a for a in id_args if a in on_universe or not universe_tables.get(a)]:
-        if contract.args[a].existence == "upstream" and existence.get(a) != "exists":
+    # (an argument bound to the tool's own table, whose source decides existence, also counts: a local
+    # universe of the id_type elsewhere, NCT IDs in a labels table, says nothing about the registry)
+    own = [a for a in id_args if bound and isinstance(contract.args[a].binds, str)
+           and contract.args[a].binds.startswith(bound + ".")]
+    for a in [a for a in id_args if a in on_universe or not universe_tables.get(a) or a in own]:
+        # on its own table an upstream-existence argument is decided by upstream even when the resolver
+        # accepted the value (its syntax, or a local list that is not the registry)
+        if contract.args[a].existence == "upstream" and (existence.get(a) != "exists" or a in own):
             return Classification("not_found", reason, obj, is_json, _nf_error(name, args, a, reason, bound),
                                   explicit_not_found=True, matched=matched)
     proven = [a for a in on_universe if existence.get(a) == "exists"]

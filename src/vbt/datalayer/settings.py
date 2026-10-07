@@ -99,6 +99,12 @@ def _tuple(value: Any) -> tuple[Any, ...]:
     return (value,)
 
 
+_GATEWAY_CHOICES: dict[str, tuple[str, ...]] = {
+    "mode": ("off", "observe", "enforce"), "profile": ("safe", "fidelity"),
+    "when_service_down": ("strict", "lenient"), "unbound_empty": ("empty_unverified", "error"),
+}
+
+
 @dataclass(frozen=True)
 class GatewaySettings:
     mode: Literal["off", "observe", "enforce"] = "enforce"
@@ -106,6 +112,18 @@ class GatewaySettings:
     profile: Literal["safe", "fidelity"] = "safe"
     when_service_down: Literal["strict", "lenient"] = "strict"
     unbound_empty: Literal["empty_unverified", "error"] = "empty_unverified"
+
+    def __post_init__(self) -> None:
+        # YAML 1.1 reads an unquoted `mode: off` as false (and `on` as true): map them back, and refuse any
+        # value outside the declared set, so a typo never silently runs the gateway in another mode
+        for name, allowed in _GATEWAY_CHOICES.items():
+            value = getattr(self, name)
+            if isinstance(value, bool):
+                value = {False: "off", True: "on"}[value] if name == "mode" else value
+                object.__setattr__(self, name, value)
+            if value not in allowed:
+                raise ValueError(f"data.gateway.{name} must be one of {', '.join(allowed)} (got {value!r}); "
+                                 f"quote the value in YAML (\"off\")")
 
     def enforces(self, server: str) -> bool:
         """True when calls to ``server`` are enforced (not only observed)."""

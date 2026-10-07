@@ -48,7 +48,7 @@ tools:
     result:
       rows: $.tractability
       rows_of: open_targets.target_tractability
-      parent_key: {id: $.target_id}
+      parent_key: {/id: $.target_id}                  # buckets have their own id
       not_found_when: ["$.found == false"]
       drop_fields: {$.message: "a null tractability list means not assessed, not untractable"}
     serve: pass
@@ -209,7 +209,8 @@ tools:
       target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
     result:
       rows: $.constraint
-      row_key: [constraintType]
+      rows_of: open_targets.target_constraint
+      parent_key: {id: $.target_id}
       count_fields: [$.num_constraint_types]
       not_found_when: ["$.error =~ '(?i)not found'"]
     serve: pass
@@ -220,7 +221,8 @@ tools:
       target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
     result:
       rows: $.subcellular_locations
-      row_key: [location, source]
+      rows_of: open_targets.target_subcellular_locations
+      parent_key: {id: $.target_id}
       drop_fields:
         $.num_locations: "counts (location, source) records, not distinct locations"
         $.primary_locations: "first-seen names with '[Isoform' removed by substring; not a primary-location call"
@@ -233,7 +235,8 @@ tools:
       target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
     result:
       rows: $.target_class
-      row_key: [id, level]
+      rows_of: open_targets.target_class
+      parent_key: {/id: $.target_id}                  # classes have their own id
       count_fields: [$.num_classes]
       drop_fields: {$.primary_class: "the first l1 class only; a target can belong to several l1 classes"}
       not_found_when: ["$.error =~ '(?i)not found'"]

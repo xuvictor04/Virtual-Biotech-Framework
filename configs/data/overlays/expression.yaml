@@ -8,6 +8,7 @@ tools:
   list_available_tissues:
     reads: {open_targets.expression: {access: full_table, columns: [id, tissues]}}
     args: {}
+    witness: false                                 # rows are distinct tissues across genes, not rows of the table
     result:
       rows: $.tissues
       row_key: [efo_code]

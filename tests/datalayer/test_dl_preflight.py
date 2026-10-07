@@ -64,11 +64,8 @@ def test_subprocess_check_gives_one_result_per_part(baseline: dict[str, Any]) ->
     for r in _findings(results):
         assert r.scope["source"] and r.scope["table"] and r.label.startswith("data: ")
         assert set(r.scope) <= {"source", "table", "column", "columns", "partition"}
-    # a column-scoped finding names its column and only the tools that read it
-    col = [r for r in _findings(results) if "column" in r.scope and r.tools]
-    assert col, [r.line() for r in _findings(results)]
-    for r in col:
-        assert all(t.startswith("mcp__") for t in r.tools)
+    # Open Targets stores SO_0001583: the so plugin's canonical form for it, so no encoding drift (F12)
+    assert not [r for r in _findings(results) if r.scope["table"] == "so"], [r.line() for r in _findings(results)]
     labels = {r.label for r in results}
     assert "Open Targets reference data (OPEN_TARGETS_DATA_PATH)" in labels
     assert "Tahoe-100M data (TAHOE_DATA_PATH)" in labels and DATA_TOOLS_LABEL in labels
@@ -76,6 +73,25 @@ def test_subprocess_check_gives_one_result_per_part(baseline: dict[str, Any]) ->
     assert degraded_servers(cfg, results) == {}
     assert "mcp__drug__search_known_drugs" not in baseline["tools"]
     assert "mcp__target__get_target_info" not in baseline["tools"]
+
+
+def test_column_finding_names_its_column_and_readers(ot_root: Path, tahoe_root: Path,
+                                                    tmp_path_factory: pytest.TempPathFactory) -> None:
+    """A column-scoped finding (so.id stored in another form than the descriptor declares) names its
+    column and only the tools that read it."""
+    import dl_fixtures as F
+
+    root = _copy(ot_root, tmp_path_factory, "pf-so")
+    rows = [{**r, "id": str(r["id"]).replace("_", ":", 1)} for r in F.read_rows(root, "so")]
+    F.delete_table(root, "so")
+    F.write_table(root, "so", F.table("so", rows))
+    F.write_manifest(root)
+    cfg = _config(tmp_path_factory.mktemp("pf-so-cfg"), root, tahoe_root)
+    results = preflight.check_reference_data(cfg)
+    col = [r for r in _findings(results) if r.scope["table"] == "so" and "column" in r.scope]
+    assert col, [r.line() for r in _findings(results)]
+    assert all(r.scope["column"] == "id" and set(r.tools) == {"mcp__pathway__get_sequence_ontology_term"} for r in col), \
+        [(r.scope, r.tools) for r in col]
 
 
 def test_deleting_known_drug_degrades_only_its_readers(baseline: dict[str, Any], ot_root: Path, tahoe_root: Path,

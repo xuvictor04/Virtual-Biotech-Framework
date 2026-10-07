@@ -9,18 +9,32 @@ from __future__ import annotations
 
 import re
 
+from typing import Any, Mapping, Self, Sequence
+
 from ..base import Normalized, Rejected
 from ..registry import register
-from . import KeyIdentifier, Trace
+from . import KeyIdentifier, Trace, set_attr
 
 _IRI = re.compile(r"https?://\S+/([A-Za-z]+[_:]\d+)")
 
 
 class OboTerm(KeyIdentifier):
-    """``PREFIX:NNNNNNN`` OBO term IDs (``prefix`` and ``digits`` set by subclasses)."""
+    """``PREFIX:NNNNNNN`` OBO term IDs (``prefix`` and ``digits`` set by subclasses).
+    ``options.separator: "_"`` makes ``PREFIX_NNNNNNN`` canonical, for sources that store that form
+    (Open Targets stores ``SO_0001583``); either form is accepted as input."""
 
     prefix = "GO"
     digits = 7
+    separator = ":"
+    capabilities = frozenset({"options"})
+
+    def configure(self, options: Mapping[str, Any], universe_sample: Sequence[str] | None) -> Self:
+        other = super().configure(options, universe_sample)
+        if (options or {}).get("separator") == "_":
+            set_attr(other, "separator", "_")
+            set_attr(other, "canonical", rf"^{self.prefix}_\d{{{self.digits}}}$")
+            set_attr(other, "examples", tuple(e.replace(":", "_", 1) for e in self.examples))
+        return other
 
     def _normalize(self, text: str, stored: bool) -> Normalized | Rejected:
         t = Trace(text).strip()
@@ -30,8 +44,9 @@ class OboTerm(KeyIdentifier):
         m = re.fullmatch(rf"({self.prefix})([_:])(\d{{{self.digits}}})", t.value, re.IGNORECASE)
         if m is None:
             return self.reject(t.value)
-        if m.group(2) == "_":
-            t.apply("curie_underscore_to_colon", f"{m.group(1)}:{m.group(3)}")
+        if m.group(2) != self.separator:
+            step = "curie_underscore_to_colon" if self.separator == ":" else "curie_colon_to_underscore"
+            t.apply(step, f"{m.group(1)}{self.separator}{m.group(3)}")
         t.upper()
         return t.done() if self.matches(t.value) else self.reject(t.value)
 

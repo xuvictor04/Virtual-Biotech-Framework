@@ -60,7 +60,7 @@ tools:
     serve: pass
     defects:
       - {id: SC-002, what: "df.iloc[:limit] keeps the first cells by join id (the first datasets), not a sample of the filter",
-         where: "single_cell_mcp/tools.py:348-352", effect: silent_wrong}
+         where: "single_cell_mcp/tools.py:348-352", test: test_dl_defect_detectors.py::test_sc_002, effect: silent_wrong}
 
   get_anndata:
     reads: {cellxgene_census.obs: {access: upstream, est_row_bytes: 200}, cellxgene_census.var: {access: upstream}}
@@ -111,7 +111,7 @@ tools:
     serve: pass
     defects:
       - {id: SC-003, what: "a gene measured in no cell gets sparsity 1.0 (all zeros) instead of undefined",
-         where: "single_cell_mcp/tools.py:635", effect: silent_wrong}
+         where: "single_cell_mcp/tools.py:635", test: test_dl_defect_detectors.py::test_sc_003, effect: silent_wrong}
 
   summarize_datasets:
     reads: {cellxgene_census.obs: {access: upstream, est_row_bytes: 120}}
@@ -169,7 +169,7 @@ tools:
               "max_cells truncates the matching cells; the number truncated is disclosed"]
     defects:
       - {id: SC-004, what: "default value_filter soma_joinid < max_cells silently restricts the query to the first datasets",
-         where: "single_cell_mcp/tools.py:883-885", effect: silent_wrong}
+         where: "single_cell_mcp/tools.py:883-885", test: test_dl_defect_detectors.py::test_sc_004, effect: silent_wrong}
 
   get_anndata_donor_balanced:
     reads: {cellxgene_census.obs: {access: upstream, est_row_bytes: 200}, cellxgene_census.var: {access: upstream}}
@@ -183,6 +183,9 @@ tools:
       ensembl_ids:  {binds: cellxgene_census.var.feature_id, op: in, each: true, accepts: [census_feature], existence: upstream}
       obs_columns:  {role: projection}
       layer:        {role: selector, values: {raw: cellxgene_census.anndata_outputs, normalized: cellxgene_census.anndata_outputs}}
+    requires_fixed:
+      - {arg: value_filter, columns: [dataset_id], alternatives: [single_cell.get_anndata],
+         reason: "donor_id is unique only within dataset_id; donors of different datasets would be balanced as one"}
     result:
       kind: file
       rows: null
@@ -198,4 +201,4 @@ tools:
               "'No cells found' is an unverified empty (the filter may name values absent from this Census release)"]
     defects:
       - {id: SC-001, what: "donor_id is grouped without dataset_id: donors of different datasets that share a label are balanced as one donor",
-         where: "single_cell_mcp/tools.py:1096-1111", effect: silent_wrong}
+         where: "single_cell_mcp/tools.py:1096-1111", test: test_dl_defect_detectors.py::test_sc_001, effect: silent_wrong}

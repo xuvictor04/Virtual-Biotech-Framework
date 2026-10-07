@@ -26,7 +26,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 __all__ = [
     "WILDCARD", "parse_jsonpath", "jp_get", "jp_first", "jp_set", "jp_test", "parse_payload", "extract_rows",
-    "place_rows", "FieldMapper", "cosine", "recount", "set_path", "get_path", "column_name",
+    "place_rows", "FieldMapper", "cosine", "recount", "set_path", "get_path", "column_name", "concrete_paths",
 ]
 
 WILDCARD = "*"
@@ -190,11 +190,45 @@ def parse_payload(text: str | None, structured: Any = None) -> tuple[Any, bool]:
         return text, False
 
 
+def concrete_paths(obj: Any, path: str) -> list[str]:
+    """``path`` with each ``[*]`` expanded to the indices present in ``obj`` (``$.a[*].b`` ->
+    ``$.a[0].b``, ``$.a[1].b``); a path without wildcards is returned as is."""
+    parts = parse_jsonpath(path)
+    if WILDCARD not in parts:
+        return [path]
+    out: list[str] = []
+
+    def walk(node: Any, i: int, prefix: str) -> None:
+        if i == len(parts):
+            out.append(prefix)
+            return
+        part = parts[i]
+        if part == WILDCARD:
+            if isinstance(node, list):
+                for k, item in enumerate(node):
+                    walk(item, i + 1, f"{prefix}[{k}]")
+            return
+        if isinstance(part, int):
+            if isinstance(node, list) and -len(node) <= part < len(node):
+                walk(node[part], i + 1, f"{prefix}[{part}]")
+            return
+        if isinstance(node, Mapping) and part in node:
+            walk(node[part], i + 1, f"{prefix}[{json.dumps(part)}]" if not re.fullmatch(r"[A-Za-z_]\w*", part)
+                 else f"{prefix}.{part}")
+
+    walk(obj, 0, "$")
+    return out
+
+
 def extract_rows(obj: Any, paths: Sequence[str]) -> list[tuple[str, list[Any]]]:
     """``[(path, rows)]`` for each row path: a list at the path is the rows; a record (``$`` on a
-    dict) is one row; a missing path gives no rows."""
+    dict) is one row; a missing path gives no rows. A path with ``[*]`` gives one group per match,
+    under its concrete path, so the rows of each group are written back where they came from."""
     out: list[tuple[str, list[Any]]] = []
+    expanded: list[str] = []
     for path in paths:
+        expanded.extend(concrete_paths(obj, path) or [path])
+    for path in expanded:
         found = jp_get(obj, path)
         if not found:
             out.append((path, []))
@@ -266,6 +300,20 @@ def set_path(row: dict[str, Any], column: str, value: Any) -> bool:
     return True
 
 
+def _set_copy(row: dict[str, Any], column: str, value: Any) -> None:
+    """Set a dotted path, copying the nested dicts on the way (they may be shared with the payload)."""
+    parts = _plain_parts(column)
+    if not parts:
+        return
+    cur = row
+    for p in parts[:-1]:
+        nxt = cur.get(p)
+        nxt = dict(nxt) if isinstance(nxt, Mapping) else {}
+        cur[p] = nxt
+        cur = nxt
+    cur[parts[-1]] = value
+
+
 def cosine(a: Sequence[float] | None, b: Sequence[float] | None) -> float | None:
     """Cosine similarity; None for missing, mismatched or zero-norm vectors (T14)."""
     if not a or not b or len(a) != len(b):
@@ -290,30 +338,67 @@ class FieldMapper:
     """Logical views of result rows (see the module docstring).
 
     ``fields`` is ``ResultSpec.fields`` (``{result field: FieldMap}``); ``parent_key`` maps key
-    columns to payload JSONPaths; ``key_from_args`` maps key columns to argument names."""
+    columns to payload JSONPaths; ``key_from_args`` maps key columns to argument names.
+    ``item_prefix`` is the container path of an item table's rows (``tissues[].``): columns under
+    it are read relative to the item, since each row already is one item.
+
+    A field named with ``[]`` (``children[].name``) is a per-item spec: its placeholders are checked
+    in each item of that list and nothing is added to the row. A mapped column is recorded only when
+    it was placed on the row, and :meth:`to_output` writes back only values a transform changed."""
 
     def __init__(self, fields: Mapping[str, Any] | None = None, *, parent_key: Mapping[str, str] | None = None,
-                 key_from_args: Mapping[str, str] | None = None) -> None:
+                 key_from_args: Mapping[str, str] | None = None, item_prefix: str | None = None) -> None:
         self.fields = dict(fields or {})
         self.parent_key = dict(parent_key or {})
         self.key_from_args = dict(key_from_args or {})
+        self.item_prefix = (item_prefix.rstrip(".") + ".") if item_prefix else None
         self._created: dict[int, set[str]] = {}
         self._mapped: dict[int, dict[str, str]] = {}
+        self._original: dict[int, dict[str, Any]] = {}
         self.counters: dict[str, dict[str, int]] = {"placeholders": {}, "dangling": {}, "computed": {}}
         self.unmapped: list[str] = []                  # fields whose column path cannot be placed on a row
+
+    def _relative(self, column: str) -> str:
+        col = column_name(column)
+        if self.item_prefix and col.startswith(self.item_prefix):
+            return col[len(self.item_prefix):]
+        return col
 
     def column_of(self, field: str) -> str | None:
         fm = self.fields.get(field)
         if fm is None:
             return None
-        return column_name(fm.column) if fm.column else field
+        return self._relative(fm.column) if fm.column else field
 
     def field_of(self, column: str) -> str | None:
-        col = column_name(column)
+        col = self._relative(column)
         for field, fm in self.fields.items():
-            if (column_name(fm.column) if fm.column else field) == col:
+            if "[]" not in field and (self._relative(fm.column) if fm.column else field) == col:
                 return field
         return None
+
+    def _bump(self, bucket: str, field: str) -> None:
+        self.counters[bucket][field] = self.counters[bucket].get(field, 0) + 1
+
+    def _item_placeholders(self, out: dict[str, Any], field: str, fm: Any) -> None:
+        """``children[].name``: placeholder values inside the items of ``children`` become null (on a
+        copy of the list, so the upstream object is not changed)."""
+        container, _, inner = field.partition("[].")
+        items = get_path(out, container)
+        if not inner or not isinstance(items, list) or not fm.placeholders:
+            return
+        bucket = "dangling" if fm.on_placeholder == "dangling_ref" else "placeholders"
+        changed = False
+        copied: list[Any] = []
+        for item in items:
+            if isinstance(item, Mapping) and any(_same(get_path(item, inner), p) for p in fm.placeholders):
+                item = dict(item)
+                set_path(item, inner, None)
+                self._bump(bucket, field)
+                changed = True
+            copied.append(item)
+        if changed:
+            set_path(out, container, copied)
 
     def to_logical(self, row: Any, *, payload: Any = None, args: Mapping[str, Any] | None = None,
                    anchor_vector: Sequence[float] | None = None) -> Any:
@@ -323,19 +408,27 @@ class FieldMapper:
         out = dict(row)
         created: set[str] = set()
         mapped: dict[str, str] = {}
+        original: dict[str, Any] = {}
 
-        def add(column: str, value: Any) -> None:
+        def add(column: str, value: Any) -> bool:
             if column.startswith("/"):                 # a parent key part kept apart from the item's fields
                 out[column] = value
                 created.add(column)
-                return
+                return True
             top = column_name(column).split(".")[0].split("[")[0]
             if top not in row:
                 created.add(top)
-            if not set_path(out, column, value) and column not in out:
+            if set_path(out, column, value):
+                return True
+            if column not in out:
                 self.unmapped.append(column)
+            created.discard(top)
+            return False
 
         for field, fm in self.fields.items():
+            if "[]" in field:                          # a per-item spec, not a row field
+                self._item_placeholders(out, field, fm)
+                continue
             if fm.computed is not None:
                 value = row.get(field)
                 spec = fm.computed
@@ -343,22 +436,24 @@ class FieldMapper:
                 if value is None and anchor_vector is not None and src:
                     value = cosine(get_path(row, str(src)), anchor_vector)
                     if value is not None:
-                        self.counters["computed"][field] = self.counters["computed"].get(field, 0) + 1
+                        self._bump("computed", field)
                 if value is not None and isinstance(value, float) and not math.isfinite(value):
                     value = None
                 out[field] = value
                 continue
-            col = column_name(fm.column)
-            value = row.get(field)
+            col = self._relative(fm.column) if fm.column else field
+            value = row[field] if field in row else get_path(row, field)
+            original[field] = value
             if fm.placeholders and any(_same(value, p) for p in fm.placeholders):
-                bucket = "dangling" if fm.on_placeholder == "dangling_ref" else "placeholders"
-                self.counters[bucket][field] = self.counters[bucket].get(field, 0) + 1
+                self._bump("dangling" if fm.on_placeholder == "dangling_ref" else "placeholders", field)
                 value = None
                 if col == field:
                     out[field] = None
             if col != field:
-                add(col, value)
-                mapped[col] = field
+                if add(col, value):
+                    mapped[col] = field
+            elif field not in row and "." in field:
+                pass                                   # a nested upstream field read in place
             else:
                 out[field] = value
         for col, path in self.parent_key.items():
@@ -369,19 +464,27 @@ class FieldMapper:
                 add(col, args.get(arg))
         self._created[id(out)] = created
         self._mapped[id(out)] = mapped
+        self._original[id(out)] = original
         return out
 
     def to_output(self, row: Any) -> Any:
-        """The upstream-shaped row: added names removed, changed mapped values written back."""
+        """The upstream-shaped row: added names removed, mapped values a transform changed written back."""
         if not isinstance(row, Mapping):
             return row
         rid = id(row)
         created = self._created.get(rid, set())
         mapped = self._mapped.get(rid, {})
+        original = self._original.get(rid, {})
         out = dict(row)
         for col, field in mapped.items():
-            if field in out or field in self.fields:
-                out[field] = get_path(row, col)
+            value = get_path(row, col)
+            if field in original and _same(value, original[field]) and \
+                    (value is None) == (original[field] is None):
+                continue                               # unchanged: upstream's value stays as returned
+            if field in row or "." not in field:
+                out[field] = value
+            else:
+                _set_copy(out, field, value)
         for name in created:
             out.pop(name, None)
         return out
@@ -430,6 +533,11 @@ def recount(obj: Any, count_fields: Sequence[str] | Mapping[str, str], returned:
                     if jp_first(el, t_rest) != n:
                         jp_set(el, t_rest, n)
                         changed[f"{prefix}[{k}]{t_rest[1:]}"] = n
+            elif s_parts and s_parts[-1] == WILDCARD:
+                n = len(jp_get(obj, source))           # len($.a[*].b[*]): every item matched
+                if jp_get(obj, target) and jp_first(obj, target) != n:
+                    jp_set(obj, target, n)
+                    changed[target] = n
             else:
                 src = jp_first(obj, source)
                 n = len(src) if isinstance(src, (list, dict)) else 0

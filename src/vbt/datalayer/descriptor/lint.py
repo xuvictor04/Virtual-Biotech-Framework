@@ -1217,6 +1217,15 @@ class _OverlayLinter:
             hit = self.table_of(res.rows_of, f"{w}.rows_of")
             if hit is not None and hit[0].tables[hit[1]].items_of is None:
                 self.add("error", f"{w}.rows_of", f"{res.rows_of!r} is not an item table", "binding", res.rows_of)
+        if res.grain not in (None, "row", "rows") and b.witness:
+            # the witness counts this grain: the result table (or the table it is an item table of) declares it
+            hit = self.result_table(b)
+            if hit is not None:
+                spec_t = hit[0].tables[hit[1]]
+                parent = hit[0].tables.get(spec_t.items_of.table) if spec_t.items_of is not None else None
+                if res.grain not in spec_t.grains and (parent is None or res.grain not in parent.grains):
+                    self.add("error", f"{w}.grain", f"{hit[0].source}.{hit[1]} declares no grain {res.grain!r} "
+                             "(use row, a declared grain, or witness: false)", "binding", res.grain)
         for arg, spec in res.echo_specs().items():
             if isinstance(spec, EchoSpec) and spec.source == "request":
                 self.add("error", f"{w}.echo.{arg}", "an echo must read the record (source: record), not copy the "

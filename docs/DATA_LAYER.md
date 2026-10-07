@@ -3360,7 +3360,7 @@ data:
   overlays_dir: configs/data/overlays
   cache_dir: ${VBT_DATA_DIR:-data}/.vbt-datalayer   # index/, readiness/, stats/; always safe to delete
   gateway:
-    mode: enforce                     # off | observe | enforce
+    mode: enforce                     # "off" | observe | enforce (quote "off")
     enforce_servers: all              # or a list, for staged rollout
     profile: safe                     # safe | fidelity
     when_service_down: strict         # strict: guarded tools not_ready; lenient: generic guard

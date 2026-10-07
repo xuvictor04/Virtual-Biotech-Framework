@@ -49,7 +49,8 @@ id_types:
   reactome_pathway: {plugin: reactome, universe: reactome.id, resolve_via: [reactome.label]}
   go_term:          {plugin: go, universe: go.id, resolve_via: [go.name],
                      retired: {label_prefix: "obsolete "}}               # 8,259 obsolete names in OT go (VERIFIED)
-  so_term:          {plugin: so, universe: so.id, resolve_via: [so.label]}
+  so_term:          {plugin: so, options: {separator: "_"}, universe: so.id,   # 25.09 stores SO_0001583
+                     resolve_via: [so.label]}
   biosample:        {plugin: local_key, options: {canonical: "^[A-Za-z]+_[A-Za-z0-9]+$", normalize: [strip]},
                      universe: biosample.biosampleId, resolve_via: [biosample.biosampleName, biosample.synonyms]}
   gwas_study:       {plugin: gwas_study, universe: study.studyId}
@@ -311,6 +312,30 @@ tables:
     grain: one COSMIC cancer hallmark annotation of one gene
     key: {columns: [], check: sampled}
     coverage: {statement: "COSMIC cancer hallmark annotations; no annotation means not annotated, not that the gene has no hallmark role.",
+               absence_means: unknown}
+
+  target_constraint:                            # item table: rows of get_genetic_constraint
+    kind: fact
+    items_of: {table: target, path: "constraint[]"}
+    grain: one gnomAD constraint metric (syn, mis or lof) of one gene
+    key: {columns: [], check: sampled}
+    coverage: {statement: "gnomAD constraint metrics integrated by OT 25.09; a gene with no metrics was not assessed.",
+               absence_means: unknown}
+
+  target_subcellular_locations:                 # item table: rows of get_subcellular_locations
+    kind: fact
+    items_of: {table: target, path: "subcellularLocations[]"}
+    grain: one subcellular location of one gene from one source
+    key: {columns: [], check: sampled}
+    coverage: {statement: "Subcellular locations (HPA, UniProt) integrated by OT 25.09; a missing location means not reported.",
+               absence_means: unknown}
+
+  target_class:                                 # item table: rows of get_target_class
+    kind: fact
+    items_of: {table: target, path: "targetClass[]"}
+    grain: one ChEMBL target class of one gene at one level
+    key: {columns: [], check: sampled}
+    coverage: {statement: "ChEMBL target classes integrated by OT 25.09; a gene with no class was not classified.",
                absence_means: unknown}
 
   target_prioritisation:

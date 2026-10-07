@@ -36,4 +36,5 @@ tools:
     serve: pass
     defects:
       - {id: PUBMED-001, what: "PMC1234 passed as a PMID returns the record of PMID 1234 (VERIFIED); more than 50 PMIDs are silently truncated",
-         where: "src/vbt/mcp_servers/pubmed_server.py:231-235", effect: silent_wrong}
+         where: "src/vbt/mcp_servers/pubmed_server.py:231-235", test: test_dl_correctness_six.py::test_ct1_today_pmcid,
+         effect: silent_wrong}

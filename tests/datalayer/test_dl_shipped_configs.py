@@ -250,16 +250,53 @@ def test_defects_point_at_existing_upstream_lines(catalog) -> None:
     assert not [i for i, n in ids.items() if n > 1], "defect ids are unique"
 
 
+def _test_names(path: Path) -> set[str]:
+    return {n.name for n in ast.parse(path.read_text(encoding="utf-8")).body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+#: Files whose tests may serve as a defect's detector: the detectors, and the correctness pins of today.
+DETECTOR_FILES = (DETECTORS, DETECTORS.parent / "test_dl_correctness_six.py")
+
+#: §11.6: ``order_source: upstream_full_sort`` skips the ranking refusal only when a detector proves it.
+FULL_SORT_PROOFS = {
+    "association.query_associations": "test_full_sort_associations",
+    "association.get_associations_for_disease": "test_full_sort_associations",
+    "association.get_associations_for_target": "test_full_sort_associations",
+    "association.filter_by_datatype": "test_full_sort_filters",
+    "association.filter_by_datasource": "test_full_sort_filters",
+    "association.find_similar_entities": "test_full_sort_similar",
+    "genetics.query_gwas_associations": "test_full_sort_genetics",
+    "genetics.get_credible_sets": "test_full_sort_genetics",
+}
+
+
 def test_defect_detectors_exist(catalog) -> None:
-    names = {n.name for n in ast.parse(DETECTORS.read_text(encoding="utf-8")).body if isinstance(n, ast.FunctionDef)}
+    names = {f.name: _test_names(f) for f in DETECTOR_FILES}
     named = 0
     for server, tool, d in _defects(catalog):
         if d.test is None:
             continue
         file, _, func = d.test.partition("::")
-        assert file == DETECTORS.name and func in names, f"{server}.{tool} {d.id}: detector {d.test} not found"
+        assert func in names.get(file, set()), f"{server}.{tool} {d.id}: detector {d.test} not found"
         named += 1
     assert named >= 14
+
+
+def test_remote_defects_have_detectors(catalog) -> None:
+    """Until phase 4 every remote tool's known miscount carries a detector test (§11.6)."""
+    missing = [f"{s}.{t} {d.id}" for s, t, d in _defects(catalog)
+               if s in ("clinicaltrials", "pubmed", "single_cell") and d.test is None]
+    assert not missing, missing
+
+
+def test_upstream_full_sort_is_proven(catalog) -> None:
+    detectors = _test_names(DETECTORS)
+    declared = sorted(f"{s}.{t}" for s in catalog.servers() for t in catalog.tools(s)
+                      if _binding(catalog, f"{s}.{t}").result.order_source == "upstream_full_sort")
+    assert declared, "no upstream_full_sort binding"
+    for name in declared:
+        assert FULL_SORT_PROOFS.get(name) in detectors, f"{name}: upstream_full_sort without a detector proving it"
 
 
 # ---------------------------------------------------------------------------- fixtures vs descriptors

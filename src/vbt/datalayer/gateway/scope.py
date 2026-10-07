@@ -119,11 +119,13 @@ def scope_completeness(contract: Any, plan: Any, witness: Any, *, fixed: Mapping
                        order: Sequence[Any] | None = None, verb: str | None = None, route: str = "upstream",
                        inflated: bool = True, values: Mapping[str, Sequence[Any]] | None = None,
                        storage_types: Mapping[str, str | None] | None = None,
-                       units: Mapping[str, str] | None = None) -> ScopeDecision:
+                       units: Mapping[str, str] | None = None,
+                       vocab_values: Mapping[str, Sequence[Any]] | None = None) -> ScopeDecision:
     """Apply the rule (module docstring). ``fixed`` maps columns fixed by equality arguments to
     their values; ``values`` gives distinct values per dimension when the witness has none (a
     vocabulary snapshot); ``inflated`` says whether a pass-mode limit was inflated so the gateway can
-    cut per group."""
+    cut per group. ``vocab_values`` (every stored value of a dimension) fill an error's ``values`` and
+    ``retry_with`` when the values under the call are unknown; they are never disclosed as this call's."""
     decision = ScopeDecision()
     b = contract.binding
     bound = getattr(plan, "bound_table", None) or contract.bound_table
@@ -201,11 +203,17 @@ def scope_completeness(contract: Any, plan: Any, witness: Any, *, fixed: Mapping
         if ranked:
             mode = limit_binding.limit_mode if limit_binding is not None else "per_group"
             if mode == "refuse" or (route == "upstream" and not inflated):
-                payload = incomplete_key_payload(_last(dim), arg, vals, unit=unit, subkind="incomparable_order",
+                offered = vals
+                if not vals_known:
+                    vv = (vocab_values or {}).get(dim) or (vocab_values or {}).get(_last(dim)) or []
+                    offered = sorted({repr(json_value(v, st)): json_value(v, st) for v in vv}.values(),
+                                     key=lambda v: (v is None, str(type(v)), v if v is not None else 0))
+                payload = incomplete_key_payload(_last(dim), arg, offered, unit=unit, subkind="incomparable_order",
                                                  storage_type=st)
+                across = f"across {len(vals)} groups" if vals_known else "across its groups"
                 raise GatewayError(ErrorKind.incomplete_key,
-                                   f"{ranked[0]} is comparable only within {_last(dim)}; a single top-k across "
-                                   f"{len(vals)} groups is not meaningful; pass {arg or _last(dim)}",
+                                   f"{ranked[0]} is comparable only within {_last(dim)}; a single top-k {across} "
+                                   f"is not meaningful; pass {arg or _last(dim)}",
                                    tool=f"mcp__{contract.server}__{contract.tool}", argument=arg, payload=payload)
             decision.per_group.append(_last(dim))
             decision.notes.append(f"ranked by {ranked[0]} within each {_last(dim)}")

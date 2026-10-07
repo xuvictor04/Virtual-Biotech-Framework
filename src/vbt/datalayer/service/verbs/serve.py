@@ -6,9 +6,9 @@ Verbs (phase 1):
   ``rank``; nulls last, ties by the canonical key; within the ``group_by`` groups, else within the
   order's ``within`` columns, with ``limit`` per group), cut to ``limit`` (per ``limit_grain``: each
   grain's best row), one row per ``distinct`` combination, with ``explode``/``carry``/``rename``. ``nest: {group_by, items, count_as, having,
-  include_negated}`` groups rows **after** dropping negated rows (a ``qualifier`` with ``effect:
-  negate`` that is true), keeps groups whose count satisfies ``having`` and cuts the groups to
-  ``limit``; ``split: {by, limit, values}`` returns ``{value: rows}`` with a limit per list.
+  item_filter, include_negated}`` groups rows **after** dropping negated rows and items (a ``qualifier``
+  with ``effect: negate`` that is true) and items failing ``item_filter``, keeps groups whose count
+  satisfies ``having`` (``min_arg`` reads the bound from an argument) and cuts the groups to ``limit``; ``split: {by, limit, values}`` returns ``{value: rows}`` with a limit per list.
   ``sections: {name: {table, verb, predicate, key, columns, order, limit, single}}`` are served
   per section; a section over an ``entity_detail`` table is always a list.
 * ``search``: ``search_text`` against the key, label and synonym leaves, ranked by match class
@@ -22,7 +22,8 @@ Verbs (phase 1):
 
 ``served_by`` is ``derived``. Over the scan budget the response has no rows, ``total: null`` and a
 ``reason`` starting with ``too_large:`` (never a partial answer presented as complete). Counters that
-have no field of their own (``excluded_negated``) are reported in ``sections["_excluded"]``.
+have no field of their own (``excluded_negated``, groups ``filtered`` empty) are reported in
+``sections["_excluded"]``.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ from typing import Any, Mapping, Sequence
 
 from ...descriptor.columns import is_container
 from ...ipc import VERB_SERVE, ServeRequest, ServeResponse
-from ...predicate import And, Eq, from_json
+from ...predicate import And, Eq, evaluate, from_json
 from ...roles import parse_path
 from .. import ServiceContext, ServiceError
 from .. import items as _items
@@ -73,11 +74,16 @@ def _truthy(v: Any) -> bool:
     return v is True or (isinstance(v, str) and v.strip().lower() in ("true", "1", "yes", "not"))
 
 
-def _nest(rows: list[dict[str, Any]], spec: Mapping[str, Any], negate: Sequence[str]
-          ) -> tuple[list[dict[str, Any]], int]:
-    """Group rows (after dropping negated rows unless ``include_negated``); returns (groups, n negated)."""
+def _nest(rows: list[dict[str, Any]], spec: Mapping[str, Any], negate: Sequence[str],
+          params: Mapping[str, Any] | None = None) -> tuple[list[dict[str, Any]], int, int]:
+    """Group rows; returns (groups, n negated, n filtered). Negated rows, and negated items of a list
+    field, are dropped (unless ``include_negated``), as are items failing ``item_filter`` (the argument
+    predicates on the items). A group left without items is dropped: counted as negated when items
+    matched the filters but every one was negated, else as filtered. ``having`` is checked on what
+    remains, so a limit applied to the groups never selects a group the filters empty."""
     negated = 0
-    if not spec.get("include_negated"):
+    include_negated = bool(spec.get("include_negated"))
+    if not include_negated:
         kept = []
         for r in rows:
             if any(_truthy(r.get(c)) for c in negate if c in r):
@@ -85,12 +91,15 @@ def _nest(rows: list[dict[str, Any]], spec: Mapping[str, Any], negate: Sequence[
                 continue
             kept.append(r)
         rows = kept
+    item_preds = [from_json(p) for p in spec.get("item_filter") or []]
     group_by = list(spec.get("group_by") or [])
     items = spec.get("items") or "items"
     name = items if isinstance(items, str) else str(items.get("name", "items"))
     cols = None if isinstance(items, str) else list(items.get("columns") or []) or None
     count_as = spec.get("count_as")
     groups: dict[str, dict[str, Any]] = {}
+    matched: dict[str, bool] = {}                      # a group had an item passing the filters
+    dropped: dict[str, bool] = {}                      # a group lost items to the filters or negation
     for r in rows:
         gkey = json.dumps([r.get(g) for g in group_by], default=str)
         g = groups.get(gkey)
@@ -98,20 +107,47 @@ def _nest(rows: list[dict[str, Any]], spec: Mapping[str, Any], negate: Sequence[
             g = groups[gkey] = {c: r.get(c) for c in group_by}
             g[name] = []
         if cols is None and isinstance(r.get(name), list):
-            g[name].extend(r[name])                    # items is a list field of the rows: merge the lists
+            for it in r[name]:                         # items is a list field of the rows: merge the lists
+                if item_preds and not all(evaluate(p, it, params) is True for p in item_preds):
+                    dropped[gkey] = True
+                    continue
+                matched[gkey] = True
+                if not include_negated and isinstance(it, Mapping) and \
+                        any(_truthy(it.get(c)) for c in negate if c in it):
+                    dropped[gkey] = True
+                    continue
+                g[name].append(it)
             continue
         item = {k: v for k, v in r.items() if k not in group_by} if cols is None else {c: r.get(c) for c in cols}
         g[name].append(item)
     out = []
-    having = spec.get("having") or {}
-    for g in groups.values():
+    filtered = 0
+    having = _resolve_having(spec.get("having") or {}, params or {})
+    for gkey, g in groups.items():
         n = len(g[name])
         if count_as:
             g[str(count_as)] = n
+        if n == 0 and dropped.get(gkey):
+            if matched.get(gkey):
+                negated += 1                           # every matching item was negated
+            else:
+                filtered += 1                          # no item passed the filters
+            continue
         if not _having_ok(n, having):
             continue
         out.append(g)
-    return out, negated
+    return out, negated, filtered
+
+
+def _resolve_having(having: Mapping[str, Any], params: Mapping[str, Any]) -> dict[str, Any]:
+    """``{min_arg: <argument>}`` (and ``max_arg``) take their bound from the call's argument; unset, no bound."""
+    out = {k: v for k, v in having.items() if k not in ("min_arg", "max_arg")}
+    for k, bound in (("min_arg", "min"), ("max_arg", "max")):
+        arg = having.get(k)
+        v = params.get(str(arg)) if arg else None
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[bound] = v
+    return out
 
 
 def _having_ok(n: int, having: Mapping[str, Any]) -> bool:
@@ -174,7 +210,9 @@ def _section(ctx: ServiceContext, name: str, sec: Mapping[str, Any], params: Map
     rows, _keys, _st = reader.rows(pred, sec.get("columns") or (), sec.get("order") or (), sec.get("limit"),
                                    params=params)
     if sec.get("single") and reader.table.kind != "entity_detail":
-        return rows[0] if rows else None
+        row = rows[0] if rows else None
+        field = sec.get("value")
+        return row.get(str(field)) if field and isinstance(row, Mapping) else row
     return rows
 
 
@@ -358,12 +396,12 @@ def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
         if req.nest:
             nest = dict(req.nest)
             nest["group_by"] = [req.rename.get(c, c) for c in nest.get("group_by") or []]   # rows are renamed
-            nested, negated = _nest(rows, nest, _negate_columns(reader))
+            nested, negated, filtered = _nest(rows, nest, _negate_columns(reader), params)
             total = len(nested)
             truncated = req.limit is not None and total > int(req.limit)
             out_rows = nested[: int(req.limit)] if req.limit is not None else nested
             keys = []
-            sections["_excluded"] = {"negated": negated}
+            sections["_excluded"] = {"negated": negated, "filtered": filtered}
         if req.split:
             out_rows = _split(out_rows, req.split, req.limit)
             truncated = sum(len(v) for v in out_rows.values()) < len(rows)

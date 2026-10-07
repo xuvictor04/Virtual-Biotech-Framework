@@ -67,7 +67,7 @@ async def test_filter_injected_into_search_and_rows_withheld(tmp_path):
     sent: dict[str, Any] = {}
     plan, res = await call(gw, "clinicaltrials", "search", {"condition": "asthma", "advanced_filter": "AREA[Phase]PHASE3"},
                            lambda a: sent.update(a) or {"trials": TRIALS, "total_count": 4})
-    assert sent["advanced_filter"] == "AREA[Phase]PHASE3 AND AREA[StudyFirstPostDate]RANGE[MIN,2020-01-15]"
+    assert sent["advanced_filter"] == "(AREA[Phase]PHASE3) AND (AREA[StudyFirstPostDate]RANGE[MIN,2020-01-15])"
     ids = [t["nctId"] for t in res.obj["trials"]]
     assert ids == ["NCT01", "NCT04"]                 # NCT02 posted Jan 2020 (= Jan 31), NCT03 changed after
     h = hdr(res)
@@ -75,6 +75,30 @@ async def test_filter_injected_into_search_and_rows_withheld(tmp_path):
     # NCT04 has no dates: kept, but the record says the ceiling could not be checked
     assert res.provenance.leakage == {"ceiling": "2020-01-15", "withheld": 2, "risk": True}
     assert h["total_method"] == "upstream_upper_bound" and h.get("order") is None
+
+
+async def test_ceiling_cannot_be_escaped_by_an_or(tmp_path):
+    """AND binds tighter than OR in Essie: the existing filter is parenthesised before the ceiling is ANDed,
+    and a wrapped free-text value may not close its wrap early (SC1)."""
+    gw = ct(tmp_path)
+    sent: dict[str, Any] = {}
+    await call(gw, "clinicaltrials", "search", {"advanced_filter": "AREA[Phase]PHASE3 OR AREA[Phase]PHASE2"},
+               lambda a: sent.update(a) or {"trials": [], "total_count": 0})
+    assert sent["advanced_filter"] == ("(AREA[Phase]PHASE3 OR AREA[Phase]PHASE2) AND "
+                                       "(AREA[StudyFirstPostDate]RANGE[MIN,2020-01-15])")
+    wrapped = {**CT_OVERLAY, "tools": {**CT_OVERLAY["tools"], "search": {
+        **CT_OVERLAY["tools"]["search"],
+        "args": {"condition": {"role": "free_text", "interpreted_as": "engine", "wrap": "({value})"},
+                 "advanced_filter": {"role": "free_text", "wrap": "({value})"}}}}}
+    gw = ct(tmp_path / "wrapped", overlay=wrapped)
+    for args in ({"advanced_filter": "x) OR (y"}, {"condition": "lung cancer) OR (melanoma"}):
+        with pytest.raises(GatewayError) as e:
+            await call(gw, "clinicaltrials", "search", args, lambda a: {"trials": [], "total_count": 0})
+        assert e.value.kind == ErrorKind.invalid_argument and "unbalanced parentheses" in e.value.message
+    sent.clear()
+    await call(gw, "clinicaltrials", "search", {"advanced_filter": "(x OR y)"},
+               lambda a: sent.update(a) or {"trials": [], "total_count": 0})
+    assert sent["advanced_filter"] == "(((x OR y))) AND (AREA[StudyFirstPostDate]RANGE[MIN,2020-01-15])"
 
 
 async def test_counting_tool_without_filter_is_quarantined(tmp_path):

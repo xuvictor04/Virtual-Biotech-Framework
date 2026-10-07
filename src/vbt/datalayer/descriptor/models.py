@@ -352,9 +352,16 @@ class FragmentKey(Strict):
 
 
 class SizeFrom(Strict):
+    """Count-first admission of a remote read (§14.1): the rows a call reads number ``column`` of the
+    ``table`` record it is scoped to. ``via`` (``server.tool``, called with ``{arg: <scope value>}``) reads
+    that count at ``path`` (a number, or a mapping of counts whose largest is taken) before the call."""
+
     table: str
     column: str
     row_bytes: int | None = None
+    via: str | None = None
+    arg: str | None = None
+    path: str | None = None
 
 
 class EvidenceNature(Strict):
@@ -409,6 +416,7 @@ class SectionSpec(Strict):
     verb: Literal["lookup", "find", "search", "members", "count", "aggregate", "similar", "expand"] = "lookup"
     single: bool = False                               # an entity_detail section is a list, never the first of many
     key_from_args: dict[str, str] = {}
+    value: str | None = None                           # single: the section holds this field of the record
 
 
 class ViewSpec(Strict):

@@ -620,11 +620,13 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
             for k, v in zip(key, m.key):
                 if v is None and k in nulls and (t.is_item_table or k not in flat):
                     nulls[k] += 1
-            ck = canonical(list(m.key), types)
-            if fraction < 1.0:
-                block = canonical([m.key[i] for i in prefix_idx]) if prefix_idx else ck
-                if _hash(block) % buckets >= keep_below:
+            if fraction < 1.0 and prefix_idx:
+                # the sample is decided on the prefix block before the full key is rendered
+                if _hash(canonical([m.key[i] for i in prefix_idx])) % buckets >= keep_below:
                     continue
+            ck = canonical(list(m.key), types)
+            if fraction < 1.0 and not prefix_idx and _hash(ck) % buckets >= keep_below:
+                continue
             if spill is not None:
                 spill.add(ck)
                 continue

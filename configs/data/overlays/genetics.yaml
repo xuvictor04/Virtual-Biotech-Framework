@@ -127,6 +127,7 @@ tools:
     exclusive: [[study_id, trait], [study_id, study_type], [study_id, gene_id], [study_id, min_sample_size], [study_id, project_id]]
     result:
       rows: $.studies
+      record_when: "$.studyId"                       # study_id: upstream returns the study record itself
       count_fields: [$.count]
       arg_echo: {limit: $.limit}
       order: [{column: studyId, direction: asc}]

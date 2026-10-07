@@ -379,6 +379,18 @@ def test_crash_classification():
     assert not d.oom and d.retry and d.error.kind is ErrorKind.server_crashed
     d = crash_decision("McpError: Connection closed", None, server="s", tool="t", attempt=1)
     assert not d.oom and not d.retry and d.error.retryable == "once"
-    # a MemoryError logged earlier by a tool that survived it is not a crash cause
-    d = crash_decision("EndOfStream", "Traceback ...\nMemoryError\n" + plain, server="s", tool="t")
+    # a MemoryError logged earlier by a tool that survived it (more output followed) is not a crash cause
+    d = crash_decision("EndOfStream", "Traceback ...\nMemoryError\nINFO handled request 7\n" + plain,
+                       server="s", tool="t")
     assert not d.oom
+    # RLIMIT_DATA fails the allocation instead of killing: an uncaught MemoryError (rc 1) or a C++
+    # std::bad_alloc (SIGABRT) that ends the process is oom, never retried (INV-1)
+    d = crash_decision("EndOfStream", "Traceback ...\nMemoryError\n" + plain, server="s", tool="t")
+    assert d.oom and not d.retry and d.error.kind is ErrorKind.oom
+    abrt = 'VBT_CHILD_EXIT {"code": null, "maxrss_kb": 10, "pid": 5, "reason": "signal", "signal": 6}\n'
+    d = crash_decision("Connection closed", "terminate called after throwing an instance of 'std::bad_alloc'\n"
+                       "  what():  std::bad_alloc\n" + abrt, server="s", tool="t")
+    assert d.oom and not d.retry
+    # a clean exit is never a memory death, whatever was logged
+    clean = 'VBT_CHILD_EXIT {"code": 0, "maxrss_kb": 10, "pid": 5, "reason": "exit_code", "signal": null}\n'
+    assert not crash_decision("EndOfStream", "MemoryError\n" + clean, server="s", tool="t").oom

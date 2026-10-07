@@ -103,6 +103,16 @@ class ArgBinding(Strict):
             raise ValueError("min > max")
         return self
 
+    @model_validator(mode="after")
+    def _text_match(self) -> "ArgBinding":
+        # a scalar argument upstream matches as text (substring, regex) is free text whatever the role
+        # says: it is checked for substring collisions and re-applied as a text match, never as an
+        # exact filter or a vocabulary value (a list argument keeps its role; its items are checked)
+        if self.role == "filter" and self.interpreted_as in ("substring", "casefold_substring", "regex") and \
+                self.op == "eq" and not self.each:
+            self.role = "free_text"
+        return self
+
     @property
     def bound_columns(self) -> list[str]:
         """Every column path this argument binds (selector maps and ``binds_any`` included)."""
@@ -190,10 +200,21 @@ class LeakageFilter(Strict):
     template: str                                      # a query fragment with "{ceiling}"
 
 
+class RequiresFixed(Strict):
+    """The tool is accepted only when ``arg`` (a SOMA filter) fixes each of ``columns`` to one value; else
+    ``unsupported_combination`` naming ``alternatives`` (a column unique only within another)."""
+
+    arg: str
+    columns: list[str]
+    reason: str
+    alternatives: list[str] = []
+
+
 class ResultSpec(Strict):
     kind: Literal["rows", "record", "count", "file"] = "rows"
     rows: str | list[str] | None = "$"
     rows_of: str | None = None                         # item table the rows are items of
+    record_when: str | None = None                     # payload test: a by-key reply is one record at "$"
     grain: str | None = None
     fields: dict[str, FieldMap] = {}
     parent_key: dict[str, str] = {}
@@ -285,6 +306,7 @@ class ToolBinding(Strict):
     on_contradiction: Literal["derived", "tool_defect"] = "derived"
     witness: bool = True
     leakage_filter: LeakageFilter | None = None
+    requires_fixed: list[RequiresFixed] = []
     defects: list[DefectSpec] = []
     text: TextSpec = TextSpec()
     hidden: bool = False

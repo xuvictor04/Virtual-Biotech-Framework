@@ -30,8 +30,12 @@ tools:
   search_interactions:
     reads: {open_targets.interaction: {access: full_table}}
     args:
-      target_a:        {binds: open_targets.interaction.targetA, accepts: [ensembl_gene, hgnc_symbol]}
-      target_b:        {binds: open_targets.interaction.targetB, accepts: [ensembl_gene, hgnc_symbol]}   # pair matched in either orientation
+      # an undirected edge: each endpoint matches either side, so one endpoint alone finds every edge of
+      # that gene and both together find the pair stored as (A, B) or (B, A)
+      target_a:        {binds_any: [open_targets.interaction.targetA, open_targets.interaction.targetB],
+                        accepts: [ensembl_gene, hgnc_symbol]}
+      target_b:        {binds_any: [open_targets.interaction.targetA, open_targets.interaction.targetB],
+                        accepts: [ensembl_gene, hgnc_symbol]}
       source_database: {binds: open_targets.interaction.sourceDatabase, match: casefold}
       min_count:       {binds: open_targets.interaction.count, op: ge, min: 0}
       limit:           {role: limit, min: 1, max: 1000, limit_mode: per_group}

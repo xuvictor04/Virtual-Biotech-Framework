@@ -40,8 +40,9 @@ def witness(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
                 if w not in group_by:
                     group_by.append(w)
     grains: dict[str, Any] = dict(req.grains)
-    if req.grain:
-        grains.setdefault("__grain__", req.grain)
+    grain = None if req.grain in ("row", "rows") else req.grain   # the reserved row grain counts rows
+    if grain:
+        grains.setdefault("__grain__", grain)
     k = req.k if settings.topk and req.order else None
     try:
         agg = reader.aggregate(req.predicate, order=[o.model_dump() for o in req.order], k=k, group_by=group_by,
@@ -56,7 +57,7 @@ def witness(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     except FormatError:
         raise
     st = agg.stats
-    total = agg.distinct_counts.pop("__grain__") if req.grain else st.total
+    total = agg.distinct_counts.pop("__grain__") if grain else st.total
     resp = WitnessResponse(
         total=total, total_method="footer" if st.footer else ("index" if st.used_sidecar else "scan"),
         topk=agg.topk if k else [],

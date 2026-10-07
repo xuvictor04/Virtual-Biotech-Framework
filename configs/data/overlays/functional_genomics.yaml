@@ -12,9 +12,9 @@ tools:
     args:
       gene_id: {binds: open_targets.target_essentiality.id, accepts: [ensembl_gene, hgnc_symbol]}
       disease: {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource",
-                match: casefold, item_filter: true}          # exact vocabulary value; substring collisions are rejected
+                interpreted_as: casefold_substring, match: casefold, item_filter: true}   # substring collisions are rejected
       tissue:  {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].tissueName",
-                match: casefold, item_filter: true}
+                interpreted_as: casefold_substring, match: casefold, item_filter: true}
     result:
       rows: "$.essentiality_by_tissue[*].cell_lines"
       rows_of: open_targets.target_essentiality_screens
@@ -45,7 +45,7 @@ tools:
     reads: {open_targets.target_essentiality: {access: full_table}}
     args:
       disease:              {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource",
-                             match: casefold, item_filter: true}
+                             interpreted_as: casefold_substring, match: casefold, item_filter: true}
       min_effect_threshold: {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].geneEffect",
                              op: le, item_filter: true}
       min_cell_lines:       {role: family_param, min: 1}           # screens per gene with a gene effect (having)
@@ -70,7 +70,8 @@ tools:
     args:
       gene_id:  {binds: open_targets.target_essentiality.id, accepts: [ensembl_gene, hgnc_symbol]}
       diseases: {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource",
-                 op: in, each: true, match: casefold, item_filter: true}   # overlapping groups -> invalid_argument
+                 op: in, each: true, interpreted_as: casefold_substring, match: casefold,
+                 item_filter: true}                                        # overlapping groups -> invalid_argument
     witness: false
     result:
       rows: $.disease_essentiality
@@ -92,9 +93,9 @@ tools:
     reads: {open_targets.target_essentiality: {access: full_table}}
     args:
       target_disease:     {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource",
-                           match: casefold, item_filter: true}
+                           interpreted_as: casefold_substring, match: casefold, item_filter: true}
       comparison_disease: {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource",
-                           match: casefold, item_filter: true}
+                           interpreted_as: casefold_substring, match: casefold, item_filter: true}   # overlapping groups -> invalid_argument
       min_effect_difference: {role: family_param, min: 0}
       min_cell_lines:        {role: family_param, min: 1}
       limit:                 {role: limit, min: 1, max: 10000, limit_grain: gene}

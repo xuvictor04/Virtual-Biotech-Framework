@@ -130,7 +130,7 @@ tools:
       rename: {disease: disease_id}
       sections:
         phenotype: {path: $.phenotype_name, table: open_targets.disease_hpo, verb: lookup, single: true,
-                    key_from_args: {id: phenotype_id}}
+                    key_from_args: {id: phenotype_id}, value: name}   # the term's name, as upstream gives it
     defects:
       - {id: OT-DIS-006, what: "diseases whose evidence list is empty after the evidence_type filter are kept (count 0), and negated (qualifierNot) items count as support",
          where: "disease_mcp/tools.py:605-627", test: test_dl_defect_detectors.py::test_ot_dis_006, effect: silent_wrong}

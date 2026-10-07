@@ -12,10 +12,10 @@ for genetic evidence that your GWAS/L2G/colocalisation tools do not cover:
 - Other genetic datasources (e.g. `gwas_credible_sets`, `eva` (ClinVar),
   `genomics_england`, `orphanet`, `clingen`, `gene2phenotype`, `uniprot_variants`)
   and the `genetic_association` datatype (`mcp__association__filter_by_datatype`).
-- `mcp__association__compare_direct_indirect` to check whether support comes
-  from the disease itself or only from descendant terms;
-  `mcp__association__get_associations_for_target` / `query_associations` for
-  the overall picture.
+- `mcp__association__query_associations` with `include_indirect=false` and then
+  `include_indirect=true` to check whether support comes from the disease itself
+  or only from descendant terms (compare the two results);
+  `mcp__association__get_associations_for_target` for the overall picture.
 
 A resolved query with `status: empty` means no rows in this source's coverage;
 record it only as an absence finding (`supports: absence`), never as support. A

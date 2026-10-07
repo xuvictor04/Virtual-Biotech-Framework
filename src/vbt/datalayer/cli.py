@@ -25,7 +25,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 __all__ = ["add_datasource_parsers", "ALIASES", "COMMANDS"]
 
@@ -68,6 +68,27 @@ def _split_tool(text: str) -> tuple[str, str]:
     if not sep or not server or not tool:
         raise ValueError(f"expected <server>.<tool>, got {text!r}")
     return server, tool
+
+
+def _unknown_tool(config: dict[str, Any], catalog: Any, server: str, tool: str, *, bound: bool) -> str | None:
+    """Why ``server.tool`` names nothing (None when it is known): the server must be in the catalog or the
+    configured MCP servers; with ``bound`` the tool must have a binding (a check or an estimate needs one)."""
+    configured = {s.get("name") for s in (config.get("mcp_servers") or {}).get("servers", [])}
+    if server not in set(catalog.servers()) | configured:
+        return f"unknown server {server!r}"
+    if bound and tool not in set(catalog.tools(server)):
+        return f"{server}.{tool} has no binding in the catalog (unknown tool, or not reviewed)"
+    return None
+
+
+def _unknown_tables(catalog: Any, refs: Iterable[str]) -> list[str]:
+    out = []
+    for ref in refs:
+        try:
+            catalog.table(ref)
+        except Exception:  # noqa: BLE001
+            out.append(str(ref))
+    return out
 
 
 # ---------------------------------------------------------------------------- list / describe / lint
@@ -215,10 +236,17 @@ def cmd_check(args: argparse.Namespace, config: dict[str, Any]) -> int:
         tables.append(".".join(parts[:2]))
         column = ".".join(parts[2:])
     _settings, catalog, _registry = _catalog(config)
+    bad = _unknown_tables(catalog, tables)
+    if bad:
+        _err(f"error: unknown table(s): {', '.join(bad)}")
+        return 2
     tool = None
     if args.tool:
         try:
             tool = _split_tool(args.tool)
+            why = _unknown_tool(config, catalog, *tool, bound=True)
+            if why:
+                raise ValueError(why)
             contract = catalog.contract(*tool)
         except Exception as exc:  # noqa: BLE001
             _err(f"error: {exc}")
@@ -247,7 +275,9 @@ def cmd_check(args: argparse.Namespace, config: dict[str, Any]) -> int:
         if tool_result is not None:
             body["tool"] = tool_result
         _out(json.dumps(body, sort_keys=True, default=str))
-        return 0 if (tool_result or {}).get("ready", True) else 1
+        if tool_result is not None:
+            return 0 if tool_result["ready"] else 1
+        return _check_rc(config, dr, set(tables))
     shown = set(tables)
     for ref, m in sorted(dr.tables.items()):
         if shown and ref not in shown:
@@ -283,7 +313,18 @@ def cmd_check(args: argparse.Namespace, config: dict[str, Any]) -> int:
         for ref in tool_result["unchecked"]:
             _out(f"  {ref}: unchecked")
         return 0 if tool_result["ready"] else 1
-    return 0
+    return _check_rc(config, dr, shown)
+
+
+def _check_rc(config: dict[str, Any], dr: Any, shown: set[str]) -> int:
+    """1 when a checked table failed its check or a required readiness result fails, else 0."""
+    from ..preflight import data_findings
+
+    if any(not shown or ref in shown for ref in dr.errors):
+        return 1
+    if shown:
+        return 1 if any(dr.tables[r].status not in ("ready", "partial") for r in shown if r in dr.tables) else 0
+    return 1 if any(not r.ok and r.required for r in data_findings(config, dr)) else 0
 
 
 # ---------------------------------------------------------------------------- resolve
@@ -304,6 +345,26 @@ def resolver_for(config: dict[str, Any]) -> tuple[Any, Any]:
     return Resolver(registry, catalog, store.provider(fingerprint), settings=settings), catalog
 
 
+def _no_local_index(config: dict[str, Any], catalog: Any, qualified: str) -> str | None:
+    """Why ``qualified`` (or the key type it labels) resolves offline only to existence ``unknown``."""
+    from .resolve import IndexStore
+    from .settings import DataSettings
+
+    store = IndexStore(DataSettings.from_config(config).cache_dir)
+    try:
+        source, spec = catalog.id_type(qualified)
+    except Exception:  # noqa: BLE001
+        return None
+    name = qualified.split(":", 1)[-1]
+    target = getattr(spec, "label_of", None) or name
+    if getattr(spec, "index", None) == "remote" or getattr(spec, "resolvable", True) is False:
+        return None
+    if store.fingerprints(source, target):
+        return None
+    return (f"no local index for {source}:{target}; values resolve by syntax only (existence unknown). "
+            f"Build it with `vbt ds index build --id-type {source}:{target}`")
+
+
 def cmd_resolve(args: argparse.Namespace, config: dict[str, Any]) -> int:
     resolver, catalog = resolver_for(config)
     try:
@@ -312,6 +373,9 @@ def cmd_resolve(args: argparse.Namespace, config: dict[str, Any]) -> int:
         _err(f"error: {exc}")
         return 2
     qualified = args.id_type if ":" in args.id_type else f"{source}:{args.id_type}"
+    no_index = _no_local_index(config, catalog, qualified)
+    if no_index:
+        _err(f"note: {no_index}")
     rc = 0
     rows = []
     for value in args.values:
@@ -405,6 +469,9 @@ def cmd_explain(args: argparse.Namespace, config: dict[str, Any]) -> int:
     elif args.target:
         try:
             targets = [_split_tool(args.target)]
+            why = _unknown_tool(config, catalog, *targets[0], bound=False)
+            if why:
+                raise ValueError(why)
         except ValueError as exc:
             _err(f"error: {exc}")
             return 2
@@ -522,6 +589,9 @@ def cmd_estimate(args: argparse.Namespace, config: dict[str, Any]) -> int:
     if args.tool:
         try:
             server, tool = _split_tool(args.tool)
+            why = _unknown_tool(config, catalog, server, tool, bound=True)
+            if why:
+                raise ValueError(why)
             contract = catalog.contract(server, tool)
         except Exception as exc:  # noqa: BLE001
             _err(f"error: {exc}")
@@ -530,6 +600,10 @@ def cmd_estimate(args: argparse.Namespace, config: dict[str, Any]) -> int:
         full = set(contract.full_table_reads)
     elif args.table:
         tables = list(args.table)
+        bad = _unknown_tables(catalog, tables)
+        if bad:
+            _err(f"error: unknown table(s): {', '.join(bad)}")
+            return 2
         full = set(tables)
     else:
         _err("error: pass --table S.T or --tool server.tool")
@@ -560,16 +634,22 @@ def cmd_estimate(args: argparse.Namespace, config: dict[str, Any]) -> int:
         _out(f"{ref}: {model.rows if model.rows is not None else '?'} rows, {model.fragments} fragments, "
              f"{model.bytes_on_disk / 1e6:.1f} MB on disk; upstream full load ~{up / 1e6:.0f} MB, "
              f"projected scan ~{scan / 1e6:.0f} MB")
-    for ref, err in sorted((stats.get("table_errors") or stats.get("errors") or {}).items()):
+    errors = dict(stats.get("table_errors") or stats.get("errors") or {})
+    for ref, err in sorted(errors.items()):
         _out(f"{ref}: error: {err}")
+    missing = sorted(str(r) for r in errors if str(r) in {str(f) for f in full} or server is None)
     if server is not None:
+        if missing:
+            # a table the tool loads whole could not be measured: no size, so no admission verdict
+            _out(f"tool {args.tool}: not estimable ({', '.join(missing)} unavailable)")
+            return 1
         _out(f"tool {args.tool}: upstream peak ~{total_upstream / 1e6:.0f} MB"
              + (f"; server limit {limit} MB" if limit else "")
              + (f"; host {host} MB" if host else "")
              + ("; admissible" if not limit or total_upstream / 1e6 <= limit else "; NOT admissible (too_large)"))
     elif host:
         _out(f"host memory: {host} MB")
-    return 0
+    return 1 if missing else 0
 
 
 # ---------------------------------------------------------------------------- retro-audit
