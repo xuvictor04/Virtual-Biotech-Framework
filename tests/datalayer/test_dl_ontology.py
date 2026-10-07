@@ -131,6 +131,33 @@ def test_include_descendants_through_a_derived_tool(ctx, tmp_path) -> None:
         (D[1], "HP_0000001"), (D[2], "HP_0000002"), (D[3], "HP_0000003")}
 
 
+def test_include_descendants_on_search_known_drugs(ctx, tmp_path) -> None:
+    """F18: drug.search_known_drugs offers include_descendants; such a call is served derived through the
+    known_drug ancestors (Eq OR Contains), keeps the term's own rows, adds the descendants' rows, and records
+    the expansion; without it the tool still goes upstream."""
+    import asyncio
+    import os
+
+    from test_dl_native_tools import _derived, _gateway
+    from vbt.datalayer.service import ServiceContext
+    from vbt.datalayer.settings import DataSettings
+
+    # the tiny release has no known_drug sentinel rows: readiness sentinels are not this test's subject
+    settings = DataSettings.from_dict({"descriptors_dir": str(REPO / "configs" / "data" / "sources"),
+                                       "overlays_dir": str(REPO / "configs" / "data" / "overlays"),
+                                       "cache_dir": str(tmp_path / "cache"), "readiness": {"sentinels": False}},
+                                      project_root=REPO)
+    assert os.environ.get("OPEN_TARGETS_DATA_PATH")
+    gw = _gateway(ServiceContext(settings), tmp_path)
+    wide = asyncio.run(_derived(gw, "drug", "search_known_drugs", {"disease_id": D[1], "include_descendants": True}))
+    assert {(r["drugId"], r["diseaseId"]) for r in wide.obj["drugs"]} == {("CHEMBL1", D[1]), ("CHEMBL2", D[3])}
+    assert wide.header["served_by"] == "derived"
+    records = wide.provenance.to_dict().get("derived") or {}
+    assert "_expansion" in records or "expansion" in json.dumps(records), records
+    b = gw.catalog.contract("drug", "search_known_drugs").binding
+    assert b.serve == "pass" and b.derived_when == ["include_descendants"]   # without it: upstream as before
+
+
 def test_propagated_over_columns_refuse_include_descendants(ctx) -> None:
     from vbt.datalayer.errors import GatewayError
     from vbt.datalayer.service.verbs.hierarchy import descendant_predicate

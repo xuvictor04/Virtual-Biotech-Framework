@@ -649,7 +649,10 @@ class DataGateway:
         st.predicate = conjuncts[0] if len(conjuncts) == 1 else (And(tuple(conjuncts)) if conjuncts else None)
         self._unique_within(plan, st, contract, selected)
         # route
-        derived = b.serve == "derived" and b.derived is not None and self.profile != "fidelity"
+        # a pass binding is served derived when an argument it lists in derived_when is set (upstream cannot
+        # honour include_descendants: the gateway answers that call itself)
+        wants = any(plan.args_raw.get(a) or plan.gateway_args.get(a) for a in b.derived_when)
+        derived = (b.serve == "derived" or wants) and b.derived is not None and self.profile != "fidelity"
         plan.route = "derived" if derived else "upstream"
         if st.undefined:
             plan.route = "none"

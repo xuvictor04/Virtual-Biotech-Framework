@@ -304,6 +304,8 @@ class ToolBinding(Strict):
     result: ResultSpec = ResultSpec()
     serve: Literal["pass", "derived", "block"] = "pass"
     derived: DerivedSpec | None = None
+    # gateway-only arguments that, when set, serve a `pass` binding through `derived` (include_descendants)
+    derived_when: list[str] = []
     block: BlockSpec | None = None
     on_contradiction: Literal["derived", "tool_defect"] = "derived"
     witness: bool = True

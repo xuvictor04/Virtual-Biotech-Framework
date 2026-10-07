@@ -112,6 +112,9 @@ tools:
       disease_id: {binds: open_targets.known_drug.diseaseId, accepts: [ot_disease, disease_name]}
       min_phase:  {binds: open_targets.known_drug.phase, op: ge, min: 0, max: 4}
       limit:      {role: limit, min: 1, max: 200}
+      # x-gateway (phase 3, F18): the disease and every descendant term, by the table's own ancestor list
+      # (Eq(diseaseId, X) OR Contains(ancestors, X)); each row keeps the disease it is annotated to
+      include_descendants: {role: family_param, gateway_only: true}
     require_any: [[target_id, disease_id]]
     result:
       rows: $.drugs
@@ -120,6 +123,10 @@ tools:
       arg_echo: {limit: $.limit}
       drop_fields: {$.message: "no curated drug is not evidence that the target is undruggable"}
     serve: pass
+    derived_when: [include_descendants]          # upstream cannot expand: those calls are served derived
+    derived: {verb: find, table: open_targets.known_drug, envelope: {success: true}}
+    text:
+      notes: ["include_descendants=true with disease_id also returns the drugs of every descendant disease term; each row names its own disease."]
     defects:
       - {id: OT-DRUG-003, what: "head(limit) before sort_values('phase'): the top rows are file order, not the highest phases",
          where: "drug_mcp/tools.py:590,601", test: test_dl_defect_detectors.py::test_ot_drug_003, effect: silent_wrong}

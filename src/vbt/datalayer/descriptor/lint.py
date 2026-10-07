@@ -1084,6 +1084,11 @@ class _OverlayLinter:
         # serve modes
         if b.serve == "derived" and b.derived is None:
             self.add("error", f"{w}.serve", "serve: derived needs a `derived` spec", "binding")
+        if b.derived_when and b.derived is None:
+            self.add("error", f"{w}.derived_when", "derived_when needs a `derived` spec", "binding")
+        for a in b.derived_when:
+            if a not in b.args or not b.args[a].gateway_only:
+                self.add("error", f"{w}.derived_when", f"{a} is not a gateway-only argument of this tool", "binding")
         if b.serve == "block":
             hidden = b.hidden or (b.block is not None and b.block.hidden)
             if b.block is None or (not b.block.alternatives and not hidden):
