@@ -246,15 +246,22 @@ class CheckRun:
     def model(self) -> TableCheckModel:
         status = worst(self.statuses)
         fp = sig = None
+        pfs: dict[str, str] = {}
         if self.reader is not None:
             try:
                 fp, sig = self.reader.fingerprint(), self.reader._sig
             except (ServiceError, OSError):
                 pass
+            # per-partition fingerprints let replay ignore drift in partitions a call did not read
+            if fp is not None and self.reader.spec.partitions:
+                try:
+                    pfs = self.reader.partition_fingerprints()
+                except (ServiceError, OSError):
+                    pfs = {}
         return TableCheckModel(status=status, columns=self.columns, containers=self.containers,
                                partitions=self.partitions, item_tables=self.item_tables, checks=self.checks,
-                               fingerprint=fp, signature=sig, confirmed=_jsonable(self.confirmed), vocab=self.vocab,
-                               key_check=self.key_check)
+                               fingerprint=fp, partition_fingerprints=pfs, signature=sig,
+                               confirmed=_jsonable(self.confirmed), vocab=self.vocab, key_check=self.key_check)
 
 
 def _jsonable(v: Any) -> Any:

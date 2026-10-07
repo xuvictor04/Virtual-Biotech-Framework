@@ -1277,10 +1277,26 @@ class Run:
         if not path.exists():
             link_cited_by(self.manifest["artifacts"], [])
             return []
-        refreshed = refresh_claims(claims, self._evidence_context())
+        ctx = self._evidence_context()
+        ctx.fingerprints = self._current_fingerprints()
+        refreshed = refresh_claims(claims, ctx)
         link_cited_by(self.manifest["artifacts"], refreshed)
         self._write_harness_json("evidence/claims.json", claims_payload(refreshed))
         return refreshed
+
+    def _current_fingerprints(self) -> dict[str, str] | None:
+        """Current reference-table fingerprints for the status refresh: the cache ``vbt ds fingerprint
+        --write`` keeps (``<data.cache_dir>/fingerprints.json``). None without a data configuration or
+        cache, so evidence is then not compared against reference data."""
+        if not isinstance(self.config, dict) or not isinstance(self.config.get("data"), dict):
+            return None
+        try:
+            from .verify import cached_fingerprints
+
+            return cached_fingerprints(self.config) or None
+        except Exception as exc:  # noqa: BLE001 - never fail a refresh over the fingerprint cache
+            self.note_audit_error(f"fingerprints: {type(exc).__name__}: {exc}")
+            return None
 
     def _summarise_turn_claims(self, claims: list[dict[str, Any]]) -> None:
         filed = {c.get("id"): c for c in claims}

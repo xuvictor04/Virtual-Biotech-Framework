@@ -31,6 +31,7 @@ HARNESS_MODULES = (
     "vbt.datalayer.descriptor.lint", "vbt.datalayer.descriptor.scoping", "vbt.datalayer.plugins.registry",
     "vbt.datalayer.resolve", "vbt.datalayer.gateway", "vbt.datalayer.gateway.readiness", "vbt.datalayer.derive",
     "vbt.datalayer.memory", "vbt.datalayer.launch", "vbt.datalayer.cli", "vbt.datalayer.retro_audit",
+    "vbt.datalayer.replay", "vbt.datalayer.diff_release", "vbt.verify",
     "vbt.preflight", "vbt.runtime", "vbt.orchestrator", "vbt.tools.mcp_bridge", "vbt.cli",
 )
 

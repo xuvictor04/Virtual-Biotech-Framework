@@ -223,36 +223,15 @@ def record_versions(record: Mapping[str, Any] | None) -> dict[str, dict[str, str
     return {}
 
 
-def _partition_parts(name: str) -> dict[str, str]:
-    out = {}
-    for part in str(name).split("/"):
-        k, sep, v = part.partition("=")
-        if sep:
-            out[k] = v
-    return out
-
-
 def partitions_from_scope(record: Mapping[str, Any], available: Iterable[str]) -> list[str] | None:
     """The partitions (``col=value[/col=value]``) a call read, from the scope it fixed: the partitions
     whose values agree with every fixed scope dimension that is a partition column. None when the scope
     fixes no partition column (the call read every partition)."""
+    from .gateway.readiness import partitions_selected
+
     req = record.get("request") if isinstance(record.get("request"), Mapping) else {}
     scope = req.get("scope") if isinstance(req.get("scope"), Mapping) else {}
-    names = list(available)
-    cols = {k for n in names for k in _partition_parts(n)}
-    fixed = {str(k).split(".")[-1]: v for k, v in scope.items() if str(k).split(".")[-1] in cols}
-    if not fixed:
-        return None
-
-    def agrees(name: str) -> bool:
-        parts = _partition_parts(name)
-        for col, value in fixed.items():
-            values = value if isinstance(value, (list, tuple)) else [value]
-            if col in parts and parts[col] not in {str(v) for v in values}:
-                return False
-        return True
-
-    return sorted(n for n in names if agrees(n))
+    return partitions_selected(scope, available)
 
 
 def stamp_partitions(record: dict[str, Any], stats: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:

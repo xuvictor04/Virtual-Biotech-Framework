@@ -100,6 +100,7 @@ class ResultInfo:
     truncated: bool | None = None
     order: OrderInfo | None = None
     key_columns: list[str] = field(default_factory=list)
+    key_storage_types: list[str | None] | None = None   # storage types of the key columns, in key order
     row_keys: list[Any] = field(default_factory=list)
     row_keys_complete: bool = True
     row_keys_sha256: str | None = None
@@ -109,6 +110,7 @@ class ResultInfo:
     computed: dict[str, Any] | None = None         # {metric, anchor_keys, input_row_keys_sha256, values_sha256}
     statistics: dict[str, Any] | None = None       # {test, correction, family_m, universe, query, propagation}
     transforms: list[str] = field(default_factory=list)
+    record_versions: dict[str, dict[str, str]] | None = None   # live tables: {source.table: {key: version}}
 
 
 @dataclass

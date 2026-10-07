@@ -70,8 +70,8 @@ def _write_run(run: Path, record: dict[str, Any], text: str) -> None:
 
 @pytest.fixture
 def world(ot_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    """A copy of the OT fixture and a run with one recorded ``query_evidence`` call, its record stamped
-    with the partitions it read (as the runtime does once the gateway records them)."""
+    """A copy of the OT fixture and a run with one recorded ``query_evidence`` call; the gateway's record
+    names the partitions the call read and their fingerprints."""
     import dl_fixtures as F
 
     root = F.copy_fixture(ot_root, tmp_path / "ot" / "25.09")
@@ -82,8 +82,6 @@ def world(ot_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Sim
         res = await rp.call(*CALL)
         rec = res.provenance.to_dict()
         rec["tool_use_id"] = TUID
-        tables = [f"open_targets.{t['name']}" for t in rec["tables"]]
-        stamp_partitions(rec, await rp.stats(tables))
         return rec, res.text
 
     import asyncio
@@ -125,6 +123,10 @@ def test_the_recorded_call_reads_one_partition(world) -> None:
     (ev,) = [t for t in rec["tables"] if t["name"] == "evidence"]
     assert ev["partitions_read"] == ["sourceId=europepmc"]
     assert set(ev["partition_fingerprints"]) == {"sourceId=europepmc"}
+    # stamping from _stats keeps what the gateway recorded
+    assert stamp_partitions(json.loads(json.dumps(rec)), {})["tables"] == rec["tables"]
+    types = rec["result"]["key_storage_types"]
+    assert types is None or len(types) == len(rec["result"]["key_columns"])
     assert rec["request"]["args_sent"]["target_id"] == "ENSG00000169174"
 
 

@@ -30,7 +30,7 @@ from ..plugins.base import LayoutSpec
 
 __all__ = ["READY_STATUSES", "TABLE_LEVEL_STATUSES", "CallReadiness", "ReadinessCache", "call_readiness",
            "section_tables", "layout_spec", "table_signature", "tables_read", "columns_read", "degraded_tools", "norm_path",
-           "parse_partition_label", "table_status"]
+           "parse_partition_label", "partitions_selected", "table_status"]
 
 READY_STATUSES = frozenset({"ready", "awaiting_producer", "unbound"})
 #: Statuses that make the whole table unservable whatever part a call reads.
@@ -71,6 +71,27 @@ def parse_partition_label(label: str) -> dict[str, str]:
         if sep:
             out[k] = v
     return out
+
+
+def partitions_selected(scope: Mapping[str, Any] | None, labels: Iterable[str]) -> list[str] | None:
+    """The partitions (``col=value[/col=value]``) a call reads, from the scope it fixed: the labels whose
+    values agree with every fixed scope dimension that is a partition column. None when the scope fixes
+    no partition column (the call reads every partition)."""
+    names = list(labels)
+    cols = {k for n in names for k in parse_partition_label(n)}
+    fixed = {str(k).split(".")[-1]: v for k, v in (scope or {}).items() if str(k).split(".")[-1] in cols}
+    if not fixed:
+        return None
+
+    def agrees(name: str) -> bool:
+        parts = parse_partition_label(name)
+        for col, value in fixed.items():
+            values = value if isinstance(value, (list, tuple)) else [value]
+            if col in parts and parts[col] not in {str(v) for v in values}:
+                return False
+        return True
+
+    return sorted(n for n in names if agrees(n))
 
 
 def layout_spec(table: Any) -> LayoutSpec:

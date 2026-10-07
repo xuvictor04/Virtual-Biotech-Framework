@@ -130,6 +130,7 @@ class TableCheckModel(IpcModel):
     item_tables: dict[str, str] = {}
     checks: list[CheckItemModel] = []
     fingerprint: str | None = None
+    partition_fingerprints: dict[str, str] = {}        # partition label -> fingerprint (partitioned layouts)
     signature: str | None = None
     confirmed: dict[str, Any] = {}                     # verified:false facts confirmed (True) or refuted (False)
     vocab: dict[str, str] = {}                         # column -> vocabulary snapshot id

@@ -209,7 +209,8 @@ def live_find(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]
     shown = rows[: int(limit)] if limit is not None else rows
     return {"table": ref, "rows": shown, "total": total, "total_method": "unknown" if total is None else "remote",
             "as_of": got["as_of"], "truncated": bool(got["truncated"]) or len(shown) < len(rows),
-            "pages": got["pages"], "source_updated": flags["source_updated"]}
+            "pages": got["pages"], "source_updated": flags["source_updated"],
+            "record_versions": {str(t.physical): flags["versions"]} if flags["versions"] else {}}
 
 
 VERBS = {VERB_WITNESS: witness, LIVE_FIND: live_find}

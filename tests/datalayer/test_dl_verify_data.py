@@ -309,3 +309,44 @@ def test_verify_main_takes_data(run: Run, monkeypatch: pytest.MonkeyPatch, capsy
     assert main([str(run.dir), "--data", "--backend", "inprocess", "--json"]) == 0
     assert seen["data"] is True and seen["backend"] == "inprocess"
     assert json.loads(capsys.readouterr().out)["status"] == "COMPLETE"
+
+
+def test_vbt_verify_takes_data(run: Run, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    import argparse
+
+    import vbt.verify as verify_mod
+    from vbt.audit.cli import add_audit_parsers
+
+    run.close()
+    seen: dict[str, Any] = {}
+
+    def fake_verify(run_dir: Any, **kw: Any) -> dict[str, Any]:
+        seen.update(kw)
+        return {"status": "COMPLETE", "problems": []}
+
+    monkeypatch.setattr(verify_mod, "verify_run", fake_verify)
+    ap = argparse.ArgumentParser()
+    add_audit_parsers(ap.add_subparsers())
+    config = {"paths": {"runs_dir": str(run.dir.parent)}, "data": {}}
+    args = ap.parse_args(["verify", str(run.dir), "--data", "--backend", "inprocess", "--json"])
+    assert args.handler(args, config) == 0
+    assert seen["data"] is True and seen["backend"] == "inprocess" and seen["config"] is config
+    seen.clear()
+    args = ap.parse_args(["verify", str(run.dir), "--json"])
+    assert args.handler(args, config) == 0
+    assert seen["data"] is False and seen["config"] is None
+    capsys.readouterr()
+
+
+def test_status_refresh_compares_against_the_cached_fingerprints(run: Run, tmp_path: Path) -> None:
+    _data_call(run, "t1", _record(KEYS, types=TYPES), fp="fp1:sha256:old")
+    assert run.record_claims([_claim("C1", "t1")])["ok"]
+    cache = tmp_path / "dl-cache"
+    cache.mkdir()
+    run.config = {"data": {"cache_dir": str(cache)}}
+    assert run._current_fingerprints() is None                      # no cache yet: nothing to compare
+    (cache / "fingerprints.json").write_text(json.dumps({"tables": {"open_targets.known_drug": "fp1:sha256:old"}}))
+    assert run._refresh_claims()[0]["n_verified"] == 1
+    (cache / "fingerprints.json").write_text(json.dumps({"tables": {"open_targets.known_drug": "fp1:sha256:new"}}))
+    ev = run._refresh_claims()[0]["evidence"][0]
+    assert ev["evidence_status"] == "unresolved" and "the data changed since the call" in ev["problem"]

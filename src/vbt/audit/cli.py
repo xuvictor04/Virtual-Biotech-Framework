@@ -44,7 +44,9 @@ def cmd_verify(args, config) -> int:
     run = _resolve(args, config)
     if run is None:
         return 2
-    report = verify_run(run, rerun=args.rerun, python=args.python, timeout=args.timeout)
+    data = bool(getattr(args, "data", False))
+    report = verify_run(run, rerun=args.rerun, python=args.python, timeout=args.timeout, data=data,
+                        config=config if data else None, backend=getattr(args, "backend", "auto"))
     if args.json:
         _print_json(report)
     else:
@@ -202,6 +204,11 @@ def add_audit_parsers(sub) -> None:
     v.add_argument("--python", metavar="EXE", help="interpreter for --rerun (default: this one)")
     v.add_argument("--timeout", type=float, default=600, metavar="S", help="per-script timeout for --rerun")
     v.add_argument("--json", action="store_true", help="print the machine-readable report")
+    v.add_argument("--data", action="store_true",
+                   help="check reference data: current table fingerprints (data_version_drift) and a replay of "
+                        "every cited data call (replay_mismatch, source_updated)")
+    v.add_argument("--backend", choices=("auto", "inprocess", "bridge"), default="auto",
+                   help="--data: how cited calls are replayed (see `vbt ds replay`)")
     v.set_defaults(handler=cmd_verify)
 
     ls = sub.add_parser("list", help="list runs (newest first)")

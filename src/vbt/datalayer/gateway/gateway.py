@@ -81,7 +81,7 @@ from .contracts import (
 from .fields import FieldMapper, extract_rows, get_path, jp_first, jp_get, jp_set, jp_test, parse_payload, place_rows
 from .files import MaterializedRegistry, reconcile
 from .leakage import LeakagePlan, ceiling_of, leakage_record, prepare_leakage
-from .readiness import ReadinessCache, call_readiness, degraded_tools, tables_read
+from .readiness import ReadinessCache, call_readiness, degraded_tools, partitions_selected, tables_read
 from .scope import ScopeDecision, grain_columns, scope_completeness
 from .service_client import DATA_SERVER, ServiceClient, ServiceError
 from .transforms import (
@@ -185,6 +185,28 @@ def _ms(t0: float) -> float:
 
 def _last(path: str) -> str:
     return str(path).lstrip("/").split(".")[-1].replace("[]", "")
+
+
+def _record_versions(t: Any, rows: Sequence[Any], cols: Sequence[str]) -> dict[str, dict[str, str]] | None:
+    """Live record versions ``{source.table: {key: version}}`` of the returned rows, for a table whose key
+    declares a ``version`` column (replay reports rows whose version moved as ``source_updated``)."""
+    try:
+        version = t.spec.key.version
+    except AttributeError:   # no table, or a key without a record-version column
+        return None
+    if not version or len(cols) != 1:
+        return None
+    out: dict[str, str] = {}
+    for r in rows:
+        if not isinstance(r, Mapping):
+            continue
+        k = get_path(r, cols[0])
+        v = get_path(r, version)
+        if v is None:
+            v = get_path(r, _last(version))
+        if k not in (None, "") and v not in (None, ""):
+            out[str(k)] = str(v)
+    return {str(t.physical): out} if out else None
 
 
 class DataGateway:
@@ -2318,8 +2340,12 @@ class DataGateway:
             rs = b.reads.get(ref) if b is not None else None
             access = ("derived_scan" if plan.route == "derived" else
                       f"upstream_{rs.access}" if rs is not None else "witness_scan")
+            pfs = dict(m.partition_fingerprints) if m is not None else {}
+            read = (partitions_selected(plan.scope, pfs) or sorted(pfs)) if pfs else None
             tables.append(TableInfo(name=_last(ref), layout=ct.layout if ct is not None else None,
                                     fingerprint=m.fingerprint if m is not None else None, access=access,
+                                    partitions_read=read,
+                                    partition_fingerprints={p: pfs[p] for p in read} if read else None,
                                     lineage=(ct.spec.lineage.model_dump() if ct is not None and ct.spec.lineage
                                              else None)))
         o = _rank_json(order) if order is not None else {}
@@ -2341,7 +2367,9 @@ class DataGateway:
                                               verified=verified,
                                               source=b.result.order_source if b is not None else None)
                               if order is not None else None,
-                              key_columns=list(cols), transforms=list(st.transforms)),
+                              key_columns=list(cols),
+                              key_storage_types=list(types) if cols and any(types) else None,
+                              transforms=list(st.transforms), record_versions=_record_versions(t, rows, cols)),
             memory=st.admission.to_record() if st.admission is not None else {"admission": "not_applicable"},
             leakage=leakage_record(st.leakage.ceiling, withheld_leakage, st.leakage.risk or leakage_unchecked > 0)
             if st.leakage is not None and st.leakage.active else None,

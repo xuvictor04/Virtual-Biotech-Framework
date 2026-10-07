@@ -503,3 +503,9 @@ def test_pubmed_overlay_reads_the_new_fields(tmp_path: Path) -> None:
     c = cat.contract("pubmed", "fetch_abstracts")
     out = classify(raw_of({"articles": [{"pmid": "1234"}], "unrequested": ["1234"]}), c, None)
     assert out.outcome == "source_error"
+
+
+def test_live_find_returns_the_record_versions(ctx: ServiceContext, stub: Stub) -> None:
+    stub.study_version = "2024-05-01"
+    out = load_verbs()["_live_find"](ctx, {"table": "clinicaltrials_gov.studies"})
+    assert out["record_versions"] == {"clinicaltrials_gov.studies": {"NCT01234567": "2024-05-01"}}
