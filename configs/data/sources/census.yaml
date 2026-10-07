@@ -1,9 +1,10 @@
 # CZ CELLxGENE Census, human (docs/DATA_LAYER.md §6.7; phase 4, strict: false).
 #
 # Remote SOMA. The tools are still served upstream; phase 4 gives obs and var the soma layout and
-# format, which the data child uses for count-first admission of Census pulls (_census_count), the
-# remote witness (one value_filter read of soma_joinid) and donor-balanced sampling keyed by
-# (dataset_id, donor_id). The upstream server opens census_version "stable"
+# format, which the data child uses for count-first admission of Census pulls (_census_count, asked by
+# the gateway for the overlay's `count_first` tools), the remote witness (one value_filter read of
+# soma_joinid) and a donor-balanced sample keyed by (dataset_id, donor_id) (_census_count `sample`;
+# not yet served in place of get_anndata_donor_balanced). The upstream server opens census_version "stable"
 # (single_cell_mcp/tools.py:29,51): the release is resolved from each result ($.census_version) and,
 # in the data child, through cellxgene_census.get_census_version_description, recorded with its
 # release_confidence (exact | inferred | unknown) and drift-checked (a moved alias is reported, never

@@ -553,3 +553,70 @@ def test_live_find_returns_the_record_versions(ctx: ServiceContext, stub: Stub) 
     stub.study_version = "2024-05-01"
     out = load_verbs()["_live_find"](ctx, {"table": "clinicaltrials_gov.studies"})
     assert out["record_versions"] == {"clinicaltrials_gov.studies": {"NCT01234567": "2024-05-01"}}
+
+
+def _census_gateway(stub: Stub, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, limit_mb: int) -> Any:
+    from vbt.datalayer.ipc import CensusCountResponse
+
+    mod = fake_census(CELLS, ["2025-01-30"] * 20)
+    monkeypatch.setattr(soma_layout, "_RESOLVED", {})
+    monkeypatch.setitem(sys.modules, "cellxgene_census", mod)
+    ov = load_yaml(SOURCES.parent / "overlays" / "single_cell.yaml", _variables(stub))
+    # gene symbols resolve through Open Targets (not loaded here): bind them as plain values for this test
+    ov["tools"]["get_anndata"]["args"]["gene_symbols"] = {"role": "projection"}
+    gw = make_gateway(tmp_path, [_source("census", stub)], [ov], {},
+                      data={"witness": {"enabled": False}, "memory": {"default_server_mb": limit_mb}})
+    ctx = ServiceContext(gw.settings, catalog=gw.catalog, registry=REGISTRY)
+    gw.service._census_count = lambda req: CensusCountResponse.model_validate(   # type: ignore[attr-defined]
+        load_verbs()["_census_count"](ctx, req.model_dump(exclude_none=True)))
+    return gw
+
+
+async def test_census_pulls_are_admitted_count_first(stub: Stub, tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    """F20: the shipped single_cell overlay counts the cells a value_filter selects before upstream fetches
+    anything: over the server's limit the pull is too_large (upstream never called); within it the call
+    goes on with the count and the resolved release disclosed."""
+    calls: list[Any] = []
+
+    def upstream(tool: str, args: dict[str, Any]) -> Any:
+        if tool == "list_metadata_values":                # the value_filter's vocabulary check
+            col = args["column_name"]
+            return {"value_counts": [{"value": v} for v in sorted({str(c[col]) for c in CELLS if col in c})]}
+        calls.append((tool, args))
+        out = tmp_path / "ok" / "out" / "x.h5ad"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"")
+        return {"success": True, "output_path": str(out), "n_cells": 20, "n_genes": 2}
+
+    big = ["G%d" % i for i in range(20000)]
+    gw = _census_gateway(stub, tmp_path / "small", monkeypatch, limit_mb=1)
+    gw.bridge.upstream = upstream
+    with pytest.raises(GatewayError) as e:
+        await call(gw, "single_cell", "get_anndata",
+                   {"value_filter": "tissue == 'lung'", "gene_symbols": big, "output_path": "x.h5ad"}, upstream)
+    assert e.value.kind == ErrorKind.too_large, e.value.message
+    assert e.value.payload["n_cells"] == 20 and not calls
+    assert e.value.payload["release"]["resolved"] == "2025-01-30"
+    gw = _census_gateway(stub, tmp_path / "ok", monkeypatch, limit_mb=4000)
+    gw.bridge.upstream = upstream
+    plan = await gw.prepare("single_cell", "get_anndata",
+                            {"value_filter": "tissue == 'lung'", "gene_symbols": ["G1", "G2"],
+                             "output_path": "x.h5ad"}, None)
+    st = plan._vbt_state  # type: ignore[attr-defined]
+    assert st.count_first["n_cells"] == 20 and st.count_first["admissible"] is True
+    assert any("count-first: the filter selects 20 cells" in n for n in st.notes)
+
+
+def test_genes_found_are_recomputed_from_feature_name(ctx: ServiceContext, tmp_path: Path) -> None:
+    """F20: _census_count with genes_file reads var.feature_name of the written h5ad."""
+    pytest.importorskip("anndata")
+    import anndata as ad
+    import numpy as np
+    import pandas as pd
+
+    var = pd.DataFrame({"feature_name": ["CD276", "OSMR"]}, index=["0", "1"])     # positional var_names
+    path = tmp_path / "x.h5ad"
+    ad.AnnData(X=np.zeros((2, 2), dtype="float32"), var=var).write_h5ad(path)
+    out = load_verbs()["_census_count"](ctx, {"genes_file": str(path), "genes": ["CD276", "TP53"]})
+    assert out["genes_found"] == ["CD276"] and out["genes_not_found"] == ["TP53"]

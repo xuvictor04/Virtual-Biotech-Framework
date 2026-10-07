@@ -25,32 +25,17 @@ import random
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from pydantic import BaseModel, ConfigDict
-
+from ...ipc import VERB_CENSUS_COUNT, CensusCountRequest
 from ...predicate import Predicate, from_json
 from .. import ServiceContext, ServiceError, layout_spec
 
 __all__ = ["VERB", "CensusCountRequest", "census_count", "donor_balanced", "genes_from_h5ad", "DONOR_KEY",
            "VERBS"]
 
-VERB = "_census_count"
+VERB = VERB_CENSUS_COUNT
 DONOR_KEY = ("dataset_id", "donor_id")
 DEFAULT_ROW_BYTES = 200
 DEFAULT_VALUE_BYTES = 4                        # float32 X, dense upper bound
-
-
-class CensusCountRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    table: str = "cellxgene_census.obs"
-    value_filter: str | None = None
-    predicate: dict[str, Any] | None = None
-    n_genes: int | None = None
-    max_cells: int | None = None
-    row_bytes: int | None = None
-    value_bytes: float | None = None
-    cap_bytes: int | None = None
-    sample: dict[str, Any] | None = None       # {max_cells, seed}
 
 
 def _predicate(req: CensusCountRequest) -> Predicate | None:
@@ -139,7 +124,16 @@ def genes_from_h5ad(path: str, requested: Sequence[str], *, column: str = "featu
 
 
 def census_count(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
-    req = CensusCountRequest.model_validate(dict(payload))
+    payload = dict(payload)
+    if "request" in payload and len(payload) == 1:
+        payload = dict(payload["request"])
+    req = CensusCountRequest.model_validate({"table": "cellxgene_census.obs", **payload})
+    if req.genes_file:
+        # the written file's genes, by feature_name (the gateway replaces upstream's var_names comparison)
+        try:
+            return {"table": req.table, **genes_from_h5ad(req.genes_file, list(req.genes or []))}
+        except (OSError, KeyError, ImportError) as exc:
+            return {"table": req.table, "reason": f"genes not checked: {exc}"[:500]}
     t = ctx.table(req.table)
     layout = ctx.plugin("layout", t.layout)
     if "count" not in (getattr(layout, "capabilities", ()) or ()):

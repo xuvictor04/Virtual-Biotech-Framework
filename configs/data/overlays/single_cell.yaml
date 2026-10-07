@@ -3,11 +3,13 @@
 # Predicate IR (gateway/soma_filter.py), so is_primary_data and dataset scope are checked before the call.
 #
 # Phase 4: obs and var are soma tables. get_anndata, get_expression_for_genes and get_anndata_donor_balanced
-# are admitted count-first by the data child's _census_count (cells x genes against the cap, before upstream
-# fetches anything), against the release 'stable' resolves to (release_confidence, drift). Donors are keyed by
-# (dataset_id, donor_id); _census_count's donor-balanced sample per dataset replaces the upstream balancing that
-# merges donors of different datasets. genes_found/genes_not_found are recomputed from the written h5ad's
-# var.feature_name (census_count.genes_from_h5ad): upstream compares against positional var_names.
+# are admitted count-first (`count_first`: the gateway asks the data child's _census_count for the cells the
+# value_filter selects, against the release 'stable' resolves to, and refuses too_large when cells x genes
+# exceeds the server's limit, before upstream fetches anything). get_expression_for_genes' genes_found and
+# genes_not_found are recomputed from the written h5ad's var.feature_name (census_count.genes_from_h5ad):
+# upstream compares against positional var_names. Donor balancing stays upstream's, accepted only when the
+# filter fixes one dataset_id (requires_fixed): donors are unique only within (dataset_id, donor_id). The
+# derived donor-balanced sample (_census_count `sample`) is not served yet (docs/DATA_LAYER_STATUS.md, F20).
 schema: vbt.overlay/1
 server: single_cell
 sources: [cellxgene_census]
@@ -80,6 +82,7 @@ tools:
       ensembl_ids:  {binds: cellxgene_census.var.feature_id, op: in, each: true, accepts: [census_feature], existence: upstream}
       obs_columns:  {role: projection}
       layer:        {role: selector, values: {raw: cellxgene_census.anndata_outputs, normalized: cellxgene_census.anndata_outputs}}
+    count_first: {table: cellxgene_census.obs, filter_arg: value_filter, genes_arg: gene_symbols}
     result:
       kind: file
       rows: null
@@ -160,12 +163,13 @@ tools:
                      engine_doc: "SOMA value_filter over obs columns; without one upstream takes soma_joinid < max_cells"}
       layer:        {role: selector, values: {raw: cellxgene_census.anndata_outputs, normalized: cellxgene_census.anndata_outputs}}
       max_cells:    {role: limit, min: 1, max: 200000}
+    # counted before upstream fetches; genes_found/genes_not_found recomputed from the file's var.feature_name
+    # (upstream compares against var_names, which are positional digits in Census AnnData output)
+    count_first: {table: cellxgene_census.obs, filter_arg: value_filter, genes_arg: gene_symbols,
+                  max_cells_arg: max_cells, recompute_genes: true}
     result:
       kind: file
       rows: null
-      drop_fields:
-        $.genes_found: "compared against var_names, which are positional digits in Census AnnData output"
-        $.genes_not_found: "compared against var_names, which are positional digits in Census AnnData output"
       summary_fields: {$.summary_stats: drop}    # over non-zero values of the truncated cells only
       files:
         - {path_from: $.output_path, must_exist: true, echo_checks: {n_obs: $.n_cells, n_vars: $.n_genes},
@@ -190,6 +194,8 @@ tools:
       ensembl_ids:  {binds: cellxgene_census.var.feature_id, op: in, each: true, accepts: [census_feature], existence: upstream}
       obs_columns:  {role: projection}
       layer:        {role: selector, values: {raw: cellxgene_census.anndata_outputs, normalized: cellxgene_census.anndata_outputs}}
+    count_first: {table: cellxgene_census.obs, filter_arg: value_filter, genes_arg: gene_symbols,
+                  max_cells_arg: max_cells}
     requires_fixed:
       - {arg: value_filter, columns: [dataset_id], alternatives: [single_cell.get_anndata],
          reason: "donor_id is unique only within dataset_id; donors of different datasets would be balanced as one"}

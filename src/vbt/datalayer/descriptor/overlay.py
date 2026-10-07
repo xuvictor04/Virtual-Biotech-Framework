@@ -200,6 +200,20 @@ class LeakageFilter(Strict):
     template: str                                      # a query fragment with "{ceiling}"
 
 
+class CountFirst(Strict):
+    """Count-first admission of a pull from a remote table (phase 4, F20): before the upstream call the
+    data child counts the rows ``filter_arg`` selects (``_census_count``) and the call is refused
+    ``too_large`` when rows x (row bytes + ``genes_arg`` values x value bytes) exceeds the server's limit.
+    ``recompute_genes``: the written file's ``genes_found``/``genes_not_found`` are recomputed from its
+    ``var.feature_name`` (upstream compares against positional var_names)."""
+
+    table: str
+    filter_arg: str | None = None
+    genes_arg: str | None = None
+    max_cells_arg: str | None = None
+    recompute_genes: bool = False
+
+
 class RequiresFixed(Strict):
     """The tool is accepted only when ``arg`` (a SOMA filter) fixes each of ``columns`` to one value; else
     ``unsupported_combination`` naming ``alternatives`` (a column unique only within another)."""
@@ -306,6 +320,7 @@ class ToolBinding(Strict):
     derived: DerivedSpec | None = None
     # gateway-only arguments that, when set, serve a `pass` binding through `derived` (include_descendants)
     derived_when: list[str] = []
+    count_first: CountFirst | None = None
     block: BlockSpec | None = None
     on_contradiction: Literal["derived", "tool_defect"] = "derived"
     witness: bool = True

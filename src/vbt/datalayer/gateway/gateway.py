@@ -50,7 +50,15 @@ from ..errors import (
     too_large_payload,
     unsupported_combination_payload,
 )
-from ..ipc import RankKeyModel, ServeRequest, ServeResponse, WitnessRequest, WitnessResponse
+from ..ipc import (
+    VERB_CENSUS_COUNT,
+    CensusCountRequest,
+    RankKeyModel,
+    ServeRequest,
+    ServeResponse,
+    WitnessRequest,
+    WitnessResponse,
+)
 from ..launch import build_launch_spec
 from ..memory import AdmissionController, MemoryEstimator, ResidencyLedger, TableRead, crash_decision, read_status
 from ..memory.host import host_budget_mb
@@ -157,6 +165,7 @@ class _CallState:
     auto_fixed: dict[str, Any] = field(default_factory=dict)
     soft_sections: dict[str, str] = field(default_factory=dict)
     section_meta: dict[str, dict[str, Any]] = field(default_factory=dict)   # derived sections' own status
+    count_first: dict[str, Any] | None = None                                # the count-first admission
     storage_types: dict[str, str | None] = field(default_factory=dict)
     attempts: int = 0
     t_ms: dict[str, float] = field(default_factory=dict)
@@ -680,10 +689,69 @@ class DataGateway:
         st.notes.extend(st.leakage.notes)
         # 9. admission (upstream only; observe mode reserves nothing and never recycles a server)
         if plan.route == "upstream" and st.mode == "enforce":
+            if b.count_first is not None:
+                await self._count_first(plan, st, contract)
             await self._admit(plan, st, contract)
         # 10. limit inflation
         if plan.route == "upstream":
             self._inflate(plan, st, contract, inflatable)
+
+    async def _count_first(self, plan: CallPlan, st: _CallState, contract: ToolContract) -> None:
+        """Count-first admission (``count_first``, F20): the data child counts the cells the filter selects
+        (against the release ``stable`` resolves to) and the pull is refused ``too_large`` before upstream
+        fetches anything when cells x genes would exceed the server's memory limit."""
+        cf = contract.binding.count_first
+        args = plan.args_sent
+        genes = args.get(cf.genes_arg) if cf.genes_arg else None
+        n_genes = len(genes) if isinstance(genes, list) else None
+        max_cells = args.get(cf.max_cells_arg) if cf.max_cells_arg else None
+        limit_mb = 0.0
+        with contextlib.suppress(Exception):
+            limit_mb = float(self.admission.limit_mb(plan.server) or 0)
+        req = CensusCountRequest(table=cf.table, value_filter=args.get(cf.filter_arg) if cf.filter_arg else None,
+                                 n_genes=n_genes, max_cells=max_cells if isinstance(max_cells, int) else None,
+                                 cap_bytes=int(limit_mb * 1024 * 1024) if limit_mb > 0 else None)
+        try:
+            resp = await self.service.call(VERB_CENSUS_COUNT, req)
+        except ServiceError as exc:
+            st.notes.append(f"count-first admission unavailable ({exc.message[:200]}); the memory admission applies")
+            return
+        info = resp.model_dump(exclude_none=True)
+        st.count_first = info
+        if resp.release:
+            st.notes.append(f"{cf.table} release: {resp.release.get('resolved') or resp.release}")
+        if resp.admissible is False:
+            raise GatewayError(ErrorKind.too_large, f"{cf.table}: the filter selects {resp.n_cells} cells; the pull "
+                               f"needs about {(resp.need_bytes or 0) // (1024 * 1024)} MB, over the "
+                               f"{int(limit_mb)} MB limit of {plan.server}: narrow value_filter or lower max_cells",
+                               tool=st.name, payload={"n_cells": resp.n_cells, "need_bytes": resp.need_bytes,
+                                                      "cap_bytes": resp.cap_bytes, "release": resp.release},
+                               subkind="count_first")
+        if resp.n_cells is None:
+            st.notes.append(f"count-first admission could not count: {resp.reason}")
+        else:
+            st.notes.append(f"count-first: the filter selects {resp.n_cells} cells")
+
+    async def _recompute_genes(self, plan: CallPlan, st: _CallState, contract: ToolContract, obj: Any) -> None:
+        """``count_first.recompute_genes``: genes_found/genes_not_found of the written file, from its
+        ``var.feature_name``; when the file cannot be read they are dropped (upstream's are wrong)."""
+        cf = contract.binding.count_first
+        if cf is None or not cf.recompute_genes or not isinstance(obj, dict):
+            return
+        genes = plan.args_sent.get(cf.genes_arg) if cf.genes_arg else None
+        paths = list((st.prepared.output_paths if st.prepared is not None else {}).values())
+        resp = None
+        if isinstance(genes, list) and paths:
+            req = CensusCountRequest(table=cf.table, genes_file=str(paths[0]), genes=[str(g) for g in genes])
+            with contextlib.suppress(ServiceError):
+                resp = await self.service.call(VERB_CENSUS_COUNT, req)
+        if resp is not None and resp.genes_found is not None:
+            obj["genes_found"], obj["genes_not_found"] = list(resp.genes_found), list(resp.genes_not_found or [])
+            st.notes.append("genes_found/genes_not_found recomputed from the file's var.feature_name")
+        else:
+            for k in ("genes_found", "genes_not_found"):
+                obj.pop(k, None)
+            st.notes.append("genes_found/genes_not_found removed: upstream compares positional var_names")
 
     # ---------------------------------------------------------------- generic
 
@@ -1610,6 +1678,7 @@ class DataGateway:
     async def _process_upstream(self, plan: CallPlan, st: _CallState, contract: ToolContract, obj: Any,
                                 raw: RawResult, counters: Counters) -> DataResult:
         b = contract.binding
+        await self._recompute_genes(plan, st, contract, obj)
         mapper = self._mapper(contract)
         paths = b.result.row_paths
         record = b.result.kind == "record"

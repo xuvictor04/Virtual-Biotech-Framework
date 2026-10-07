@@ -21,7 +21,8 @@ __all__ = [
     "PHASE1_VERBS", "ServeVerb", "IpcModel", "RankKeyModel", "StatsRequest", "ColumnStatsModel", "TableStatsModel",
     "StatsResponse", "CheckRequest", "CheckItemModel", "KeyCheckModel", "TableCheckModel", "CheckResponse",
     "WitnessRequest", "WitnessResponse", "ServeRequest", "ServeResponse", "BuildIndexRequest", "BuildIndexResponse",
-    "ResolveRemoteRequest", "ResolveRemoteResponse", "VocabRequest", "VocabResponse", "VERB_MODELS",
+    "ResolveRemoteRequest", "ResolveRemoteResponse", "VocabRequest", "VocabResponse", "VERB_CENSUS_COUNT",
+    "CensusCountRequest", "CensusCountResponse", "VERB_MODELS",
     "request_payload", "parse_response",
 ]
 
@@ -276,6 +277,42 @@ class VocabResponse(IpcModel):
     counts: dict[str, int] | None = Field(default=None)
 
 
+# --------------------------------------------------------------------------- _census_count (phase 4)
+
+VERB_CENSUS_COUNT = "_census_count"
+
+
+class CensusCountRequest(IpcModel):
+    """Count-first admission of a single-cell pull (``service/verbs/census_count.py``), or, with
+    ``genes_file``, the genes found in a written h5ad's ``var.feature_name``."""
+
+    table: str
+    value_filter: str | None = None
+    predicate: dict[str, Any] | None = None
+    n_genes: int | None = None
+    max_cells: int | None = None
+    row_bytes: int | None = None
+    value_bytes: float | None = None
+    cap_bytes: int | None = None
+    sample: dict[str, Any] | None = None               # {max_cells, seed}
+    genes_file: str | None = None
+    genes: list[str] | None = None
+
+
+class CensusCountResponse(IpcModel):
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    table: str | None = None
+    n_cells: int | None = None
+    admissible: bool | None = None
+    need_bytes: int | None = None
+    cap_bytes: int | None = None
+    release: dict[str, Any] | None = None
+    reason: str | None = None
+    genes_found: list[str] | None = None
+    genes_not_found: list[str] | None = None
+
+
 VERB_MODELS: dict[str, tuple[type[IpcModel], type[IpcModel]]] = {
     VERB_STATS: (StatsRequest, StatsResponse),
     VERB_CHECK: (CheckRequest, CheckResponse),
@@ -284,6 +321,7 @@ VERB_MODELS: dict[str, tuple[type[IpcModel], type[IpcModel]]] = {
     VERB_BUILD_INDEX: (BuildIndexRequest, BuildIndexResponse),
     VERB_RESOLVE_REMOTE: (ResolveRemoteRequest, ResolveRemoteResponse),
     VERB_VOCAB: (VocabRequest, VocabResponse),
+    VERB_CENSUS_COUNT: (CensusCountRequest, CensusCountResponse),
 }
 
 
