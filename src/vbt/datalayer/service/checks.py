@@ -59,7 +59,7 @@ from .reader import BudgetExceeded, TableReader, TableUnavailable, logical_leave
 
 __all__ = [
     "STATUS_ORDER", "worst", "CheckRun", "check_table", "check_tables", "aggregate_stats", "eval_expr",
-    "SAMPLE_ROWS", "SAMPLE_VALUES",
+    "SAMPLE_ROWS", "SAMPLE_VALUES", "SPILL_KEYS", "sweep_spills",
 ]
 
 STATUS_ORDER = ("ready", "unbound", "awaiting_producer", "stale", "partial", "key_violation", "encoding_drift",
@@ -673,20 +673,24 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
                     examples.append(ck)
                 continue
             seen.add(ck)
-            if len(seen) > 2_000_000:
+            if len(seen) > SPILL_KEYS:
                 spill = _Spill(run.ctx.settings.cache_dir)
                 for s in seen:
                     spill.add(s)
                 seen = set()
+        if spill is not None:
+            d, ex = spill.duplicates()
+            dups += d
+            examples.extend(ex[: 5 - len(examples)])
     except (BudgetExceeded, TableUnavailable, FormatError) as exc:
         model.ok = None
         model.detail = f"key check not completed: {exc}"
         run.add("R5b", False, model.detail, level="warning")
         return model
-    if spill is not None:
-        d, ex = spill.duplicates()
-        dups += d
-        examples.extend(ex[: 5 - len(examples)])
+    finally:
+        # every exit (an unfinished scan, any other error, cancellation) removes the spill files
+        if spill is not None:
+            spill.close()
     model.duplicates = dups
     model.null_counts = {k: v for k, v in nulls.items() if v}
     null_bad = {k: v for k, v in nulls.items() if v and k not in nullable}
@@ -708,14 +712,32 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
     return model
 
 
+#: Distinct keys held in memory before the uniqueness pass spills to hash-partitioned files.
+SPILL_KEYS = 2_000_000
+SPILL_PREFIX = "keycheck."
+
+
 class _Spill:
-    """Hash-partitioned temporary files for a bounded-memory full uniqueness pass."""
+    """Hash-partitioned temporary files for a bounded-memory full uniqueness pass. The directory is
+    ``<cache_dir>/keycheck.<pid>.<random>``: :meth:`close` removes it on every exit of the check, and
+    :func:`sweep_spills` removes those of data children that died before they could."""
 
     def __init__(self, cache_dir: Any, parts: int = 64) -> None:
         os.makedirs(str(cache_dir), exist_ok=True)
-        self.dir = tempfile.mkdtemp(prefix="keycheck.", dir=str(cache_dir))
+        self.dir = tempfile.mkdtemp(prefix=f"{SPILL_PREFIX}{os.getpid()}.", dir=str(cache_dir))
         self.parts = parts
         self.files = [open(os.path.join(self.dir, f"{i:02d}"), "w", encoding="utf-8") for i in range(parts)]
+
+    def close(self) -> None:
+        """Close the files and remove the directory (idempotent)."""
+        import shutil
+
+        for f in self.files:
+            try:
+                f.close()
+            except OSError:
+                pass
+        shutil.rmtree(self.dir, ignore_errors=True)
 
     def add(self, key: str) -> None:
         self.files[_hash(key) % self.parts].write(key.replace("\n", "\\n") + "\n")
@@ -736,16 +758,41 @@ class _Spill:
                                 examples.append(line.strip())
                         seen.add(line)
         finally:
-            for i in range(self.parts):
-                try:
-                    os.unlink(os.path.join(self.dir, f"{i:02d}"))
-                except OSError:
-                    pass
-            try:
-                os.rmdir(self.dir)
-            except OSError:
-                pass
+            self.close()
         return dups, examples
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:          # EPERM: alive, another user's
+        return True
+    return True
+
+
+def sweep_spills(cache_dir: Any) -> list[str]:
+    """Remove spill directories left by data children that were killed mid-check (their pid is gone),
+    and pre-pid ``keycheck.<random>`` ones. Called when a data child starts; returns the removed paths."""
+    import shutil
+
+    removed: list[str] = []
+    try:
+        entries = os.listdir(str(cache_dir))
+    except OSError:
+        return removed
+    for name in entries:
+        if not name.startswith(SPILL_PREFIX):
+            continue
+        path = os.path.join(str(cache_dir), name)
+        head = name[len(SPILL_PREFIX):].split(".", 1)
+        if len(head) == 2 and head[0].isdigit() and _pid_alive(int(head[0])):
+            continue
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+            removed.append(path)
+    return removed
 
 
 def r5b_item_keys(run: CheckRun) -> None:

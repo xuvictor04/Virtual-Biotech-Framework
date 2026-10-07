@@ -292,6 +292,24 @@ def test_bash_runs_under_the_workspace_memory_limit(tmp_path) -> None:
     assert _workspace_limit({"data": {"enabled": False}}, probe, tmp_path, "tu_4") == (None, None, None)
 
 
+def test_workspace_limit_follows_limit_kind(tmp_path) -> None:
+    """``data.memory.limit_kind`` applies to the workspace as to the MCP servers: none lifts the limit,
+    cgroup and watchdog reach the reaper as ``--containment`` (INV-6)."""
+    from vbt.tools.builtin import _workspace_limit
+
+    if not sys.platform.startswith("linux"):
+        pytest.skip("the reaper is Linux-only")
+    probe = ["true"]
+    cfg = lambda kind: {"data": {"memory": {"workspace_mb": 3000, "limit_kind": kind}}}  # noqa: E731
+    assert _workspace_limit(cfg("none"), probe, tmp_path, "k0") == (None, None, None)
+    for i, kind in enumerate(("cgroup", "watchdog")):
+        argv = _workspace_limit(cfg(kind), probe, tmp_path, f"k{i + 1}")[1]
+        assert argv is not None and argv[argv.index("--containment") + 1] == kind
+        assert argv.index("--containment") < argv.index("--")
+    argv = _workspace_limit(cfg("rlimit_data"), probe, tmp_path, "k3")[1]
+    assert argv is not None and "--containment" not in argv
+
+
 # ---------------------------------------------------------------------------- the child backend
 
 

@@ -383,7 +383,7 @@ def oversized_error(msg_id: Any, size: int, cap_bytes: int) -> bytes:
     body = {"jsonrpc": "2.0", "id": msg_id, "error": {
         "code": RELAY_ERROR_CODE,
         "message": f"the server's response is {size / MB:.1f} MB, over the relay cap of {cap_bytes / MB:.0f} MB "
-                   "(data.memory relay_max_message_mb); it was discarded. Narrow the request.",
+                   "(data.memory.relay_max_message_mb); it was discarded. Narrow the request.",
         "data": {"bytes": size, "cap_bytes": cap_bytes}}}
     return (json.dumps(body, sort_keys=True) + "\n").encode("utf-8")
 

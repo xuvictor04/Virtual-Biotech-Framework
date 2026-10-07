@@ -208,7 +208,14 @@ def main(argv: list[str] | None = None) -> int:
         if not args.id_type and not args.access_paths:
             parser.error("--build-index needs --id-type or --access-paths")
         return _build_index(args)
-    make_server().run()
+    ctx = build_context()
+    try:  # key-check spill files of data children killed mid-check (their pid is gone)
+        from vbt.datalayer.service.checks import sweep_spills
+
+        sweep_spills(ctx.settings.cache_dir)
+    except Exception:  # noqa: BLE001 - housekeeping never stops the child from serving
+        pass
+    make_server(ctx).run()
     return 0
 
 

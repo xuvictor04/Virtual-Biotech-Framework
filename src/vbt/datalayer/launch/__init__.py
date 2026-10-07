@@ -110,5 +110,8 @@ def build_launch_spec(cfg: Any, settings: Any = None, log_dir: str | Path | None
     kind = getattr(getattr(settings, "memory", None), "limit_kind", "rlimit_data")
     if kind in ("cgroup", "watchdog"):                 # rlimit_data is the reaper's default; none sets limit 0
         args += ["--containment", str(kind)]
+    relay_mb = float(getattr(getattr(settings, "memory", None), "relay_max_message_mb", 0) or 0)
+    if relay_mb > 0:                                   # data.memory.relay_max_message_mb (off by default)
+        args += ["--relay-max-mb", f"{relay_mb:g}"]
     args += ["--", str(cfg.command), *[str(a) for a in (cfg.args or [])]]
     return LaunchSpec(command=sys.executable, args=args, env=dict(CHILD_ENV), status_path=str(status))

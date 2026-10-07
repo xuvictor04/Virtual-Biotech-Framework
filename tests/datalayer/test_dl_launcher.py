@@ -128,6 +128,11 @@ def test_build_launch_spec(tmp_path):
     wd = build_launch_spec(cfg, DataSettings.from_dict({"memory": {"limit_kind": "watchdog"}}), tmp_path)
     assert wd.args[wd.args.index("--containment") + 1] == "watchdog" and wd.args.index("--containment") < \
         wd.args.index("--")
+    # the stdout relay is configured by data.memory.relay_max_message_mb (off by default)
+    assert "--relay-max-mb" not in spec.args
+    rl = build_launch_spec(cfg, DataSettings.from_dict({"memory": {"relay_max_message_mb": 64}}), tmp_path)
+    assert rl.args[rl.args.index("--relay-max-mb") + 1] == "64" and rl.args.index("--relay-max-mb") < \
+        rl.args.index("--")
     # per-server limit, the data child's default, the kill switch, HTTP servers
     assert server_limit_mb(MCPServerConfig("t", command="x", mem_limit_mb=512), settings) == 512
     assert server_limit_mb(MCPServerConfig("data", command="x"), settings) == 1500

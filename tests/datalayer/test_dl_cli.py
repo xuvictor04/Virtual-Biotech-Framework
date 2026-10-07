@@ -146,3 +146,23 @@ def test_check_and_resolve_report_missing_data(tmp_path: Path, monkeypatch: pyte
     cli.main(["--profile", "mock", "ds", "resolve", "ensembl_gene", "ENSG00000141510"])
     err = capsys.readouterr().err
     assert "no local index" in err and "vbt ds index build" in err
+
+
+def test_status_and_explain_text_forms(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                       capsys: pytest.CaptureFixture[str]) -> None:
+    """The host total is formatted like every other figure, and explain without a cached upstream
+    schema says so rather than printing an empty schema that reads as "no arguments" (R9)."""
+    import vbt.datalayer.memory.host as host
+
+    monkeypatch.setattr(host, "host_total_mb", lambda: 16094.6953125)
+    monkeypatch.setenv("VBT_DATA_DIR", str(tmp_path))
+    assert cli.main(["--profile", "mock", "ds", "status"]) == 0
+    out = capsys.readouterr().out
+    assert "host: 16,095 MB" in out and "16094.69" not in out
+    assert cli.main(["--profile", "mock", "ds", "explain", "target.get_target_info"]) == 0
+    out = capsys.readouterr().out
+    assert '"properties": {}' not in out and '"target_id"' in out
+    monkeypatch.setattr(ds, "upstream_tool_schemas", lambda *a, **k: {})
+    assert cli.main(["--profile", "mock", "ds", "explain", "target.get_target_info"]) == 0
+    assert "derived schema: (upstream schema not available offline)" in capsys.readouterr().out
+

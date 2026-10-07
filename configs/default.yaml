@@ -244,6 +244,7 @@ data:
     max_oom_kills: 3
     max_result_bytes: 2000000
     host_budget_mb: auto
+    relay_max_message_mb: 0       # > 0: the reaper relays server stdout and replaces larger messages with an error
   readiness:
     per_turn_depth: shallow       # stat-only signatures before every turn
     session_depth: standard       # R1-R10 at session start (preflight runs the data child's --check)

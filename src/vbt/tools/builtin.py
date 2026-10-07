@@ -910,7 +910,8 @@ def _workspace_limit(config: Mapping[str, Any], argv: list[str], run_dir: Path, 
         limit = int(memory.get("workspace_mb", WORKSPACE_MB) or 0)
     except (TypeError, ValueError):
         limit = WORKSPACE_MB
-    if limit <= 0 or not sys.platform.startswith("linux") or data.get("enabled") is False:
+    kind = str(memory.get("limit_kind") or "rlimit_data")
+    if limit <= 0 or kind == "none" or not sys.platform.startswith("linux") or data.get("enabled") is False:
         return None, None, None
     try:
         from ..datalayer.launch import REAPER
@@ -921,8 +922,11 @@ def _workspace_limit(config: Mapping[str, Any], argv: list[str], run_dir: Path, 
     status = run_dir / "logs" / "tool_outputs" / f"bash_{_safe_id(call_id)}.status.json"
     status.parent.mkdir(parents=True, exist_ok=True)
     status.unlink(missing_ok=True)
+    # the containment mirrors build_launch_spec: rlimit_data is the reaper's default, and the allow-listed
+    # child environment never carries $VBT_REAPER_CONTAINMENT, so cgroup/watchdog go on the command line
+    containment = ["--containment", kind] if kind in ("cgroup", "watchdog") else []
     return limit, [sys.executable, "-E", str(REAPER), "--limit-mb", str(limit), "--status", str(status),
-                   "--server", "workspace", "--", *argv], status
+                   "--server", "workspace", *containment, "--", *argv], status
 
 
 def _strip_exit_marker(text: str) -> tuple[str, str | None]:

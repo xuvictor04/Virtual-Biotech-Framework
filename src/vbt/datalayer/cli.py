@@ -495,12 +495,15 @@ def explain_tool(catalog: Any, registry: Any, server: str, tool: str, *, descrip
         lines.append(f"  derived: {b.derived.model_dump(exclude_none=True, exclude_defaults=True)}")
     max_chars = getattr(getattr(settings, "derive", None), "description_max_chars", 1200)
     enum_max = getattr(getattr(settings, "derive", None), "enum_max", 64)
-    try:
-        derived = annotate_schema(contract, dict(schema or {"type": "object", "properties": {}}), catalog=catalog,
-                                  registry=registry, enum_max=enum_max)
-        lines.append("  derived schema: " + json.dumps(derived, sort_keys=True, default=str)[:1500])
-    except Exception as exc:  # noqa: BLE001
-        lines.append(f"  derived schema: unavailable ({type(exc).__name__}: {exc})")
+    if not schema:
+        # An empty placeholder would read as "takes no arguments"; --json shows the input schema.
+        lines.append("  derived schema: (upstream schema not available offline)")
+    else:
+        try:
+            derived = annotate_schema(contract, dict(schema), catalog=catalog, registry=registry, enum_max=enum_max)
+            lines.append("  derived schema: " + json.dumps(derived, sort_keys=True, default=str)[:1500])
+        except Exception as exc:  # noqa: BLE001
+            lines.append(f"  derived schema: unavailable ({type(exc).__name__}: {exc})")
     try:
         text = describe_tool(contract, description, catalog=catalog, max_chars=max_chars)
         lines.append("  derived text:")
@@ -692,10 +695,15 @@ def cmd_explain(args: argparse.Namespace, config: dict[str, Any]) -> int:
     else:
         _err("error: name a tool (<server>.<tool>) or pass --all")
         return 2
+    try:  # the upstream input schemas, parsed offline (AST); none when the checkout is absent
+        schemas = upstream_tool_schemas(_upstream_root(config), getattr(settings, "project_root", None))
+    except Exception:  # noqa: BLE001
+        schemas = {}
     rc = 0
     for server, tool in targets:
         try:
-            for line in explain_tool(catalog, registry, server, tool, settings=settings):
+            for line in explain_tool(catalog, registry, server, tool, settings=settings,
+                                     schema=schemas.get(f"{server}.{tool}")):
                 _out(line)
         except Exception as exc:  # noqa: BLE001
             _err(f"{server}.{tool}: error: {type(exc).__name__}: {exc}")
@@ -973,7 +981,8 @@ def cmd_status(args: argparse.Namespace, config: dict[str, Any]) -> int:
         return 0
     host = body["host"]
     budget = host["budget_mb"]
-    _out(f"host: {host['total_mb'] or '?'} MB; budget "
+    total = f"{host['total_mb']:,.0f}" if host["total_mb"] else "?"
+    _out(f"host: {total} MB; budget "
          + (f"{budget:,.0f} MB" if budget else "off") + f"; resident {host['resident_mb']:,.0f} MB; "
          f"containment {host['limit_kind']}")
     if status_dir is None:

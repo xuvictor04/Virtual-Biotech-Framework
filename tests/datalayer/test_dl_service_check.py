@@ -313,3 +313,42 @@ def test_inverse_hierarchy_links(tmp_path):
     model = check_table(make_ctx(tmp_path, {"onto": t}), "s.onto")
     assert model.confirmed["parents.inverse_of"] == {"confirmed": False}
     assert "1 link(s) without the inverse" in finding(model, "R10:hierarchy").detail
+
+
+def test_key_check_spill_is_removed_on_every_exit(tmp_path, monkeypatch):
+    """The uniqueness pass spills to <cache>/keycheck.<pid>.*; an unfinished scan, a completed one or a
+    stale directory of a killed child never leaves those files behind (R2)."""
+    import os
+
+    import vbt.datalayer.service.checks as checks
+    from vbt.datalayer.service.reader import BudgetExceeded, TableReader
+
+    rows = [{"k": f"k{i}", "v": 1.0} for i in range(40)]
+    write(tmp_path, "t", rows + [{"k": "k3", "v": 2.0}])
+    cols = {"k": {"role": "identifier"}, "v": {"role": "measure"}}
+    ctx = make_ctx(tmp_path, {"t": table(cols, ["k"], key_extra={"check": "full"})})
+    cache = Path(ctx.settings.cache_dir)
+    monkeypatch.setattr(checks, "SPILL_KEYS", 5)
+    model = check_table(ctx, "s.t")
+    assert model.key_check.duplicates == 1                      # found through the spill
+    assert not list(cache.glob("keycheck.*"))
+
+    real_scan = TableReader.scan
+
+    def failing_scan(self, *a, **k):
+        for i, m in enumerate(real_scan(self, *a, **k)):
+            if i == 20:
+                raise BudgetExceeded("scan budget exceeded")
+            yield m
+
+    monkeypatch.setattr(TableReader, "scan", failing_scan)
+    model = check_table(ctx, "s.t")
+    assert model.key_check.ok is None and "not completed" in model.key_check.detail
+    assert not list(cache.glob("keycheck.*"))
+    # a killed child's directory (dead pid) and a pre-pid one are swept; a live child's is kept
+    for name in ("keycheck.999999999.abc", "keycheck.zz3xggm8", f"keycheck.{os.getpid()}.live"):
+        (cache / name).mkdir()
+        (cache / name / "00").write_text("k\n")
+    removed = checks.sweep_spills(cache)
+    assert sorted(Path(p).name for p in removed) == ["keycheck.999999999.abc", "keycheck.zz3xggm8"]
+    assert [p.name for p in cache.glob("keycheck.*")] == [f"keycheck.{os.getpid()}.live"]

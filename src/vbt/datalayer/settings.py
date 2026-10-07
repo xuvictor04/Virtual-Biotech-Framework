@@ -73,6 +73,7 @@ DATA_DEFAULTS: dict[str, Any] = {
         "max_oom_kills": 3,
         "max_result_bytes": 2_000_000,
         "host_budget_mb": "auto",
+        "relay_max_message_mb": 0,
     },
     "readiness": {
         "per_turn_depth": "shallow",
@@ -181,6 +182,7 @@ class MemorySettings:
     max_oom_kills: int = 3
     max_result_bytes: int = 2_000_000
     host_budget_mb: int | str = "auto"
+    relay_max_message_mb: float = 0                   # > 0: the reaper relays stdout with this message cap
 
 
 @dataclass(frozen=True)

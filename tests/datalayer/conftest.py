@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import atexit
+import shutil
 import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -43,6 +45,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 _EMPTY_ZENODO = tempfile.mkdtemp(prefix="vbt-no-zenodo-")
+atexit.register(shutil.rmtree, _EMPTY_ZENODO, ignore_errors=True)
 
 
 @pytest.hookimpl(hookwrapper=True)
