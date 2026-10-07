@@ -331,3 +331,27 @@ def test_child_backend_starts_the_data_child_through_a_bridge(ot_env, tmp_path) 
         assert len(frame) == len(F.read_rows(ot_env, "drug_molecule"))
     finally:
         c.close()
+
+
+def test_survival_reads_go_through_the_client(client, tmp_path, monkeypatch) -> None:
+    """S10: the survival script's raw_data.csv is opened through the data client: same frame as a plain
+    read, plus a provenance id (cite it with derived_from); without a data child the cBioPortal clinical
+    reads fall back to the REST API (None here, no network)."""
+    import pandas as pd
+
+    from vbt.analysis import survival
+
+    raw = tmp_path / "raw_data.csv"
+    pd.DataFrame({"patientId": ["P1", "P2"], "sampleId": ["S1", "S2"],
+                  "expression_data": ["{'value': 3.5}", "{'value': 1.0}"],
+                  "clinical_data": ["{'OS_MONTHS': '12', 'OS_STATUS': '1:DECEASED'}",
+                                    "{'OS_MONTHS': '30', 'OS_STATUS': '0:LIVING'}"]}).to_csv(raw, index=False)
+    df = survival.load_cbioportal_raw(raw)
+    assert list(df["patientId"]) == ["P1", "P2"] and list(df["expr"]) == [3.5, 1.0]
+    assert df.loc[0, "OS_STATUS"] == "1:DECEASED"
+    rec = _record(client, df.attrs["vbt_prov"])
+    assert rec["served_by"] == "unguarded" and rec["tables"][0]["name"] == str(raw)
+    from vbt.datalayer import client as C
+
+    monkeypatch.setattr(C, "find", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no data child")))
+    assert survival._clinical_via_data_client("luad_tcga") is None

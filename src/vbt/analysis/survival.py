@@ -126,10 +126,17 @@ def load_cbioportal_raw(path) -> pd.DataFrame:
     sample with stringified ``expression_data`` / ``clinical_data`` dicts from
     the cBioPortal API) into a flat frame: ``patientId``, ``sampleId``,
     ``expr`` (RSEM value as downloaded) and one column per clinical attribute,
-    ready for :func:`prepare_tcga_clinical`."""
+    ready for :func:`prepare_tcga_clinical`.
+
+    The file is opened through the data client (``vbt.datalayer.client.open_file``): it is fingerprinted
+    and gets a ``vbt.dataprov/1`` record whose id is in ``attrs["vbt_prov"]`` (cite it with
+    ``register_artifact(derived_from=...)``)."""
     import ast
 
-    raw = pd.read_csv(path)
+    from ..datalayer import client
+
+    handle = client.open_file(path)
+    raw = pd.read_csv(handle.path)
     rows = []
     for _, r in raw.iterrows():
         e = r.get("expression_data")
@@ -139,7 +146,9 @@ def load_cbioportal_raw(path) -> pd.DataFrame:
         val = e.get("value") if isinstance(e, dict) else None
         rows.append({"patientId": r.get("patientId"), "sampleId": r.get("sampleId"),
                      "expr": float(val) if val is not None else np.nan, **c})
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    out.attrs["vbt_prov"] = handle.prov
+    return out
 
 
 def _cox_phreg(dat: pd.DataFrame, time_col, event_col, xcols):
@@ -325,8 +334,10 @@ def fetch_cbioportal_expression_and_clinical(study_id: str = "luad_tcga_pan_can_
         mol = pd.DataFrame(r.json())
         if mol.empty:
             raise ValueError(f"no expression returned for {gene} in {profile}")
+        wide = _clinical_via_data_client(study_id)
         clin = {}
-        for kind in ("PATIENT", "SAMPLE"):
+        for kind in ("PATIENT", "SAMPLE") if wide is None else ():
+            # fallback: the data child is not available here (no provenance record for these reads)
             r = client.get(f"/studies/{study_id}/clinical-data",
                            params={"clinicalDataType": kind, "projection": "SUMMARY",
                                    "pageSize": 10_000_000})
@@ -343,16 +354,22 @@ def fetch_cbioportal_expression_and_clinical(study_id: str = "luad_tcga_pan_can_
     expr = expr.sort_values("sampleId").drop_duplicates("patientId")
     expr["expr"] = np.log2(expr["value"].clip(lower=0) + 1) if log2 else expr["value"]
 
-    pat = clin["PATIENT"]
-    pat_w = (pat.pivot_table(index="patientId", columns="clinicalAttributeId", values="value",
-                             aggfunc="first") if not pat.empty else pd.DataFrame())
-    smp = clin["SAMPLE"]
-    if not smp.empty:
-        smp_w = smp.pivot_table(index="sampleId", columns="clinicalAttributeId", values="value",
-                                aggfunc="first")
-        smp_w = smp_w.loc[smp_w.index.intersection(expr["sampleId"])]
+    provs: list[str] = []
+    if wide is not None:
+        pat_w, smp_w, provs = wide
+        if not smp_w.empty:
+            smp_w = smp_w.loc[smp_w.index.intersection(expr["sampleId"])]
     else:
-        smp_w = pd.DataFrame()
+        pat = clin["PATIENT"]
+        pat_w = (pat.pivot_table(index="patientId", columns="clinicalAttributeId", values="value",
+                                 aggfunc="first") if not pat.empty else pd.DataFrame())
+        smp = clin["SAMPLE"]
+        if not smp.empty:
+            smp_w = smp.pivot_table(index="sampleId", columns="clinicalAttributeId", values="value",
+                                    aggfunc="first")
+            smp_w = smp_w.loc[smp_w.index.intersection(expr["sampleId"])]
+        else:
+            smp_w = pd.DataFrame()
     out = expr[["patientId", "sampleId", "expr"]].set_index("patientId")
     out = out.join(pat_w, how="left")
     if not smp_w.empty:
@@ -360,4 +377,32 @@ def fetch_cbioportal_expression_and_clinical(study_id: str = "luad_tcga_pan_can_
         out = out.join(smp_w.drop(columns=dup), on="sampleId", how="left")
     out.index.name = "patientId"
     out.attrs.update({"study_id": study_id, "gene": gene, "entrez_id": int(entrez_id)})
-    return out.reset_index()
+    out = out.reset_index()
+    if provs:
+        out.attrs["vbt_prov"] = provs                  # the clinical reads' data provenance ids
+    return out
+
+
+def _clinical_via_data_client(study_id: str) -> tuple[pd.DataFrame, pd.DataFrame, list[str]] | None:
+    """Patient and sample clinical data of a study through the data client (``cbioportal.patient_clinical``
+    and ``cbioportal.sample_clinical``, pivoted by the data child to one row per patient / sample, each read
+    with a ``vbt.dataprov/1`` record); None when the data layer cannot answer here (the caller falls back to
+    the REST API)."""
+    from ..datalayer import client
+
+    try:
+        frames = []
+        provs = []
+        for table, index in (("cbioportal.patient_clinical", "patientId"), ("cbioportal.sample_clinical", "sampleId")):
+            res = client.find(table, {"studyId": study_id}, limit=1000)
+            if res.status not in ("ok", "empty") or (res.header or {}).get("truncated"):
+                return None
+            df = pd.DataFrame(res.rows)
+            drop = [c for c in ("studyId", "patientId" if index == "sampleId" else None, "_conflicts") if c]
+            df = df.drop(columns=[c for c in drop if c in df.columns])
+            frames.append(df.set_index(index) if index in df.columns else pd.DataFrame())
+            if res.prov:
+                provs.append(res.prov)
+        return frames[0], frames[1], provs
+    except Exception:  # noqa: BLE001 - no data child, no descriptor, a refusal: the REST fallback applies
+        return None

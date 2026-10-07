@@ -56,7 +56,7 @@ from .record import DataProvenance, RequestInfo, ResolutionRecord, ResultInfo, S
 __all__ = [
     "DataClient", "Result", "MatrixHandle", "get_client", "configure", "use_bridge", "close", "find", "lookup",
     "search", "aggregate", "similar", "resolve", "describe", "vocab", "members", "neighbors", "read_frame",
-    "open_matrix", "BACKENDS", "ENV_BACKEND", "ENV_LOG",
+    "open_matrix", "open_file", "BACKENDS", "ENV_BACKEND", "ENV_LOG",
 ]
 
 BACKENDS = ("auto", "inprocess", "child", "off")
@@ -458,6 +458,13 @@ class DataClient:
                 return str(ref), Path(*resolved.parts[:-depth]), resolved.name
         return None
 
+    def open_file(self, path: str | os.PathLike[str]) -> MatrixHandle:
+        """A file a harness reader names (``raw_data.csv`` of the survival scripts): a matrix fragment a
+        descriptor declares is checked ready like :meth:`open_matrix`; any other file is fingerprinted by its
+        sha256 and gets a ``vbt.dataprov/1`` record that says it is unguarded, so artifacts built from it can
+        cite it (``derived_from``)."""
+        return self.open_matrix(path=path)
+
     def _unguarded(self, path: Path) -> MatrixHandle:
         sha = hashlib.sha256(path.read_bytes()).hexdigest()
         out = {"_vbt": {"status": "ok", "notes": [f"{path} is declared by no descriptor: opened unguarded"]}}
@@ -551,6 +558,10 @@ def neighbors(table: str, node: str, **kwargs: Any) -> Result:
 
 def read_frame(table: str, columns: Sequence[str] | None = None, **kwargs: Any) -> Any:
     return get_client().read_frame(table, columns, **kwargs)
+
+
+def open_file(path: str | os.PathLike[str]) -> MatrixHandle:
+    return get_client().open_file(path)
 
 
 def open_matrix(table: str | None = None, fragment: str | None = None, **kwargs: Any) -> MatrixHandle:
