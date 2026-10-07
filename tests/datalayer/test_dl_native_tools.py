@@ -35,7 +35,8 @@ from dl_upstream import REPO, needs_arrow
 
 pytestmark = needs_arrow
 
-PUBLIC = ("resolve", "describe", "lookup", "find", "search", "vocab", "members", "aggregate", "similar", "neighbors")
+PUBLIC = ("resolve", "describe", "lookup", "find", "search", "vocab", "members", "aggregate", "similar", "neighbors",
+          "expand", "enrich")
 
 
 def _ctx(tmp: Path, sources: Path, *, overlays: Path | None = None) -> Any:
@@ -538,3 +539,29 @@ async def test_compute_entity_similarity_repairs_from_both_anchors(ot_root: Path
             assert {k: v for k, v in res.obj.items() if k != "_vbt"} == {
                 "entity_a": a, "entity_a_category": "target", "entity_b": b, "entity_b_category": "disease",
                 "similarity": pytest.approx(0.6)}
+
+
+def test_listed_schemas_offer_the_phase3_verbs(ot) -> None:
+    """F17/F18: the listings advertise what the runtime verbs accept: multi-hop neighbors with nodes and
+    max_nodes, propagated members, and the public expand and enrich verbs."""
+    from vbt.datalayer.derive.tools import MAX_HOPS, native_tools
+    from vbt.datalayer.service.verbs.network import MAX_HOPS as CHILD_MAX_HOPS
+
+    assert MAX_HOPS == CHILD_MAX_HOPS
+    tools = {t.verb: t for t in native_tools(ot.catalog)}
+    nb = tools["neighbors"].input_schema
+    assert nb["properties"]["hops"]["maximum"] == MAX_HOPS and "enum" not in nb["properties"]["hops"]
+    assert {"nodes", "max_nodes", "score_order"} <= set(nb["properties"])
+    assert "phase 3" not in json.dumps(tools["members"].input_schema)
+    assert "one hop" not in tools["neighbors"].description
+    ex = tools["expand"].input_schema
+    assert "open_targets:ot_disease" in ex["properties"]["id_type"]["enum"]
+    assert ex["required"] == ["id_type", "values"]
+    assert "genes" in tools["enrich"].input_schema["properties"] and tools["enrich"].tables
+
+
+def test_expand_is_a_public_verb(ot) -> None:
+    import dl_fixtures as F
+
+    out = call(ot, "expand", id_type="open_targets:ot_disease", values=[F.T2D], direction="ancestors")
+    assert "rows" in out and out["_vbt"]["status"] in ("ok", "empty"), out

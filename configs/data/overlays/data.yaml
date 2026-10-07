@@ -1,5 +1,6 @@
 # Overlay for the harness's own data child (src/vbt/datalayer/service/server.py; docs/DATA_LAYER.md §10.6).
-# Phase 2 (F14): the public verbs of service/verbs/public.py are listed as mcp__data__<verb>.
+# Phase 2 (F14): the public verbs of service/verbs/public.py are listed as mcp__data__<verb>. Phase 3
+# (F17, F18): multi-hop neighbors, propagated members, and the public expand and enrich verbs.
 #
 # The data child answers from the descriptors itself (identifiers resolved by the same resolver the
 # gateway uses, honest totals, coverage, typed errors), so every binding is `serve: pass` without a
@@ -46,7 +47,7 @@ tools:
     result: {rows: $.rows, total: $._vbt.total}
     serve: pass
     witness: false
-    text: {summary: "The direct members of one set."}
+    text: {summary: "The members of one set; propagate=true adds the members of every descendant set once each."}
   aggregate:
     result: {rows: $.rows, total: $._vbt.total}
     serve: pass
@@ -61,4 +62,14 @@ tools:
     result: {rows: $.rows, total: $._vbt.total}
     serve: pass
     witness: false
-    text: {summary: "Edges touching a node on either side (one hop)."}
+    text: {summary: "Edges around one or more nodes over 1-4 hops, in key order, sources never pooled."}
+  expand:
+    result: {rows: $.rows, total: $._vbt.total}
+    serve: pass
+    witness: false
+    text: {summary: "Descendants or ancestors of terms under an id_type's hierarchy (declared predicates only), with depth."}
+  enrich:
+    result: {rows: $.rows, total: $._vbt.total}
+    serve: pass
+    witness: false
+    text: {summary: "Over-representation of a gene list in the sets of a member column (hypergeometric p, BH q)."}

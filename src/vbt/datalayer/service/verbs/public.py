@@ -3,7 +3,10 @@
 ``resolve(id_type, values)``, ``describe(source[, table])``, ``lookup(table, key)``, ``find(table, where,
 rank_by, limit, distinct, group_by)``, ``search(table, text)``, ``vocab(table, column)``,
 ``members(table, set_id, propagate)``, ``aggregate(table, group_by, measure, how, min_n)``,
-``similar(table, anchor, where, top_k)`` and ``neighbors(table, node)`` (one hop until phase 3).
+``similar(table, anchor, where, top_k)``, ``neighbors(table, node)`` (phase 3: ``network.py`` wraps it for
+``nodes``, ``hops`` 1-4 and ``max_nodes``; ``hierarchy.py`` wraps ``members`` for ``propagate: true``), and
+the phase-3 ``expand(id_type, values, direction)`` and ``enrich(table, genes, ...)`` (the hidden ``_expand``
+and ``_enrich`` handlers, listed publicly).
 
 Every verb works on the table's **long view**: the columns of a table or item table, or for a matrix
 the row-axis key and fields, the column-axis key and parsed header fields, the values and the row
@@ -48,7 +51,7 @@ __all__ = [
 
 #: The public verbs, in listing order (each is ``mcp__data__<name>``).
 PUBLIC_VERBS = ("resolve", "describe", "lookup", "find", "search", "vocab", "members", "aggregate", "similar",
-                "neighbors")
+                "neighbors", "expand", "enrich")
 #: ``where`` operators: ``{column: value}`` is ``eq`` (``in`` for a list).
 WHERE_OPS = ("eq", "in", "ne", "ge", "gt", "le", "lt", "contains")
 _CMP = {"ge": ">=", "gt": ">", "le": "<=", "lt": "<", "ne": "!="}
@@ -865,7 +868,8 @@ def vocab(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def members(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
-    """The members of one set of a ``sets`` table (direct membership; propagation arrives in phase 3)."""
+    """The members of one set of a ``sets`` table (direct membership; ``hierarchy.py`` wraps this verb for
+    ``propagate: true``)."""
     table = table_access(ctx, payload.get("table"), agent=payload.get("agent"))
     view = long_view(ctx, str(table.ref))
     if payload.get("propagate"):
@@ -894,7 +898,8 @@ def members(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def neighbors(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Edges of an ``edges`` table touching ``node`` on either side (one hop; more hops arrive in phase 3)."""
+    """Edges of an ``edges`` table touching ``node`` on either side, one hop (``network.py`` wraps this verb
+    for several nodes and hops)."""
     table = table_access(ctx, payload.get("table"), agent=payload.get("agent"))
     view = long_view(ctx, str(table.ref))
     hops = payload.get("hops", 1)
@@ -1017,6 +1022,21 @@ def _client_table(ctx: ServiceContext, payload: Mapping[str, Any]) -> tuple[Serv
     return sub, table
 
 
+def _expand(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
+    """``expand`` (§10.6): the hidden ``_expand`` verb (hierarchy.py) as a public tool."""
+    from .hierarchy import expand_verb
+
+    return expand_verb(ctx, payload)
+
+
+def _enrich(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
+    """``enrich`` (§10.6): the hidden ``_enrich`` verb (enrich.py) on a table exposed to the native tools."""
+    from .enrich import enrich
+
+    table_access(ctx, payload.get("table"), agent=payload.get("agent"))
+    return enrich(ctx, payload)
+
+
 def materialize(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     """``_materialize``: the rows of ``table`` matching ``where`` (identifiers resolved), projected on
     ``columns``, written as one Parquet file under ``out_dir`` for the in-process client (a backed read:
@@ -1134,6 +1154,8 @@ VERBS = {
     "aggregate": guarded("aggregate", _aggregate),
     "similar": guarded("similar", _similar),
     "neighbors": guarded("neighbors", neighbors),
+    "expand": guarded("expand", lambda ctx, payload: _expand(ctx, payload)),
+    "enrich": guarded("enrich", lambda ctx, payload: _enrich(ctx, payload)),
 }
 assert tuple(VERBS) == PUBLIC_VERBS
 VERBS.update({"_materialize": guarded("materialize", materialize), "_matrix": guarded("matrix", matrix)})

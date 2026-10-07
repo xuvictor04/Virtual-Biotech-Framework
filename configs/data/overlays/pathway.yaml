@@ -28,7 +28,7 @@ tools:
       table: open_targets.target_pathways
       rename: {"pathways[].pathwayId": pathwayId, "pathways[].pathway": pathway, "pathways[].topLevelTerm": topLevelTerm}
     text:
-      notes: ["topLevelTerm is a lossy single label (a pathway can sit under several top-level pathways); the exact top-level ancestors come from pathway.get_pathway_info or data._expand (direction ancestors) on the Reactome hierarchy."]
+      notes: ["topLevelTerm is a lossy single label (a pathway can sit under several top-level pathways); the exact top-level ancestors come from pathway.get_pathway_info or mcp__data__expand (direction ancestors) on the Reactome hierarchy."]
 
   search_pathways:
     reads: {open_targets.target: {access: projection, columns: [id, pathways]}}

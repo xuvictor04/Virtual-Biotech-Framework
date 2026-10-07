@@ -33,7 +33,9 @@ __all__ = [
 
 NATIVE_SERVER = "data"
 NATIVE_VERBS = ("resolve", "describe", "lookup", "find", "search", "vocab", "members", "aggregate", "similar",
-                "neighbors")
+                "neighbors", "expand", "enrich")
+#: The most hops ``neighbors`` takes (the data child's ``network.MAX_HOPS``).
+MAX_HOPS = 4
 
 VERB_DESCRIPTIONS = {
     "resolve": "Resolve identifiers (symbols, aliases, retired IDs, cross-references) to one canonical key of an "
@@ -47,13 +49,20 @@ VERB_DESCRIPTIONS = {
     "search": "Rows whose key, label or synonym matches `text`, ordered by match class (exact, casefold, previous, "
               "alias, synonym, prefix, word, substring), then rank, then key; each row carries `match`.",
     "vocab": "The distinct values of a category or scope column, in their storage type, with counts when scanned.",
-    "members": "The direct members of one set of a sets table (propagation over a hierarchy arrives in phase 3).",
+    "members": "The members of one set of a sets table; propagate=true adds the members of every descendant set "
+               "once each, with `via` naming the set it was annotated to.",
     "aggregate": "Grouped aggregation over a table's long view (matrix row attributes joined): count, "
                  "count_distinct or the measure's statistic (mean, median, ...); unknown values excluded and "
                  "counted; per-group n; groups below `min_n` dropped and counted.",
     "similar": "Cosine top-k of a vectors table around an anchor; the anchor is excluded from the results and the "
                "total; candidates without a finite score are excluded and counted.",
-    "neighbors": "Edges of an edges table that touch `node` on either side (one hop); each row names the partner.",
+    "neighbors": "Edges of an edges table around `node` (or `nodes`) over 1 to 4 hops, frontier expanded in key "
+                 "order, sources never pooled; each row names the partner; `max_nodes` cuts the last hop (partial).",
+    "expand": "The descendants (or ancestors) of terms under an id_type's hierarchy, with each term's depth; the "
+              "closure follows the declared predicates only (GO is_a and part_of, never regulates). Exact top-level "
+              "ancestors come from direction=ancestors.",
+    "enrich": "Over-representation of a gene list in the sets of a member column (hypergeometric p and BH q over "
+              "the declared universe; sets below min_size or above max_size dropped and counted).",
 }
 _TAIL = ("Unknown identifiers are errors, never empty results; an empty result states its coverage and is citable "
          "only as an absence.")
@@ -115,6 +124,11 @@ def _supports(verb: str, table: Any) -> bool:
         return "vector" in roles
     if verb == "neighbors":
         return table.spec.edge is not None
+    if verb == "expand":
+        return table.kind == "ontology" or "hierarchy" in roles
+    if verb == "enrich":
+        return any(getattr(getattr(c, "membership", None), "enrichment", None) is not None
+                   for c in table.columns.values() if getattr(c, "role", None) == "member")
     return False
 
 
@@ -222,8 +236,29 @@ def native_input_schema(catalog: Any, verb: str, tables: list[str], *, enum_max:
         required = ["table", "column"]
     elif verb == "members":
         props = {"table": table, "set_id": {"type": "string"},
-                 "propagate": {"type": "boolean", "default": False, "description": "phase 3; false only"}}
+                 "propagate": {"type": "boolean", "default": False,
+                               "description": "true: also the members of every descendant set (each once, `via` "
+                                              "names its set)"}}
         required = ["table", "set_id"]
+    elif verb == "expand":
+        names = sorted(_hierarchy_id_types(catalog, tables))
+        props = {"id_type": {"type": "string", **({"enum": names} if names else {})},
+                 "values": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                 "direction": {"type": "string", "enum": ["descendants", "ancestors"], "default": "descendants"},
+                 "include_self": {"type": "boolean", "default": False},
+                 "max_expand": {"type": "integer", "minimum": 1}}
+        required = ["id_type", "values"]
+    elif verb == "enrich":
+        props = {"table": table, "column": {"type": "string", "description": "the member column (default: the "
+                                                                               "one with an enrichment contract)"},
+                 "genes": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                 "universe": {"type": "array", "items": {"type": "string"}, "minItems": 1,
+                              "description": "a background list instead of the declared universe"},
+                 "scope": {"type": "object"}, "min_size": {"type": "integer", "minimum": 1},
+                 "max_size": {"type": "integer", "minimum": 1},
+                 "alpha": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+                 "propagate": {"description": "auto, true or false"}, "limit": {**limit, "default": 50}}
+        required = ["table", "genes"]
     elif verb == "aggregate":
         props = {"table": table, "where": where, "group_by": {"type": "array", "items": {"type": "string"},
                                                               "minItems": 1},
@@ -239,10 +274,33 @@ def native_input_schema(catalog: Any, verb: str, tables: list[str], *, enum_max:
                  "where": where, "top_k": {**limit, "default": 10}}
         required = ["table", "anchor"]
     else:                                              # neighbors
-        props = {"table": table, "node": {"type": "string"}, "where": where, "limit": {**limit, "default": 50},
-                 "hops": {"type": "integer", "enum": [1], "default": 1, "description": "one hop until phase 3"}}
-        required = ["table", "node"]
+        props = {"table": table, "node": {"type": "string"},
+                 "nodes": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                 "where": where, "limit": {**limit, "default": 50},
+                 "hops": {"type": "integer", "minimum": 1, "maximum": MAX_HOPS, "default": 1},
+                 "max_nodes": {"type": "integer", "minimum": 1},
+                 "score_order": {"type": "boolean", "default": False,
+                                 "description": "order each node's edges by score within one source"}}
+        required = ["table"]
+        out = {"type": "object", "properties": props, "required": required, "additionalProperties": False,
+               "anyOf": [{"required": ["node"]}, {"required": ["nodes"]}]}
+        return out
     return {"type": "object", "properties": props, "required": required, "additionalProperties": False}
+
+
+def _hierarchy_id_types(catalog: Any, tables: list[str]) -> set[str]:
+    """``source:id_type`` names whose hierarchy (declared, or their universe table's) ``expand`` can walk."""
+    out: set[str] = set()
+    names = {t.split(".", 1)[1] for t in tables if "." in t}
+    for src, desc in (getattr(catalog, "sources", None) or {}).items():
+        for name, spec in (getattr(desc, "id_types", None) or {}).items():
+            uni = getattr(spec, "universe", None)
+            uni = uni[0] if isinstance(uni, list) and uni else uni
+            table = getattr(uni, "table", None) if uni is not None and not isinstance(uni, str) else \
+                (str(uni).split(".")[0] if uni else None)
+            if getattr(spec, "hierarchy", None) is not None or (table and table in names):
+                out.add(f"{src}:{name}")
+    return out
 
 
 def native_tool(catalog: Any, verb: str, *, agent: str | None = None,
