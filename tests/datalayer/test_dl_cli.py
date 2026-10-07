@@ -108,3 +108,39 @@ def test_index_build_resolve_and_check(fixture_env: Path, capsys: pytest.Capture
     assert body["indexes"]["open_targets:ensembl_gene"]["status"] == "ready"
     assert cli.main(["--profile", "mock", "ds", "check", "--table", "open_targets.known_drug"]) == 0
     assert "open_targets.known_drug: ready" in capsys.readouterr().out
+
+
+def test_unknown_names_exit_2(capsys: pytest.CaptureFixture[str]) -> None:
+    """A typo is an error (rc 2), never a check, explanation or estimate of nothing (R7)."""
+    assert cli.main(["--profile", "mock", "ds", "check", "--tool", "target.nosuch"]) == 2
+    assert "no binding" in capsys.readouterr().err
+    assert cli.main(["--profile", "mock", "ds", "check", "--table", "nosuch.table"]) == 2
+    assert "unknown table" in capsys.readouterr().err
+    assert cli.main(["--profile", "mock", "ds", "explain", "nosuch.tool"]) == 2
+    assert "unknown server" in capsys.readouterr().err
+    assert cli.main(["--profile", "mock", "ds", "estimate", "--tool", "target.nosuch"]) == 2
+    assert cli.main(["--profile", "mock", "ds", "estimate", "--table", "open_targets.nosuch"]) == 2
+
+
+@needs_arrow
+def test_estimate_without_data_is_not_admissible(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                 capsys: pytest.CaptureFixture[str]) -> None:
+    """A table the tool loads that cannot be measured gives no verdict and rc 1 (R7)."""
+    monkeypatch.setenv("OPEN_TARGETS_DATA_PATH", str(tmp_path / "missing"))
+    monkeypatch.setenv("VBT_DATA_DIR", str(tmp_path))
+    assert cli.main(["--profile", "mock", "ds", "estimate", "--tool", "target.get_target_info"]) == 1
+    out = capsys.readouterr().out
+    assert "not estimable" in out and "admissible" not in out
+
+
+@needs_arrow
+def test_check_and_resolve_report_missing_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                               capsys: pytest.CaptureFixture[str]) -> None:
+    """check exits 1 when a requested table is not ready; resolve says no local index exists (R7)."""
+    monkeypatch.setenv("OPEN_TARGETS_DATA_PATH", str(tmp_path / "missing"))
+    monkeypatch.setenv("VBT_DATA_DIR", str(tmp_path))
+    assert cli.main(["--profile", "mock", "ds", "check", "--table", "open_targets.known_drug"]) == 1
+    capsys.readouterr()
+    cli.main(["--profile", "mock", "ds", "resolve", "ensembl_gene", "ENSG00000141510"])
+    err = capsys.readouterr().err
+    assert "no local index" in err and "vbt ds index build" in err
