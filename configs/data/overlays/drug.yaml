@@ -46,7 +46,7 @@ tools:
   get_drug_indications:
     reads: {open_targets.drug_indication: {access: full_table}}
     args:
-      drug_id: {binds: open_targets.drug_indication.id, accepts: [chembl_molecule, drug_name]}
+      drug_id: {binds: open_targets.drug_indication.id, accepts: [chembl_molecule, drug_name], family: include}   # parent and salts
       limit:   {role: limit, min: 1, max: 500}
     result:
       rows: $.indications

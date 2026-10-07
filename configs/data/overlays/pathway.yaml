@@ -1,5 +1,8 @@
 # Overlay for the upstream pathway server (pathway_mcp; docs/DATA_LAYER.md §6.5, Appendix A).
-# Phase 1: 3 pass, 5 derived, 2 block.
+# Phase 1: 3 pass, 5 derived, 2 block. Phase 3 (F16, F18): the two enrichment tools are derived from the
+# member columns' enrichment contracts (full BH family, aspect-specific GO background, propagation over
+# the Reactome and GO hierarchies), and find_genes_in_pathway propagates membership down the Reactome
+# hierarchy: 3 pass, 7 derived, 0 block.
 schema: vbt.overlay/1
 server: pathway
 sources: [open_targets]
@@ -24,6 +27,8 @@ tools:
       verb: find
       table: open_targets.target_pathways
       rename: {"pathways[].pathwayId": pathwayId, "pathways[].pathway": pathway, "pathways[].topLevelTerm": topLevelTerm}
+    text:
+      notes: ["topLevelTerm is a lossy single label (a pathway can sit under several top-level pathways); the exact top-level ancestors come from pathway.get_pathway_info or data._expand (direction ancestors) on the Reactome hierarchy."]
 
   search_pathways:
     reads: {open_targets.target: {access: projection, columns: [id, pathways]}}
@@ -117,34 +122,89 @@ tools:
       count_fields: {"$.gene_count": "len($.genes)"}
       order: [{column: id, direction: asc}]
     serve: derived
-    derived: {verb: members, table: open_targets.target_pathways, columns: [id]}
+    # a higher-level pathway (564 Reactome IDs have no direct gene) lists the genes of its sub-pathways;
+    # each gene once, with `via` naming the pathway it is annotated to (propagated membership, disclosed)
+    derived: {verb: members, table: open_targets.target_pathways, columns: [id], split: {propagate: true},
+              envelope: {pathway_id: "{pathway_id}", gene_count: null}}
+    text:
+      notes: ["Genes annotated to the pathway or to any of its sub-pathways (Reactome hierarchy); `via` names the pathway each gene is annotated to."]
     defects:
       - {id: OT-PATH-002, what: "a pathway with no annotated gene is reported as not found (an error), not as an empty membership",
          where: "pathway_mcp/tools.py:366-370", effect: error}
 
   get_pathway_enrichment:
-    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, pathways]}}
+    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, pathways]},
+            open_targets.reactome: {access: full_table}}
     args:
-      gene_list: {binds: open_targets.target.id, op: in, each: true, accepts: [ensembl_gene, hgnc_symbol],
-                  on_missing: partial, min_resolved_fraction: 0.9}
-    result: {rows: $.enriched_pathways}
-    serve: block
-    block:
-      reason: "Benjamini-Hochberg over overlapping sets only (m counts pathways with at least one hit) and a background of annotated genes; set-test statistic plugins arrive in phase 3."
-      alternatives: [pathway.get_gene_pathways, pathway.find_genes_in_pathway]
-      until_phase: 3
+      gene_list:        {binds: open_targets.target.id, op: in, each: true, accepts: [ensembl_gene, hgnc_symbol],
+                         on_missing: partial, min_resolved_fraction: 0.9}
+      min_pathway_size: {role: family_param, min: 1}            # counted within the universe
+      max_pathway_size: {role: family_param, min: 1}
+      pvalue_threshold: {role: family_param, min: 0, max: 1}    # on the BH q-value (fdr), inclusive
+      limit:            {role: limit, min: 1, max: 5000}
+    witness: false                                 # rows are tested sets, not rows of target
+    result:
+      rows: $.enriched_pathways
+      row_key: [pathwayId]
+      # ordered by the handler: pvalue asc, then pathwayId (tested sets, not rows of target)
+      count_fields: {"$.count": "len($.enriched_pathways)"}
+      statistics: {test: hypergeom_enrichment, correction: fdr_bh, family: "every Reactome pathway within the size bounds, zero-overlap pathways included",
+                   universe: "genes with at least one Reactome annotation"}
+    serve: derived
+    derived:
+      verb: find
+      table: open_targets.target
+      # the enrich handler reads target.pathways' enrichment contract; upstream's enrichment_ratio
+      # (overlap / pathway size) is not an enrichment ratio and is dropped (fold_enrichment is served)
+      split:
+        enrich: {column: pathways, args: {min_size: min_pathway_size, max_size: max_pathway_size, alpha: pvalue_threshold},
+                 defaults: {min_size: 5, max_size: 500, alpha: 0.05}, drop: [expected]}
+      rename: {set_id: pathwayId, set_label: pathway, set_size: pathway_size, overlap: overlap_count,
+               overlap_members: overlap_genes, top_level: top_level_pathways}
+      envelope: {count: null}                    # filled by count_fields
+    text:
+      drop_promises: [enrichment_ratio, topLevelTerm]
+      notes:
+        - "BH runs over every pathway within the size bounds (zero-overlap pathways included); the background is the genes with at least one Reactome annotation; annotations are propagated to ancestor pathways."
+        - "top_level_pathways lists the exact top-level Reactome ancestors (topLevelTerm is a lossy single label)."
+    defects:
+      - {id: OT-PATH-005, what: "Benjamini-Hochberg m counts only pathways with at least one hit, so every q-value is too small",
+         where: "pathway_mcp/tools.py:463-505", effect: silent_wrong}
 
   get_go_enrichment:
     reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, go]}, open_targets.go: {access: full_table}}
     args:
-      gene_list: {binds: open_targets.target.id, op: in, each: true, accepts: [ensembl_gene, hgnc_symbol],
-                  on_missing: partial, min_resolved_fraction: 0.9}
-    result: {rows: $.enriched_terms}
-    serve: block
-    block:
-      reason: "The background ignores the GO aspect and the multiple-testing family counts only overlapping terms; set-test statistic plugins arrive in phase 3."
-      alternatives: [pathway.get_gene_ontology]
-      until_phase: 3
+      gene_list:        {binds: open_targets.target.id, op: in, each: true, accepts: [ensembl_gene, hgnc_symbol],
+                         on_missing: partial, min_resolved_fraction: 0.9}
+      go_type:          {role: family_param,
+                         values: {P: P, F: F, C: C, biological_process: P, molecular_function: F, cellular_component: C}}
+      pvalue_threshold: {role: family_param, min: 0, max: 1}
+      limit:            {role: limit, min: 1, max: 5000}
+    witness: false
+    result:
+      rows: $.enriched_terms
+      row_key: [go_aspect, go_id]
+      # ordered by the handler: pvalue asc, then aspect and go_id
+      count_fields: {"$.count": "len($.enriched_terms)"}
+      statistics: {test: hypergeom_enrichment, correction: fdr_bh, family: "every GO term of the aspect within the size bounds, zero-overlap terms included",
+                   universe: "genes with at least one GO annotation in the aspect"}
+    serve: derived
+    derived:
+      verb: find
+      table: open_targets.target
+      split:
+        enrich: {column: go, args: {aspect: go_type, alpha: pvalue_threshold}, defaults: {min_size: 3, alpha: 0.05},
+                 drop: [expected, top_level]}
+      rename: {set_id: go_id, set_label: go_name, scope: go_aspect, set_size: background_count, overlap: query_count,
+               overlap_members: query_genes, fold_enrichment: enrichment_ratio}
+      envelope: {count: null}
+    text:
+      notes:
+        - "Each GO aspect has its own background (genes with an annotation in that aspect) and its own BH family; annotations propagate to ancestor terms over is_a and part_of (not regulates) when go-basic.obo is available."
+        - "enrichment_ratio is the fold enrichment (observed / expected overlap)."
+    defects:
+      - {id: OT-PATH-006, what: "the background ignores the GO aspect and BH m counts only terms with a hit",
+         where: "pathway_mcp/tools.py:770-800", effect: silent_wrong}
 
   get_go_term_info:
     reads: {open_targets.go: {access: full_table}}

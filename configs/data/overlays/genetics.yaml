@@ -1,5 +1,5 @@
 # Overlay for the upstream genetics server (genetics_mcp; docs/DATA_LAYER.md §8, Appendix A).
-# Phase 1: 8 pass, 1 derived, 1 block.
+# Phase 1: 8 pass, 1 derived, 1 block. Phase 3 (F17): get_qtl_colocalization is derived from the eCAVIAR table: 8 pass, 2 derived.
 schema: vbt.overlay/1
 server: genetics
 sources: [open_targets]
@@ -60,16 +60,25 @@ tools:
     serve: pass
 
   get_qtl_colocalization:
-    reads: {open_targets.l2g_prediction: {access: full_table}}
+    reads: {open_targets.colocalisation_ecaviar: {access: full_table}}
     args:
-      study_locus_id: {binds: open_targets.l2g_prediction.studyLocusId, accepts: [study_locus_id]}
-      gene_id:        {binds: open_targets.l2g_prediction.geneId, accepts: [ensembl_gene, hgnc_symbol]}
-    result: {rows: $.results}
-    serve: block
-    block:
-      reason: "Reads QTL colocalisation from L2G feature values rather than from the colocalisation tables, so CLPP thresholds apply to model features. A colocalisation statistic plugin and a derived replacement arrive in phase 3."
-      alternatives: [genetics.query_colocalisation, genetics.get_colocalisation_by_chromosome]
-      until_phase: 3
+      study_locus_id: {binds_any: [open_targets.colocalisation_ecaviar.leftStudyLocusId,
+                                   open_targets.colocalisation_ecaviar.rightStudyLocusId], accepts: [study_locus_id]}
+      gene_id:        {role: unbound}             # the colocalisation tables carry no gene; refused unless absent
+      qtl_type:       {binds: open_targets.colocalisation_ecaviar.rightStudyType}   # an exact study type (eqtl, pqtl, sqtl)
+      min_clpp:       {binds: open_targets.colocalisation_ecaviar.clpp, op: ge, min: 0, max: 1}
+      limit:          {role: limit, min: 1, max: 1000}
+    require_any: [[study_locus_id]]
+    result:
+      rows: $.results
+      count_fields: {"$.num_results": "len($.results)"}
+      order: [{column: clpp, direction: desc, nulls: last}, {column: leftStudyLocusId, direction: asc},
+              {column: rightStudyLocusId, direction: asc}]
+    serve: derived
+    # read from the eCAVIAR colocalisation table (CLPP is its statistic), not from L2G model features
+    derived: {verb: find, table: open_targets.colocalisation_ecaviar, envelope: {num_results: null}}
+    text:
+      notes: ["CLPP values come from the eCAVIAR colocalisation tests; qtl_type is an exact study type. Gene-level queries are not answerable from these tables."]
     defects:
       - {id: OT-GEN-003, what: "QTL colocalisation taken from l2g_prediction features; qtl_type is recorded but never filters",
          where: "genetics_mcp/tools.py:559-575", effect: silent_wrong}

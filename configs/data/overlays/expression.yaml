@@ -1,5 +1,5 @@
 # Overlay for the upstream expression server (expression_mcp; docs/DATA_LAYER.md §8, Appendix A).
-# Phase 1: 3 pass, 2 derived, 1 block.
+# Phase 1: 3 pass, 2 derived, 1 block. Phase 3 (F16): find_tissue_specific_genes is derived (unit guard): 3 pass, 3 derived.
 schema: vbt.overlay/1
 server: expression
 sources: [open_targets]
@@ -105,15 +105,33 @@ tools:
   find_tissue_specific_genes:
     reads: {open_targets.expression: {access: full_table}}
     args:
-      output_path: {role: output_path}
-      tissue:      {binds_any: ["open_targets.expression.tissues[].label", "open_targets.expression.tissues[].efo_code"],
-                    match: casefold, item_filter: true}
-    result: {rows: $.top_genes}
-    serve: block
-    block:
-      reason: "Fold change against the mean of the other tissues mixes units and in-band unknown codes; a tissue-specificity statistic arrives in phase 3."
-      alternatives: [expression.query_expression_by_tissue, expression.compare_expression_across_tissues]
-      until_phase: 3
+      output_path:           {role: output_path}       # confined; the derived answer writes no file
+      tissue:                {role: family_param}      # an exact tissue label or EFO code (no substring match)
+      fold_change_threshold: {role: family_param, min: 0}
+      limit:                 {role: limit, min: 1, max: 10000}
+    witness: false                                 # per-gene ratios computed from every tissue of the gene
+    result:
+      rows: $.top_genes
+      row_key: [gene_id]
+      count_fields: {"$.num_results": "len($.top_genes)"}
+    serve: derived
+    derived:
+      verb: find
+      table: open_targets.expression_tissues
+      # unit guard: each gene is compared within the unit of its target-tissue value; a blank unit is excluded;
+      # a zero median of the other tissues gives fold_change null and expressed_only_in_target (no 999.9 sentinel)
+      split:
+        tissue_specificity:
+          columns: {gene: id, tissue_id: "tissues[].efo_code", tissue_label: "tissues[].label",
+                    value: "tissues[].rna.value", unit: "tissues[].rna.unit", zscore: "tissues[].rna.zscore"}
+      envelope: {success: true, tissue: "{tissue}", fold_change_threshold: "{fold_change_threshold}", num_results: null}
+    text:
+      drop_promises: [size_mb, summary_stats]
+      notes:
+        - "The derived answer writes no CSV file; output_path is accepted and confined. Fold changes compare tissues in one unit only; genes expressed only in the target tissue have fold_change null and expressed_only_in_target true."
+    defects:
+      - {id: OT-EXPR-004, what: "fold change against the median of other tissues writes 999.9 when they are 0, and the tissue is a substring match",
+         where: "expression_mcp/tools.py:684-731", effect: silent_wrong}
 
   search_biosample_ontology:
     reads: {open_targets.biosample: {access: full_table}}

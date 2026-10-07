@@ -1,5 +1,7 @@
 # Overlay for the upstream interaction server (interaction_mcp; docs/DATA_LAYER.md §6.8 S8, Appendix A).
-# Phase 1: 1 pass, 2 derived, 2 block.
+# Phase 1: 1 pass, 2 derived, 2 block. Phase 3 (F17): the network tools are derived from the
+# deterministic traversal of the edges table (frontier in key order, edges by full key, sources never
+# pooled): 1 pass, 4 derived, 0 block.
 schema: vbt.overlay/1
 server: interaction
 sources: [open_targets]
@@ -68,25 +70,59 @@ tools:
          where: "interaction_mcp/tools.py:247-253", effect: false_empty}
 
   get_interaction_network:
-    reads: {open_targets.interaction: {access: full_table}}
+    reads: {open_targets.interaction: {access: bounded_scan}}
     args:
-      seed_targets: {binds_any: [open_targets.interaction.targetA, open_targets.interaction.targetB], op: in, each: true,
-                     accepts: [ensembl_gene, hgnc_symbol]}
-    result: {kind: record, rows: $}
-    serve: block
-    block:
-      reason: "Breadth-first expansion over a set iteration order: edge counts differ between runs (2, 2, 4, 4, 3, 4 over six runs, VERIFIED) and scores of different sources are thresholded together. A deterministic network verb arrives in phase 3."
-      alternatives: [interaction.get_interactions, interaction.search_interactions]
-      until_phase: 3
+      seed_targets:     {binds_any: [open_targets.interaction.targetA, open_targets.interaction.targetB], op: in, each: true,
+                         accepts: [ensembl_gene, hgnc_symbol]}
+      max_hops:         {role: family_param, min: 1, max: 4}
+      min_confidence:   {role: unbound}           # one threshold across incomparable sources: refused unless 0
+      max_network_size: {role: family_param, min: 1}
+    witness: false                                 # a traversal, not rows matching the arguments
+    result:
+      kind: record
+      rows: [$.nodes, $.edges]
+      row_key: [sourceDatabase, intA, intB, targetA, targetB]
+      count_fields: {"$.network_size": "len($.nodes)", "$.edge_count": "len($.edges)"}
+    serve: derived
+    derived:
+      verb: find
+      table: open_targets.interaction
+      split: {network: {mode: network}}
+      envelope: {seed_targets: "{seed_targets}", max_hops: "{max_hops}", network_size: null, edge_count: null}
+      sections:
+        statistics: {path: $.statistics, table: open_targets.interaction, verb: count}
+    text:
+      notes:
+        - "The frontier is expanded in key order and edges are keyed by source database and interactor pair, so the same call gives the same network; network_truncated and statistics.network.frontier say where max_network_size cut it."
+        - "Scores of different sources are not comparable; min_confidence other than 0 is refused."
+    defects:
+      - {id: OT-INT-005, what: "breadth-first expansion iterates a Python set: edges kept under max_network_size depend on the hash seed (2, 2, 4, 4, 3, 4 edges over six runs)",
+         where: "interaction_mcp/tools.py:343-401", effect: silent_wrong}
+      - {id: OT-INT-006, what: "min_confidence thresholds STRING, IntAct, Reactome and SIGNOR scores together",
+         where: "interaction_mcp/tools.py:339-340", effect: silent_wrong}
 
   find_common_interactors:
-    reads: {open_targets.interaction: {access: full_table}}
+    reads: {open_targets.interaction: {access: bounded_scan}}
     args:
-      target_ids: {binds_any: [open_targets.interaction.targetA, open_targets.interaction.targetB], op: in, each: true,
-                   accepts: [ensembl_gene, hgnc_symbol]}
-    result: {rows: $.common_interactors}
-    serve: block
-    block:
-      reason: "One min_confidence threshold across STRING, IntAct, Reactome and SIGNOR scores, which are not comparable; a per-source network verb arrives in phase 3."
-      alternatives: [interaction.get_interactions]
-      until_phase: 3
+      target_ids:     {binds_any: [open_targets.interaction.targetA, open_targets.interaction.targetB], op: in, each: true,
+                       accepts: [ensembl_gene, hgnc_symbol]}
+      min_targets:    {role: family_param, min: 1}
+      min_confidence: {role: unbound}
+      limit:          {role: limit, min: 1, max: 1000}
+    witness: false
+    result:
+      rows: $.common_interactors
+      row_key: [interactor_id]
+      count_fields: [$.count]
+    serve: derived
+    derived:
+      verb: find
+      table: open_targets.interaction
+      split: {network: {mode: common}}
+      envelope: {input_targets: "{target_ids}", count: null}
+    text:
+      drop_promises: [avg_confidence]
+      notes: ["Partners are listed per source database with that source's best score; scores are never averaged across sources."]
+    defects:
+      - {id: OT-INT-007, what: "avg_confidence averages scores of different source databases",
+         where: "interaction_mcp/tools.py:536-537", effect: silent_wrong}
