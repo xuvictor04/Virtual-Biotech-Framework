@@ -1,0 +1,88 @@
+# Overlay for the upstream interaction server (interaction_mcp; docs/DATA_LAYER.md §6.8 S8, Appendix A).
+# Phase 1: 1 pass, 2 derived, 2 block.
+schema: vbt.overlay/1
+server: interaction
+sources: [open_targets]
+upstream_commit: ${vars.upstream_commit:-71f9da68c95c5ee0ef4c1d9b8f45f10693de022d}   # the commit these bindings were reviewed against
+tools:
+  get_interactions:
+    reads: {open_targets.interaction: {access: full_table}}
+    args:
+      target_id:       {binds_any: [open_targets.interaction.targetA, open_targets.interaction.targetB],
+                        accepts: [ensembl_gene, hgnc_symbol]}           # either side of an undirected edge
+      species:         {binds_any: [open_targets.interaction.speciesA.scientificName, open_targets.interaction.speciesB.scientificName],
+                        match: casefold}                                 # species on either side
+      source_database: {binds: open_targets.interaction.sourceDatabase, match: casefold}
+      limit:           {role: limit, min: 1, max: 1000, limit_mode: per_group}   # scores rank only within one source
+    result:
+      rows: $.interactions
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      order: [{column: scoring, direction: desc, nulls: last, within: [sourceDatabase]},
+              {column: targetA, direction: asc}, {column: targetB, direction: asc}]
+    serve: pass
+    defects:
+      - {id: OT-INT-001, what: "head(limit) in file order: the top interactions are not the highest-scoring, and STRING and IntAct scores are mixed",
+         where: "interaction_mcp/tools.py:116", effect: silent_wrong}
+      - {id: OT-INT-004, what: "species matched as a substring of the str() of the species struct; source_database as a regex substring",
+         where: "interaction_mcp/tools.py:100-114", effect: silent_wrong}
+
+  search_interactions:
+    reads: {open_targets.interaction: {access: full_table}}
+    args:
+      target_a:        {binds: open_targets.interaction.targetA, accepts: [ensembl_gene, hgnc_symbol]}
+      target_b:        {binds: open_targets.interaction.targetB, accepts: [ensembl_gene, hgnc_symbol]}   # pair matched in either orientation
+      source_database: {binds: open_targets.interaction.sourceDatabase, match: casefold}
+      min_count:       {binds: open_targets.interaction.count, op: ge, min: 0}
+      limit:           {role: limit, min: 1, max: 1000, limit_mode: per_group}
+    require_any: [[target_a, target_b]]
+    result:
+      rows: $.interactions
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      order: [{column: scoring, direction: desc, nulls: last, within: [sourceDatabase]},
+              {column: targetA, direction: asc}, {column: targetB, direction: asc}]
+    serve: derived
+    derived: {verb: find, table: open_targets.interaction}
+    defects:
+      - {id: OT-INT-002, what: "target_a only matches targetA and target_b only targetB: an undirected pair stored as (B, A) is missed",
+         where: "interaction_mcp/tools.py:174-178", effect: false_empty}
+
+  get_interaction_evidence:
+    reads: {open_targets.interaction_evidence: {access: bounded_scan}}
+    args:
+      target_id: {binds_any: [open_targets.interaction_evidence.targetA, open_targets.interaction_evidence.targetB],
+                  accepts: [ensembl_gene, hgnc_symbol]}
+      limit:     {role: limit, min: 1, max: 1000}
+    result:
+      rows: $.evidence
+      count_fields: [$.count]
+    serve: derived
+    derived: {verb: find, table: open_targets.interaction_evidence}
+    defects:
+      - {id: OT-INT-003, what: "searches targetA only: evidence where the gene is the second interactor is never returned",
+         where: "interaction_mcp/tools.py:247-253", effect: false_empty}
+
+  get_interaction_network:
+    reads: {open_targets.interaction: {access: full_table}}
+    args:
+      seed_targets: {binds_any: [open_targets.interaction.targetA, open_targets.interaction.targetB], op: in, each: true,
+                     accepts: [ensembl_gene, hgnc_symbol]}
+    result: {kind: record, rows: $}
+    serve: block
+    block:
+      reason: "Breadth-first expansion over a set iteration order: edge counts differ between runs (2, 2, 4, 4, 3, 4 over six runs, VERIFIED) and scores of different sources are thresholded together. A deterministic network verb arrives in phase 3."
+      alternatives: [interaction.get_interactions, interaction.search_interactions]
+      until_phase: 3
+
+  find_common_interactors:
+    reads: {open_targets.interaction: {access: full_table}}
+    args:
+      target_ids: {binds_any: [open_targets.interaction.targetA, open_targets.interaction.targetB], op: in, each: true,
+                   accepts: [ensembl_gene, hgnc_symbol]}
+    result: {rows: $.common_interactors}
+    serve: block
+    block:
+      reason: "One min_confidence threshold across STRING, IntAct, Reactome and SIGNOR scores, which are not comparable; a per-source network verb arrives in phase 3."
+      alternatives: [interaction.get_interactions]
+      until_phase: 3

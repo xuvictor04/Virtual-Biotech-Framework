@@ -1,0 +1,102 @@
+# The paper's Zenodo case-study archive (doi:10.5281/zenodo.22259123), extracted by
+# `vbt data zenodo fetch` (docs/DATA_LAYER.md §6.3, §6.8 S1/S10; phase 1, strict: false).
+#
+# The Open Targets 25.09 extracts declare `implements`, so overlays bound to open_targets tables can
+# be served from them when the operator sets data.sources.alias: {open_targets: zenodo_vbt}; their
+# lineage records the upstream release in provenance. The four GEO h5ad cohorts (osmr/code/data)
+# arrive in phase 2 with the h5ad format plugin.
+schema: vbt.datasource/1
+source: zenodo_vbt
+title: The Virtual Biotech case-study archive (Zenodo 22259123)
+kind: local
+release: {expect: "22259123", from: literal}
+root: ${VBT_ZENODO_DIR:-${vars.project_root}/data/zenodo}/virtualbiotech_submission
+defaults: {format: parquet, layout: sharded_dir, missing: unknown}
+strict: false
+
+id_types:
+  nct_id: {plugin: nct_id, universe: clinical_trial_labels.nct_id, resolvable: false}
+
+tables:
+  disease:
+    kind: ontology
+    path: clinical_trials/data/disease
+    implements: "open_targets:disease@25.09"
+    lineage: {source: open_targets, release: "25.09", table: disease}
+    grain: one ontology term used by Open Targets as a disease, phenotype, measurement or process
+    key: {columns: [id], check: full}
+    constraints:
+      - {column: ontology.leaf, op: equals_expr, expr: "len(children) == 0", verified: false, on_refute: drop_field,
+         origin: "false for all 39,530 terms while 31,635 have no children (Zenodo 22259123)"}
+    columns:
+      id:               {role: identifier, id_type: "open_targets:ot_disease", self: true}
+      name:             {role: label, of: id, unique: false}
+      therapeuticAreas: {role: identifier, id_type: "open_targets:ot_disease", path: "[]", cardinality: many}
+      obsoleteTerms:    {role: identifier, id_type: "open_targets:ot_disease", retired_into: id, path: "[]"}
+      parents:          {role: hierarchy, relation: parent, of: id, closure: direct, inverse_of: children}
+      children:         {role: hierarchy, relation: child, of: id, closure: direct, inverse_of: parents}
+      ontology:         {role: nested, fields: {isTherapeuticArea: {role: flag, missing: unknown},
+                                                leaf: {role: flag, missing: unknown, verified: false}}}
+
+  drug_molecule:
+    kind: entity
+    path: clinical_trials/data/drug_molecule
+    implements: "open_targets:drug_molecule@25.09"
+    lineage: {source: open_targets, release: "25.09", table: drug_molecule}
+    grain: one ChEMBL molecule (a parent compound or one of its salt forms)
+    key: {columns: [id], check: full}
+    grains: {molecule: [id], parent_molecule: {columns: [id], canonicalize: "open_targets:chembl_molecule.parent"}}
+    columns:
+      id:             {role: identifier, id_type: "open_targets:chembl_molecule", self: true}
+      name:           {role: label, of: id, unique: false, placeholder_when: equals_key}
+      drugType:       {role: category, vocab: data, placeholders: [Unknown]}
+      parentId:       {role: identifier, id_type: "open_targets:chembl_molecule", ref: drug_molecule.id, integrity: partial}
+      childChemblIds: {role: identifier, id_type: "open_targets:chembl_molecule", ref: drug_molecule.id,
+                       integrity: partial, path: "[]"}   # 2,704 of 4,301 dangle in the extract
+
+  association_by_datatype_direct:
+    kind: fact
+    path: clinical_trials/data/association_by_datatype_direct
+    implements: "open_targets:association_by_datatype_direct@25.09"
+    lineage: {source: open_targets, release: "25.09", table: association_by_datatype_direct}
+    grain: one direct target-disease association score within one data type
+    key: {columns: [diseaseId, targetId, datatypeId], check: full}
+    rank: [{column: score, direction: desc, nulls: last, within: [datatypeId]}]
+    coverage: {statement: "The OT 25.09 direct per-datatype associations the authors extracted for case study 1.",
+               absence_means: unknown}
+    columns:
+      diseaseId:  {role: identifier, id_type: "open_targets:ot_disease", ref: disease.id, integrity: partial}
+      targetId:   {role: identifier, id_type: "open_targets:ensembl_gene"}
+      datatypeId: {role: category, vocab: data, scope: {kind: stratum, pooling: forbid, pool_ok_for: [exists, count, distinct]}}
+      score:      {role: measure, statistic: score_0_1, scale: [0, 1], comparable_within: [datatypeId], missing: unknown}
+
+  chembl_clinical_nct:
+    kind: crosswalk
+    path: clinical_trials/data/chembl_clinical_nct_data.parquet
+    layout: single_file
+    grain: one (ClinicalTrials.gov study, target) link from ChEMBL clinical candidates
+    key: {columns: [nct_id, targetId], check: full, verified: false}
+    columns:
+      nct_id:   {role: identifier, id_type: nct_id}
+      targetId: {role: identifier, id_type: "open_targets:ensembl_gene", integrity: partial}
+
+  clinical_trial_labels:
+    kind: records
+    path: clinical_trials/data/clinical_trial_labels_reconciled.csv
+    layout: single_file
+    format: none                                  # the csv format plugin arrives in phase 2 (F12)
+    grain: one reconciled outcome label of one ClinicalTrials.gov study (case study 1 ground truth)
+    key: {columns: [nct_id], check: full}
+    expose: {native: false, withhold_from: [trial-annotator, clinical-trialist],
+             reason: "evaluation labels of case study 1; agents that annotate trials must not see them"}
+    column_patterns:
+      "ae_serious_{organ}_pct": {role: measure, statistic: percent, scale: [0, 100], missing: unknown}
+    columns:
+      nct_id:                    {role: identifier, id_type: nct_id, self: true}
+      primary_endpoint_result:   {role: category, vocab: [POSITIVE, NEGATIVE, UNKNOWN]}
+      secondary_endpoint_result: {role: category, vocab: [POSITIVE, NEGATIVE, UNKNOWN]}
+      virtualbiotech_stop_reason_categories: {role: category, vocab: data, list_delimiter: "|"}
+      results_source:            {role: category, vocab: data}
+      ae_source:                 {role: category, vocab: data}
+      pubmed_ids:                {role: reference, ref_kinds: [pmid], list_delimiter: "|"}
+      confidence:                {role: category, vocab: [high, medium, low]}

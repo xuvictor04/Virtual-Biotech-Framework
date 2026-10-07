@@ -1,0 +1,39 @@
+# Overlay for the harness PubMed server (src/vbt/mcp_servers/pubmed_server.py; docs/DATA_LAYER.md
+# Appendix A). Phase 1: 2 pass.
+schema: vbt.overlay/1
+server: pubmed
+sources: [pubmed]
+tools:
+  search_pubmed:
+    reads: {pubmed.records: {access: upstream, est_row_bytes: 600}}
+    args:
+      query:       {role: free_text, interpreted_as: engine,
+                    engine_doc: "PubMed query syntax: automatic term mapping, field tags ([tiab], [si]) and Boolean operators"}
+      max_results: {role: limit, min: 1, max: 200}
+      sort:        {role: order_by, values: {relevance: server_relevance,
+                                             pub_date: {column: pubdate, direction: desc}}}
+    result:
+      rows: $.results
+      row_key: [pmid]
+      total: {path: $.count, method: upstream}
+      order_from_arg: sort
+      order_source: source_server_side
+      drop_fields: {$.summary: "restates count and returned; the header carries both"}
+    serve: pass
+    text:
+      notes: ["a count of 0 is an unverified empty: PubMed search maps and expands terms, so no match is not evidence that nothing was published",
+              "records after the literature ceiling (or with no date) are withheld and listed in 'withheld'"]
+
+  fetch_abstracts:
+    reads: {pubmed.records: {access: upstream, est_row_bytes: 4000}}
+    args:
+      pmids: {binds: pubmed.records.pmid, op: in, each: true, max_items: 50, accepts: [pmid], existence: upstream}
+    result:
+      rows: $.articles
+      row_key: [pmid]
+      echo_set: {arg: pmids, path: "$.articles[*].pmid", mode: subset, withheld_path: "$.withheld[*].pmid"}
+      drop_fields: {$.summary: "restates the counts; the header and echo_set carry them"}
+    serve: pass
+    defects:
+      - {id: PUBMED-001, what: "PMC1234 passed as a PMID returns the record of PMID 1234 (VERIFIED); more than 50 PMIDs are silently truncated",
+         where: "src/vbt/mcp_servers/pubmed_server.py:231-235", effect: silent_wrong}

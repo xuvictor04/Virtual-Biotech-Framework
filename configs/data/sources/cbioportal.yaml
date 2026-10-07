@@ -1,0 +1,132 @@
+# cBioPortal public studies through pybioportal (docs/DATA_LAYER.md §6.8 S10; phase 1, strict: false).
+#
+# Served upstream by the clinicaltrials server. Clinical data come at two levels: patient attributes
+# (OS_MONTHS, OS_STATUS, AGE, ...) and sample attributes (SAMPLE_TYPE, ...). Upstream get_clinical_data
+# copies patient values onto every sample of the patient, so they are counted once per patient (I15),
+# and unknown sample IDs come back as phantom rows with patientId null (C24).
+schema: vbt.datasource/1
+source: cbioportal
+title: cBioPortal for Cancer Genomics (public studies)
+kind: remote
+release: {from: as_of, per: {table: study, column: importDate}}
+defaults: {format: none, layout: upstream_only, missing: unknown}
+budget: {requests_per_min: 60}
+strict: false
+
+id_types:
+  cbio_cancer_type: {plugin: cbio_cancer_type,
+                     universe_via: {tool: clinicaltrials.get_all_cancer_types, path: "$.cancer_types[*].cancerTypeId", ttl_s: 86400}}
+  cbio_study:       {plugin: cbio_study,
+                     universe_via: {tool: clinicaltrials.search_studies, path: "$.studies[*].studyId", ttl_s: 3600}}
+  cbio_sample:      {plugin: cbio_sample, universe: {table: sample, keys: [studyId, sampleId], mode: tuple}}
+  cbio_patient:     {plugin: cbio_patient, universe: {table: patient, keys: [studyId, patientId], mode: tuple}}
+  # No upstream tool lists a study's samples, so sample existence is decided per returned row by the
+  # overlay's ResultSpec.exists_when (§8.1) and W6 (§11.6), not before the call.
+
+tables:
+  cancer_type:
+    kind: ontology
+    path: cancer-types
+    grain: one OncoTree cancer type used by cBioPortal
+    key: {columns: [cancerTypeId], check: none}
+    columns:
+      cancerTypeId:   {role: identifier, id_type: cbio_cancer_type, self: true}
+      name:           {role: label, of: cancerTypeId}
+      parent:         {role: hierarchy, relation: parent, of: cancerTypeId, closure: direct}
+      dedicatedColor: {role: payload}
+      shortName:      {role: label, of: cancerTypeId}
+
+  study:
+    kind: entity
+    path: studies
+    grain: one cBioPortal study
+    key: {columns: [studyId], check: none}
+    size_from: {table: study, column: allSampleCount, row_bytes: 2000}
+    coverage: {statement: "Public cBioPortal studies at the time of the call (existence only).", absence_means: absent,
+               applies_to: entity}
+    columns:
+      studyId:        {role: identifier, id_type: cbio_study, self: true}
+      name:           {role: label, of: studyId}
+      description:    {role: text}
+      cancerTypeId:   {role: identifier, id_type: cbio_cancer_type, ref: cancer_type.cancerTypeId}
+      pmid:           {role: reference, ref_kinds: [pmid], list_delimiter: ","}
+      citation:       {role: text}
+      allSampleCount: {role: count, counts: "samples in the study"}
+      sequencedSampleCount: {role: count, counts: "sequenced samples"}
+      cnaSampleCount: {role: count, counts: "samples with copy-number data"}
+      mrnaRnaSeqV2SampleCount: {role: count, counts: "samples with RNA-seq data"}
+      rppaSampleCount: {role: count, counts: "samples with RPPA data"}
+      completeSampleCount: {role: count, counts: "samples with complete profiles"}
+      importDate:     {role: time, precision: second, stored_as: iso8601_string, as_of: true}
+
+  patient:
+    kind: entity_detail
+    path: "studies/{studyId}/patients"
+    grain: one patient in one study
+    key: {columns: [studyId, patientId], check: none}
+    columns:
+      studyId:   {role: identifier, id_type: cbio_study, ref: study.studyId}
+      patientId: {role: identifier, id_type: cbio_patient, unique_within: [studyId]}
+
+  sample:
+    kind: entity_detail
+    path: "studies/{studyId}/samples"
+    grain: one specimen of one patient in one study
+    key: {columns: [studyId, sampleId], check: none}
+    grains: {patient: [studyId, patientId]}
+    columns:
+      studyId:    {role: identifier, id_type: cbio_study, ref: study.studyId}
+      sampleId:   {role: identifier, id_type: cbio_sample, unique_within: [studyId]}
+      patientId:  {role: identifier, id_type: cbio_patient, ref: {table: patient, on: {studyId: studyId, patientId: patientId}}}
+      sampleType: {role: category, vocab: data}
+
+  clinical_attribute:
+    kind: entity_detail
+    path: "studies/{studyId}/clinical-attributes"
+    grain: one clinical attribute defined by one study
+    key: {columns: [studyId, clinicalAttributeId], check: none}
+    columns:
+      studyId:             {role: identifier, id_type: cbio_study, ref: study.studyId}
+      clinicalAttributeId: {role: category, vocab: data}
+      displayName:         {role: label, of: clinicalAttributeId}
+      description:         {role: text}
+      datatype:            {role: category, vocab: [STRING, NUMBER, BOOLEAN]}
+      patientAttribute:    {role: flag, true_means: "a patient-level attribute"}
+      priority:            {role: payload}
+
+  patient_clinical:
+    kind: entity_detail
+    path: "studies/{studyId}/clinical-data?clinicalDataType=PATIENT"
+    pivot: {index: [studyId, patientId], name_column: clinicalAttributeId, value_column: value}
+    roles_from: {table: clinical_attribute, name: clinicalAttributeId, level_from: patientAttribute, type_from: datatype}
+    grain: one patient's patient-level clinical attributes in one study
+    key: {columns: [studyId, patientId], check: none}
+    coverage: {statement: "Patient attributes the study curated; a missing attribute means not reported.", absence_means: unknown}
+    column_patterns:
+      "{stem}_MONTHS": {role: time, unit: months, parse: number, level: patient,
+                        missing_values: ["[Not Available]", "[Not Applicable]", "[Unknown]", "[Discrepancy]", NA]}
+      "{stem}_STATUS": {role: flag, event_of: "{stem}_MONTHS", level: patient,
+                        encoding: {"1:DECEASED": true, "0:LIVING": false, "DECEASED": true, "LIVING": false,
+                                   "1:Recurred/Progressed": true, "0:DiseaseFree": false},
+                        missing_values: ["[Not Available]"], verified: false}
+    columns:
+      studyId:   {role: identifier, id_type: cbio_study, ref: study.studyId}
+      patientId: {role: identifier, id_type: cbio_patient, unique_within: [studyId]}
+      AGE:       {role: measure, statistic: numeric, unit: years, parse: number, missing: unknown, level: patient,
+                  missing_values: ["[Not Available]", "[Unknown]", NA], optional: true}
+      SEX:       {role: category, vocab: data, level: patient, missing_values: ["[Not Available]", "[Unknown]"], optional: true}
+
+  sample_clinical:
+    kind: entity_detail
+    path: "studies/{studyId}/clinical-data?clinicalDataType=SAMPLE"
+    pivot: {index: [studyId, sampleId], name_column: clinicalAttributeId, value_column: value}
+    roles_from: {table: clinical_attribute, name: clinicalAttributeId, level_from: patientAttribute, type_from: datatype}
+    grain: one sample's sample-level clinical attributes in one study
+    key: {columns: [studyId, sampleId], check: none}
+    grains: {patient: [studyId, patientId]}
+    columns:
+      studyId:     {role: identifier, id_type: cbio_study, ref: study.studyId}
+      sampleId:    {role: identifier, id_type: cbio_sample, unique_within: [studyId]}
+      patientId:   {role: identifier, id_type: cbio_patient, ref: {table: patient, on: {studyId: studyId, patientId: patientId}}}
+      SAMPLE_TYPE: {role: category, vocab: data, missing_values: ["[Not Available]"], optional: true}
+      CANCER_TYPE: {role: category, vocab: data, optional: true}

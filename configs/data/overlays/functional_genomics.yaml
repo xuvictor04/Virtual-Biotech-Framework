@@ -1,0 +1,236 @@
+# Overlay for the upstream functional_genomics server (functional_genomics_mcp; docs/DATA_LAYER.md §8.5,
+# Appendix A): DepMap essentiality from Open Targets and Tahoe-100M perturbations.
+# Phase 1: 4 pass, 3 derived, 2 block.
+# ReadSpec.when: {<arg>: <value>} means the argument equals the value; {<arg>: {present: true}} means it is given.
+schema: vbt.overlay/1
+server: functional_genomics
+sources: [open_targets, tahoe_100m]
+upstream_commit: ${vars.upstream_commit:-71f9da68c95c5ee0ef4c1d9b8f45f10693de022d}   # the commit these bindings were reviewed against
+tools:
+  query_gene_essentiality:
+    reads: {open_targets.target_essentiality: {access: full_table}}
+    args:
+      gene_id: {binds: open_targets.target_essentiality.id, accepts: [ensembl_gene, hgnc_symbol]}
+      disease: {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource",
+                match: casefold, item_filter: true}          # exact vocabulary value; substring collisions are rejected
+      tissue:  {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].tissueName",
+                match: casefold, item_filter: true}
+    result:
+      rows: "$.essentiality_by_tissue[*].cell_lines"
+      rows_of: open_targets.target_essentiality_screens
+      parent_key: {id: $.gene_id}
+      fields:
+        cellLineName: {column: "geneEssentiality[].depMapEssentiality[].screens[].cellLineName"}
+        depmapId:     {column: "geneEssentiality[].depMapEssentiality[].screens[].depmapId"}
+        disease:      {column: "geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource"}
+        expression:   {column: "geneEssentiality[].depMapEssentiality[].screens[].expression"}
+        geneEffect:   {column: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect"}
+        mutation:     {column: "geneEssentiality[].depMapEssentiality[].screens[].mutation"}
+      count_fields:
+        "$.num_tissues": "len($.essentiality_by_tissue)"
+        "$.num_cell_lines": "len($.essentiality_by_tissue[*].cell_lines[*])"
+        "$.essentiality_by_tissue[*].num_cell_lines": "len($.essentiality_by_tissue[*].cell_lines)"
+      summary_fields:
+        "$.essentiality_by_tissue[*].mean_gene_effect":
+          recompute: {agg: mean, of: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect",
+                      group_by: ["geneEssentiality[].depMapEssentiality[].tissueId"]}
+        "$.essentiality_by_tissue[*].essential_fraction": drop   # fraction below -0.5 over screens with a value
+      not_found_when: ["$.found == false"]
+    serve: pass
+    defects:
+      - {id: FG-001, what: "disease and tissue are matched as case-insensitive substrings of diseaseFromSource and tissueName",
+         where: "functional_genomics_mcp/tools.py:195-211", effect: silent_wrong}
+
+  find_essential_genes:
+    reads: {open_targets.target_essentiality: {access: full_table}}
+    args:
+      disease:              {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource",
+                             match: casefold, item_filter: true}
+      min_effect_threshold: {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].geneEffect",
+                             op: le, item_filter: true}
+      min_cell_lines:       {role: family_param, min: 1}           # screens per gene with a gene effect (having)
+      limit:                {role: limit, min: 1, max: 10000, limit_grain: gene}
+    witness: false                                 # rows are per-gene aggregates over screens
+    result:
+      rows: $.genes
+      grain: gene
+      fields:
+        gene_id: {column: id}
+        mean_gene_effect: {computed: {agg: mean, from: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect", group_by: [id]}}
+      count_fields: {"$.num_results": "len($.genes)"}
+      order: [{column: mean_gene_effect, direction: asc, nulls: last}, {column: id, direction: asc}]
+      summary_fields: {"$.genes[*].essential_fraction": drop}
+    serve: pass
+    defects:
+      - {id: FG-002, what: "disease is a substring of diseaseFromSource ('Lung' also matches other lung-derived diseases); the whole essentiality table is iterated row by row",
+         where: "functional_genomics_mcp/tools.py:313-345", effect: silent_wrong}
+
+  compare_essentiality_across_diseases:
+    reads: {open_targets.target_essentiality: {access: full_table}}
+    args:
+      gene_id:  {binds: open_targets.target_essentiality.id, accepts: [ensembl_gene, hgnc_symbol]}
+      diseases: {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource",
+                 op: in, each: true, match: casefold, item_filter: true}   # overlapping groups -> invalid_argument
+    witness: false
+    result:
+      rows: $.disease_essentiality
+      grain: disease
+      fields:
+        disease: {column: "geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource"}
+        mean_gene_effect: {computed: {agg: mean, from: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect",
+                                      group_by: ["geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource"]}}
+      count_fields: {"$.num_diseases_compared": "len($.disease_essentiality)"}
+      order: [{column: mean_gene_effect, direction: asc, nulls: last}]
+      summary_fields: {"$.disease_essentiality[*].essential_fraction": drop}
+      not_found_when: ["$.found == false"]
+    serve: pass
+    defects:
+      - {id: FG-003, what: "each requested disease is a substring match, so overlapping names ('lung' and 'lung adenocarcinoma') pool the same lines twice",
+         where: "functional_genomics_mcp/tools.py:598-613", effect: silent_wrong}
+
+  find_selective_dependencies:
+    reads: {open_targets.target_essentiality: {access: full_table}}
+    args:
+      target_disease:     {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource",
+                           match: casefold, item_filter: true}
+      comparison_disease: {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource",
+                           match: casefold, item_filter: true}
+      min_effect_difference: {role: family_param, min: 0}
+      min_cell_lines:        {role: family_param, min: 1}
+      limit:                 {role: limit, min: 1, max: 10000, limit_grain: gene}
+    witness: false                                 # two groups of screens per gene, compared by their means
+    result:
+      rows: $.genes
+      grain: gene
+      fields:
+        gene_id: {column: id}
+        effect_difference: {computed: {agg: mean_difference, from: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect",
+                                       groups: [target_disease, comparison_disease]}}
+      count_fields: {"$.num_results": "len($.genes)"}
+      order: [{column: effect_difference, direction: asc, nulls: last}]
+    serve: pass
+    defects:
+      - {id: FG-004, what: "a line whose disease contains both names is counted in the target group only (if/elif on substrings)",
+         where: "functional_genomics_mcp/tools.py:736-739", effect: silent_wrong}
+
+  query_cell_line_dependency:
+    reads: {open_targets.target_essentiality: {access: bounded_scan}}
+    args:
+      cell_line_name:       {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].depmapId",
+                             accepts: ["open_targets:depmap_cell_line"], item_filter: true}   # name resolved to one ACH ID
+      min_effect_threshold: {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].geneEffect",
+                             op: le, item_filter: true}                                        # same screen item (Any)
+      limit:                {role: limit, min: 1, max: 20000}
+    result:
+      rows: $.dependencies
+      rows_of: open_targets.target_essentiality_screens
+      fields:
+        gene_id:     {column: id}
+        gene_effect: {column: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect"}
+        expression:  {column: "geneEssentiality[].depMapEssentiality[].screens[].expression"}
+        mutation:    {column: "geneEssentiality[].depMapEssentiality[].screens[].mutation"}
+      count_fields: {"$.num_results": "len($.dependencies)"}
+      order: [{column: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect", direction: asc, nulls: last},
+              {column: id, direction: asc}]
+    serve: derived
+    derived:
+      verb: find
+      table: open_targets.target_essentiality_screens
+      explode: ["geneEssentiality[]", "geneEssentiality[].depMapEssentiality[]", "geneEssentiality[].depMapEssentiality[].screens[]"]
+      carry: [id]
+      rename: {id: gene_id, "geneEssentiality[].depMapEssentiality[].screens[].geneEffect": gene_effect,
+               "geneEssentiality[].depMapEssentiality[].screens[].expression": expression,
+               "geneEssentiality[].depMapEssentiality[].screens[].mutation": mutation}
+    defects:
+      - {id: FG-005, what: "cell_line_name is a substring of cellLineName ('PC-3' also matches 'BxPC-3'); a null geneEffect sorts as 0",
+         where: "functional_genomics_mcp/tools.py:470-498", effect: silent_wrong}
+
+  query_drug_perturbation:
+    reads:
+      tahoe_100m.de_permissive: {access: bounded_scan}
+      tahoe_100m.drug_metadata: {access: full_table}
+      tahoe_100m.cell_line_metadata: {access: full_table, when: {cell_line_id: {present: true}}}   # only with a cell line
+    args:
+      drug_name:      {binds: tahoe_100m.de_permissive.drug, accepts: [tahoe_drug], send_as: stored}
+      cell_line_id:   {binds: tahoe_100m.de_permissive.Cell_ID_DepMap, accepts: [depmap_cell_line]}
+      concentration:  {binds: tahoe_100m.de_permissive.concentration, gateway_only: true}   # auto-derived x-gateway
+      plate:          {binds: tahoe_100m.de_permissive.plate, gateway_only: true}           # replicate: listed if absent
+      max_padj:       {binds: tahoe_100m.de_permissive.padj, op: le, max: 0.10}             # from the constraint
+      min_abs_log2fc: {binds: tahoe_100m.de_permissive.log2FoldChange, op: gt_abs, min: 0}  # upstream uses strict >
+      top_n:          {role: limit, min: 1, max: 500, limit_grain: gene}
+    result:
+      rows: [$.top_upregulated, $.top_downregulated]
+      grain: gene                                   # one row per gene within one contrast
+      summary_fields: {$.num_total_significant: {recompute: {agg: count_distinct, of: gene_name}},
+                       $.num_cell_lines_tested: {recompute: {agg: count_distinct, of: Cell_ID_DepMap}}}
+    serve: derived
+    derived:
+      verb: find
+      table: tahoe_100m.de_permissive
+      split: {by_sign: log2FoldChange, into: {"+": $.top_upregulated, "-": $.top_downregulated}}   # top_n per list
+      rename: {Cell_ID_DepMap: cell_line, n_cells_trt: n_cells_treatment, n_cells_ctrl: n_cells_control}
+      sections:
+        drug_info:      {path: $.drug_info, table: tahoe_100m.drug_metadata, verb: lookup, single: true, key_from_args: {drug: drug_name}}
+        cell_line_info: {path: $.cell_line_info, table: tahoe_100m.cell_line_metadata, verb: lookup, key_from_args: {Cell_ID_DepMap: cell_line_id}}
+    defects:
+      - {id: TAHOE-001, what: "concentration and plate are ignored: contrasts at every dose and plate are pooled and ranked together",
+         where: "functional_genomics_mcp/tools.py:875-911", effect: silent_wrong}
+      - {id: TAHOE-002, what: "cell line metadata reads a 'Driver mutations' column that does not exist and takes the first of 1-57 driver rows",
+         where: "functional_genomics_mcp/tools.py:816-828", effect: silent_wrong}
+      - {id: TAHOE-003, what: "drug metadata is matched on the exact stored string: 'Erdafitinib ' in the DE file has no metadata row",
+         where: "functional_genomics_mcp/tools.py:791-795", effect: false_empty}
+
+  find_drugs_affecting_gene:
+    reads: {tahoe_100m.de_permissive: {access: bounded_scan}, tahoe_100m.drug_metadata: {access: full_table}}
+    args:
+      gene_name:        {binds: tahoe_100m.de_permissive.gene_name, accepts: [tahoe_gene, "open_targets:ensembl_gene", hgnc_symbol],
+                         send_as: stored}
+      cell_line_filter: {binds: tahoe_100m.de_permissive.Cell_ID_DepMap, accepts: [depmap_cell_line]}
+      min_abs_log2fc:   {binds: tahoe_100m.de_permissive.log2FoldChange, op: gt_abs, min: 0}
+      max_padj:         {binds: tahoe_100m.de_permissive.padj, op: le, max: 0.10}
+      top_n:            {role: limit, min: 1, max: 500, limit_grain: drug}   # each drug's best contrast shown
+    result:
+      rows: [$.top_upregulators, $.top_downregulators]
+      grain: row
+      order: [{column: log2FoldChange, direction: desc_abs, nulls: last}]
+      summary_fields: {$.num_drugs_found: {recompute: {agg: count_distinct, of: drug}},
+                       $.num_cell_lines_tested: {recompute: {agg: count_distinct, of: Cell_ID_DepMap}}}
+    serve: derived
+    derived:
+      verb: find
+      table: tahoe_100m.de_permissive
+      split: {by_sign: log2FoldChange, into: {"+": $.top_upregulators, "-": $.top_downregulators}}
+      rename: {drug: drug_name, Cell_ID_DepMap: cell_line}
+    defects:
+      - {id: TAHOE-004, what: "nsmallest(top_n, 'padj') ranks contrasts of different families by padj; a drug appears once per contrast",
+         where: "functional_genomics_mcp/tools.py:1012-1013", effect: silent_wrong}
+
+  compare_drug_effects:
+    reads:
+      tahoe_100m.de_permissive: {access: bounded_scan}
+      tahoe_100m.drug_metadata: {access: full_table}
+      tahoe_100m.cell_line_metadata: {access: full_table, when: {cell_line_id: {present: true}}}
+    args:
+      drug_a:       {binds: tahoe_100m.de_permissive.drug, accepts: [tahoe_drug], send_as: stored}
+      drug_b:       {binds: tahoe_100m.de_permissive.drug, accepts: [tahoe_drug], send_as: stored}
+      cell_line_id: {binds: tahoe_100m.de_permissive.Cell_ID_DepMap, accepts: [depmap_cell_line]}
+    result: {kind: record, rows: $}
+    serve: block
+    block:
+      reason: "Merges the two drugs' contrasts on gene_name only (a cartesian product over doses, lines and plates) and compares padj across families. A paired comparison verb arrives in phase 3."
+      alternatives: [functional_genomics.query_drug_perturbation]
+      until_phase: 3
+
+  find_cell_line_selective_effects:
+    reads: {tahoe_100m.de_permissive: {access: bounded_scan}, tahoe_100m.drug_metadata: {access: full_table},
+            tahoe_100m.cell_line_metadata: {access: full_table}}
+    args:
+      drug_name:            {binds: tahoe_100m.de_permissive.drug, accepts: [tahoe_drug], send_as: stored}
+      cell_line_of_interest: {binds: tahoe_100m.de_permissive.Cell_ID_DepMap, accepts: [depmap_cell_line]}
+      comparison_cell_lines: {binds: tahoe_100m.de_permissive.Cell_ID_DepMap, op: in, each: true, accepts: [depmap_cell_line]}
+    result: {rows: $.selective_genes}
+    serve: block
+    block:
+      reason: "Selectivity ratios over padj-censored data treat a missing (not significant or not profiled) contrast as 0 and pool doses; a censored comparison verb arrives in phase 3."
+      alternatives: [functional_genomics.query_drug_perturbation]
+      until_phase: 3

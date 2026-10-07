@@ -1,0 +1,239 @@
+# Overlay for the upstream association server (association_mcp; docs/DATA_LAYER.md §8.7, Appendix A).
+# Phase 1: 7 pass, 2 derived, 2 block.
+schema: vbt.overlay/1
+server: association
+sources: [open_targets]
+upstream_commit: ${vars.upstream_commit:-71f9da68c95c5ee0ef4c1d9b8f45f10693de022d}   # the commit these bindings were reviewed against
+tools:
+  query_associations:
+    reads:
+      open_targets.association_overall_direct: {access: full_table, when: {include_indirect: false}}
+      open_targets.association_by_overall_indirect: {access: full_table, when: {include_indirect: true}}
+    args:
+      output_path:      {role: output_path}
+      target_id:        {binds: open_targets.association_overall_direct.targetId, accepts: [ensembl_gene, hgnc_symbol]}
+      disease_id:       {binds: open_targets.association_overall_direct.diseaseId, accepts: [ot_disease, disease_name]}
+      min_score:        {binds: open_targets.association_overall_direct.score, op: ge, min: 0, max: 1}
+      include_indirect: {role: selector, values: {false: open_targets.association_overall_direct,
+                                                  true: open_targets.association_by_overall_indirect}}
+      limit:            {role: limit, min: 1, max: 100000}
+    result:
+      rows: $.top_associations
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      order: [{column: score, direction: desc, nulls: last}, {column: targetId, direction: asc}, {column: diseaseId, direction: asc}]
+      order_source: upstream_full_sort          # sort_values('score') runs before head(limit)
+      summary_fields: {$.summary_stats: drop}   # mean/median over the truncated set
+      files: [{path_from: $.output_path, must_exist: true, write_once: true}]
+    serve: pass
+
+  get_associations_for_disease:
+    reads:
+      open_targets.association_overall_direct: {access: full_table, when: {include_indirect: false}}
+      open_targets.association_by_overall_indirect: {access: full_table, when: {include_indirect: true}}
+    args:
+      output_path:      {role: output_path}
+      disease_id:       {binds: open_targets.association_overall_direct.diseaseId, accepts: [ot_disease, disease_name]}
+      min_score:        {binds: open_targets.association_overall_direct.score, op: ge, min: 0, max: 1}
+      include_indirect: {role: selector, values: {false: open_targets.association_overall_direct,
+                                                  true: open_targets.association_by_overall_indirect}}
+      limit:            {role: limit, min: 1, max: 100000}
+    result:
+      rows: $.top_associations
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      order: [{column: score, direction: desc, nulls: last}, {column: targetId, direction: asc}]
+      order_source: upstream_full_sort
+      summary_fields: {$.summary_stats: drop}
+      files: [{path_from: $.output_path, must_exist: true, write_once: true}]
+    serve: pass
+
+  get_associations_for_target:
+    reads:
+      open_targets.association_overall_direct: {access: full_table, when: {include_indirect: false}}
+      open_targets.association_by_overall_indirect: {access: full_table, when: {include_indirect: true}}
+    args:
+      output_path:      {role: output_path}
+      target_id:        {binds: open_targets.association_overall_direct.targetId, accepts: [ensembl_gene, hgnc_symbol]}
+      min_score:        {binds: open_targets.association_overall_direct.score, op: ge, min: 0, max: 1}
+      include_indirect: {role: selector, values: {false: open_targets.association_overall_direct,
+                                                  true: open_targets.association_by_overall_indirect}}
+      limit:            {role: limit, min: 1, max: 100000}
+    result:
+      rows: $.top_associations
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      order: [{column: score, direction: desc, nulls: last}, {column: diseaseId, direction: asc}]
+      order_source: upstream_full_sort
+      summary_fields: {$.summary_stats: drop}
+      files: [{path_from: $.output_path, must_exist: true, write_once: true}]
+    serve: pass
+
+  compare_direct_indirect:
+    reads:
+      open_targets.association_overall_direct: {access: full_table}
+      open_targets.association_by_overall_indirect: {access: full_table}
+    args:
+      output_path: {role: output_path}
+      target_id:   {binds: open_targets.association_overall_direct.targetId, accepts: [ensembl_gene, hgnc_symbol]}
+      disease_id:  {binds: open_targets.association_overall_direct.diseaseId, accepts: [ot_disease, disease_name]}
+    result: {kind: record, rows: $}
+    serve: block
+    block:
+      reason: "Compares the top-limit prefixes of the direct and indirect tables, so 'direct only' and 'indirect only' depend on the limit, not on the data. A derived comparison over the complete keys arrives in phase 2."
+      alternatives: [association.query_associations]
+      until_phase: 2
+    defects:
+      - {id: OT-ASSOC-004, what: "set differences of two head(limit) prefixes are reported as direct-only and indirect-only associations",
+         where: "association_mcp/tools.py:363-372", effect: silent_wrong}
+
+  filter_by_datatype:
+    reads:
+      open_targets.association_by_datatype_direct: {access: full_table, when: {include_indirect: false}}
+      open_targets.association_by_datatype_indirect: {access: full_table, when: {include_indirect: true}}
+    args:
+      output_path:      {role: output_path}
+      target_id:        {binds: open_targets.association_by_datatype_direct.targetId, accepts: [ensembl_gene, hgnc_symbol]}
+      disease_id:       {binds: open_targets.association_by_datatype_direct.diseaseId, accepts: [ot_disease, disease_name]}
+      datatype:         {binds: open_targets.association_by_datatype_direct.datatypeId}   # unfixed -> incomplete_key (incomparable_order)
+      min_score:        {binds: open_targets.association_by_datatype_direct.score, op: ge, min: 0, max: 1}
+      include_indirect: {role: selector, values: {false: open_targets.association_by_datatype_direct,
+                                                  true: open_targets.association_by_datatype_indirect}}
+      limit:            {role: limit, min: 1, max: 100000}
+    witness: false                              # an inflated limit would write extra rows to the agent's output_path
+    result:
+      rows: $.top_associations
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      order: [{column: score, direction: desc, nulls: last, within: [datatypeId]}, {column: targetId, direction: asc}]
+      order_source: upstream_full_sort
+      summary_fields: {$.summary_stats: drop}
+      files: [{path_from: $.output_path, must_exist: true, write_once: true}]
+    serve: pass
+    defects:
+      - {id: OT-ASSOC-005, what: "the parquet written to output_path holds exactly the upstream limit's rows, pooled and ranked across data types when datatype is omitted",
+         where: "association_mcp/tools.py:531-537", test: test_dl_defect_detectors.py::test_ot_assoc_005, effect: silent_wrong}
+
+  filter_by_datasource:
+    reads:
+      open_targets.association_by_datasource_direct: {access: full_table, when: {include_indirect: false}}
+      open_targets.association_by_datasource_indirect: {access: full_table, when: {include_indirect: true}}
+    args:
+      output_path:      {role: output_path}
+      target_id:        {binds: open_targets.association_by_datasource_direct.targetId, accepts: [ensembl_gene, hgnc_symbol]}
+      disease_id:       {binds: open_targets.association_by_datasource_direct.diseaseId, accepts: [ot_disease, disease_name]}
+      datasource:       {binds: open_targets.association_by_datasource_direct.datasourceId}   # unfixed -> incomplete_key
+      min_score:        {binds: open_targets.association_by_datasource_direct.score, op: ge, min: 0, max: 1}
+      include_indirect: {role: selector, values: {false: open_targets.association_by_datasource_direct,
+                                                  true: open_targets.association_by_datasource_indirect}}
+      limit:            {role: limit, min: 1, max: 100000}
+    witness: false                              # an inflated limit would write extra rows to the agent's output_path
+    result:
+      rows: $.top_associations
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      order: [{column: score, direction: desc, nulls: last, within: [datasourceId]}, {column: targetId, direction: asc}]
+      order_source: upstream_full_sort
+      summary_fields: {$.summary_stats: drop}
+      files: [{path_from: $.output_path, must_exist: true, write_once: true}]
+    serve: pass
+    defects:
+      - {id: OT-ASSOC-006, what: "without datasource, scores of different data sources are ranked against each other and cut at limit",
+         where: "association_mcp/tools.py:659-685", effect: silent_wrong}
+
+  query_evidence:
+    reads:
+      open_targets.evidence:
+        access: bounded_scan
+        columns: [id, sourceId, targetId, diseaseId, score, datatypeId, literature, publicationYear, publicationDate, studyId, variantId]
+    args:
+      target_id:      {binds: open_targets.evidence.targetId, accepts: [ensembl_gene, hgnc_symbol]}
+      disease_id:     {binds: open_targets.evidence.diseaseId, accepts: [ot_disease, disease_name]}
+      datasource_id:  {binds: open_targets.evidence.sourceId, accepts: [ot_datasource]}
+      datatype_id:    {binds: open_targets.evidence.datatypeId, accepts: [ot_datatype]}
+      min_score:      {binds: open_targets.evidence.score, op: ge, min: 0, max: 1}      # comparable within sourceId only
+      min_year:       {binds: open_targets.evidence.publicationYear, op: ge}            # unknown years never pass
+      max_year:       {binds: open_targets.evidence.publicationYear, op: le}
+      require_pubmed: {role: flag, binds: open_targets.evidence.literature, op: nonempty}
+      limit:          {role: limit, min: 1, max: 1000, limit_mode: per_group}
+    result:
+      rows: $.evidence
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      order: [{column: score, direction: desc, nulls: last, within: [sourceId]}, {column: id, direction: asc}]
+    serve: derived
+    derived:
+      verb: find
+      table: open_targets.evidence
+      columns: [id, targetId, diseaseId, score, datasourceId, datatypeId, literature, publicationYear, studyId, variantId]
+    defects:
+      - {id: OT-ASSOC-007, what: "min_year and max_year keep rows whose publicationYear is null",
+         where: "association_mcp/tools.py:829-837", effect: silent_wrong}
+      - {id: OT-ASSOC-008, what: "the whole evidence table (all 23 sources) is loaded into pandas for every call",
+         where: "association_mcp/tools.py:802", effect: oom}
+
+  get_evidence_by_publication:
+    reads: {open_targets.evidence: {access: bounded_scan, columns: [id, sourceId, targetId, diseaseId, score, datatypeId, literature]}}
+    args:
+      pmid:  {binds: open_targets.evidence.literature, op: contains, accepts: ["open_targets:pmid"], existence: "off"}
+      limit: {role: limit, min: 1, max: 1000}
+    result:
+      rows: $.evidence
+      count_fields: [$.count]
+      order: [{column: score, direction: desc, nulls: last, within: [sourceId]}, {column: id, direction: asc}]
+    serve: derived
+    derived: {verb: find, table: open_targets.evidence, columns: [id, targetId, diseaseId, score, datasourceId, datatypeId]}
+    defects:
+      - {id: OT-ASSOC-009, what: "literature is an ndarray: isinstance(list, tuple) is False, so every publication returns no evidence",
+         where: "association_mcp/tools.py:906-913", test: test_dl_defect_detectors.py::test_ot_assoc_009, effect: false_empty}
+
+  search_literature:
+    reads: {open_targets.literature: {access: full_table}}
+    args:
+      pmid:       {binds: open_targets.literature.pmid, accepts: ["open_targets:pmid"]}
+      year:       {binds: open_targets.literature.year}
+      keyword_id: {binds: open_targets.literature.keywordId, accepts: [literature_word, ensembl_gene, ot_disease, chembl_molecule]}
+      limit:      {role: limit, min: 1, max: 1000}
+    result: {rows: $.publications, count_fields: [$.count]}
+    serve: block
+    block:
+      reason: "Loads the whole literature table (hundreds of millions of rows) into pandas and returns rows in file order. A sidecar index over pmid and keywordId arrives in phase 4."
+      alternatives: [pubmed.search_pubmed, association.get_evidence_by_publication]
+      until_phase: 4
+
+  find_similar_entities:
+    reads: {open_targets.literature_vector: {access: full_table, columns: [word, category, norm, vector]}}
+    args:
+      entity_id: {role: anchor, binds: open_targets.literature_vector.word,
+                  accepts: [literature_word, ensembl_gene, hgnc_symbol, ot_disease, disease_name, chembl_molecule, drug_name]}
+      category:  {binds: open_targets.literature_vector.category, default_disclosed: true}
+      top_k:     {role: limit, min: 1, max: 500}
+    result:
+      rows: $.similar_entities
+      fields: {entity_id: {column: word}, category: {column: category}, norm: {column: norm},
+               similarity: {computed: {statistic: cosine, from: vector, anchor: entity_id}}}
+      echo: {entity_id: $.query_entity_id}
+      count_fields: [$.count]
+      order: [{column: similarity, direction: desc, nulls: last}]
+      order_source: upstream_full_sort            # detector test proves upstream sorts all candidates first
+    serve: pass
+    on_contradiction: tool_defect                 # phase 2 (F14): derived: {verb: similar, table: open_targets.literature_vector}
+    defects:
+      - {id: OT-ASSOC-010, what: "a candidate with norm 0 gives a NaN cosine, and sorting a list holding NaN leaves it unordered (the top-k is not the most similar)",
+         where: "association_mcp/tools.py:1111-1122", test: test_dl_defect_detectors.py::test_ot_assoc_010, effect: silent_wrong}
+
+  compute_entity_similarity:
+    reads: {open_targets.literature_vector: {access: full_table, columns: [word, category, norm, vector]}}
+    args:
+      entity_a: {role: anchor, binds: open_targets.literature_vector.word,
+                 accepts: [literature_word, ensembl_gene, hgnc_symbol, ot_disease, disease_name, chembl_molecule, drug_name]}
+      entity_b: {role: anchor, binds: open_targets.literature_vector.word,
+                 accepts: [literature_word, ensembl_gene, hgnc_symbol, ot_disease, disease_name, chembl_molecule, drug_name]}
+    result:
+      kind: record
+      rows: $
+      fields: {similarity: {computed: {statistic: cosine, from: vector, anchor: entity_a}},
+               entity_a_category: {column: category}, entity_b_category: {column: category}}
+      drop_fields: {$.interpretation: "fixed cosine cut-offs (0.8, 0.6, 0.4, 0.2) are uncalibrated for these embeddings and read as biological similarity"}
+    serve: pass
+    on_contradiction: tool_defect

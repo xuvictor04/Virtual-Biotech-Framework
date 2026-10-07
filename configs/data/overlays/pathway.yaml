@@ -1,0 +1,187 @@
+# Overlay for the upstream pathway server (pathway_mcp; docs/DATA_LAYER.md §6.5, Appendix A).
+# Phase 1: 3 pass, 5 derived, 2 block.
+schema: vbt.overlay/1
+server: pathway
+sources: [open_targets]
+upstream_commit: ${vars.upstream_commit:-71f9da68c95c5ee0ef4c1d9b8f45f10693de022d}   # the commit these bindings were reviewed against
+tools:
+  get_gene_pathways:
+    reads: {open_targets.target: {access: projection, columns: [id, pathways]}}
+    args:
+      target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
+    result:
+      rows: $.pathways
+      rows_of: open_targets.target_pathways
+      parent_key: {id: $.target_id}
+      fields:
+        pathwayId:    {column: "pathways[].pathwayId"}
+        pathway:      {column: "pathways[].pathway"}
+        topLevelTerm: {column: "pathways[].topLevelTerm"}
+      count_fields: [$.count]
+      order: [{column: "pathways[].pathwayId", direction: asc}]
+    serve: derived
+    derived:
+      verb: find
+      table: open_targets.target_pathways
+      rename: {"pathways[].pathwayId": pathwayId, "pathways[].pathway": pathway, "pathways[].topLevelTerm": topLevelTerm}
+    text:
+      notes: ["lowest-level Reactome annotations; a gene missing from a pathway is unannotated there"]
+
+  search_pathways:
+    reads: {open_targets.target: {access: projection, columns: [id, pathways]}}
+    args:
+      query:          {role: free_text, binds_any: ["open_targets.target.pathways[].pathway", "open_targets.target.pathways[].pathwayId"],
+                       interpreted_as: casefold_substring}
+      top_level_term: {binds: "open_targets.target.pathways[].topLevelTerm", item_filter: true}
+      limit:          {role: limit, min: 1, max: 5000}
+    result:
+      rows: $.pathways
+      rows_of: open_targets.target_pathways
+      grain: pathway
+      fields:
+        pathwayId:    {column: "pathways[].pathwayId"}
+        pathway:      {column: "pathways[].pathway"}
+        topLevelTerm: {column: "pathways[].topLevelTerm"}
+        gene_count:   {computed: {agg: count_distinct, from: id, group_by: ["pathways[].pathwayId"]}}
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      order: [{column: gene_count, direction: desc}, {column: "pathways[].pathwayId", direction: asc}]
+    serve: derived
+    derived:
+      verb: aggregate
+      table: open_targets.target_pathways
+      group_by: ["pathways[].pathwayId"]
+      aggregate: {gene_count: {count_distinct: id}, pathway: {first: "pathways[].pathway"},
+                  topLevelTerm: {distinct: "pathways[].topLevelTerm"}}
+      rename: {"pathways[].pathwayId": pathwayId}
+    defects:
+      - {id: OT-PATH-001, what: "topLevelTerm of a pathway is overwritten by its last occurrence, so the top-level filter misses pathways under two terms",
+         where: "pathway_mcp/tools.py:149-153", effect: silent_wrong}
+
+  get_gene_ontology:
+    reads: {open_targets.target: {access: projection, columns: [id, go]}}
+    args:
+      target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
+      aspect:    {binds: "open_targets.target.go[].aspect", item_filter: true,
+                  send_map: {C: C, F: F, P: P}}          # aliases (biological_process -> P) resolve before sending
+    result:
+      rows: $.go_terms
+      rows_of: open_targets.target_go
+      parent_key: {id: $.target_id}
+      count_fields: [$.count]
+      order: [{column: "go[].id", direction: asc}]
+    serve: derived
+    derived:
+      verb: find
+      table: open_targets.target_go
+      rename: {"go[].id": id, "go[].aspect": aspect, "go[].evidence": evidence, "go[].source": source,
+               "go[].geneProduct": geneProduct, "go[].ecoId": ecoId}
+    text: {drop_promises: [go_name]}
+    defects:
+      - {id: OT-PATH-003, what: "go is an ndarray: isinstance(go_terms, list) is False, so every gene returns count 0",
+         where: "pathway_mcp/tools.py:236", test: test_dl_defect_detectors.py::test_ot_path_003, effect: false_empty}
+
+  search_go_terms:
+    reads: {open_targets.target: {access: projection, columns: [id, go]}, open_targets.go: {access: full_table}}
+    args:
+      query:  {role: free_text, binds_any: ["open_targets.target.go[].id"], interpreted_as: casefold_substring}
+      aspect: {binds: "open_targets.target.go[].aspect", item_filter: true}
+      limit:  {role: limit, min: 1, max: 5000}
+    result:
+      rows: $.go_terms
+      rows_of: open_targets.target_go
+      grain: term
+      fields:
+        goId:       {column: "go[].id"}
+        aspect:     {column: "go[].aspect"}
+        gene_count: {computed: {agg: count_distinct, from: id, group_by: ["go[].id"]}}
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      order: [{column: gene_count, direction: desc}, {column: "go[].id", direction: asc}]
+    serve: derived
+    derived:
+      verb: aggregate
+      table: open_targets.target_go
+      group_by: ["go[].id", "go[].aspect"]
+      aggregate: {gene_count: {count_distinct: id}}
+      rename: {"go[].id": goId, "go[].aspect": aspect}
+    defects:
+      - {id: OT-PATH-004, what: "go is an ndarray: isinstance(row['go'], list) is False, so every search returns no terms",
+         where: "pathway_mcp/tools.py:287", effect: false_empty}
+
+  find_genes_in_pathway:
+    reads: {open_targets.target: {access: projection, columns: [id, pathways]}}
+    args:
+      pathway_id: {binds: "open_targets.target.pathways[].pathwayId", accepts: [reactome_pathway]}
+    result:
+      rows: $.genes
+      rows_of: open_targets.target_pathways
+      count_fields: {"$.gene_count": "len($.genes)"}
+      order: [{column: id, direction: asc}]
+    serve: derived
+    derived: {verb: members, table: open_targets.target_pathways, columns: [id]}
+    text:
+      notes: ["direct annotations only: genes annotated to a descendant pathway are not included (hierarchy expansion arrives in phase 3)"]
+    defects:
+      - {id: OT-PATH-002, what: "a pathway with no annotated gene is reported as not found (an error), not as an empty membership",
+         where: "pathway_mcp/tools.py:366-370", effect: error}
+
+  get_pathway_enrichment:
+    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, pathways]}}
+    args:
+      gene_list: {binds: open_targets.target.id, op: in, each: true, accepts: [ensembl_gene, hgnc_symbol],
+                  on_missing: partial, min_resolved_fraction: 0.9}
+    result: {rows: $.enriched_pathways}
+    serve: block
+    block:
+      reason: "Benjamini-Hochberg over overlapping sets only (m counts pathways with at least one hit) and a background of annotated genes; set-test statistic plugins arrive in phase 3."
+      alternatives: [pathway.get_gene_pathways, pathway.find_genes_in_pathway]
+      until_phase: 3
+
+  get_go_enrichment:
+    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, go]}, open_targets.go: {access: full_table}}
+    args:
+      gene_list: {binds: open_targets.target.id, op: in, each: true, accepts: [ensembl_gene, hgnc_symbol],
+                  on_missing: partial, min_resolved_fraction: 0.9}
+    result: {rows: $.enriched_terms}
+    serve: block
+    block:
+      reason: "The background ignores the GO aspect and the multiple-testing family counts only overlapping terms; set-test statistic plugins arrive in phase 3."
+      alternatives: [pathway.get_gene_ontology]
+      until_phase: 3
+
+  get_go_term_info:
+    reads: {open_targets.go: {access: full_table}}
+    args:
+      go_id: {binds: open_targets.go.id, accepts: [go_term]}       # obsolete terms resolve through the retired rule
+    result:
+      kind: record
+      rows: $
+      echo: {go_id: {path: $.id, source: record}}
+      not_found_when: ["$.error =~ '(?i)not found'"]
+    serve: pass
+
+  get_pathway_info:
+    reads: {open_targets.reactome: {access: full_table}}
+    args:
+      pathway_id: {binds: open_targets.reactome.id, accepts: [reactome_pathway]}
+    result:
+      kind: record
+      rows: $
+      echo: {pathway_id: {path: $.id, source: record}}
+      trim:
+        $.descendants: {max: 200, order: key}
+        $.path: {max: 50, order: declared}
+      not_found_when: ["$.error =~ '(?i)not found'"]
+    serve: pass
+
+  get_sequence_ontology_term:
+    reads: {open_targets.so: {access: full_table}}
+    args:
+      so_id: {binds: open_targets.so.id, accepts: [so_term]}      # 'SO:0001583' normalised to SO_0001583; labels resolve
+    result:
+      kind: record
+      rows: $
+      echo: {so_id: {path: $.id, source: record}}
+      not_found_when: ["$.error =~ '(?i)not found'"]
+    serve: pass

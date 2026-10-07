@@ -1,0 +1,136 @@
+# Overlay for the upstream disease server (disease_mcp; docs/DATA_LAYER.md §8, Appendix A).
+# Phase 1: 2 pass, 4 derived.
+schema: vbt.overlay/1
+server: disease
+sources: [open_targets]
+upstream_commit: ${vars.upstream_commit:-71f9da68c95c5ee0ef4c1d9b8f45f10693de022d}   # the commit these bindings were reviewed against
+tools:
+  get_disease_info:
+    reads: {open_targets.disease: {access: full_table}}
+    args:
+      disease_id: {binds: open_targets.disease.id, accepts: [ot_disease, disease_name]}   # CURIEs, retired IDs and xrefs resolve
+    result:
+      kind: record
+      rows: $
+      echo: {disease_id: {path: $.id, source: record}}
+      trim:
+        $.descendants: {max: 100, order: key}
+        $.ancestors: {max: 100, order: depth}
+        $.children: {max: 100, order: key}
+        $.dbXRefs: {max: 100, order: key}
+        $.obsoleteTerms: {max: 100, order: key}
+      not_found_when: ["$.error =~ '(?i)not found'"]
+    serve: pass
+
+  search_diseases_by_name:
+    reads: {open_targets.disease: {access: projection, columns: [id, name, description, therapeuticAreas, synonyms, ontology]}}
+    args:
+      query: {role: free_text, interpreted_as: casefold_substring,
+              binds_any: [open_targets.disease.name, open_targets.disease.synonyms.hasExactSynonym,
+                          open_targets.disease.synonyms.hasRelatedSynonym]}   # broad/narrow synonyms are labelled, not matched
+      therapeutic_area: {binds: open_targets.disease.therapeuticAreas, op: contains, accepts: [ot_disease, disease_name],
+                         universe_where: {eq: [ontology.isTherapeuticArea, true]}}
+      limit: {role: limit, min: 1, max: 500}
+    result:
+      rows: $.results
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      order: [{column: match_class, direction: asc}, {column: name, direction: asc}]
+    serve: derived
+    derived: {verb: search, table: open_targets.disease, columns: [id, name, description, therapeuticAreas, synonyms]}
+    defects:
+      - {id: OT-DIS-001, what: "name matched with str.contains(regex=True): a substring and regex match ('cancer' matches 'Non-Cancerous')",
+         where: "disease_mcp/tools.py:155-156", effect: silent_wrong}
+      - {id: OT-DIS-002, what: "synonyms is a struct of four lists: search_synonyms returns False for a dict, so synonym search is dead",
+         where: "disease_mcp/tools.py:159-171", test: test_dl_defect_detectors.py::test_ot_dis_002, effect: false_empty}
+
+  get_disease_hierarchy:
+    reads: {open_targets.disease: {access: projection, columns: [id, name, parents, children, ancestors, descendants, ontology]}}
+    args:
+      disease_id: {binds: open_targets.disease.id, accepts: [ot_disease, disease_name]}
+    result:
+      kind: record
+      rows: $
+      fields:
+        disease_id: {column: id}
+        disease_name: {column: name}
+        parents: {column: parents}
+        children: {column: children}
+        ancestors: {column: ancestors}
+        descendants: {column: descendants}
+        is_therapeutic_area: {column: ontology.isTherapeuticArea}
+        is_leaf: {column: ontology.leaf}                      # dropped while the ontology.leaf constraint is refuted
+        "parents[].name": {column: name, placeholders: [Unknown], on_placeholder: dangling_ref}
+        "children[].name": {column: name, placeholders: [Unknown], on_placeholder: dangling_ref}
+      trim:
+        $.descendants: {max: 200, order: key}
+        $.ancestors: {max: 200, order: depth}
+      drop_fields: {$.is_leaf: "ontology.leaf is false for every 25.09 term while most have no children (relation constraint refuted); use children"}
+      not_found_when: ["$.error =~ '(?i)not found'"]
+    serve: pass
+    defects:
+      - {id: OT-DIS-003, what: "is_leaf reads ontology.leaf, which is false for every term in 25.09 while most terms have no children",
+         where: "disease_mcp/tools.py:262-266", effect: silent_wrong}
+      - {id: OT-DIS-005, what: "a parent or child missing from the disease table is returned with name 'Unknown' (a dangling reference reads as a term)",
+         where: "disease_mcp/tools.py:286-294", effect: silent_wrong}
+
+  get_disease_phenotypes:
+    reads: {open_targets.disease_phenotype: {access: full_table}, open_targets.disease: {access: projection, columns: [id]}}
+    args:
+      disease_id: {binds: open_targets.disease_phenotype.disease, accepts: [ot_disease, disease_name]}
+      limit:      {role: limit, min: 1, max: 500}
+    result:
+      rows: $.phenotypes
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      order: [{column: phenotype, direction: asc}]
+    serve: derived
+    derived: {verb: find, table: open_targets.disease_phenotype}
+    text:
+      notes: ["evidence items with qualifierNot = true are negative findings (the phenotype is NOT present) and are excluded unless include_negated"]
+
+  find_diseases_by_therapeutic_area:
+    reads: {open_targets.disease: {access: projection, columns: [id, name, description, therapeuticAreas, ontology]}}
+    args:
+      therapeutic_area:       {binds: open_targets.disease.therapeuticAreas, op: contains, accepts: [ot_disease, disease_name],
+                               universe_where: {eq: [ontology.isTherapeuticArea, true]}}
+      list_therapeutic_areas: {role: flag, binds: open_targets.disease.ontology.isTherapeuticArea, when_true: {in: [true]}}
+      limit:                  {role: limit, min: 1, max: 1000}
+    require_any: [[therapeutic_area, list_therapeutic_areas]]
+    exclusive: [[therapeutic_area, list_therapeutic_areas]]
+    result:
+      rows: [$.diseases, $.therapeutic_areas]
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      order: [{column: id, direction: asc}]
+    serve: derived
+    derived: {verb: find, table: open_targets.disease, columns: [id, name, description]}
+    defects:
+      - {id: OT-DIS-004, what: "a name is matched by substring and the first therapeutic area in file order is used",
+         where: "disease_mcp/tools.py:465-490", effect: silent_wrong}
+
+  find_diseases_by_phenotype:
+    reads: {open_targets.disease_phenotype: {access: full_table}, open_targets.disease_hpo: {access: full_table}}
+    args:
+      phenotype_id:  {binds: open_targets.disease_phenotype.phenotype, accepts: [hpo]}
+      evidence_type: {binds: "open_targets.disease_phenotype.evidence[].evidenceType", item_filter: true, drop_empty_parents: true}
+      min_evidence:  {role: family_param, min: 1}         # consumed by derived.nest.having (evidence items per disease)
+      limit:         {role: limit, min: 1, max: 500, limit_grain: disease}
+    result:
+      rows: $.diseases
+      grain: disease
+      count_fields: {"$.count": "len($.diseases)", "$.diseases[*].evidence_count": "len($.diseases[*].evidence)"}
+      arg_echo: {limit: $.limit}
+      order: [{column: disease, direction: asc}]
+    serve: derived
+    derived:
+      verb: find
+      table: open_targets.disease_phenotype
+      nest: {group_by: [disease], items: evidence, count_as: evidence_count, having: {min_arg: min_evidence}}
+      rename: {disease: disease_id}
+      sections:
+        phenotype: {path: $.phenotype_name, table: open_targets.disease_hpo, verb: lookup, single: true,
+                    key_from_args: {id: phenotype_id}}
+    defects:
+      - {id: OT-DIS-006, what: "diseases whose evidence list is empty after the evidence_type filter are kept (count 0), and negated (qualifierNot) items count as support",
+         where: "disease_mcp/tools.py:605-627", test: test_dl_defect_detectors.py::test_ot_dis_006, effect: silent_wrong}

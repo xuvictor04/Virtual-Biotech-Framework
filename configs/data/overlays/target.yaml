@@ -1,0 +1,259 @@
+# Overlay for the upstream target server (target_mcp; docs/DATA_LAYER.md §8, Appendix A).
+# Phase 1: 11 pass, 4 derived (get_pharmacogenomics is bound in drug.yaml with same_as), 1 block.
+# `defects` document upstream bugs with file:line; each detector test imports the unmodified function.
+schema: vbt.overlay/1
+server: target
+sources: [open_targets]
+upstream_commit: ${vars.upstream_commit:-71f9da68c95c5ee0ef4c1d9b8f45f10693de022d}   # the commit these bindings were reviewed against
+tools:
+  get_target_info:
+    reads: {open_targets.target: {access: full_table}}
+    args:
+      target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
+    result:
+      kind: record
+      rows: $
+      echo: {target_id: {path: $.id, source: record}}
+      trim:
+        $.go: {max: 50, order: key}
+        $.homologues: {max: 50, order: declared}
+        $.dbXrefs: {max: 50, order: key}
+        $.synonyms: {max: 50, order: declared}
+      not_found_when: ["$.found == false"]
+    serve: pass
+    text: {drop_promises: [chromosome, proteinAnnotations]}   # the docstring promises fields absent in 25.09
+
+  search_targets_by_name:
+    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, approvedName, biotype, symbolSynonyms]}}
+    args:
+      query: {role: free_text, binds_any: [open_targets.target.approvedSymbol, open_targets.target.approvedName],
+              interpreted_as: casefold_substring}
+      limit: {role: limit, min: 1, max: 500}
+    result:
+      rows: $.results
+      count_fields: [$.num_results]
+      order: [{column: match_class, direction: asc}, {column: approvedSymbol, direction: asc}]
+      drop_fields: {$.message: "'No targets found' is not evidence that no gene matches"}
+    serve: derived
+    derived: {verb: search, table: open_targets.target, columns: [id, approvedSymbol, approvedName, biotype]}
+    defects:
+      - {id: OT-TARGET-001, what: "str.contains(regex=True) over symbol and name in file order: 'TP53' answers TP53BP1 and TP53I3 before TP53, regex metacharacters change the query",
+         where: "target_mcp/tools.py:181-188", test: test_dl_defect_detectors.py::test_ot_target_001, effect: silent_wrong}
+
+  get_target_tractability:
+    same_as: [drug.get_target_tractability]
+    reads: {open_targets.target: {access: projection, columns: [id, tractability]}}
+    args:
+      target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
+    result:
+      rows: $.tractability
+      rows_of: open_targets.target_tractability
+      parent_key: {id: $.target_id}
+      not_found_when: ["$.found == false"]
+      drop_fields: {$.message: "a null tractability list means not assessed, not untractable"}
+    serve: pass
+
+  get_target_prioritisation_scores:
+    reads: {open_targets.target_prioritisation: {access: full_table}}
+    args:
+      target_id: {binds: open_targets.target_prioritisation.targetId, accepts: [ensembl_gene, hgnc_symbol]}
+    result:
+      rows: $.prioritisations
+      count_fields: [$.count]
+      drop_fields: {$.message: "no prioritisation row means not scored, not deprioritised"}
+    serve: pass
+    text:
+      notes: ["hasSafetyEvent: -1 = a safety event is recorded, 0 = none recorded, null = not assessed",
+              "maxClinicalTrialPhase is normalised to 0-1 in this table (0.25 per phase), not 0-4"]
+
+  prioritize_targets:
+    reads: {open_targets.target_prioritisation: {access: full_table}}
+    args:
+      has_pocket:      {role: flag, binds: open_targets.target_prioritisation.hasPocket, when_true: {in: [yes]}, when_false: {in: [no]}}
+      has_small_molecule_binder: {role: flag, binds: open_targets.target_prioritisation.hasSmallMoleculeBinder,
+                                  when_true: {in: [yes]}, when_false: {in: [no]}}
+      no_safety_events: {role: flag, binds: open_targets.target_prioritisation.hasSafetyEvent,
+                         when_true: {in: [none_recorded]}}       # positive form: -1 and null never pass
+      min_genetic_constraint: {binds: open_targets.target_prioritisation.geneticConstraint, op: le, min: -1, max: 1}
+      min_clinical_phase: {binds: open_targets.target_prioritisation.maxClinicalTrialPhase, op: ge, min: 0, max: 4}
+      is_membrane:     {role: flag, binds: open_targets.target_prioritisation.isInMembrane, when_true: {in: [yes]}, when_false: {in: [no]}}
+      is_secreted:     {role: flag, binds: open_targets.target_prioritisation.isSecreted, when_true: {in: [yes]}, when_false: {in: [no]}}
+      sort_by:
+        role: order_by
+        values:
+          hasPocket: {column: hasPocket, direction: desc}
+          hasLigand: {column: hasLigand, direction: desc}
+          hasSmallMoleculeBinder: {column: hasSmallMoleculeBinder, direction: desc}
+          hasSafetyEvent: {column: hasSafetyEvent, direction: desc}
+          geneticConstraint: {column: geneticConstraint, direction: asc}
+          maxClinicalTrialPhase: {column: maxClinicalTrialPhase, direction: desc}
+          isInMembrane: {column: isInMembrane, direction: desc}
+          isSecreted: {column: isSecreted, direction: desc}
+          tissueSpecificity: {column: tissueSpecificity, direction: desc}
+          tissueDistribution: {column: tissueDistribution, direction: desc}
+          mouseKOScore: {column: mouseKOScore, direction: desc}
+          paralogMaxIdentityPercentage: {column: paralogMaxIdentityPercentage, direction: desc}
+          mouseOrthologMaxIdentityPercentage: {column: mouseOrthologMaxIdentityPercentage, direction: desc}
+      ascending:       {role: order_direction, values: {true: asc, false: desc}}
+      limit:           {role: limit, min: 1, max: 1000}
+    result:
+      rows: $.targets
+      count_fields: [$.count]
+      order_from_arg: sort_by
+      order: [{column: targetId, direction: asc}]
+    serve: derived
+    derived: {verb: find, table: open_targets.target_prioritisation}
+    defects:
+      - {id: OT-TARGET-005, what: "no_safety_events keeps hasSafetyEvent NaN (not assessed) and -1 (event recorded) because it filters != 1.0",
+         where: "target_mcp/tools.py:668-671", test: test_dl_defect_detectors.py::test_ot_target_005, effect: silent_wrong}
+      - {id: OT-TARGET-006, what: "an unknown sort_by is logged and ignored; rows come back in file order",
+         where: "target_mcp/tools.py:709-716", effect: silent_wrong}
+      - {id: OT-TARGET-010, what: "has_pocket/is_membrane False keep NaN rows: not assessed counts as 'no'",
+         where: "target_mcp/tools.py:655-657,695-697", effect: silent_wrong}
+
+  get_target_safety_profile:
+    reads: {open_targets.openfda_significant_adverse_target_reactions: {access: full_table}}
+    args:
+      target_id: {binds: open_targets.openfda_significant_adverse_target_reactions.targetId, accepts: [ensembl_gene, hgnc_symbol]}
+      limit:     {role: limit, min: 1, max: 500}
+    result:
+      rows: $.adverse_events
+      order: [{column: llr, direction: desc, nulls: last}, {column: event, direction: asc}]
+      count_fields: [$.count]
+      drop_fields: {$.message: "'No adverse event data' reads as a safe target; the coverage statement replaces it"}
+    serve: pass
+    defects:
+      - {id: OT-TARGET-009, what: "head(limit) in file order: the strongest (highest llr) events may be cut",
+         where: "target_mcp/tools.py:758", effect: silent_wrong}
+
+  get_mouse_phenotype:
+    reads: {open_targets.mouse_phenotype: {access: full_table}}
+    args:
+      target_id: {binds: open_targets.mouse_phenotype.targetFromSourceId, accepts: [ensembl_gene, hgnc_symbol]}
+      limit:     {role: limit, min: 1, max: 500}
+    result:
+      rows: $.phenotypes
+      count_fields: [$.count]
+      order: [{column: modelPhenotypeId, direction: asc}]
+    serve: derived
+    derived: {verb: find, table: open_targets.mouse_phenotype}
+    defects:
+      - {id: OT-TARGET-007, what: "matches the human Ensembl ID against targetInModelEnsemblId (the mouse orthologue column): always empty for human genes",
+         where: "target_mcp/tools.py:808", test: test_dl_defect_detectors.py::test_ot_target_007, effect: false_empty}
+
+  get_comprehensive_target_profile:
+    reads:
+      open_targets.target: {access: full_table}
+      open_targets.association_overall_direct: {access: full_table, when: {include_diseases: true}}
+      open_targets.known_drug: {access: full_table, when: {include_drugs: true}}
+      open_targets.expression: {access: full_table, when: {include_expression: true}}
+      open_targets.interaction: {access: full_table, when: {include_interactions: true}}
+      open_targets.openfda_significant_adverse_target_reactions: {access: full_table, when: {include_safety: true}}
+      open_targets.mouse_phenotype: {access: full_table, when: {include_safety: true}}
+    args:
+      target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
+    result: {kind: record, rows: $}
+    serve: block
+    block:
+      reason: "Seven sections loaded whole; a failed section becomes [] with no section error, so an outage reads as 'no drugs' or 'no interactions'. A view with per-section status replaces it in phase 2."
+      alternatives: [target.get_target_info, drug.search_known_drugs, association.get_associations_for_target,
+                     expression.query_expression_by_gene, interaction.get_interactions, target.get_target_safety_profile,
+                     target.get_mouse_phenotype]
+      until_phase: 2
+    defects:
+      - {id: OT-TARGET-011, what: "section failures become [] or an empty list with no section_errors",
+         where: "target_mcp/tools.py:1382-1385,1471-1481", effect: false_empty}
+
+  get_target_hallmarks:
+    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, hallmarks]}}
+    args:
+      target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
+    result:
+      kind: record
+      rows: $.hallmarks
+      drop_fields:
+        $.num_hallmarks: "counts cancerHallmarks only, not attributes"
+        $.message: "no hallmark annotation means not annotated, not 'no hallmark role'"
+      not_found_when: ["$.error =~ '(?i)not found'"]
+    serve: pass
+
+  get_target_tep:
+    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, tep]}}
+    args:
+      target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
+    result:
+      kind: record
+      rows: $.tep
+      not_found_when: ["$.error =~ '(?i)not found'"]
+    serve: pass
+
+  get_chemical_probes:
+    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, chemicalProbes]}}
+    args:
+      target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
+    result:
+      rows: $.chemical_probes
+      rows_of: open_targets.target_chemical_probes
+      parent_key: {id: $.target_id}
+      count_fields: [$.num_high_quality]
+      drop_fields:
+        $.num_probes: "a null list (not assessed) and an empty list (none listed) both read as 0"
+        $.message: "the item table's coverage states what an empty list means"
+      not_found_when: ["$.error =~ '(?i)not found'"]
+    serve: pass
+
+  get_genetic_constraint:
+    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, constraint]}}
+    args:
+      target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
+    result:
+      rows: $.constraint
+      row_key: [constraintType]
+      count_fields: [$.num_constraint_types]
+      not_found_when: ["$.error =~ '(?i)not found'"]
+    serve: pass
+
+  get_subcellular_locations:
+    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, subcellularLocations]}}
+    args:
+      target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
+    result:
+      rows: $.subcellular_locations
+      row_key: [location, source]
+      drop_fields:
+        $.num_locations: "counts (location, source) records, not distinct locations"
+        $.primary_locations: "first-seen names with '[Isoform' removed by substring; not a primary-location call"
+      not_found_when: ["$.error =~ '(?i)not found'"]
+    serve: pass
+
+  get_target_class:
+    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, targetClass]}}
+    args:
+      target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
+    result:
+      rows: $.target_class
+      row_key: [id, level]
+      count_fields: [$.num_classes]
+      drop_fields: {$.primary_class: "the first l1 class only; a target can belong to several l1 classes"}
+      not_found_when: ["$.error =~ '(?i)not found'"]
+    serve: pass
+
+  get_homologues:
+    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, homologues]}}
+    args:
+      target_id:      {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
+      species_filter: {binds: "open_targets.target.homologues[].speciesName", interpreted_as: casefold_substring,
+                       match: casefold, item_filter: true}
+      min_identity:   {binds: "open_targets.target.homologues[].queryPercentageIdentity", op: ge, min: 0, max: 100,
+                       item_filter: true}                     # percent 0-100, not a fraction
+    result:
+      rows: $.homologues
+      rows_of: open_targets.target_homologues
+      parent_key: {id: $.target_id}
+      count_fields: [$.num_homologues]
+      drop_fields: {$.model_organisms: "the first homologue per species from the unfiltered list, ignoring species_filter and min_identity"}
+      not_found_when: ["$.error =~ '(?i)not found'"]
+    serve: pass
+    defects:
+      - {id: OT-TARGET-012, what: "min_identity compares h.get('queryPercentageIdentity', 0): a missing identity counts as 0, not unknown",
+         where: "target_mcp/tools.py:2084-2088", effect: silent_wrong}

@@ -1,0 +1,147 @@
+# Tahoe-100M pseudobulk differential expression as prepared by tools/prepare_tahoe.py
+# (docs/DATA_LAYER.md §6.6; phase 1, strict: false).
+#
+# One row of de_permissive is one gene's DESeq2 contrast for one drug at one concentration in one
+# cell line on one plate. concentration is stored as float32, so literals are compiled in the
+# storage type and rendered 0.05, never 0.05000000074505806 (C20).
+schema: vbt.datasource/1
+source: tahoe_100m
+title: Tahoe-100M pseudobulk differential expression (prepared by tools/prepare_tahoe.py)
+release: {from: [manifest.source_revision, manifest.filters]}   # "<rev>@<sha256(filters)[:12]>"
+root: ${TAHOE_DATA_PATH}
+manifests:
+  - {path: preparation_manifest.json, required: true, require: {complete: true},
+     checks: {rows: "$.rows.permissive", constraints: "$.filters.permissive"}}
+defaults: {format: parquet, layout: single_file, missing: unknown}
+strict: false
+concepts:
+  plate: [de_permissive.plate, sample_metadata.plate]
+  drug: [de_permissive.drug, drug_metadata.drug, sample_metadata.drug]
+
+id_types:
+  tahoe_drug:       {plugin: tahoe_drug, universe: drug_metadata.drug, resolve_via: [drug_metadata.drug],
+                     stored_forms: {de_permissive.drug: as_stored, sample_metadata.drug: as_stored}}
+                     # 'Erdafitinib ' (DE) vs 'Erdafitinib' (metadata): the index keeps both forms (VERIFIED)
+  depmap_cell_line: {plugin: depmap_cell_line, universe: {table: de_permissive, keys: [Cell_ID_DepMap]},
+                     resolve_via: [cell_line_metadata.cell_name]}
+                     # qualified name tahoe_100m:depmap_cell_line: never confused with Open Targets' universe
+  cellosaurus:      {plugin: cellosaurus, resolvable: false}
+  tahoe_gene:       {plugin: tahoe_gene_name, universe: gene_metadata.gene_symbol,
+                     crosswalks: [{name: tahoe_ensembl, table: gene_metadata, from: ensembl_id, to: gene_symbol, cardinality: one}],
+                     maps_to: [{id_type: "open_targets:ensembl_gene", via: tahoe_ensembl, cardinality: one}]}
+
+tables:
+  de_permissive:
+    kind: fact
+    path: tahoe_permissive_padj010.parquet
+    layout: single_file
+    size_class: huge                                        # EST 1e8-3e8 rows, ~62,600 row groups
+    grain: one gene's DESeq2 contrast for one drug at one concentration in one cell line on one plate (replicate wells pooled)
+    key: {columns: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate, gene_name],
+          check: sampled, sample_prefix: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate]}
+    grains: {gene: [gene_name], drug: [drug], cell_line: [Cell_ID_DepMap], drug_dose: [drug, concentration, concentration_unit],
+             contrast: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate]}
+    access_paths:
+      - {columns: [drug], via: row_group_stats}             # 3,924 of 3,987 row groups hold one drug (VERIFIED)
+      - {columns: [gene_name], via: sidecar_index, build: readiness}   # no row group holds one gene
+    conditions: {columns: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate], from: self}
+    constraints:
+      - {column: padj, op: "<", value: 0.10, origin: "third_party/TheVirtualBiotech/tools/prepare_tahoe.py:72"}
+      - {column: padj, op: ">=", value: 0, origin: "tools/prepare_tahoe.py:71"}
+      - {column: log2FoldChange, op: is_finite, origin: "tools/prepare_tahoe.py:70"}
+    coverage:
+      statement: "Only contrasts with finite padj < 0.10 are stored; 76% of source rows have padj NA and were dropped."
+      absence_means: censored
+      censor: {column: padj, op: ">=", value: 0.10, plus: [padj_na, not_profiled]}
+    rank: [{column: padj, direction: asc, nulls: last, within: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate]},
+           {column: log2FoldChange, direction: desc_abs, nulls: last}]
+    sentinels:
+      present: [{key: {drug: Bortezomib}, expect: {min_rows: 1}}]
+    columns:
+      drug:               {role: identifier, id_type: tahoe_drug, ref: drug_metadata.drug, form: as_stored}
+      concentration:      {role: scope, scope: {kind: condition, pooling: forbid}, unit_from: concentration_unit,
+                           vocab: data, statistic: numeric}     # float32 storage: literals cast, rendered 0.05
+      concentration_unit: {role: scope, scope: {kind: condition, pooling: forbid}, vocab: data}
+      Cell_ID_DepMap:     {role: identifier, id_type: depmap_cell_line, scope: {kind: condition, pooling: forbid}}
+      Cell_ID_Cellosaur:  {role: identifier, id_type: cellosaurus, resolvable: false}
+      Cell_Name_Vevo:     {role: label, of: Cell_ID_DepMap}
+      plate:              {role: scope, scope: {kind: replicate, pooling: list}, vocab: data,
+                           aliases_from: {table: sample_metadata, column: plate, strip_prefix: plate}}   # '1' here, 'plate1' there
+      gene_name:          {role: identifier, id_type: tahoe_gene, ref: gene_metadata.gene_symbol, integrity: partial}
+      baseMean:           {role: measure, statistic: numeric, missing: unknown}
+      log2FoldChange:     {role: measure, statistic: numeric, direction: signed, missing: unknown}
+      lfcSE:              {role: measure, statistic: numeric, of: log2FoldChange, missing: unknown}
+      stat:               {role: measure, statistic: numeric, missing: unknown}
+      pvalue:             {role: measure, statistic: numeric, scale: [0, 1], missing: unknown}
+      padj:               {role: measure, statistic: numeric, scale: [0, 1], missing: unknown,
+                           family: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate],
+                           comparable_within: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate],
+                           verified: false, verified_by: upstream_doc}
+      n_cells_trt:        {role: count, counts: "treated cells of this line in the pooled wells"}
+      n_cells_ctrl:       {role: count, counts: "DMSO control cells of this line on the plate"}
+
+  drug_metadata:
+    kind: entity
+    path: metadata/drug_metadata.parquet
+    layout: single_file
+    grain: one Tahoe-100M drug (canonical spelling)
+    key: {columns: [drug], check: full}
+    coverage: {statement: "The 379 Tahoe-100M drugs (existence only).", absence_means: absent, applies_to: entity}
+    columns:
+      drug:               {role: identifier, id_type: tahoe_drug, self: true}
+      targets:            {role: category, vocab: data, list_delimiter: "|"}
+      moa-broad:          {role: category, vocab: data}
+      moa-fine:           {role: category, vocab: data}
+      human-approved:     {role: category, vocab: data}
+      clinical-trials:    {role: category, vocab: data}
+      gpt-notes-approval: {role: text}
+      canonical_smiles:   {role: payload}
+      pubchem_cid:        {role: payload}
+
+  cell_line_metadata:
+    kind: entity_detail
+    path: metadata/cell_line_metadata.parquet
+    layout: single_file
+    grain: one driver alteration of one cell line (1-57 rows per line)   # NOT one cell line
+    key: {columns: [cell_name, Driver_Gene_Symbol, Driver_VarType, Driver_ProtEffect_or_CdnaEffect],
+          nullable: [Driver_ProtEffect_or_CdnaEffect], check: full}   # 25 null effects; 5 null Cell_ID_DepMap (VERIFIED)
+    grains: {cell_line: [cell_name]}
+    columns:
+      cell_name:          {role: identifier, resolvable: false}
+      Cell_ID_DepMap:     {role: identifier, id_type: depmap_cell_line, missing: unknown}
+      Cell_ID_Cellosaur:  {role: identifier, id_type: cellosaurus, resolvable: false}
+      Organ:              {role: category, vocab: data}
+      Driver_Gene_Symbol: {role: category, vocab: data}
+      Driver_VarZyg:      {role: category, vocab: data}
+      Driver_VarType:     {role: category, vocab: data}
+      Driver_ProtEffect_or_CdnaEffect: {role: category, vocab: data}
+      Driver_Mech_InferDM: {role: category, vocab: data}
+      Driver_GeneType_DM: {role: category, vocab: data}
+
+  gene_metadata:
+    kind: crosswalk
+    path: metadata/gene_metadata.parquet
+    layout: single_file
+    grain: one gene symbol of the Tahoe-100M gene vocabulary with its Ensembl ID
+    key: {columns: [ensembl_id], check: full}
+    alternate_keys: [{columns: [gene_symbol], check: full, verified: false}]
+    columns:
+      gene_symbol: {role: identifier, id_type: tahoe_gene, self: true}
+      ensembl_id:  {role: identifier, id_type: "open_targets:ensembl_gene", maps_to: "open_targets:ensembl_gene"}
+      token_id:    {role: payload}
+
+  sample_metadata:
+    kind: entity
+    path: metadata/sample_metadata.parquet
+    layout: single_file
+    grain: one Tahoe-100M sample (one well's treatment on one plate)
+    key: {columns: [sample], check: full}
+    columns:
+      sample:            {role: identifier, resolvable: false, self: true}
+      plate:             {role: category, vocab: data}
+      drug:              {role: identifier, id_type: tahoe_drug, form: as_stored}
+      drugname_drugconc: {role: payload}
+      mean_gene_count:   {role: measure, statistic: numeric, missing: unknown}
+      mean_tscp_count:   {role: measure, statistic: numeric, missing: unknown}
+      mean_mread_count:  {role: measure, statistic: numeric, missing: unknown}
+      mean_pcnt_mito:    {role: measure, statistic: numeric, missing: unknown}

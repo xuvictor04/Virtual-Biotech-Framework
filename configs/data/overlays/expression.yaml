@@ -1,0 +1,132 @@
+# Overlay for the upstream expression server (expression_mcp; docs/DATA_LAYER.md §8, Appendix A).
+# Phase 1: 3 pass, 2 derived, 1 block.
+schema: vbt.overlay/1
+server: expression
+sources: [open_targets]
+upstream_commit: ${vars.upstream_commit:-71f9da68c95c5ee0ef4c1d9b8f45f10693de022d}   # the commit these bindings were reviewed against
+tools:
+  list_available_tissues:
+    reads: {open_targets.expression: {access: full_table, columns: [id, tissues]}}
+    args: {}
+    result:
+      rows: $.tissues
+      row_key: [efo_code]
+      count_fields: [$.num_tissues]
+      drop_fields: {"$.tissues[*].num_expressed_genes": "counts genes with any rna.value, including the in-band -1 level code and values with no unit"}
+    serve: pass
+
+  query_expression_by_gene:
+    reads: {open_targets.expression: {access: full_table}}
+    args:
+      gene_id: {binds: open_targets.expression.id, accepts: [ensembl_gene, hgnc_symbol]}
+      tissue:  {binds_any: ["open_targets.expression.tissues[].label", "open_targets.expression.tissues[].efo_code"],
+                match: casefold, item_filter: true}       # exact tissue, never a substring ('lung' is not 'lung fibroblast')
+    result:
+      rows: $.expression
+      rows_of: open_targets.expression_tissues
+      parent_key: {id: $.gene_id}
+      fields:
+        tissue.efo_code: {column: "tissues[].efo_code"}
+        tissue.label:    {column: "tissues[].label"}
+        rna.value:       {column: "tissues[].rna.value"}
+        rna.zscore:      {column: "tissues[].rna.zscore"}
+        rna.level:       {column: "tissues[].rna.level"}       # -1 = no data (in-band unknown)
+        rna.unit:        {column: "tissues[].rna.unit"}
+        protein.level:   {column: "tissues[].protein.level"}   # -1 = no data (in-band unknown)
+        protein.reliability: {column: "tissues[].protein.reliability"}
+      count_fields: [$.num_tissues]
+      not_found_when: ["$.found == false"]
+    serve: pass
+    defects:
+      - {id: OT-EXPR-001, what: "tissue is matched as a substring of the label or EFO code: 'lung' also returns other lung-derived samples",
+         where: "expression_mcp/tools.py:240-244", effect: silent_wrong}
+
+  query_expression_by_tissue:
+    reads: {open_targets.expression: {access: bounded_scan, columns: [id, tissues]}}
+    args:
+      output_path:    {role: output_path}
+      tissue:         {binds_any: ["open_targets.expression.tissues[].label", "open_targets.expression.tissues[].efo_code"],
+                       match: casefold, item_filter: true}
+      min_expression: {binds: "open_targets.expression.tissues[].rna.value", op: ge, item_filter: true}   # same item as tissue (Any)
+      limit:          {role: limit, min: 1, max: 100000}
+    require_any: [[tissue]]
+    result:
+      rows: $.top_genes
+      rows_of: open_targets.expression_tissues
+      fields:
+        gene_id:     {column: id}
+        rna_value:   {column: "tissues[].rna.value"}
+        rna_zscore:  {column: "tissues[].rna.zscore"}
+        rna_level:   {column: "tissues[].rna.level"}
+        rna_unit:    {column: "tissues[].rna.unit"}
+        protein_reliability: {column: "tissues[].protein.reliability"}
+        protein_level: {column: "tissues[].protein.level"}
+      count_fields: [$.num_results]
+      order: [{column: "tissues[].rna.value", direction: desc, nulls: last}, {column: id, direction: asc}]
+      summary_fields: {$.summary_stats: drop}
+      files: [{path_from: $.output_path, must_exist: false, write_once: true}]
+    serve: derived
+    derived:
+      verb: find
+      table: open_targets.expression_tissues
+      rename: {id: gene_id, "tissues[].rna.value": rna_value, "tissues[].rna.zscore": rna_zscore,
+               "tissues[].rna.level": rna_level, "tissues[].rna.unit": rna_unit,
+               "tissues[].protein.reliability": protein_reliability, "tissues[].protein.level": protein_level}
+    text:
+      notes: ["rna values with different units (TPM vs unitless) are not comparable; a value with an empty unit is unknown"]
+    defects:
+      - {id: OT-EXPR-002, what: "iterrows over the whole expression table with substring tissue matching; values of different units ranked together",
+         where: "expression_mcp/tools.py:339-395", effect: silent_wrong}
+
+  compare_expression_across_tissues:
+    reads: {open_targets.expression: {access: full_table}}
+    args:
+      gene_id: {binds: open_targets.expression.id, accepts: [ensembl_gene, hgnc_symbol]}
+      tissues: {binds_any: ["open_targets.expression.tissues[].label", "open_targets.expression.tissues[].efo_code"],
+                op: in, each: true, match: casefold, item_filter: true}
+    result:
+      rows: $.tissue_expression
+      rows_of: open_targets.expression_tissues
+      parent_key: {id: $.gene_id}
+      fields:
+        tissue.efo_code: {column: "tissues[].efo_code"}
+        tissue.label:    {column: "tissues[].label"}
+        rna_value:       {column: "tissues[].rna.value"}
+        zscore:          {column: "tissues[].rna.zscore"}
+        unit:            {column: "tissues[].rna.unit"}
+      count_fields: [$.num_tissues_compared]
+      order: [{column: "tissues[].rna.value", direction: desc, nulls: last}]
+      not_found_when: ["$.found == false"]
+    serve: pass
+    text:
+      notes: ["only one unit is compared: TPM when any tissue has TPM values, otherwise unitless values; the unit used is reported"]
+
+  find_tissue_specific_genes:
+    reads: {open_targets.expression: {access: full_table}}
+    args:
+      output_path: {role: output_path}
+      tissue:      {binds_any: ["open_targets.expression.tissues[].label", "open_targets.expression.tissues[].efo_code"],
+                    match: casefold, item_filter: true}
+    result: {rows: $.top_genes}
+    serve: block
+    block:
+      reason: "Fold change against the mean of the other tissues mixes units and in-band unknown codes; a tissue-specificity statistic arrives in phase 3."
+      alternatives: [expression.query_expression_by_tissue, expression.compare_expression_across_tissues]
+      until_phase: 3
+
+  search_biosample_ontology:
+    reads: {open_targets.biosample: {access: full_table}}
+    args:
+      query:        {role: free_text, binds_any: [open_targets.biosample.biosampleName, open_targets.biosample.synonyms],
+                     interpreted_as: casefold_substring}
+      biosample_id: {binds: open_targets.biosample.biosampleId, accepts: [biosample]}
+      limit:        {role: limit, min: 1, max: 500}
+    require_any: [[query, biosample_id]]
+    exclusive: [[query, biosample_id]]
+    result:
+      rows: $.biosamples
+      count_fields: [$.count]
+      arg_echo: {limit: $.limit}
+      order: [{column: match_class, direction: asc}, {column: biosampleName, direction: asc}]
+    serve: derived
+    derived: {verb: search, table: open_targets.biosample, columns: [biosampleId, biosampleName, description, synonyms]}

@@ -1,0 +1,1233 @@
+# Open Targets Platform 25.09 (docs/DATA_LAYER.md §6.5, §6.6, §6.8; phase 1, strict: false).
+#
+# Every table a phase-1 overlay reads is declared with its grain and complete key; columns the
+# bindings, result field maps, ranks, grains and sentinels name have roles. Facts that only the
+# full 25.09 release can confirm carry `verified: false` and are disclosure-only until readiness
+# confirms them (I9). Upstream paths are relative to third_party/TheVirtualBiotech.
+schema: vbt.datasource/1
+source: open_targets
+title: Open Targets Platform
+kind: local
+release: {expect: "25.09", from: manifest.release}
+root: ${OPEN_TARGETS_DATA_PATH}
+manifests:
+  - {path: .download-manifest.json, required: false, require: {complete: true}}   # bytes + sha256 per file
+defaults: {format: parquet, layout: sharded_dir, missing: unknown}
+strict: false
+
+id_types:
+  ensembl_gene:     {plugin: ensembl_gene, universe: target.id,
+                     resolve_via: [target.approvedSymbol, target.symbolSynonyms, target.obsoleteSymbols],
+                     rules: [exact, normalized, "label_exact:approvedSymbol", "label_casefold:approvedSymbol",
+                             "synonym:previous", "synonym:alias"],
+                     disambiguate_with: [biotype, genomicLocation.chromosome]}
+  hgnc_symbol:      {plugin: hgnc_symbol, label_of: ensembl_gene}       # 1,613 duplicate symbols in 25.09: label, not key
+  ensembl_gene_any: {plugin: ensembl_gene_any, resolvable: false}       # homologue IDs: syntax only
+  ensembl_gene_mouse: {plugin: ensembl_gene_mouse, resolvable: false}   # mouse orthologues in mouse_phenotype
+  uniprot_accession: {plugin: uniprot_accession,
+                      universe: {table: target, keys: ["proteinIds[].id"],
+                                 where: {in: ["proteinIds[].source", [uniprot_swissprot, uniprot_trembl]]}}}
+  ncbi_taxon:       {plugin: ncbi_taxon, resolvable: false}             # digits; species names are categories
+  chemical_probe:   {plugin: local_key, options: {canonical: "^[A-Za-z0-9][A-Za-z0-9_.\\- ]*$"}, resolvable: false}
+  ot_disease:       {plugin: ot_disease, options: {prefixes: from_universe}, universe: disease.id,
+                     resolve_via: [disease.name, disease.synonyms],
+                     retired: {listed_in: [disease.obsoleteTerms]},
+                     xref_via: [{column: disease.dbXRefs, namespaces: {DOID: doid, MESH: mesh, OMIM: omim, UMLS: umls}}],
+                     disambiguate_with: [ontology.isTherapeuticArea, therapeuticAreas]}
+  disease_name:     {plugin: disease_name, label_of: ot_disease}
+  # Cross-reference namespaces of disease.dbXRefs (syntax only; resolved through the xref rule).
+  doid:             {plugin: local_key, options: {canonical: "^DOID:[0-9]+$", normalize: [strip, upper]}, resolvable: false}
+  mesh:             {plugin: local_key, options: {canonical: "^MESH:[CD][0-9]+$", normalize: [strip, upper]}, resolvable: false}
+  omim:             {plugin: local_key, options: {canonical: "^OMIM:[0-9]{6}$", normalize: [strip, upper]}, resolvable: false}
+  umls:             {plugin: local_key, options: {canonical: "^UMLS:C[0-9]{7}$", normalize: [strip, upper]}, resolvable: false}
+  hpo:              {plugin: hpo, universe: disease_hpo.id, resolve_via: [disease_hpo.name]}
+  chembl_molecule:  {plugin: chembl_molecule, universe: drug_molecule.id,
+                     resolve_via: [drug_molecule.name, drug_molecule.synonyms, drug_molecule.tradeNames],
+                     canonicalize: {parent: drug_molecule.parentId}}
+  drug_name:        {plugin: drug_name, label_of: chembl_molecule}
+  inchikey:         {plugin: inchikey, universe: drug_molecule.inchiKey, resolvable: false}
+  reactome_pathway: {plugin: reactome, universe: reactome.id, resolve_via: [reactome.label]}
+  go_term:          {plugin: go, universe: go.id, resolve_via: [go.name],
+                     retired: {label_prefix: "obsolete "}}               # 8,259 obsolete names in OT go (VERIFIED)
+  so_term:          {plugin: so, universe: so.id, resolve_via: [so.label]}
+  biosample:        {plugin: local_key, options: {canonical: "^[A-Za-z]+_[A-Za-z0-9]+$", normalize: [strip]},
+                     universe: biosample.biosampleId, resolve_via: [biosample.biosampleName, biosample.synonyms]}
+  gwas_study:       {plugin: gwas_study, universe: study.studyId}
+  gwas_project:     {plugin: local_key, options: {canonical: "^[A-Za-z0-9_\\-]+$", normalize: [strip]}, universe: study.projectId}
+  ot_datasource:    {plugin: local_key, options: {canonical: "^[a-z0-9_]+$", normalize: [strip, lower]},
+                     universe: association_by_datasource_direct.datasourceId}
+  ot_datatype:      {plugin: local_key, options: {canonical: "^[a-z0-9_]+$", normalize: [strip, lower]},
+                     universe: association_by_datatype_direct.datatypeId}
+  study_locus_id:   {plugin: study_locus_id, universe: credible_set.studyLocusId, index: remote}
+  ot_variant:       {plugin: ot_variant, universe: variant.variantId, index: remote}
+  rsid:             {plugin: rsid, universe: "variant.rsIds[]", index: remote,
+                     maps_to: [{id_type: ot_variant, via: variant, cardinality: many}]}   # one rsID names every allele
+  depmap_cell_line: {plugin: depmap_cell_line,
+                     universe: {table: target_essentiality,
+                                keys: ["geneEssentiality[].depMapEssentiality[].screens[].depmapId"]},
+                     resolve_via: ["target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].cellLineName"]}
+  pmid:             {plugin: pmid, universe: literature.pmid, resolvable: false}
+  pmcid:            {plugin: pmcid, resolvable: false}
+  europepmc_ppr:    {plugin: europepmc_ppr, resolvable: false}
+  ot_evidence:      {plugin: local_key, options: {canonical: "^[0-9a-f]{32}$|^[A-Za-z0-9_\\-]+$"}, resolvable: false}
+  literature_word:  {plugin: ot_entity_any, union: [ensembl_gene, ot_disease, chembl_molecule],
+                     universe: literature_vector.word}
+
+tables:
+  # -------------------------------------------------------------------- target
+  target:
+    kind: entity
+    path: target
+    grain: one Ensembl human gene
+    key: {columns: [id], check: full}
+    coverage: {statement: "Every Ensembl human gene in Open Targets 25.09 (existence only).",
+               absence_means: absent, applies_to: entity}
+    sentinels:
+      present: [{key: {id: ENSG00000169174}, expect: {approvedSymbol: PCSK9, nonempty: [pathways, go]}}]
+      absent:  [{key: {id: ENSG00000000000}}]
+    columns:
+      id:              {role: identifier, id_type: ensembl_gene, self: true}
+      approvedSymbol:  {role: label, of: id, id_type: hgnc_symbol, unique: false}
+      approvedName:    {role: label, of: id}
+      biotype:         {role: category, vocab: data}
+      symbolSynonyms:  {role: synonym, of: id, synonym_kind: alias,    path: "[].label"}
+      obsoleteSymbols: {role: synonym, of: id, synonym_kind: previous, path: "[].label"}
+      nameSynonyms:    {role: synonym, of: id, synonym_kind: related,  path: "[].label"}
+      obsoleteNames:   {role: synonym, of: id, synonym_kind: obsolete, path: "[].label"}
+      synonyms:        {role: synonym, of: id, synonym_kind: alias,    path: "[].label"}
+      functionDescriptions: {role: text, path: "[]"}
+      genomicLocation:
+        role: nested
+        fields:
+          chromosome: {role: position, part: chrom, build: GRCh38, chrom_style: bare}
+          start:      {role: position, part: start}
+          end:        {role: position, part: end}
+          strand:     {role: qualifier, effect: direction}
+      tractability:
+        role: nested
+        item_key: [modality, id]
+        null_means: not_assessed
+        empty_means: not_assessed
+        grain: one tractability bucket of one modality
+        fields:
+          modality: {role: category, vocab: [SM, AB, PR, OC], scope: {kind: stratum, pooling: group}}
+          id:       {role: category, vocab: data}
+          value:    {role: flag, missing: unknown, true_means: "bucket criterion met", partition_items: true}
+      pathways:
+        role: member
+        item_key: [pathwayId, topLevelTerm]       # a pathway can sit under two top-level terms (SCHEMA-DEPENDENT)
+        membership: {set: {path: "pathwayId", id_type: reactome_pathway}, member: {parent: id},
+                     propagation: mixed, propagate_via: {id_type: reactome_pathway, relation: ancestor}}
+        coverage: {statement: "Lowest-level Reactome annotations (some items also list an ancestor). A gene missing from a pathway is unannotated there, not shown to be outside it.",
+                   absence_means: unknown}
+        rank: [{column: pathwayId, direction: asc}]
+        fields:
+          pathwayId:    {role: identifier, id_type: reactome_pathway, ref: reactome.id, integrity: partial}
+          pathway:      {role: label, of: pathwayId}
+          topLevelTerm: {role: category, vocab: data, projection_of: reactome_pathway, lossy: true}
+      go:
+        role: member
+        item_key: {columns: [id, aspect, evidence, source, geneProduct], check: sampled}
+        membership: {set: {path: id, id_type: go_term}, member: {parent: id}, propagation: direct,
+                     count_grain: go_membership}
+        coverage: {statement: "Direct GO annotations (all evidence codes incl. IEA), not propagated to ancestor terms. A missing annotation is not evidence the gene lacks the function.",
+                   absence_means: unknown}
+        rank: [{column: id, direction: asc}]
+        fields:
+          id:          {role: identifier, id_type: go_term, ref: go.id, integrity: partial}
+          aspect:      {role: category, vocab: [C, F, P], verified: false,
+                        aliases: {cellular_component: C, molecular_function: F, biological_process: P},
+                        values: {C: cellular component, F: molecular function, P: biological process},
+                        scope: {kind: stratum, pooling: group, determined_by: [id]}}
+          evidence:    {role: qualifier, effect: evidence_code}
+          source:      {role: reference, ref_kinds: [pmid, url]}
+          geneProduct: {role: identifier, id_type: uniprot_accession}
+          ecoId:       {role: payload}
+      homologues:
+        role: nested
+        item_key: [speciesId, targetGeneId, homologyType]
+        grain: one homologue of the gene in one species
+        fields:
+          speciesId:   {role: identifier, id_type: ncbi_taxon, verified: false}   # str vs int: SCHEMA-DEPENDENT
+          speciesName: {role: category, vocab: data, match: casefold}
+          targetGeneId: {role: identifier, id_type: ensembl_gene_any}
+          targetGeneSymbol: {role: label, of: targetGeneId}
+          homologyType: {role: category, vocab: data}
+          queryPercentageIdentity:  {role: measure, statistic: percent, scale: [0, 100], missing: unknown}
+          targetPercentageIdentity: {role: measure, statistic: percent, scale: [0, 100], missing: unknown}
+          isHighConfidence: {role: flag, encoding: {"1": true, "0": false}, missing: unknown, verified: false}
+          priority: {role: measure, statistic: ordinal, missing: unknown}
+      chemicalProbes:
+        role: nested
+        item_key: [id, origin]
+        null_means: unknown
+        empty_means: absent
+        coverage: {statement: "Probes listed by Probes & Drugs as integrated in OT 25.09; an empty list means none listed, not proof that no probe exists.",
+                   absence_means: absent, verified: false}   # confirmed at readiness from null vs empty list counts
+        fields:
+          id:            {role: identifier, id_type: chemical_probe}
+          origin:        {role: category, vocab: data, path: "[]"}
+          isHighQuality: {role: flag, missing: unknown}
+          mechanismOfAction: {role: text, path: "[]"}
+          probesDrugsScore:  {role: measure, statistic: score_0_100, missing: unknown}
+          probeMinerScore:   {role: measure, statistic: score_0_100, missing: unknown}
+          scoreInCells:      {role: measure, statistic: score_0_100, missing: unknown}
+          scoreInOrganisms:  {role: measure, statistic: score_0_100, missing: unknown}
+          control: {role: payload}
+          drugId:  {role: identifier, id_type: chembl_molecule, ref: drug_molecule.id, integrity: partial}
+          targetFromSourceId: {role: payload}
+          urls: {role: payload}
+      safetyLiabilities:
+        role: nested
+        item_key: [event, eventId, datasource]
+        coverage: {statement: "Curated target safety liabilities; an empty list means none curated, not that the target is safe.",
+                   absence_means: unknown}
+        fields:
+          event:      {role: label, of: eventId}
+          eventId:    {role: category, vocab: data}
+          datasource: {role: category, vocab: data}
+          effects:    {role: payload}
+          biosamples: {role: payload}
+          literature: {role: reference, ref_kinds: [pmid]}
+          url:        {role: reference, ref_kinds: [url]}
+          studies:    {role: payload}
+      hallmarks:
+        role: nested
+        null_means: not_assessed
+        coverage: {statement: "COSMIC cancer hallmark annotations; null means the gene is not annotated, not that it has no hallmark role.",
+                   absence_means: unknown}
+        fields:
+          attributes:
+            role: nested
+            item_key: {identity: position}
+            fields:
+              pmid:           {role: reference, ref_kinds: [pmid]}
+              description:    {role: text}
+              attribute_name: {role: category, vocab: data}
+          cancerHallmarks:
+            role: nested
+            item_key: {identity: position}
+            fields:
+              pmid:        {role: reference, ref_kinds: [pmid]}
+              description: {role: text}
+              impact:      {role: category, vocab: data}
+              label:       {role: category, vocab: data}
+      constraint:
+        role: nested
+        item_key: [constraintType]
+        fields:
+          constraintType: {role: category, vocab: [syn, mis, lof], verified: false}
+          score:    {role: measure, statistic: numeric, missing: unknown}
+          exp:      {role: measure, statistic: numeric, missing: unknown}
+          obs:      {role: count, counts: "observed variants of this type"}
+          oe:       {role: measure, statistic: numeric, missing: unknown}
+          oeLower:  {role: measure, statistic: numeric, of: oe, missing: unknown}
+          oeUpper:  {role: measure, statistic: numeric, of: oe, missing: unknown}
+          upperRank: {role: measure, statistic: ordinal, missing: unknown}
+          upperBin:  {role: measure, statistic: ordinal, missing: unknown}
+          upperBin6: {role: measure, statistic: ordinal, missing: unknown}
+      tep:
+        role: nested
+        fields:
+          targetFromSourceId: {role: payload}
+          description:     {role: text}
+          therapeuticArea: {role: category, vocab: data}
+          url:             {role: reference, ref_kinds: [url]}
+      subcellularLocations:
+        role: nested
+        item_key: [location, source]
+        fields:
+          location: {role: category, vocab: data}
+          source:   {role: category, vocab: data}
+          termSL:   {role: category, vocab: data}
+          labelSL:  {role: label, of: termSL}
+      targetClass:
+        role: nested
+        item_key: [id, level]
+        fields:
+          id:    {role: category, vocab: data}
+          label: {role: label, of: id}
+          level: {role: category, vocab: data}
+      proteinIds:  {role: nested, item_key: [id, source],
+                    fields: {id: {role: identifier, id_type: uniprot_accession}, source: {role: category, vocab: data}}}
+      dbXrefs:     {role: nested, item_key: [id, source],
+                    fields: {id: {role: payload}, source: {role: category, vocab: data}}}
+      transcriptIds: {role: payload}
+      canonicalTranscript: {role: payload}
+      canonicalExons: {role: payload}
+      alternativeGenes: {role: payload}
+      tss: {role: payload}
+
+  target_go:                                    # item table: rows of get_gene_ontology
+    kind: sets
+    items_of: {table: target, path: "go[]"}
+    grain: one direct GO annotation record of one gene
+    # composed key: (id, go[].id, go[].aspect, go[].evidence, go[].source, go[].geneProduct)
+    key: {columns: [], check: sampled}
+    grains: {go_membership: [id, "go[].id"], gene: [id], term: ["go[].id"]}
+    rank: [{column: "go[].id", direction: asc}]
+    coverage: {statement: "Direct GO annotations, not propagated.", absence_means: unknown}
+    sentinels: {present: [{key: {id: ENSG00000169174}, expect: {min_rows: 1}}]}
+
+  target_pathways:                              # item table: rows of get_gene_pathways
+    kind: sets
+    items_of: {table: target, path: "pathways[]"}
+    grain: one Reactome pathway annotation of one gene
+    key: {columns: [], check: sampled}
+    grains: {membership: [id, "pathways[].pathwayId"], gene: [id], pathway: ["pathways[].pathwayId"]}
+    rank: [{column: "pathways[].pathwayId", direction: asc}]
+    coverage: {statement: "Lowest-level Reactome annotations, not propagated to every ancestor; a gene missing from a pathway is unannotated there.",
+               absence_means: unknown}
+    sentinels: {present: [{key: {id: ENSG00000169174}, expect: {min_rows: 1}}]}
+
+  target_tractability:                          # item table: rows of get_target_tractability
+    kind: fact
+    items_of: {table: target, path: "tractability[]"}
+    grain: one tractability bucket of one modality for one gene
+    key: {columns: [], check: sampled}
+    coverage: {statement: "Open Targets tractability buckets; a gene with no buckets was not assessed.",
+               absence_means: unknown}
+
+  target_homologues:                            # item table: rows of get_homologues
+    kind: fact
+    items_of: {table: target, path: "homologues[]"}
+    grain: one homologue of one human gene in one species
+    key: {columns: [], check: sampled}
+    rank: [{column: "homologues[].queryPercentageIdentity", direction: desc, nulls: last}]
+    coverage: {statement: "Ensembl Compara homologues integrated by OT 25.09; a missing species means no homologue listed.",
+               absence_means: unknown}
+
+  target_chemical_probes:                       # item table: rows of get_chemical_probes
+    kind: fact
+    items_of: {table: target, path: "chemicalProbes[]"}
+    grain: one chemical probe of one target from one origin
+    key: {columns: [], check: sampled}
+    coverage: {statement: "Probes listed by Probes & Drugs as integrated in OT 25.09; covered for genes whose list is present (empty = none listed).",
+               absence_means: absent, verified: false}
+
+  target_prioritisation:
+    kind: entity_detail
+    path: target_prioritisation
+    grain: one gene's target-prioritisation factors
+    key: {columns: [targetId], check: full}
+    coverage: {statement: "Prioritisation factors for genes OT 25.09 scored; a null factor means not assessed, never 0.",
+               absence_means: unknown}
+    columns:
+      targetId:          {role: identifier, id_type: ensembl_gene, ref: target.id}
+      isInMembrane:      {role: measure, statistic: binary_factor, missing: unknown, verified: false}
+      isSecreted:        {role: measure, statistic: binary_factor, missing: unknown, verified: false}
+      hasPocket:         {role: measure, statistic: binary_factor, missing: unknown, verified: false}
+      hasLigand:         {role: measure, statistic: binary_factor, missing: unknown, verified: false}
+      hasSmallMoleculeBinder: {role: measure, statistic: binary_factor, missing: unknown, verified: false}
+      hasSafetyEvent:    {role: measure, statistic: signed_factor, scale: [-1, 0], missing: unknown,
+                          encoding: {-1: known_unfavourable, 0: none_recorded}, verified: false,
+                          description: "-1 = a safety event is recorded, 0 = none recorded, null = not assessed"}
+      geneticConstraint: {role: measure, statistic: signed_factor, scale: [-1, 1], direction: lower_is_stronger,
+                          missing: unknown, verified: false}   # lower = more constrained (LoF-intolerant)
+      paralogMaxIdentityPercentage: {role: measure, statistic: signed_factor, scale: [-1, 0], missing: unknown, verified: false}
+      mouseOrthologMaxIdentityPercentage: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown, verified: false}
+      isCancerDriverGene: {role: measure, statistic: binary_factor, missing: unknown, verified: false}
+      hasTEP:            {role: measure, statistic: binary_factor, missing: unknown, verified: false}
+      mouseKOScore:      {role: measure, statistic: signed_factor, scale: [-1, 0], missing: unknown, verified: false}
+      hasHighQualityChemicalProbes: {role: measure, statistic: binary_factor, missing: unknown, verified: false}
+      maxClinicalTrialPhase: {role: measure, statistic: clinical_phase, missing: unknown, verified: false}   # 0-1 here vs 0-4 in known_drug
+      tissueSpecificity: {role: measure, statistic: signed_factor, scale: [-1, 1], missing: unknown, verified: false}
+      tissueDistribution: {role: measure, statistic: signed_factor, scale: [-1, 1], missing: unknown, verified: false}
+
+  openfda_significant_adverse_target_reactions:
+    kind: fact
+    path: openfda_significant_adverse_target_reactions
+    grain: one FAERS adverse event significantly reported for drugs acting on one target
+    key: {columns: [targetId, event], check: full, verified: false}
+    rank: [{column: llr, direction: desc, nulls: last}, {column: event, direction: asc}]
+    coverage: {statement: "openFDA FAERS events with llr above the critical value for drugs on this target; absence means not significant or not reported, not safe.",
+               absence_means: unknown}
+    columns:
+      targetId:   {role: identifier, id_type: ensembl_gene, ref: target.id}
+      event:      {role: category, vocab: data, match: casefold}
+      meddraCode: {role: category, vocab: data}
+      count:      {role: count, counts: "FAERS reports of the event"}
+      llr:        {role: measure, statistic: llr_critval, comparable_within: [targetId], missing: unknown}
+      critval:    {role: measure, statistic: numeric, missing: unknown}
+
+  openfda_significant_adverse_drug_reactions:
+    kind: fact
+    path: openfda_significant_adverse_drug_reactions
+    grain: one FAERS adverse event significantly reported for one drug
+    key: {columns: [chembl_id, event], check: full, verified: false}
+    rank: [{column: llr, direction: desc, nulls: last}, {column: event, direction: asc}]
+    coverage: {statement: "openFDA FAERS events with llr above the drug's critical value; absence means not significant or not reported.",
+               absence_means: unknown}
+    columns:
+      chembl_id:  {role: identifier, id_type: chembl_molecule, ref: drug_molecule.id, integrity: partial}
+      event:      {role: category, vocab: data, match: casefold}
+      meddraCode: {role: category, vocab: data}
+      count:      {role: count, counts: "FAERS reports of the event"}
+      llr:        {role: measure, statistic: llr_critval, comparable_within: [chembl_id], missing: unknown}
+      critval:    {role: measure, statistic: numeric, missing: unknown}
+
+  mouse_phenotype:
+    kind: fact
+    path: mouse_phenotype
+    grain: one mouse phenotype observed in models of one mouse orthologue of one human gene
+    key: {columns: [targetFromSourceId, targetInModelEnsemblId, modelPhenotypeId], nullable: [targetInModelEnsemblId],
+          check: sampled, verified: false}
+    rank: [{column: modelPhenotypeId, direction: asc}]
+    coverage: {statement: "IMPC/MGI mouse phenotypes of orthologues of the human gene; absence means no phenotype curated.",
+               absence_means: unknown}
+    columns:
+      targetFromSourceId:     {role: identifier, id_type: ensembl_gene, ref: target.id, integrity: partial}
+      targetInModel:          {role: label, of: targetInModelEnsemblId}
+      targetInModelEnsemblId: {role: identifier, id_type: ensembl_gene_mouse}
+      targetInModelMgiId:     {role: payload}
+      modelPhenotypeId:       {role: category, vocab: data}
+      modelPhenotypeLabel:    {role: label, of: modelPhenotypeId}
+      modelPhenotypeClasses:  {role: nested, item_key: [id], fields: {id: {role: category, vocab: data},
+                                                                     label: {role: label, of: id}}}
+      biologicalModels:       {role: payload}
+
+  pharmacogenomics:
+    kind: fact
+    path: pharmacogenomics
+    grain: one PharmGKB variant or haplotype annotation linking a genotype to a drug response
+    # genotype- and haplotype-level rows: one of genotypeId/haplotypeId is null; the key is a grouping
+    # key and rows are identified by content (verified: false until R5b samples it).
+    key: {columns: [targetFromSourceId, variantRsId, genotypeId, haplotypeId, phenotypeText],
+          nullable: [variantRsId, genotypeId, haplotypeId], row_identity: content_hash, check: sampled, verified: false}
+    grains: {drug: ["drugs[].drugId"], variant: [variantRsId]}
+    rank: [{column: evidenceLevel, direction: asc, nulls: last, statistic: ordinal}, {column: variantRsId, direction: asc}]
+    coverage: {statement: "PharmGKB clinical annotations integrated by OT 25.09; absence means none curated.",
+               absence_means: unknown}
+    columns:
+      targetFromSourceId: {role: identifier, id_type: ensembl_gene, ref: target.id, integrity: partial}
+      variantRsId:   {role: identifier, id_type: rsid}
+      variantId:     {role: identifier, id_type: ot_variant}
+      genotypeId:    {role: category, vocab: data}
+      haplotypeId:   {role: category, vocab: data}
+      haplotypeFromSourceId: {role: payload}
+      genotype:      {role: category, vocab: data}
+      genotypeAnnotationText: {role: text}
+      evidenceLevel: {role: measure, statistic: ordinal, levels: ["1A", "1B", "2A", "2B", "3", "4"], stored_as: string,
+                      direction: lower_is_stronger, missing: unknown}
+      directionality: {role: category, vocab: data}
+      pgxCategory:   {role: category, vocab: data}
+      phenotypeText: {role: category, vocab: data}
+      phenotypeFromSourceId: {role: payload}
+      variantFunctionalConsequenceId: {role: payload}
+      variantAnnotation: {role: payload}
+      isDirectTarget: {role: flag, missing: unknown}
+      studyId:       {role: payload}
+      literature:    {role: reference, ref_kinds: [pmid], path: "[]"}
+      datasourceId:  {role: category, vocab: data}
+      datasourceVersion: {role: payload}
+      datatypeId:    {role: category, vocab: data}
+      drugs:
+        role: nested
+        item_key: [drugFromSource]
+        fields:
+          drugId:         {role: identifier, id_type: chembl_molecule, ref: drug_molecule.id, integrity: partial}
+          drugFromSource: {role: label, of: drugId}
+
+  # -------------------------------------------------------------------- drugs
+  drug_molecule:
+    kind: entity
+    path: drug_molecule
+    grain: one ChEMBL molecule (a parent compound or one of its salt forms)
+    key: {columns: [id], check: full}
+    alternate_keys: [{columns: [inchiKey], nullable: [inchiKey], check: full}]
+    grains: {molecule: [id], parent_molecule: {columns: [id], canonicalize: chembl_molecule.parent}}
+    coverage: {statement: "ChEMBL molecules integrated by OT 25.09 (existence only).", absence_means: absent,
+               applies_to: entity}
+    sentinels:
+      present: [{key: {id: CHEMBL25}}]
+      absent:  [{key: {id: CHEMBL0}}]
+    columns:
+      id:       {role: identifier, id_type: chembl_molecule, self: true}
+      parentId: {role: identifier, id_type: chembl_molecule, ref: drug_molecule.id, integrity: partial}   # 31 parents absent
+      inchiKey: {role: identifier, id_type: inchikey, alternate_key: true}
+      canonicalSmiles: {role: payload}
+      name:     {role: label, of: id, unique: false, placeholder_when: equals_key}   # 5,625 names equal their own ID
+      synonyms: {role: synonym, of: id, synonym_kind: alias, path: "[]"}
+      tradeNames: {role: synonym, of: id, synonym_kind: alias, path: "[]"}
+      drugType: {role: category, vocab: data, placeholders: [Unknown]}
+      description: {role: text}
+      blackBoxWarning: {role: flag, missing: unknown}
+      hasBeenWithdrawn: {role: flag, missing: unknown}
+      isApproved: {role: flag, missing: unknown}
+      yearOfFirstApproval: {role: time, precision: year, missing: unknown}
+      maximumClinicalTrialPhase: {role: measure, statistic: clinical_phase, scale: [0, 4], missing_values: [-1],
+                                  encoding: {0.5: early_phase_1, 4: approved}, missing: unknown, verified: false}
+      childChemblIds: {role: identifier, id_type: chembl_molecule, ref: drug_molecule.id, integrity: partial, path: "[]",
+                       cardinality: many}
+      crossReferences: {role: nested, item_key: [source], fields: {
+                          source: {role: category, vocab: data},
+                          ids: {role: payload}}}
+      linkedTargets: {role: nested, fields: {
+                          rows: {role: member, membership: {set: {parent: id}, member: {path: "[]", id_type: ensembl_gene}},
+                                 ref: target.id},
+                          count: {role: count, counts: "linked targets", length_of: rows}}}
+      linkedDiseases: {role: nested, fields: {
+                          rows: {role: member, membership: {set: {parent: id}, member: {path: "[]", id_type: ot_disease}},
+                                 ref: disease.id},
+                          count: {role: count, counts: "linked diseases", length_of: rows}}}
+
+  drug_indication:
+    kind: entity_detail
+    path: drug_indication
+    grain: the indications of one ChEMBL molecule
+    key: {columns: [id], check: full}
+    coverage: {statement: "ChEMBL drug indications integrated by OT 25.09; absence means none curated.",
+               absence_means: unknown}
+    columns:
+      id: {role: identifier, id_type: chembl_molecule, ref: drug_molecule.id, integrity: partial}
+      indications:
+        role: nested
+        item_key: [disease]
+        grain: one indication of one drug
+        fields:
+          disease: {role: identifier, id_type: ot_disease, ref: disease.id, integrity: partial}
+          efoName: {role: label, of: disease}
+          maxPhaseForIndication: {role: measure, statistic: clinical_phase, scale: [0, 4], missing: unknown, verified: false}
+          references: {role: payload}
+      approvedIndications: {role: identifier, id_type: ot_disease, path: "[]", cardinality: many}
+      indicationCount: {role: count, counts: "indications of the drug", length_of: indications}
+
+  drug_indications:                             # item table: rows of get_drug_indications
+    kind: fact
+    items_of: {table: drug_indication, path: "indications[]"}
+    grain: one indication (disease) of one drug with its maximum phase
+    key: {columns: [], check: sampled}
+    rank: [{column: "indications[].maxPhaseForIndication", direction: desc, nulls: last},
+           {column: "indications[].disease", direction: asc}]
+    coverage: {statement: "ChEMBL drug indications; absence means none curated.", absence_means: unknown}
+
+  drug_warning:
+    kind: fact
+    path: drug_warning
+    grain: one ChEMBL drug warning (withdrawal or black box) for one or more molecules
+    key: {columns: [id], check: full, verified: false}
+    rank: [{column: year, direction: desc, nulls: last}, {column: id, direction: asc}]
+    coverage: {statement: "ChEMBL drug warnings; absence means no warning curated, not that the drug is safe.",
+               absence_means: unknown}
+    columns:
+      id:            {role: identifier}
+      chemblIds:     {role: identifier, id_type: chembl_molecule, path: "[]", cardinality: many}
+      toxicityClass: {role: category, vocab: data}
+      country:       {role: category, vocab: data}
+      description:   {role: text}
+      warningType:   {role: category, vocab: data}
+      year:          {role: time, precision: year, missing: unknown}
+      efo_term:      {role: label, of: efo_id}
+      efo_id:        {role: identifier, id_type: ot_disease, integrity: partial}
+      efo_id_for_warning_class: {role: identifier, id_type: ot_disease, integrity: partial}
+      references:    {role: payload}
+
+  drug_mechanism_of_action:
+    kind: fact
+    path: drug_mechanism_of_action
+    grain: one mechanism of action (action on one target) shared by one or more molecules
+    key: {columns: [mechanismOfAction, actionType, targetName], nullable: [actionType, targetName],
+          row_identity: content_hash, check: sampled, verified: false}
+    coverage: {statement: "ChEMBL mechanisms of action; absence means none curated.", absence_means: unknown}
+    columns:
+      mechanismOfAction: {role: category, vocab: data, match: casefold}
+      actionType:  {role: category, vocab: data}
+      chemblIds:   {role: identifier, id_type: chembl_molecule, path: "[]", cardinality: many}
+      targetName:  {role: category, vocab: data}
+      targetType:  {role: category, vocab: data}
+      targets:     {role: identifier, id_type: ensembl_gene, path: "[]", cardinality: many, integrity: partial}
+      references:  {role: payload}
+
+  known_drug:
+    kind: fact
+    path: known_drug
+    grain: one (drug, target, disease) clinical-precedence record per phase and trial status
+    key: {columns: [drugId, targetId, diseaseId, phase, status], nullable: [phase, status], check: full}
+    # unique with NULLS NOT DISTINCT on the real 126,689-row 25.09 file (VERIFIED); up to 21 rows per triple
+    grains:
+      drug: [drugId]
+      parent_drug: {columns: [drugId], canonicalize: chembl_molecule.parent}
+      indication: [drugId, diseaseId]
+      triple: [drugId, targetId, diseaseId]
+    rank: [{column: phase, direction: desc, nulls: last}, {column: drugId, direction: asc}]
+    coverage: {statement: "ChEMBL-curated drug-target-indication precedence only; absence means 'no curated drug', not 'undruggable'.",
+               absence_means: unknown}
+    sentinels: {present: [{key: {drugId: CHEMBL3990033, targetId: ENSG00000169174, diseaseId: EFO_0000319, phase: 3.0, status: null}}]}
+    columns:
+      drugId:    {role: identifier, id_type: chembl_molecule, ref: drug_molecule.id, form: as_stored}
+      targetId:  {role: identifier, id_type: ensembl_gene, ref: target.id}
+      diseaseId: {role: identifier, id_type: ot_disease, ref: disease.id}
+      ancestors: {role: hierarchy, relation: ancestor, of: diseaseId, closure: transitive, reflexive: false, verified: false}
+      phase:     {role: measure, statistic: clinical_phase, scale: [0, 4], missing: unknown, verified: false}
+      status:    {role: category, vocab: data}
+      urls:      {role: nested, item_key: [url], fields: {niceName: {role: category, vocab: data},
+                                                         url: {role: reference, ref_kinds: [url]}}}
+      prefName:  {role: label, of: drugId}
+      tradeNames: {role: synonym, of: drugId, synonym_kind: alias, path: "[]"}
+      synonyms:  {role: synonym, of: drugId, synonym_kind: alias, path: "[]"}
+      drugType:  {role: category, vocab: data, placeholders: [Unknown]}
+      mechanismOfAction: {role: text}
+      approvedSymbol: {role: label, of: targetId}
+      approvedName: {role: label, of: targetId}
+      targetName: {role: label, of: targetId}
+      label:     {role: label, of: diseaseId}
+      targetClass: {role: payload}
+      ctIds:     {role: reference, ref_kinds: [nct_id], optional: true}   # declared in 25.06 docs, absent from the 25.09 file
+
+  # -------------------------------------------------------------------- diseases
+  disease:
+    kind: ontology
+    path: disease
+    grain: one ontology term used by Open Targets as a disease, phenotype, measurement or process
+    key: {columns: [id], check: full}
+    coverage: {statement: "Disease, phenotype and measurement terms of OT 25.09 (EFO/MONDO and imported ontologies).",
+               absence_means: absent, applies_to: entity}
+    sentinels:
+      present: [{key: {id: MONDO_0005148}}]
+      absent:  [{key: {id: EFO_0000000}}]
+    constraints:
+      - {column: ontology.leaf, op: equals_expr, expr: "len(children) == 0", verified: false, on_refute: drop_field,
+         origin: "false for all 39,530 terms while 31,635 have no children (Zenodo 22259123)"}
+    columns:
+      id:            {role: identifier, id_type: ot_disease, self: true}
+      code:          {role: reference, ref_kinds: [url]}
+      name:          {role: label, of: id, unique: false}
+      description:   {role: text}
+      obsoleteTerms: {role: identifier, id_type: ot_disease, retired_into: id, path: "[]"}   # 4,880 retired IDs
+      obsoleteXRefs: {role: payload}
+      dbXRefs:       {role: identifier, xref: true, id_type_from: prefix, cardinality: many, path: "[]"}
+      synonyms:      {role: nested, fields: {hasExactSynonym: {role: synonym, of: /id, synonym_kind: exact, path: "[]"},
+                                             hasRelatedSynonym: {role: synonym, of: /id, synonym_kind: related, path: "[]"},
+                                             hasNarrowSynonym: {role: synonym, of: /id, synonym_kind: narrow, path: "[]"},
+                                             hasBroadSynonym: {role: synonym, of: /id, synonym_kind: broad, path: "[]"}}}
+      parents:       {role: hierarchy, relation: parent, of: id, closure: direct, inverse_of: children}
+      children:      {role: hierarchy, relation: child, of: id, closure: direct, inverse_of: parents}
+      ancestors:     {role: hierarchy, relation: ancestor, of: id, closure: transitive, closure_of: parents, reflexive: false,
+                      verified: false}
+      descendants:   {role: hierarchy, relation: descendant, of: id, closure: transitive, closure_of: children, reflexive: false,
+                      verified: false}
+      therapeuticAreas: {role: identifier, id_type: ot_disease, ref: disease.id, path: "[]", cardinality: many}
+      directLocationIds: {role: payload}
+      indirectLocationIds: {role: payload}
+      ontology:      {role: nested, fields: {isTherapeuticArea: {role: flag, missing: unknown},
+                                             leaf: {role: flag, missing: unknown, verified: false},
+                                             name: {role: payload},
+                                             sources: {role: payload}}}
+
+  disease_phenotype:
+    kind: fact
+    path: disease_phenotype
+    grain: one (disease, HPO phenotype) association with its evidence records
+    key: {columns: [disease, phenotype], check: full}
+    rank: [{column: disease, direction: asc}]
+    coverage: {statement: "HPO disease-phenotype annotations integrated by OT 25.09; negated (NOT) evidence is a negative finding, not support.",
+               absence_means: unknown}
+    columns:
+      disease:   {role: identifier, id_type: ot_disease, ref: disease.id, integrity: partial}
+      phenotype: {role: identifier, id_type: hpo, ref: disease_hpo.id, integrity: partial}
+      evidence:
+        role: nested
+        item_key: {identity: position}
+        null_means: unknown
+        grain: one evidence record of one disease-phenotype pair
+        fields:
+          aspect:              {role: category, vocab: data}
+          bioCuration:         {role: payload}
+          diseaseFromSource:   {role: label, of: /disease}
+          diseaseFromSourceId: {role: payload}
+          diseaseName:         {role: label, of: /disease}
+          evidenceType:        {role: category, vocab: data,
+                                values: {IEA: inferred from electronic annotation, PCS: published clinical study,
+                                         TAS: traceable author statement, ICE: individual clinical experience}}
+          frequency:           {role: category, vocab: data}
+          modifiers:           {role: payload}
+          onset:               {role: payload}
+          qualifier:           {role: category, vocab: data}
+          qualifierNot:        {role: qualifier, effect: negate, default_filter: true}
+          references:          {role: reference, ref_kinds: [pmid, url], path: "[]"}
+          sex:                 {role: category, vocab: data}
+          resource:            {role: category, vocab: data}
+
+  disease_phenotype_evidence:                   # item table: evidence rows of the phenotype tools
+    kind: fact
+    items_of: {table: disease_phenotype, path: "evidence[]"}
+    grain: one evidence record of one disease-phenotype pair
+    key: {columns: [], check: none}
+    grains: {disease: [disease], pair: [disease, phenotype]}
+    coverage: {statement: "HPO annotation evidence; negated records are counted separately and never support the pair.",
+               absence_means: unknown}
+
+  disease_hpo:
+    kind: ontology
+    path: disease_hpo
+    grain: one HPO phenotype term
+    key: {columns: [id], check: full}
+    coverage: {statement: "HPO terms integrated by OT 25.09 (existence only).", absence_means: absent, applies_to: entity}
+    columns:
+      id:            {role: identifier, id_type: hpo, self: true}
+      code:          {role: reference, ref_kinds: [url]}
+      name:          {role: label, of: id}
+      description:   {role: text}
+      dbXRefs:       {role: payload}
+      namespace:     {role: payload}
+      obsoleteTerms: {role: identifier, id_type: hpo, retired_into: id, path: "[]"}
+      parents:       {role: hierarchy, relation: parent, of: id, closure: direct, optional: true}
+
+  # -------------------------------------------------------------------- associations
+  association_overall_direct:
+    kind: fact
+    path: association_overall_direct
+    grain: one direct target-disease association score over all evidence
+    key: {columns: [diseaseId, targetId], check: full}
+    grains: {target: [targetId], disease: [diseaseId]}
+    rank: [{column: score, direction: desc, nulls: last}, {column: targetId, direction: asc}, {column: diseaseId, direction: asc}]
+    coverage: {statement: "Direct OT 25.09 associations (evidence on the disease itself); absence means no evidence, not a negative finding.",
+               absence_means: unknown}
+    columns:
+      diseaseId:     {role: identifier, id_type: ot_disease, ref: disease.id}
+      targetId:      {role: identifier, id_type: ensembl_gene, ref: target.id}
+      score:         {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown}
+      evidenceCount: {role: count, counts: "evidence strings behind the association"}
+
+  association_by_overall_indirect:
+    kind: fact
+    path: association_by_overall_indirect
+    grain: one indirect target-disease association score (evidence propagated from descendant diseases)
+    key: {columns: [diseaseId, targetId], check: full}
+    grains: {target: [targetId], disease: [diseaseId]}
+    rank: [{column: score, direction: desc, nulls: last}, {column: targetId, direction: asc}, {column: diseaseId, direction: asc}]
+    coverage: {statement: "Indirect OT 25.09 associations (evidence propagated up the ontology); absence means no evidence.",
+               absence_means: unknown}
+    columns:
+      diseaseId:     {role: identifier, id_type: ot_disease, ref: disease.id}
+      targetId:      {role: identifier, id_type: ensembl_gene, ref: target.id}
+      score:         {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown}
+      evidenceCount: {role: count, counts: "evidence strings behind the association"}
+
+  association_by_datatype_direct:
+    kind: fact
+    path: association_by_datatype_direct
+    grain: one direct target-disease association score within one data type
+    key: {columns: [diseaseId, targetId, datatypeId], check: full}
+    rank: [{column: score, direction: desc, nulls: last, within: [datatypeId]}, {column: targetId, direction: asc}]
+    coverage: {statement: "Direct OT 25.09 associations per data type; scores are comparable only within one data type.",
+               absence_means: unknown}
+    columns:
+      diseaseId:     {role: identifier, id_type: ot_disease, ref: disease.id}
+      targetId:      {role: identifier, id_type: ensembl_gene, ref: target.id}
+      datatypeId:    {role: category, vocab: data, scope: {kind: stratum, pooling: forbid, pool_ok_for: [exists, count, distinct]}}
+      score:         {role: measure, statistic: score_0_1, scale: [0, 1], comparable_within: [datatypeId], missing: unknown}
+      evidenceCount: {role: count, counts: "evidence strings of this data type", comparable_within: [datatypeId]}
+
+  association_by_datatype_indirect:
+    kind: fact
+    path: association_by_datatype_indirect
+    grain: one indirect target-disease association score within one data type
+    key: {columns: [diseaseId, targetId, datatypeId], check: full}
+    rank: [{column: score, direction: desc, nulls: last, within: [datatypeId]}, {column: targetId, direction: asc}]
+    coverage: {statement: "Indirect OT 25.09 associations per data type; scores are comparable only within one data type.",
+               absence_means: unknown}
+    columns:
+      diseaseId:     {role: identifier, id_type: ot_disease, ref: disease.id}
+      targetId:      {role: identifier, id_type: ensembl_gene, ref: target.id}
+      datatypeId:    {role: category, vocab: data, scope: {kind: stratum, pooling: forbid, pool_ok_for: [exists, count, distinct]}}
+      score:         {role: measure, statistic: score_0_1, scale: [0, 1], comparable_within: [datatypeId], missing: unknown}
+      evidenceCount: {role: count, counts: "evidence strings of this data type", comparable_within: [datatypeId]}
+
+  association_by_datasource_direct:
+    kind: fact
+    path: association_by_datasource_direct
+    grain: one direct target-disease association score within one data source
+    key: {columns: [diseaseId, targetId, datasourceId], check: full}
+    rank: [{column: score, direction: desc, nulls: last, within: [datasourceId]}, {column: targetId, direction: asc}]
+    coverage: {statement: "Direct OT 25.09 associations per data source; scores are comparable only within one data source.",
+               absence_means: unknown}
+    columns:
+      diseaseId:     {role: identifier, id_type: ot_disease, ref: disease.id}
+      targetId:      {role: identifier, id_type: ensembl_gene, ref: target.id}
+      datasourceId:  {role: category, vocab: data, scope: {kind: stratum, pooling: forbid, pool_ok_for: [exists, count, distinct]}}
+      datatypeId:    {role: category, vocab: data, scope: {kind: stratum, pooling: group, determined_by: [datasourceId]}}
+      score:         {role: measure, statistic: score_0_1, scale: [0, 1], comparable_within: [datasourceId], missing: unknown}
+      evidenceCount: {role: count, counts: "evidence strings of this data source", comparable_within: [datasourceId]}
+
+  association_by_datasource_indirect:
+    kind: fact
+    path: association_by_datasource_indirect
+    grain: one indirect target-disease association score within one data source
+    key: {columns: [diseaseId, targetId, datasourceId], check: full}
+    rank: [{column: score, direction: desc, nulls: last, within: [datasourceId]}, {column: targetId, direction: asc}]
+    coverage: {statement: "Indirect OT 25.09 associations per data source; scores are comparable only within one data source.",
+               absence_means: unknown}
+    columns:
+      diseaseId:     {role: identifier, id_type: ot_disease, ref: disease.id}
+      targetId:      {role: identifier, id_type: ensembl_gene, ref: target.id}
+      datasourceId:  {role: category, vocab: data, scope: {kind: stratum, pooling: forbid, pool_ok_for: [exists, count, distinct]}}
+      datatypeId:    {role: category, vocab: data, scope: {kind: stratum, pooling: group, determined_by: [datasourceId]}}
+      score:         {role: measure, statistic: score_0_1, scale: [0, 1], comparable_within: [datasourceId], missing: unknown}
+      evidenceCount: {role: count, counts: "evidence strings of this data source", comparable_within: [datasourceId]}
+
+  # S6: hive evidence with partition checks, mirrored partition column and partition-specific facets
+  evidence:
+    kind: fact
+    path: evidence
+    layout: hive
+    size_class: huge
+    grain: one evidence string, i.e. one target-disease assertion from one data source
+    key: {columns: [sourceId, id], check: sampled}
+    rank: [{column: score, direction: desc, nulls: last, within: [sourceId]}, {column: id, direction: asc}]
+    coverage: {statement: "Evidence strings of the 23 OT 25.09 data sources; absence means no evidence in these sources, not a negative finding.",
+               absence_means: unknown}
+    partitions:
+      sourceId: {column: {role: category, vocab: [cancer_biomarkers, cancer_gene_census, chembl, clingen, crispr, crispr_screen,
+                          europepmc, eva, eva_somatic, expression_atlas, gene2phenotype, gene_burden, genomics_england,
+                          gwas_credible_sets, impc, intogen, orphanet, progeny, reactome, slapenrich, sysbio,
+                          uniprot_literature, uniprot_variants],
+                          scope: {kind: partition, pooling: group, pool_ok_for: [exists, count, distinct]}},
+                 type: string, expect: declared, mirrored_by: [datasourceId]}
+    access_paths:
+      - {columns: [sourceId], via: partition}
+      - {columns: [targetId], via: sidecar_index, build: readiness}       # europepmc shards span every targetId
+      - {columns: [diseaseId], via: sidecar_index, build: readiness}
+      - {columns: ["literature[]"], via: sidecar_index, build: on_demand}
+    columns:
+      id:           {role: identifier, id_type: ot_evidence, self: true}
+      datasourceId: {role: category, vocab: data, equals: sourceId}
+      datatypeId:   {role: category, vocab: data, scope: {kind: stratum, pooling: group, determined_by: [sourceId]}}
+      targetId:     {role: identifier, id_type: ensembl_gene, ref: target.id}
+      diseaseId:    {role: identifier, id_type: ot_disease, ref: disease.id, integrity: partial}
+      targetFromSourceId: {role: identifier, resolvable: false,
+                           by_partition: {chembl: {id_type: uniprot_accession}, gwas_credible_sets: {id_type: ensembl_gene}}}
+      diseaseFromSource:  {role: payload}
+      diseaseFromSourceId: {role: payload}
+      diseaseFromSourceMappedId: {role: payload}
+      score:        {role: measure, statistic: score_0_1, scale: [0, 1], comparable_within: [sourceId], missing: unknown}
+      resourceScore: {role: measure, statistic: numeric, comparable_within: [sourceId], missing: unknown,
+                      by_partition: {gwas_credible_sets: {scale: [0, 1]}}}
+      clinicalPhase: {role: measure, statistic: clinical_phase, applies_when: {sourceId: [chembl]}, missing: unknown, verified: false}
+      publicationYear: {role: time, precision: year, missing: unknown,
+                        fallback: [{column: publicationDate, precision: day}]}   # gwas_credible_sets: year null, date set
+      publicationDate: {role: time, precision: day, stored_as: iso8601_string, missing: unknown}
+      literature:   {role: reference, ref_kinds: [pmid, europepmc_ppr], path: "[]"}
+      pmcIds:       {role: reference, ref_kinds: [pmcid], path: "[]"}
+      pValueMantissa: {role: measure, statistic: pvalue_mantissa_exponent, columns: {mantissa: pValueMantissa, exponent: pValueExponent}}
+      pValueExponent: {role: measure, statistic: numeric, part_of: pValueMantissa}
+      studyId:      {role: identifier, id_type: gwas_study, integrity: partial}
+      studyLocusId: {role: identifier, id_type: study_locus_id, integrity: partial}
+      variantId:    {role: identifier, id_type: ot_variant, integrity: partial}
+      variantRsId:  {role: identifier, id_type: rsid, integrity: partial}
+      drugId:       {role: identifier, id_type: chembl_molecule, integrity: partial}
+      mutatedSamples: {role: nested, item_key: [functionalConsequenceId], fields: {
+                         functionalConsequenceId: {role: category, vocab: data},
+                         numberMutatedSamples: {role: count, counts: samples, stored_as: float64},
+                         numberSamplesTested: {role: count, counts: "samples tested", stored_as: float64},
+                         numberSamplesWithMutationType: {role: count, counts: "samples with the mutation type"}}}
+      textMiningSentences: {role: payload}
+      urls:         {role: payload}
+
+  literature:
+    kind: fact
+    path: literature
+    size_class: huge
+    grain: one (publication, entity) co-mention from Europe PMC text mining
+    key: {columns: [pmid, keywordId], check: sampled, verified: false}
+    coverage: {statement: "Europe PMC text-mined entity mentions integrated by OT 25.09; absence means not text-mined, not that the paper is irrelevant.",
+               absence_means: unknown}
+    columns:
+      pmid:        {role: identifier, id_type: pmid}
+      pmcid:       {role: identifier, id_type: pmcid, resolvable: false}
+      date:        {role: time, precision: day, missing: unknown}
+      year:        {role: time, precision: year, missing: unknown}
+      month:       {role: payload}
+      day:         {role: payload}
+      keywordId:   {role: identifier, id_type: literature_word, integrity: partial}
+      keywordType: {role: category, vocab: [GP, DS, CD], values: {GP: gene or protein, DS: disease, CD: chemical or drug},
+                    verified: false}
+      relevance:   {role: measure, statistic: numeric, missing: unknown}
+
+  # S12: literature_vector with a multi-kind identifier and a vector relation
+  literature_vector:
+    kind: vectors
+    path: literature_vector
+    size_class: huge
+    grain: one word2vec embedding of one Open Targets entity ID learned from Europe PMC co-mentions
+    key: {columns: [word], check: full}
+    evidence_nature: {kind: literature_cooccurrence, caveat: "Similarity means co-mention in the literature, not function, mechanism or causality."}
+    coverage: {statement: "Entities with a literature embedding in OT 25.09; an entity without one was too rarely mentioned.",
+               absence_means: unknown}
+    constraints:
+      - {column: norm, op: ">", value: 0, origin: "cosine undefined at norm 0", on_refute: not_ready}
+      - {column: norm, op: equals_expr, expr: "l2(vector)", tolerance: 1.0e-6, origin: "platform-etl-backend Vectors.scala", verified: false}
+    columns:
+      word:     {role: identifier, id_type: literature_word, self: true,
+                 kind_from: {column: category, map: {target: ensembl_gene, drug: chembl_molecule}, otherwise: ot_disease}}
+      category: {role: category, vocab: [target, drug, disease],
+                 values: {disease: "any ID that is not ENSG or CHEMBL, including phenotypes and measurements"}}
+      norm:     {role: measure, statistic: numeric, missing: unknown}
+      vector:   {role: vector, dim: 100, metric: cosine, normalized: false, norm_column: norm, verified: false}
+
+  # -------------------------------------------------------------------- expression
+  expression:
+    kind: entity_detail
+    path: expression
+    grain: the baseline expression of one gene across tissues
+    key: {columns: [id], check: full}
+    coverage: {statement: "Baseline expression (Expression Atlas, HPA) integrated by OT 25.09; a missing tissue means not measured.",
+               absence_means: unknown}
+    columns:
+      id: {role: identifier, id_type: ensembl_gene, ref: target.id, integrity: partial}
+      tissues:
+        role: nested
+        item_key: [efo_code]
+        null_means: unknown
+        grain: one tissue's expression of one gene
+        coverage: {statement: "Tissues with a measurement for this gene; absence means not measured.", absence_means: unknown}
+        fields:
+          efo_code: {role: category, vocab: data, match: exact}
+          label:    {role: label, of: efo_code}
+          organs:   {role: category, vocab: data, path: "[]"}
+          anatomical_systems: {role: category, vocab: data, path: "[]"}
+          rna:
+            role: nested
+            fields:
+              value:  {role: measure, statistic: numeric, unit_from: unit, missing: unknown,
+                       unknown_when: [{column: unit, eq: ""}]}
+              zscore: {role: measure, statistic: numeric, missing: unknown}
+              level:  {role: measure, statistic: ordinal, missing_values: [-1], missing: unknown}
+              unit:   {role: category, vocab: data, placeholders: [""]}
+          protein:
+            role: nested
+            fields:
+              reliability: {role: flag, missing: unknown}
+              level:       {role: measure, statistic: ordinal, missing_values: [-1], missing: unknown}
+
+  expression_tissues:                           # item table: rows of the per-tissue expression tools
+    kind: fact
+    items_of: {table: expression, path: "tissues[]"}
+    grain: one tissue's baseline expression of one gene
+    key: {columns: [], check: sampled}
+    grains: {gene: [id], tissue: ["tissues[].efo_code"]}
+    rank: [{column: "tissues[].rna.value", direction: desc, nulls: last}, {column: id, direction: asc}]
+    coverage: {statement: "Tissues with a measurement for the gene; values of different units are not comparable.",
+               absence_means: unknown}
+
+  biosample:
+    kind: ontology
+    path: biosample
+    grain: one biosample ontology term (tissue, cell type or cell line)
+    key: {columns: [biosampleId], check: full}
+    coverage: {statement: "Biosample terms integrated by OT 25.09 (existence only).", absence_means: absent, applies_to: entity}
+    columns:
+      biosampleId:   {role: identifier, id_type: biosample, self: true}
+      biosampleName: {role: label, of: biosampleId}
+      description:   {role: text}
+      xrefs:         {role: payload}
+      synonyms:      {role: synonym, of: biosampleId, synonym_kind: related, path: "[]"}
+      parents:       {role: hierarchy, relation: parent, of: biosampleId, closure: direct}
+      ancestors:     {role: hierarchy, relation: ancestor, of: biosampleId, closure: transitive, verified: false}
+      children:      {role: hierarchy, relation: child, of: biosampleId, closure: direct}
+      descendants:   {role: hierarchy, relation: descendant, of: biosampleId, closure: transitive, verified: false}
+
+  # -------------------------------------------------------------------- functional genomics
+  target_essentiality:
+    kind: entity_detail
+    path: target_essentiality
+    size_class: large
+    grain: the DepMap essentiality of one gene across screened cell lines
+    key: {columns: [id], check: full}
+    coverage: {statement: "DepMap CRISPR essentiality of genes screened in cancer cell lines; a missing gene means not screened.",
+               absence_means: unknown}
+    columns:
+      id: {role: identifier, id_type: ensembl_gene, ref: target.id, integrity: partial}
+      geneEssentiality:
+        role: nested
+        item_key: {identity: position, max_items: 1}
+        fields:
+          isEssential: {role: flag, missing: unknown}
+          depMapEssentiality:
+            role: nested
+            item_key: [tissueId]
+            fields:
+              tissueId:   {role: category, vocab: data}
+              tissueName: {role: label, of: tissueId}
+              screens:
+                role: nested
+                item_key: [depmapId]
+                grain: one CRISPR screen of the gene in one cell line
+                fields:
+                  depmapId:     {role: identifier, id_type: depmap_cell_line}
+                  cellLineName: {role: label, of: depmapId}
+                  diseaseFromSource: {role: category, vocab: data, match: exact}
+                  diseaseCellLineId: {role: payload}
+                  expression:   {role: measure, statistic: numeric, missing: unknown}
+                  geneEffect:   {role: measure, statistic: numeric, direction: lower_is_stronger, missing: unknown,
+                                 cutoff: {value: -0.5, op: le, meaning: dependency, origin: "DepMap convention"}}
+                  mutation:     {role: payload}
+
+  target_essentiality_screens:                  # item table over three levels
+    kind: fact
+    items_of: {table: target_essentiality, path: "geneEssentiality[].depMapEssentiality[].screens[]"}
+    grain: one DepMap CRISPR screen result of one gene in one cell line (grouped by tissue)
+    key: {columns: [], check: sampled}          # composed: (id, depMapEssentiality[].tissueId, screens[].depmapId)
+    grains: {gene: [id], cell_line: ["geneEssentiality[].depMapEssentiality[].screens[].depmapId"]}
+    rank: [{column: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect", direction: asc, nulls: last}]
+    coverage: {statement: "DepMap CRISPR screens of cancer cell lines only; a missing gene or line means not screened.",
+               absence_means: unknown}
+
+  # -------------------------------------------------------------------- genetics
+  credible_set:
+    kind: fact
+    path: credible_set
+    size_class: huge
+    grain: one fine-mapped credible set (study locus) of one study
+    key: {columns: [studyLocusId], check: sampled}
+    rank: [{column: pValueMantissa, direction: asc, nulls: last, statistic: pvalue_mantissa_exponent}]
+    coverage: {statement: "Fine-mapped credible sets of OT 25.09 GWAS and molecular-QTL studies; absence means no credible set.",
+               absence_means: unknown}
+    columns:
+      studyLocusId: {role: identifier, id_type: study_locus_id, self: true}
+      studyId:      {role: identifier, id_type: gwas_study, ref: study.studyId, integrity: partial}
+      variantId:    {role: identifier, id_type: ot_variant, integrity: partial}
+      chromosome:   {role: position, part: chrom, build: GRCh38, chrom_style: bare}
+      position:     {role: position, part: pos}
+      beta:         {role: measure, statistic: numeric, direction: signed, missing: unknown}
+      pValueMantissa: {role: measure, statistic: pvalue_mantissa_exponent, columns: {mantissa: pValueMantissa, exponent: pValueExponent}}
+      pValueExponent: {role: measure, statistic: numeric, part_of: pValueMantissa}
+      studyType:    {role: category, vocab: data}
+      finemappingMethod: {role: category, vocab: data}
+      credibleSetIndex: {role: payload}
+      credibleSetlog10BF: {role: measure, statistic: numeric, direction: higher_is_stronger, missing: unknown}
+      locus:        {role: payload}
+
+  l2g_prediction:
+    kind: fact
+    path: l2g_prediction
+    grain: one locus-to-gene score of one gene at one credible set
+    key: {columns: [studyLocusId, geneId], check: full}
+    grains: {gene: [geneId], locus: [studyLocusId]}
+    rank: [{column: score, direction: desc, nulls: last}, {column: studyLocusId, direction: asc}, {column: geneId, direction: asc}]
+    coverage: {statement: "L2G predictions for credible sets of OT 25.09; absence means the gene was not scored at the locus.",
+               absence_means: unknown}
+    columns:
+      studyLocusId:  {role: identifier, id_type: study_locus_id, ref: credible_set.studyLocusId, integrity: partial}
+      geneId:        {role: identifier, id_type: ensembl_gene, ref: target.id}
+      score:         {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown}
+      features:      {role: nested, item_key: [name], fields: {name: {role: category, vocab: data},
+                                                             value: {role: measure, statistic: numeric, missing: unknown},
+                                                             shapValue: {role: measure, statistic: numeric, missing: unknown}}}
+      shapBaseValue: {role: measure, statistic: numeric, missing: unknown}
+
+  variant:
+    kind: entity
+    path: variant
+    size_class: huge
+    grain: one variant (chromosome, position, reference and alternate allele)
+    key: {columns: [variantId], check: sampled}
+    coverage: {statement: "Variants of OT 25.09 (existence only).", absence_means: absent, applies_to: entity}
+    columns:
+      variantId:       {role: identifier, id_type: ot_variant, self: true}
+      chromosome:      {role: position, part: chrom, build: GRCh38, chrom_style: bare}
+      position:        {role: position, part: pos}
+      referenceAllele: {role: payload}
+      alternateAllele: {role: payload}
+      rsIds:           {role: identifier, id_type: rsid, path: "[]", cardinality: many}   # one rsID can name several alleles
+      mostSevereConsequenceId: {role: category, vocab: data}
+      variantDescription: {role: text}
+
+  study:
+    kind: entity
+    path: study
+    grain: one GWAS or molecular-QTL study
+    key: {columns: [studyId], check: full}
+    rank: [{column: nSamples, direction: desc, nulls: last}, {column: studyId, direction: asc}]
+    coverage: {statement: "GWAS Catalog, FinnGen, UKB-PPP and QTL studies of OT 25.09 (existence only).",
+               absence_means: absent, applies_to: entity}
+    columns:
+      studyId:         {role: identifier, id_type: gwas_study, self: true}
+      geneId:          {role: identifier, id_type: ensembl_gene, ref: target.id, integrity: partial}
+      projectId:       {role: category, vocab: data}
+      studyType:       {role: category, vocab: data}
+      traitFromSource: {role: text, searchable: true}
+      traitFromSourceMappedIds: {role: identifier, id_type: ot_disease, path: "[]", cardinality: many, integrity: partial}
+      biosampleFromSourceId: {role: payload}
+      pubmedId:        {role: identifier, id_type: pmid, integrity: partial}
+      publicationTitle: {role: text}
+      publicationFirstAuthor: {role: payload}
+      publicationDate: {role: time, precision: day, stored_as: iso8601_string, missing: unknown}
+      publicationJournal: {role: payload}
+      backgroundTraitFromSourceMappedIds: {role: payload}
+      initialSampleSize: {role: text}
+      nCases:          {role: count, counts: "cases", missing: unknown}
+      nControls:       {role: count, counts: "controls", missing: unknown}
+      nSamples:        {role: count, counts: "samples", missing: unknown}
+      cohorts:         {role: payload}
+      ldPopulationStructure: {role: payload}
+      discoverySamples: {role: payload}
+      replicationSamples: {role: payload}
+      qualityControls: {role: payload}
+      analysisFlags:   {role: payload}
+      summarystatsLocation: {role: payload}
+      hasSumstats:     {role: flag, missing: unknown}
+      condition:       {role: payload}
+      diseaseIds:      {role: identifier, id_type: ot_disease, path: "[]", cardinality: many, integrity: partial}
+      backgroundDiseaseIds: {role: payload}
+      biosampleId:     {role: identifier, id_type: biosample, integrity: partial}
+
+  interval:
+    kind: fact
+    path: interval
+    size_class: huge
+    grain: one regulatory interval linked to one gene in one biosample by one source
+    key: {columns: [chromosome, start, end, geneId, intervalType, datasourceId, biosampleName],
+          nullable: [biosampleName], row_identity: content_hash, check: sampled, verified: false}
+    rank: [{column: score, direction: desc, nulls: last, within: [datasourceId]}]
+    coverage: {statement: "Enhancer-to-gene and promoter intervals of OT 25.09; absence means no interval in these sources.",
+               absence_means: unknown}
+    columns:
+      chromosome:    {role: position, part: chrom, build: GRCh38, chrom_style: bare}
+      start:         {role: position, part: start}
+      end:           {role: position, part: end}
+      geneId:        {role: identifier, id_type: ensembl_gene, ref: target.id, integrity: partial}
+      biosampleName: {role: category, vocab: data, match: casefold}
+      biosampleId:   {role: identifier, id_type: biosample, integrity: partial}
+      intervalType:  {role: category, vocab: data}
+      datasourceId:  {role: category, vocab: data, scope: {kind: stratum, pooling: group}}
+      score:         {role: measure, statistic: numeric, comparable_within: [datasourceId], missing: unknown}
+      distanceToTss: {role: measure, statistic: numeric, missing: unknown}
+
+  colocalisation_coloc:
+    kind: fact
+    path: colocalisation_coloc
+    grain: one COLOC colocalisation test between two credible sets
+    key: {columns: [leftStudyLocusId, rightStudyLocusId], check: full}
+    rank: [{column: h4, direction: desc, nulls: last}, {column: leftStudyLocusId, direction: asc}, {column: rightStudyLocusId, direction: asc}]
+    coverage: {statement: "COLOC tests run by OT 25.09 between overlapping credible sets; absence means not tested.",
+               absence_means: unknown}
+    columns:
+      leftStudyLocusId:  {role: identifier, id_type: study_locus_id, integrity: partial}
+      rightStudyLocusId: {role: identifier, id_type: study_locus_id, integrity: partial}
+      chromosome:        {role: position, part: chrom, build: GRCh38, chrom_style: bare}
+      rightStudyType:    {role: category, vocab: data}
+      numberColocalisingVariants: {role: count, counts: "variants shared by the two credible sets"}
+      h0: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown}
+      h1: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown}
+      h2: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown}
+      h3: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown}
+      h4: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown}
+      colocalisationMethod: {role: category, vocab: data}
+      betaRatioSignAverage: {role: measure, statistic: numeric, direction: signed, missing: unknown}
+
+  colocalisation_ecaviar:
+    kind: fact
+    path: colocalisation_ecaviar
+    grain: one eCAVIAR colocalisation test between two credible sets
+    key: {columns: [leftStudyLocusId, rightStudyLocusId], check: full}
+    rank: [{column: clpp, direction: desc, nulls: last}, {column: leftStudyLocusId, direction: asc}, {column: rightStudyLocusId, direction: asc}]
+    coverage: {statement: "eCAVIAR tests run by OT 25.09 between overlapping credible sets; absence means not tested.",
+               absence_means: unknown}
+    columns:
+      leftStudyLocusId:  {role: identifier, id_type: study_locus_id, integrity: partial}
+      rightStudyLocusId: {role: identifier, id_type: study_locus_id, integrity: partial}
+      chromosome:        {role: position, part: chrom, build: GRCh38, chrom_style: bare}
+      rightStudyType:    {role: category, vocab: data}
+      numberColocalisingVariants: {role: count, counts: "variants shared by the two credible sets"}
+      clpp: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown}
+      colocalisationMethod: {role: category, vocab: data}
+      betaRatioSignAverage: {role: measure, statistic: numeric, direction: signed, missing: unknown}
+
+  # -------------------------------------------------------------------- interactions
+  # S8: interaction edges with nullable endpoint and per-side columns
+  interaction:
+    kind: edges
+    path: interaction
+    grain: one interactor pair mapped to one gene pair, aggregated over the pair's evidence in one source database
+    key: {columns: [sourceDatabase, intA, intB, targetA, targetB], nullable: [targetB], check: full}
+    edge: {a: targetA, b: targetB, directed: false, directed_when: {sourceDatabase: [signor]},
+           orientation: as_reported, verified: false,
+           sides: {a: [intA, intABiologicalRole, speciesA], b: [intB, intBBiologicalRole, speciesB]}}
+    grains: {edge: {unordered: [targetA, targetB], by: [sourceDatabase]}, partner: {unordered: [targetA, targetB]}}
+    rank: [{column: scoring, direction: desc, nulls: last, within: [sourceDatabase]}]
+    coverage:
+      statement: "Interactions from IntAct, Reactome, SIGNOR and STRING mapped to genes by OT 25.09; absence means no record in these sources."
+      absence_means: unknown
+      universe: {table: interaction, keys: [targetA, targetB], mode: union, per_scope: [sourceDatabase]}
+      per_scope: {signor: "causal (directed) edges only", reactome: "pathway-reaction co-membership"}
+    columns:
+      sourceDatabase: {role: category, vocab: [intact, reactome, signor, string], scope: {kind: stratum, pooling: group}}
+      targetA: {role: endpoint, side: a, id_type: ensembl_gene, ref: target.id}
+      targetB: {role: endpoint, side: b, id_type: ensembl_gene, ref: target.id, missing: non_entity}
+      intA: {role: identifier, side: a, id_type_from: {field: intASource, map: {uniprotkb: uniprot_accession}}}
+      intB: {role: identifier, side: b, id_type_from: {field: intBSource, map: {uniprotkb: uniprot_accession}}}
+      intASource: {role: category, vocab: data, side: a}
+      intBSource: {role: category, vocab: data, side: b}
+      intABiologicalRole: {role: category, vocab: data, side: a}
+      intBBiologicalRole: {role: category, vocab: data, side: b}
+      speciesA: {role: nested, side: a, fields: {mnemonic: {role: category, vocab: data},
+                                                 scientificName: {role: category, vocab: data, match: casefold},
+                                                 taxonId: {role: identifier, id_type: ncbi_taxon}}}
+      speciesB: {role: nested, side: b, fields: {mnemonic: {role: category, vocab: data},
+                                                 scientificName: {role: category, vocab: data, match: casefold},
+                                                 taxonId: {role: identifier, id_type: ncbi_taxon}}}
+      scoring: {role: measure, statistic: score_0_1, scale: [0, 1], comparable_within: [sourceDatabase],
+                missing: unknown, by_partition: {reactome: {missing: not_applicable}, signor: {missing: not_applicable}}}
+      count: {role: count, counts: "evidence records for this pair in this source", comparable_within: [sourceDatabase]}
+
+  interaction_evidence:
+    kind: edges
+    path: interaction_evidence
+    size_class: huge
+    grain: one interaction evidence record (one experiment or curated statement) for one interactor pair
+    key: {columns: [interactionIdentifier, intA, intB, targetA, targetB], nullable: [interactionIdentifier, targetA, targetB],
+          check: sampled, verified: false}
+    edge: {a: targetA, b: targetB, directed: false, orientation: as_reported, verified: false,
+           sides: {a: [intA], b: [intB]}}
+    coverage: {statement: "Evidence records behind OT 25.09 interactions; absence means no record in these sources.",
+               absence_means: unknown}
+    columns:
+      interactionIdentifier: {role: identifier}
+      targetA: {role: endpoint, side: a, id_type: ensembl_gene, ref: target.id, missing: non_entity}
+      targetB: {role: endpoint, side: b, id_type: ensembl_gene, ref: target.id, missing: non_entity}
+      intA:    {role: identifier, side: a, resolvable: false}
+      intB:    {role: identifier, side: b, resolvable: false}
+      interactionResources: {role: nested, fields: {sourceDatabase: {role: category, vocab: data},
+                                                    databaseVersion: {role: payload}}}
+      interactionScore: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown, verified: false}
+      pubmedId: {role: identifier, id_type: pmid, integrity: partial}
+
+  # -------------------------------------------------------------------- ontologies
+  go:
+    kind: ontology
+    path: go
+    grain: one Gene Ontology term
+    key: {columns: [id], check: full}
+    coverage: {statement: "GO terms of OT 25.09, including obsolete terms named 'obsolete ...'.", absence_means: absent,
+               applies_to: entity}
+    sentinels:
+      present: [{key: {id: GO:0008150}}]
+    columns:
+      id:   {role: identifier, id_type: go_term, self: true}
+      name: {role: label, of: id}
+
+  reactome:
+    kind: ontology
+    path: reactome
+    grain: one Reactome pathway or reaction
+    key: {columns: [id], check: full}
+    coverage: {statement: "Reactome pathways of OT 25.09 (existence only).", absence_means: absent, applies_to: entity}
+    columns:
+      id:          {role: identifier, id_type: reactome_pathway, self: true}
+      label:       {role: label, of: id}
+      parents:     {role: hierarchy, relation: parent, of: id, closure: direct}
+      children:    {role: hierarchy, relation: child, of: id, closure: direct}
+      ancestors:   {role: hierarchy, relation: ancestor, of: id, closure: transitive, verified: false}
+      descendants: {role: hierarchy, relation: descendant, of: id, closure: transitive, verified: false}
+      path:        {role: payload}
+
+  so:
+    kind: ontology
+    path: so
+    grain: one Sequence Ontology term
+    key: {columns: [id], check: full}
+    coverage: {statement: "Sequence Ontology terms of OT 25.09 (existence only).", absence_means: absent, applies_to: entity}
+    columns:
+      id:    {role: identifier, id_type: so_term, self: true}
+      label: {role: label, of: id}

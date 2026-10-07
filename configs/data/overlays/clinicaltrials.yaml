@@ -1,0 +1,170 @@
+# Overlay for the upstream clinicaltrials server (clinicaltrials_mcp: ClinicalTrials.gov API v2 and
+# cBioPortal through pybioportal; docs/DATA_LAYER.md §8.7, Appendix A). Phase 1: 7 pass, 1 block (hidden).
+#
+# Free-text arguments are registry search expressions (Essie): the registry expands synonyms and
+# matches words, so a hit is not a literal match. Values are wrapped and characters that would change
+# the expression are rejected; an Essie quoting plugin replaces `forbid` when one is registered.
+schema: vbt.overlay/1
+server: clinicaltrials
+sources: [clinicaltrials_gov, cbioportal]
+upstream_commit: ${vars.upstream_commit:-71f9da68c95c5ee0ef4c1d9b8f45f10693de022d}   # the commit these bindings were reviewed against
+tools:
+  get_clinical_trial_details:
+    reads: {clinicaltrials_gov.studies: {access: upstream}}
+    args:
+      nct_id: {binds: clinicaltrials_gov.studies.protocolSection.identificationModule.nctId, accepts: [nct_id],
+               existence: upstream}
+    result:
+      kind: record
+      rows: $
+      fields:
+        nctId:              {column: protocolSection.identificationModule.nctId}
+        briefTitle:         {column: protocolSection.identificationModule.briefTitle}
+        overallStatus:      {column: protocolSection.statusModule.overallStatus}
+        whyStopped:         {column: protocolSection.statusModule.whyStopped}
+        startDate:          {column: protocolSection.statusModule.startDateStruct.date}
+        primaryCompletionDate: {column: protocolSection.statusModule.primaryCompletionDateStruct.date}
+        completionDate:     {column: protocolSection.statusModule.completionDateStruct.date}
+        studyFirstPostDate: {column: protocolSection.statusModule.studyFirstPostDateStruct.date}
+        lastUpdatePostDate: {column: protocolSection.statusModule.lastUpdatePostDateStruct.date}
+        studyType:          {column: protocolSection.designModule.studyType}
+        phases:             {column: protocolSection.designModule.phases}
+        enrollmentCount:    {column: protocolSection.designModule.enrollmentInfo.count}
+        hasResults:         {column: hasResults}
+      echo: {nct_id: {path: $.nctId, accept: [canonical, redirect], source: record}}   # merged records redirect to the surviving NCT ID
+      as_of: $.lastUpdatePostDate
+      not_found_when: ["$.error =~ '(?i)not found'"]
+    serve: pass
+
+  clear_trial_cache:
+    args: {}
+    result: {kind: record, rows: $}
+    serve: block
+    block: {reason: "No-op: upstream response caching is disabled.", hidden: true}
+    hidden: true
+
+  count_clinical_trials:
+    reads: {clinicaltrials_gov.studies: {access: upstream}}
+    args: &ctgov_args
+      condition:        {role: free_text, interpreted_as: engine, wrap: "({value})", forbid: ['"'],
+                         engine_doc: "registry search: synonym expansion and word match ('Korea' matches both Koreas)"}
+      term:             {role: free_text, interpreted_as: engine, wrap: "({value})", forbid: ['"'],
+                         engine_doc: "registry search over every indexed field"}
+      intervention:     {role: free_text, interpreted_as: engine, wrap: "({value})", forbid: ['"'],
+                         engine_doc: "registry search over intervention names and synonyms"}
+      status:           {binds: clinicaltrials_gov.studies.protocolSection.statusModule.overallStatus, op: in, each: true}
+      phase:            {binds: "clinicaltrials_gov.studies.protocolSection.designModule.phases[]", op: overlaps, each: true}
+      study_type:       {binds: clinicaltrials_gov.studies.protocolSection.designModule.studyType}
+      eligibility_text: {role: free_text, interpreted_as: engine, each: true, forbid: ['"'],
+                         engine_doc: "each phrase is quoted into AREA[EligibilityCriteria]\"...\""}
+      country:          {binds: "clinicaltrials_gov.studies.protocolSection.contactsLocationsModule.locations[].country",
+                         op: contains, interpreted_as: engine, default_disclosed: true, forbid: ['"']}   # default 'United States'
+      advanced_filter:  {role: free_text, interpreted_as: engine, wrap: "({value})",
+                         engine_doc: "an Essie expression ANDed with the other filters"}
+    leakage_filter: {arg: advanced_filter, template: "AREA[StudyFirstPostDate]RANGE[MIN,{ceiling}]"}
+    result:
+      kind: count
+      rows: null
+      total: {path: $.total_count, method: upstream}
+    serve: pass
+    defects:
+      - {id: CT-GOV-001, what: "country defaults to 'United States', silently narrowing every count (89 vs 274 trials, VERIFIED)",
+         where: "clinicaltrials_mcp/tools.py:791,764-765", effect: silent_wrong}
+      - {id: CT-GOV-002, what: "eligibility_text is pasted inside double quotes unescaped; a quote in the value changes the expression",
+         where: "clinicaltrials_mcp/tools.py:761-763", effect: silent_wrong}
+
+  search_clinical_trials:
+    reads: {clinicaltrials_gov.studies: {access: upstream}}
+    args:
+      <<: *ctgov_args
+      sort:
+        role: order_by
+        values:
+          "LastUpdatePostDate:desc": {column: protocolSection.statusModule.lastUpdatePostDateStruct.date, direction: desc}
+          "LastUpdatePostDate:asc":  {column: protocolSection.statusModule.lastUpdatePostDateStruct.date, direction: asc}
+          "StudyFirstPostDate:desc": {column: protocolSection.statusModule.studyFirstPostDateStruct.date, direction: desc}
+          "StudyFirstPostDate:asc":  {column: protocolSection.statusModule.studyFirstPostDateStruct.date, direction: asc}
+          "StartDate:desc":          {column: protocolSection.statusModule.startDateStruct.date, direction: desc}
+          "StartDate:asc":           {column: protocolSection.statusModule.startDateStruct.date, direction: asc}
+          "EnrollmentCount:desc":    {column: protocolSection.designModule.enrollmentInfo.count, direction: desc}
+          "EnrollmentCount:asc":     {column: protocolSection.designModule.enrollmentInfo.count, direction: asc}
+    leakage_filter: {arg: advanced_filter, template: "AREA[StudyFirstPostDate]RANGE[MIN,{ceiling}]"}
+    result:
+      rows: $.trials
+      row_key: [nctId]
+      fields:
+        nctId:              {column: protocolSection.identificationModule.nctId}
+        briefTitle:         {column: protocolSection.identificationModule.briefTitle}
+        overallStatus:      {column: protocolSection.statusModule.overallStatus}
+        whyStopped:         {column: protocolSection.statusModule.whyStopped}
+        startDate:          {column: protocolSection.statusModule.startDateStruct.date}
+        completionDate:     {column: protocolSection.statusModule.completionDateStruct.date}
+        studyFirstPostDate: {column: protocolSection.statusModule.studyFirstPostDateStruct.date}
+        lastUpdatePostDate: {column: protocolSection.statusModule.lastUpdatePostDateStruct.date}
+        studyType:          {column: protocolSection.designModule.studyType}
+        phases:             {column: protocolSection.designModule.phases}
+        enrollmentCount:    {column: protocolSection.designModule.enrollmentInfo.count}
+        hasResults:         {column: hasResults}
+      total: {path: $.total_count, method: upstream, partial_when: ["$.warning"]}
+      count_fields: {"$.trials_returned": "len($.trials)"}
+      order_from_arg: sort
+      order_source: source_server_side
+    serve: pass
+    text:
+      notes: ["at most 1,000 trials are fetched (10 pages of 100); beyond that the result is truncated and total_count is the registry's count"]
+    defects:
+      - {id: CT-GOV-003, what: "pagination stops at 1,000 trials without marking the result truncated; a mid-pagination error returns partial rows with total_count set to the rows returned",
+         where: "clinicaltrials_mcp/tools.py:1094-1112", effect: silent_wrong}
+
+  get_all_cancer_types:
+    reads: {cbioportal.cancer_type: {access: upstream}}
+    args: {}
+    result:
+      rows: $.cancer_types
+      row_key: [cancerTypeId]
+      fields: {cancerTypeId: {column: cancerTypeId}, name: {column: name}, parent: {column: parent}, color: {column: dedicatedColor}}
+      count_fields: [$.count]
+    serve: pass
+
+  search_studies:
+    reads: {cbioportal.study: {access: upstream}}
+    args:
+      cancer_type: {binds: cbioportal.study.cancerTypeId, accepts: [cbio_cancer_type]}   # OncoTree codes are lower case
+    result:
+      rows: $.studies
+      row_key: [studyId]
+      count_fields: [$.count]
+    serve: pass
+
+  get_study_details:
+    reads: {cbioportal.study: {access: upstream}, cbioportal.clinical_attribute: {access: upstream}}
+    args:
+      study_id: {binds: cbioportal.study.studyId, accepts: [cbio_study], existence: upstream}
+    result:
+      kind: record
+      rows: $
+      echo: {study_id: {path: $.studyId, source: record}}
+      not_found_when: ["$.error =~ '(?i)status code: 404'", "$.error =~ '(?i)not found'"]   # evaluated before legacy errors
+    serve: pass
+
+  get_clinical_data:
+    reads: {cbioportal.sample: {access: upstream}, cbioportal.patient_clinical: {access: upstream},
+            cbioportal.sample_clinical: {access: upstream}}
+    args:
+      study_id:   {binds: cbioportal.sample.studyId, accepts: [cbio_study], existence: upstream}
+      sample_ids: {binds: cbioportal.sample.sampleId, op: in, accepts: [cbio_sample], each: true, min_items: 1,
+                   qualified_by: [study_id], existence: "off"}
+    result:
+      rows: $.data
+      row_key: [sampleId]
+      key_from_args: {studyId: study_id}
+      exists_when: "$.patientId != null"          # phantom samples come back with patientId null (VERIFIED)
+      levels: {patient: [OS_MONTHS, OS_STATUS, DFS_MONTHS, DFS_STATUS, PFS_MONTHS, PFS_STATUS, AGE, SEX]}
+      count_fields: [$.sample_count]
+      not_found_when: ["$.error =~ '(?i)status code: 404'"]
+    serve: pass
+    defects:
+      - {id: CT-CBIO-001, what: "unknown sample_ids come back as {sampleId, patientId: null} rows and count in sample_count",
+         where: "clinicaltrials_mcp/tools.py:1470-1474", test: test_dl_defect_detectors.py::test_ct_cbio_001, effect: silent_wrong}
+      - {id: CT-CBIO-002, what: "patient attributes are copied onto every sample of the patient, so patient values are counted once per sample",
+         where: "clinicaltrials_mcp/tools.py:1516-1521", test: test_dl_defect_detectors.py::test_ct_cbio_002, effect: silent_wrong}
