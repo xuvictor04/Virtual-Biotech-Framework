@@ -18,7 +18,13 @@ at things that exist *in this run*:
   when the claim carries the censor statement) and is then recorded with
   ``evidence_status='absence'``; ``empty_unverified`` and results that may leak
   past the evidence ceiling are never citable; partial results and tables with an
-  evidence-nature caveat are flagged.
+  evidence-nature caveat are flagged. A cited ``row_key`` must be one of the rows the
+  call returned: it is compared in the canonical row-key encoding (§6.3: floats in their
+  storage type, explicit nulls) with the keys stored in the call's provenance record, or,
+  when the record kept only their digest, by recomputing the digest
+  (:func:`row_key_problems`). Evidence whose data changed since the call (fingerprints
+  filed with the claim, or current fingerprints in ``EvidenceContext.fingerprints``) is
+  unresolved (:func:`fingerprint_problems`).
 * ``citation`` evidence (PMID, DOI or URL) is external: format-checked, stored
   ``verified=False`` with ``evidence_status='external'``.
 
@@ -31,6 +37,8 @@ evidence ``unresolved``.
 from __future__ import annotations
 
 import copy
+import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -38,6 +46,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
+from ..datalayer.rowkey import canonical, canonical_sha256, render_float, render_value
 from .storage import (
     is_harness_rel,
     is_work_rel,
@@ -69,6 +78,7 @@ _DATA_ENTRY_FIELDS = ("result_status", "prov", "coverage", "coverage_statement",
                       "fingerprints")
 
 _PMID_RE = re.compile(r"^\d{1,9}$")
+_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]")
 _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
 
 
@@ -96,6 +106,35 @@ class EvidenceContext:
     calls: Mapping[str, Mapping[str, Any]]
     workspace: Path | None = None
     sha_cache: dict[str, str | None] = field(default_factory=dict)
+    #: Current table fingerprints (``"source.table"`` or ``"table"`` -> fingerprint). When set, tool_call
+    #: evidence whose tables changed since the call is unresolved (``refresh_claims``).
+    fingerprints: Mapping[str, str] | None = None
+    records: dict[str, Any] = field(default_factory=dict)
+
+    def data_record(self, tool_use_id: str, call: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The call's ``vbt.dataprov/1`` record (``logs/data_provenance/<id>.json``), cached; None when absent."""
+        if tool_use_id in self.records:
+            return self.records[tool_use_id]
+        dp = call.get("data_provenance") if isinstance(call.get("data_provenance"), Mapping) else {}
+        candidates = []
+        if dp.get("record"):
+            candidates.append(self.run_dir / str(dp["record"]))
+        candidates.append(self.run_dir / "logs" / "data_provenance" / f"{_SAFE_RE.sub('_', tool_use_id)[:160]}.json")
+        record = None
+        root = self.run_dir.resolve()
+        for path in candidates:
+            try:
+                actual = path.resolve(strict=True)
+                if root not in actual.parents:
+                    continue
+                data = json.loads(actual.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict):
+                record = data
+                break
+        self.records[tool_use_id] = record
+        return record
 
     def current_sha(self, rel: str) -> tuple[str | None, str | None]:
         """(sha256, problem) for a run-relative file, cached per validation."""
@@ -372,6 +411,119 @@ def data_status_rules(entry: dict[str, Any], call: Mapping[str, Any], supports: 
     return problems, warnings, absence
 
 
+# ----------------------------------------------------------------- row keys and fingerprints (phase 5)
+
+def _number(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _part_matches(cited: Any, stored: Any, storage_type: str | None) -> bool:
+    """One key part: the same canonical rendering, or (without a recorded storage type) the same
+    number, also when the cited value is a float32 value widened to float64 (``0.05000000074505806``
+    for a stored ``0.05``)."""
+    if render_value(cited, storage_type) == render_value(stored, storage_type):
+        return True
+    if storage_type is None and _number(cited) and _number(stored):
+        a, b = float(cited), float(stored)
+        if math.isnan(a) or math.isnan(b):
+            return False
+        if a == b:
+            return True
+        narrow = render_float(b, "float")
+        return narrow == repr(b) and render_float(a, "float") == narrow
+    return False
+
+
+def _key_matches(cited: list[Any], stored: Any, types: list[str | None] | None) -> bool:
+    if not isinstance(stored, (list, tuple)) or len(stored) != len(cited):
+        return False
+    ts: list[str | None] = list(types) if types and len(types) == len(cited) else [None] * len(cited)
+    return all(_part_matches(a, b, t) for a, b, t in zip(cited, stored, ts))
+
+
+def row_key_problems(row_key: Any, record: Mapping[str, Any] | None,
+                     summary: Mapping[str, Any] | None = None) -> tuple[list[str], list[str]]:
+    """``(problems, warnings)`` of a cited ``row_key`` against the call's stored row keys (§15.3, phase 5).
+
+    The key is compared in the canonical row-key encoding (:mod:`vbt.datalayer.rowkey`) with the keys
+    stored inline in the provenance record (all of them, and the grain keys of a levelled result); a
+    record that kept every key must also match its own digest (and the digest in the trace). When the
+    record kept no keys but the call returned one row, the digest of the cited key is recomputed and
+    compared. A record that kept only a sample, or no record, cannot reject a key (warning)."""
+    if not isinstance(row_key, (list, tuple)):
+        return [f"row_key must be a list of the result's key values, not {type(row_key).__name__}"], []
+    cited = list(row_key)
+    shown = canonical(cited)
+    summary = summary or {}
+    if not isinstance(record, Mapping):
+        return [], [f"row_key {shown} cannot be checked: the call's provenance record is missing"]
+    result = record.get("result") if isinstance(record.get("result"), Mapping) else {}
+    types = result.get("key_storage_types") if isinstance(result.get("key_storage_types"), list) else None
+    digest = result.get("row_keys_sha256")
+    if result.get("row_keys_sha256") and summary.get("row_keys_sha256") \
+            and result["row_keys_sha256"] != summary["row_keys_sha256"]:
+        return ["the call's provenance record does not match the row-key digest in the trace (the record was "
+                "altered)"], []
+    cols = list(result.get("key_columns") or [])
+    groups: list[tuple[list[Any], list[Any], bool, Any]] = [
+        (cols, list(result.get("row_keys") or []), bool(result.get("row_keys_complete", True)), digest)]
+    by_grain = result.get("row_keys_by_grain") if isinstance(result.get("row_keys_by_grain"), Mapping) else {}
+    for g in by_grain.values():
+        if isinstance(g, Mapping):
+            groups.append((list(g.get("key_columns") or []), list(g.get("row_keys") or []),
+                           bool(g.get("row_keys_complete", True)), g.get("row_keys_sha256")))
+    widths = {len(c) for c, _k, _x, _d in groups if c}
+    if widths and len(cited) not in widths:
+        return [f"row_key {shown} has {len(cited)} value(s) but the result's key has "
+                + " or ".join(str(w) for w in sorted(widths)) + f" ({', '.join(map(str, cols))})"], []
+    sampled = False
+    for gcols, keys, complete, gdigest in groups:
+        if not keys or (gcols and len(gcols) != len(cited)):
+            continue
+        gtypes = types if gcols == cols else None
+        if complete and gdigest and canonical_sha256([canonical(list(k), gtypes) for k in keys]) != gdigest:
+            return ["the row keys stored in the call's provenance record do not match their digest (the record was "
+                    "altered)"], []
+        if any(_key_matches(cited, k, gtypes) for k in keys):
+            return [], []
+        sampled = sampled or not complete
+    if any(keys for _c, keys, _x, _d in groups):
+        if sampled:
+            return [], [f"row_key {shown} is not in the stored sample of row keys (the call returned more rows than "
+                        "were stored), so it was not checked"]
+        return [f"row_key {shown} is not among the {len(groups[0][1])} row(s) the call returned"], []
+    returned = result.get("returned")
+    if returned == 0:
+        return [f"row_key {shown} cites a call that returned no rows"], []
+    if digest and returned == 1:
+        if canonical_sha256([canonical(cited, types)]) == digest:
+            return [], []
+        return [f"row_key {shown} does not match the row-key digest of the one row the call returned"], []
+    return [], [f"row_key {shown} cannot be checked: the call's row keys were not recorded"]
+
+
+def fingerprint_problems(entry: Mapping[str, Any], ev: Mapping[str, Any],
+                         current: Mapping[str, str] | None) -> list[str]:
+    """Problems of tool_call evidence whose data changed: the fingerprints the evidence was filed with
+    differ from the call's, or (``current``) a table the call read has another fingerprint now."""
+    out: list[str] = []
+    fps = entry.get("fingerprints") if isinstance(entry.get("fingerprints"), Mapping) else {}
+    filed = ev.get("fingerprints") if isinstance(ev.get("fingerprints"), Mapping) else {}
+    for table, fp in sorted(filed.items()):
+        if fp and fps.get(table) is not None and fps[table] != fp:
+            out.append(f"was filed against {table} at {fp}, but the call read {fps[table]}")
+    if current is None:
+        return out
+    source = entry.get("source")
+    for table, fp in sorted(fps.items()):
+        now = current.get(f"{source}.{table}") if source else None
+        now = now if now is not None else current.get(str(table))
+        if fp and now and now != fp:
+            out.append(f"read {source + '.' if source else ''}{table} at {fp}, which is now {now}: the data changed "
+                       "since the call (replay it with `vbt ds replay` and refile the claim)")
+    return out
+
+
 def check_evidence(ev: Mapping[str, Any], ctx: EvidenceContext, *, stored: bool = False,
                    claim: Mapping[str, Any] | None = None) -> tuple[dict[str, Any] | None, list[str], list[str]]:
     """Validate one evidence item. Returns (entry, problems, warnings).
@@ -400,7 +552,7 @@ def check_evidence(ev: Mapping[str, Any], ctx: EvidenceContext, *, stored: bool 
     if ev.get("supports") is not None:
         entry["supports"] = supports
     if ev.get("row_key") is not None:
-        entry["row_key"] = ev["row_key"]  # checked against the stored row keys from phase 5
+        entry["row_key"] = ev["row_key"]  # checked against the call's stored row keys below
 
     if kind in LOCAL_KINDS:
         if stored:
@@ -464,6 +616,13 @@ def check_evidence(ev: Mapping[str, Any], ctx: EvidenceContext, *, stored: bool 
                     probs, warns, status_override = data_status_rules(entry, call, supports, claim)
                     problems.extend(probs)
                     warnings.extend(warns)
+                    if ev.get("row_key") is not None:
+                        dp = call.get("data_provenance") if isinstance(call.get("data_provenance"), Mapping) else {}
+                        probs, warns = row_key_problems(ev["row_key"], ctx.data_record(tuid, call), dp)
+                        problems.extend(f"tool call {tuid!r}: {p}" for p in probs)
+                        warnings.extend(f"tool call {tuid!r}: {w}" for w in warns)
+                    problems.extend(f"tool call {tuid!r} {p}"
+                                    for p in fingerprint_problems(entry, ev, ctx.fingerprints))
     else:  # citation
         raw = {k: ev.get(k) for k in ("pmid", "doi", "url") if ev.get(k)}
         if not raw:
@@ -588,7 +747,10 @@ def refresh_claims(stored: Iterable[Mapping[str, Any]], ctx: EvidenceContext) ->
     """Refresh verified/evidence_status/n_verified of filed claims without changing pointers or hashes.
 
     Later turns may rewrite or delete artifacts; only an explicit refile may
-    update a claim's evidence, so stale pointers become ``unresolved``.
+    update a claim's evidence, so stale pointers become ``unresolved``. Tool_call
+    evidence becomes ``unresolved`` too when the fingerprints it was filed with
+    differ from the call's, or (with ``ctx.fingerprints``) when a table the call
+    read has changed since (:func:`fingerprint_problems`).
     """
     out = []
     for c in stored or []:
@@ -715,5 +877,6 @@ __all__ = [
     "validate_claims", "refresh_claims", "check_evidence", "resolve_evidence_path", "merge_claims",
     "link_cited_by", "claim_stats", "claims_payload", "read_claims_file", "load_claims",
     "normalize_pmid", "normalize_doi", "normalize_url", "SUPPORTS", "RESULT_STATUSES", "call_data_status",
-    "data_status_rules", "empty_result_citation", "censor_phrase", "carries_censor_statement",
+    "data_status_rules", "empty_result_citation", "censor_phrase", "carries_censor_statement", "row_key_problems",
+    "fingerprint_problems",
 ]
