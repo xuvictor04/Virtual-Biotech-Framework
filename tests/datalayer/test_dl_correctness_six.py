@@ -970,8 +970,13 @@ def test_ct4_inflation_limit(mode: str, topk: bool, data_env, live_variant, ot_r
         assert payload.get("subkind") == "unranked_truncation", payload
         assert bridge.bridge.status().get("drug", {}).get("calls") == before, "the upstream tool was called"
     else:
-        payload = err(r, "tool_defect")
-        assert dig(payload, "witness", "total") == F.oracle_known_drug(ot_root, T)["total"] == 35, payload
+        # the witness catches head-before-sort (OT-DRUG-003); with a derived spec on the binding
+        # (include_descendants, F18) the contradiction is repaired from the data child, never withheld
+        # as a wrong answer: the verified top 5 of all 35
+        ok(r)
+        assert r.header.get("served_by") in ("repaired", "derived"), r.header
+        assert _known_drug_keys(r) == F.oracle_known_drug_topk(ot_root, T, 5), show(r)
+        assert r.header.get("total") == F.oracle_known_drug(ot_root, T)["total"] == 35, r.header
 
 
 def _pin_known_drug(r: CallResult) -> None:

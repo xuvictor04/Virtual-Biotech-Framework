@@ -498,7 +498,7 @@ def test_ipc_validation_and_helpers():
     assert isinstance(resp, ipc.WitnessResponse) and resp.total == 3
     assert ipc.SETTINGS_ENV == "VBT_DATA_SETTINGS"
     assert set(ipc.PHASE1_VERBS) == {"_stats", "_check", "_witness", "_serve", "_build_index", "_resolve_remote",
-                                     "_vocab"} == set(ipc.VERB_MODELS)
+                                     "_vocab"} == set(ipc.VERB_MODELS) - {ipc.VERB_CENSUS_COUNT}   # phase 4: typed too
 
 
 # ---------------------------------------------------------------------------

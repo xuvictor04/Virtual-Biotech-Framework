@@ -195,6 +195,11 @@ class FakeService(ServiceClient):
         out = {t: self.check_models.get(t, TableCheckModel(status="ready", fingerprint=f"fp1:{t}")) for t in tables}
         return CheckResponse(tables=out, hash_randomization=0)
 
+    def _census_count(self, req: Any) -> Any:
+        from vbt.datalayer.ipc import CensusCountResponse
+
+        return CensusCountResponse(table=req.table, reason="no Census in the fake child")
+
     def _build_index(self, req: Any) -> BuildIndexResponse:
         rows = self.index_rows.get(f"{req.source}:{req.id_type}")
         if rows is None:

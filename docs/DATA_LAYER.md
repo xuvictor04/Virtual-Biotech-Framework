@@ -3405,6 +3405,7 @@ data:
     max_oom_kills: 3
     max_result_bytes: 2000000
     host_budget_mb: auto              # phase 4
+    relay_max_message_mb: 0           # phase 4: > 0 relays server stdout with this message cap
   readiness:
     per_turn_depth: shallow
     session_depth: standard
