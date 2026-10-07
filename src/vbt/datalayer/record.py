@@ -153,9 +153,12 @@ class DataProvenance:
     evidence_nature: dict[str, Any] | None = None  # {kind, caveat}
     upstream: UpstreamInfo = field(default_factory=UpstreamInfo)
     t_ms: dict[str, float] = field(default_factory=dict)
+    derived: dict[str, Any] | None = None          # derived handlers' records: expansion, statistics, network, ...
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
+        if not d.get("derived"):
+            d.pop("derived", None)                     # absent unless a derived handler recorded something
         # Key order of §15.1: schema, id, tool_use_id first.
         head = {k: d.pop(k) for k in ("schema", "id", "tool_use_id", "tool", "server")}
         return {**head, **d}

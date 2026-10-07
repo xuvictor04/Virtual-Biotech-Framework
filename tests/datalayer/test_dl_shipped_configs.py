@@ -45,8 +45,8 @@ HARNESS_SERVERS = {"pubmed", "data"}             # overlays for harness servers,
 # Appendix A, per server: (pass, derived, block); same_as tools count on the server that registers them.
 # Phase 2 (F14) moved one target and one association tool from block to derived.
 APPENDIX_A = {
-    "target": (11, 5, 0), "disease": (2, 4, 0), "drug": (5, 4, 0), "association": (7, 3, 1), "genetics": (8, 1, 1),
-    "expression": (3, 2, 1), "interaction": (1, 2, 2), "functional_genomics": (4, 3, 2), "pathway": (3, 5, 2),
+    "target": (11, 5, 0), "disease": (2, 4, 0), "drug": (5, 4, 0), "association": (7, 4, 0), "genetics": (8, 2, 0),
+    "expression": (3, 3, 0), "interaction": (1, 4, 0), "functional_genomics": (0, 9, 0), "pathway": (3, 7, 0),
     "single_cell": (11, 0, 0), "clinicaltrials": (7, 0, 1), "pubmed": (2, 0, 0),
 }
 IDENTIFIER_PARAM = re.compile(r"(_ids?$|^gene|^pmid|^nct|^rs_id$|^variant_id$|^drug_name$|^entity_)")
@@ -181,7 +181,7 @@ def test_serve_modes_match_appendix_a(catalog) -> None:
         mode = catalog.contract(server, tool).binding.serve
         total[mode] += 1
         by_server.setdefault(server, Counter())[mode] += 1
-    assert dict(total) == {"pass": 64, "derived": 29, "block": 10}
+    assert dict(total) == {"pass": 60, "derived": 42, "block": 1}
     for server, (p, d, b) in APPENDIX_A.items():
         got = by_server[server]
         assert (got["pass"], got["derived"], got["block"]) == (p, d, b), server
@@ -213,9 +213,10 @@ def test_identifier_parameters_are_resolved(catalog) -> None:
             if not IDENTIFIER_PARAM.search(p):
                 continue
             a = args.get(p)
-            if a is None or not (a.accepts or a.role == "anchor"):
+            # role unbound is refused at the gateway whenever it is set, so it is never sent unresolved
+            if a is None or not (a.accepts or a.role in ("anchor", "unbound")):
                 unbound.append(f"{server}.{tool}({p})")
-    assert not unbound, f"identifier-like parameters without accepts or anchor: {unbound}"
+    assert not unbound, f"identifier-like parameters without accepts, anchor or unbound: {unbound}"
 
 
 @needs_upstream
@@ -471,7 +472,7 @@ def test_tahoe_and_census_facts(catalog) -> None:
     assert "de_permissive.drug" in tahoe.id_types["tahoe_drug"].stored_forms
     anndata = _table(catalog, "cellxgene_census.anndata_outputs")
     assert anndata.materialized_by.tool == "single_cell.get_anndata" and anndata.matrix is not None
-    assert catalog.source("cellxgene_census").table_layout("obs") == "upstream_only"
+    assert catalog.source("cellxgene_census").table_layout("obs") == "soma"
 
 
 def test_zenodo_cbioportal_and_clinicaltrials_facts(catalog) -> None:

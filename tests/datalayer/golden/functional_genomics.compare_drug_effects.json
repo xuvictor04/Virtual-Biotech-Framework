@@ -1,5 +1,5 @@
 {
- "description": "UNAVAILABLE: Merges the two drugs' contrasts on gene_name only (a cartesian product over doses, lines and plates) and compares padj across families. A paired comparison verb arrives in phase 3.; use functional_genomics.query_drug_perturbation. Compare transcriptomic signatures between two drugs.",
+ "description": "Compare transcriptomic signatures between two drugs.\nData: Tahoe-100M pseudobulk differential expression (prepared by tools/prepare_tahoe.py) · table de_permissive — one record = one gene's DESeq2 contrast for one drug at one concentration in one cell line on one plate (replicate wells pooled).\nKey: drug, concentration, concentration_unit, Cell_ID_DepMap, plate, gene_name.\nArguments: drug_a accepts tahoe drug (resolved; unknown -> error); drug_b accepts tahoe drug (resolved; unknown -> error); cell_line_id accepts depmap cell line (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches; `_vbt.grains.gene` counts genes; `_vbt.grains.drug` counts drugs; `_vbt.grains.cell_line` counts cell_lines; `_vbt.grains.drug_dose` counts drug_doses; `_vbt.grains.contrast` counts contrasts.\npadj is adjusted within one drug, concentration, concentration_unit, Cell_ID_DepMap, plate family.\nMissing rows are censored (padj >= 0.1): not significant or not tested.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Only contrasts with finite padj < 0.10 are stored; 76% of source rows have padj NA and were dropped.…",
  "schema": {
   "properties": {
    "cell_line_id": {
@@ -63,6 +63,6 @@
   ],
   "type": "object"
  },
- "serve": "block",
+ "serve": "derived",
  "tool": "functional_genomics.compare_drug_effects"
 }

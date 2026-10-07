@@ -246,3 +246,20 @@ def test_overlay_init_cli_from_json(tmp_path: Path, capsys) -> None:
     assert "exists" in capsys.readouterr().err
     ns.force = True
     assert cmd_overlay_init(ns, config) == 0
+
+
+def test_an_overlay_names_its_envelope_codec() -> None:
+    """``result.codec`` names an envelope plugin; lint refuses an unknown one, and the classifier
+    decodes with the one named."""
+    from vbt.datalayer.descriptor.lint import lint_overlay
+    from vbt.datalayer.plugins.envelopes import codec_of
+
+    text = scaffold_overlay("uniprot", LISTING, REGISTRY, url="http://127.0.0.1:1/mcp")
+    data = yaml.safe_load(text)
+    data["tools"]["search"]["result"] = {"rows": "$.results", "codec": "jsonpath", "codec_options": {"total": "$.n"}}
+    ov = Overlay.model_validate(data)
+    assert codec_of(ov.tools["search"].result) == ("jsonpath", {"total": "$.n", "rows": ["$.results"]})
+    assert not [f for f in lint_overlay(ov, {}, REGISTRY) if f.level == "error" and "codec" in f.where]
+    data["tools"]["search"]["result"]["codec"] = "teleporter"
+    bad = [f for f in lint_overlay(Overlay.model_validate(data), {}, REGISTRY) if f.level == "error"]
+    assert any(f.where.endswith("result.codec") for f in bad), bad

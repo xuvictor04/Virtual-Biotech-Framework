@@ -143,13 +143,16 @@ async def test_qualifier_overrides_are_gateway_only(tmp_path: Path) -> None:
 
 
 async def test_depmap_groups_collide_or_overlap(tmp_path: Path) -> None:
-    """DepMap disease arguments are substring-matched upstream: a value matching several stored values,
-    or two groups sharing a value, is invalid_argument (SC4)."""
+    """DepMap disease arguments are substring-matched upstream; the derived tools take exact values
+    (phase 3), so a substring is invalid_argument with the valid values, and two groups sharing a value
+    are invalid_argument too (SC4)."""
     gw = shipped(tmp_path)
     vocab(gw, {"diseaseFromSource": ["Lung Cancer", "Melanoma", "Small Cell Lung Cancer"],
                "tissueName": ["Lung"]})
-    e = await refused(gw, "functional_genomics", "find_essential_genes", {"disease": "Lung Cancer"})
-    assert e.kind == ErrorKind.invalid_argument and e.envelope().get("reason") == "substring_collision"
+    plan = await gw.prepare("functional_genomics", "find_essential_genes", {"disease": "Lung Cancer"}, None)
+    assert plan.args_sent["disease"] == "Lung Cancer"                   # exact: no substring collision
+    e = await refused(gw, "functional_genomics", "find_essential_genes", {"disease": "lung"})
+    assert e.kind == ErrorKind.invalid_argument and "Lung Cancer" in e.envelope()["valid_values"]
     e = await refused(gw, "functional_genomics", "find_selective_dependencies",
                       {"target_disease": "Melanoma", "comparison_disease": "Melanoma"})
     assert e.kind == ErrorKind.invalid_argument and e.envelope().get("reason") == "overlapping_groups"

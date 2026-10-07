@@ -1,5 +1,5 @@
 {
- "description": "UNAVAILABLE: Breadth-first expansion over a set iteration order: edge counts differ between runs (2, 2, 4, 4, 3, 4 over six runs, VERIFIED) and scores of different sources are thresholded together. A deterministic network verb arrives in phase 3.; use interaction.get_interactions, interaction.search_interactions. Build multi-hop protein interaction network from seed targets.",
+ "description": "Build multi-hop protein interaction network from seed targets.\nData: Open Targets Platform 25.09 · table interaction — one record = one interactor pair mapped to one gene pair, aggregated over the pair's evidence in one source database.\nKey: sourceDatabase, intA, intB, targetA, targetB (targetB may be null).\nArguments: seed_targets accepts ensembl gene or hgnc symbol (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches; `_vbt.grains.edge` counts edges; `_vbt.grains.partner` counts partners.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Interactions from IntAct, Reactome, SIGNOR and STRING mapped to genes by OT 25.09; absence means no record in these sources.\nThe frontier is expanded in key order and edges are keyed by source database and interactor pair, so the same call gives the same network; network_truncated and statistics.network.frontier say where max_network_size cut it.\nScores of different sources are not comparable; min_confidence other than 0 is refused.",
  "schema": {
   "properties": {
    "max_hops": {
@@ -43,6 +43,6 @@
   ],
   "type": "object"
  },
- "serve": "block",
+ "serve": "derived",
  "tool": "interaction.get_interaction_network"
 }

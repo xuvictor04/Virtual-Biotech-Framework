@@ -196,6 +196,14 @@ class GatewayError(ToolFailure):
     def __str__(self) -> str:
         return json.dumps(self.envelope(), default=str, ensure_ascii=False)
 
+    @classmethod
+    def from_envelope(cls, env: Mapping[str, Any]) -> "GatewayError":
+        """The error an :meth:`envelope` describes (an envelope the data child sent back)."""
+        payload = {k: v for k, v in env.items() if k not in _ENVELOPE_FIXED}
+        return cls(str(env.get("kind")), str(env.get("message") or ""), tool=env.get("tool"),
+                   argument=env.get("argument"), value=env.get("value"), payload=payload,
+                   retryable=env.get("retryable"), subkind=env.get("subkind"), instruction=env.get("instruction"))
+
     def with_tool(self, tool: str) -> "GatewayError":
         """Set the tool name when the raising code did not know it; returns self."""
         if not self.tool:

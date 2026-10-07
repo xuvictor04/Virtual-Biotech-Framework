@@ -1,5 +1,5 @@
 {
- "description": "UNAVAILABLE: Loads the whole literature table (hundreds of millions of rows) into pandas and returns rows in file order. A sidecar index over pmid and keywordId arrives in phase 4.; use pubmed.search_pubmed, association.get_evidence_by_publication. Search publication metadata.",
+ "description": "Search publication metadata.\nData: Open Targets Platform 25.09 · table literature — one record = one (publication, entity) co-mention from Europe PMC text mining.\nKey: pmid, keywordId.\nArguments: pmid accepts pmid (resolved; unknown -> error); keyword_id accepts literature word or ensembl gene or ot disease or chembl molecule (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Europe PMC text-mined entity mentions integrated by OT 25.09; absence means not text-mined, not that the paper is irrelevant.\nserved from the literature table by the data layer: keyword_id uses its sidecar index and pmid its row-group statistics; a year-only search is refused as too large",
  "schema": {
   "properties": {
    "keyword_id": {
@@ -45,6 +45,6 @@
   },
   "type": "object"
  },
- "serve": "block",
+ "serve": "derived",
  "tool": "association.search_literature"
 }

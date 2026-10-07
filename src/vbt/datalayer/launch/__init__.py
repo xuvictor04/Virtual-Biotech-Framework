@@ -106,6 +106,9 @@ def build_launch_spec(cfg: Any, settings: Any = None, log_dir: str | Path | None
     name = str(cfg.name)
     limit = server_limit_mb(cfg, settings)
     status = status_path(Path(log_dir) if log_dir is not None else Path.cwd(), name)
-    args = ["-E", str(REAPER), "--limit-mb", str(limit), "--status", str(status), "--server", name,
-            "--", str(cfg.command), *[str(a) for a in (cfg.args or [])]]
+    args = ["-E", str(REAPER), "--limit-mb", str(limit), "--status", str(status), "--server", name]
+    kind = getattr(getattr(settings, "memory", None), "limit_kind", "rlimit_data")
+    if kind in ("cgroup", "watchdog"):                 # rlimit_data is the reaper's default; none sets limit 0
+        args += ["--containment", str(kind)]
+    args += ["--", str(cfg.command), *[str(a) for a in (cfg.args or [])]]
     return LaunchSpec(command=sys.executable, args=args, env=dict(CHILD_ENV), status_path=str(status))

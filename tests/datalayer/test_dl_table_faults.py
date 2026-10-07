@@ -56,6 +56,8 @@ def _plan(catalog: Any) -> tuple[dict[str, list[tuple[str, str, dict[str, Any]]]
                 if t.descriptor.kind != "local" or t.layout == "upstream_only":
                     continue
                 rs = b.reads.get(ref)
+                if rs is not None and rs.access == "upstream" and b.serve == "derived":
+                    continue                           # read by the upstream function only; a derived call never does
                 args = {k: (v if not isinstance(v, dict) else "x") for k, v in ((rs.when if rs else None) or {}).items()}
                 phys = str(t.physical)
                 if (server, tool, args) not in readers.setdefault(phys, []):

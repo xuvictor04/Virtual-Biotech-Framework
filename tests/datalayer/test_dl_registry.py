@@ -72,12 +72,12 @@ def _settings(**plugins) -> DataSettings:
     return DataSettings.from_config({"data": {"plugins": plugins}})
 
 
-def test_kinds_are_exactly_four():
-    assert set(KINDS) == {"format", "layout", "statistic", "identifier"}
+def test_kinds_are_exactly_five():
+    assert set(KINDS) == {"format", "layout", "statistic", "identifier", "envelope"}
     assert KINDS["format"] is FormatPlugin and KINDS["layout"] is LayoutPlugin
     assert KINDS["statistic"] is StatisticPlugin and KINDS["identifier"] is IdentifierPlugin
     assert KIND_PACKAGES == {"format": "formats", "layout": "layouts", "statistic": "statistics",
-                             "identifier": "identifiers"}
+                             "identifier": "identifiers", "envelope": "envelopes"}
     assert entry_point_group("format") == "vbt.datalayer.format"
     assert set(CAPABILITIES) == set(KINDS) and API_VERSION == 1
     assert {"canonical_prefix_case", "strip_suffix", "strip_version"} <= NORMALIZE_STEPS
@@ -121,7 +121,7 @@ def test_identifier_base_defaults():
     ({"capabilities": frozenset({"teleport"})}, "unknown statistic capabilities"),
     ({"capabilities": frozenset({"paired"})}, "aggregate_pair"),
     ({"name": ""}, "lacks 'name'"),
-    ({"kind": "envelope"}, "unknown plugin kind"),
+    ({"kind": "teleporter"}, "unknown plugin kind"),
 ])
 def test_validate_plugin_rejects(attrs, match):
     cls = type("Bad", (DlTestStat,), attrs)

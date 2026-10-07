@@ -124,6 +124,10 @@ def test_build_launch_spec(tmp_path):
     assert spec.status_path == str(tmp_path / "target.status.json")
     assert spec.env == CHILD_ENV == {"ARROW_DEFAULT_MEMORY_POOL": "system", "MALLOC_ARENA_MAX": "2",
                                      "PRELOAD_MCP_DATA": "0"}
+    assert "--containment" not in spec.args                     # rlimit_data is the reaper's default
+    wd = build_launch_spec(cfg, DataSettings.from_dict({"memory": {"limit_kind": "watchdog"}}), tmp_path)
+    assert wd.args[wd.args.index("--containment") + 1] == "watchdog" and wd.args.index("--containment") < \
+        wd.args.index("--")
     # per-server limit, the data child's default, the kill switch, HTTP servers
     assert server_limit_mb(MCPServerConfig("t", command="x", mem_limit_mb=512), settings) == 512
     assert server_limit_mb(MCPServerConfig("data", command="x"), settings) == 1500

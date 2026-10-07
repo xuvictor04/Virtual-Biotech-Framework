@@ -60,7 +60,9 @@ tools:
     serve: pass
 
   get_qtl_colocalization:
-    reads: {open_targets.colocalisation_ecaviar: {access: full_table}}
+    reads:
+      open_targets.colocalisation_ecaviar: {access: full_table}
+      open_targets.l2g_prediction: {access: upstream}   # what the upstream tool reads; the derived path does not
     args:
       study_locus_id: {binds_any: [open_targets.colocalisation_ecaviar.leftStudyLocusId,
                                    open_targets.colocalisation_ecaviar.rightStudyLocusId], accepts: [study_locus_id]}

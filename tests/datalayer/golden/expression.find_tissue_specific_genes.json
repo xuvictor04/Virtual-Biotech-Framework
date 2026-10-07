@@ -1,5 +1,5 @@
 {
- "description": "UNAVAILABLE: Fold change against the mean of the other tissues mixes units and in-band unknown codes; a tissue-specificity statistic arrives in phase 3.; use expression.query_expression_by_tissue, expression.compare_expression_across_tissues. Find genes with tissue-enriched or tissue-specific expression and save to CSV file.",
+ "description": "Find genes with tissue-enriched or tissue-specific expression and save to CSV file.\nData: Open Targets Platform 25.09 · table expression_tissues — one record = one tissue's baseline expression of one gene.\nKey: id, tissues[].efo_code.\nResults: one row = one item (one tissue's baseline expression of one gene); `_vbt.total` counts items; `_vbt.grains.gene` counts genes; `_vbt.grains.tissue` counts tissues.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Tissues with a measurement for the gene; values of different units are not comparable.\nThe derived answer writes no CSV file; output_path is accepted and confined. Fold changes compare tissues in one unit only; genes expressed only in the target tissue have fold_change null and expressed_only_in_target true.",
  "schema": {
   "properties": {
    "fold_change_threshold": {
@@ -8,6 +8,8 @@
    },
    "limit": {
     "default": 100,
+    "maximum": 10000,
+    "minimum": 1,
     "type": "integer"
    },
    "output_path": {
@@ -23,6 +25,6 @@
   ],
   "type": "object"
  },
- "serve": "block",
+ "serve": "derived",
  "tool": "expression.find_tissue_specific_genes"
 }

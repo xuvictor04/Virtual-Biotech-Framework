@@ -105,7 +105,7 @@ tools:
     derived:
       verb: find
       table: open_targets.target_essentiality_screens
-      split: {essentiality: {mode: selective, columns: {gene: id, effect: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect", disease: "geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource", cell_line: "geneEssentiality[].depMapEssentiality[].screens[].cellLineName",
+      split: {essentiality: {mode: selective, groups: [target_disease, comparison_disease], columns: {gene: id, effect: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect", disease: "geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource", cell_line: "geneEssentiality[].depMapEssentiality[].screens[].cellLineName",
                     tissue_id: "geneEssentiality[].depMapEssentiality[].tissueId", tissue_name: "geneEssentiality[].depMapEssentiality[].tissueName",
                     essential_flag: "geneEssentiality[].isEssential"}}}
       envelope: {target_disease: "{target_disease}", comparison_disease: "{comparison_disease}", num_results: null}

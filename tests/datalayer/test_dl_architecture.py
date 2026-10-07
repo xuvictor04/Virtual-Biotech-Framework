@@ -73,6 +73,8 @@ ALLOWED: dict[str, dict[str, str]] = {
     "obs": {"gateway/files.py": "the AnnData obs axis of an .h5ad header", "descriptor/models.py": "the matrix obs axis"},
     "var": {"gateway/files.py": "the AnnData var axis of an .h5ad header", "descriptor/models.py": "the matrix var axis"},
     "records": {"descriptor/models.py": "the `records` table kind (§6.2)"},
+    "cosine": {"gateway/fields.py": "the __all__ entry of the fields.cosine helper (computed fields), not the statistic"},
+    "soma": {"gateway/soma_filter.py": "the SOMA filter language named by ArgBinding.escape"},
 }
 
 

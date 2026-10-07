@@ -179,6 +179,9 @@ async def test_interaction_network_tools_are_derived(ctx, tmp_path) -> None:
     with pytest.raises(GatewayError) as e:
         await _derived(gw, "interaction", "get_interaction_network", {"seed_targets": ["PCSK9"], "min_confidence": 0.5})
     assert e.value.kind.value == "unsupported_filter"
+    with pytest.raises(GatewayError) as e:                     # a family_param's bounds hold at the gateway
+        await gw.prepare("interaction", "get_interaction_network", {"seed_targets": ["PCSK9"], "max_hops": 9}, None)
+    assert e.value.kind.value == "invalid_argument" and e.value.envelope()["reason"] == "bounds"
     common = await _derived(gw, "interaction", "find_common_interactors",
                             {"target_ids": ["PCSK9", "SYMD"], "min_targets": 2})
     rows = common.obj["common_interactors"]

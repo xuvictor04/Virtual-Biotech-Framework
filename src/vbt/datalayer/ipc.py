@@ -216,6 +216,7 @@ class ServeResponse(IpcModel):
     sections: dict[str, Any] = {}
     row_keys: list[list[Any]] = []
     reason: str | None = None
+    error: dict[str, Any] | None = None                # a §12.1 envelope: the derived handler refused the request
 
 
 # --------------------------------------------------------------------------- _build_index

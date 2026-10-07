@@ -1,5 +1,5 @@
 {
- "description": "UNAVAILABLE: The background ignores the GO aspect and the multiple-testing family counts only overlapping terms; set-test statistic plugins arrive in phase 3.; use pathway.get_gene_ontology. Perform Gene Ontology (GO) enrichment analysis on a gene list.",
+ "description": "Perform Gene Ontology (GO) enrichment analysis on a gene list.\nData: Open Targets Platform 25.09 · table target — one record = one Ensembl human gene.\nKey: id.\nArguments: gene_list accepts ensembl gene or hgnc symbol (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\npathways: mixed direct and propagated annotations.\ngo: direct annotations only.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Every Ensembl human gene in Open Targets 25.09 (existence only).\nEach GO aspect has its own background (genes with an annotation in that aspect) and its own BH family; annotations propagate to ancestor terms over is_a and part_of (not regulates) when go-basic.obo is available.\nenrichment_ratio is the fold enrichment (observed / expected overlap).",
  "schema": {
   "properties": {
    "gene_list": {
@@ -24,6 +24,8 @@
    },
    "limit": {
     "default": 50,
+    "maximum": 5000,
+    "minimum": 1,
     "type": "integer"
    },
    "pvalue_threshold": {
@@ -36,6 +38,6 @@
   ],
   "type": "object"
  },
- "serve": "block",
+ "serve": "derived",
  "tool": "pathway.get_go_enrichment"
 }

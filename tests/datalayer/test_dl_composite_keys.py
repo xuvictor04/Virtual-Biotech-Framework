@@ -139,6 +139,9 @@ async def test_tahoe_tools_are_derived_through_the_gateway(tahoe, tmp_path) -> N
     genes = res.obj["selective_genes"]
     assert {g["gene_name"] for g in genes} == {F.SELECTIVE, "GENE4"} and res.obj["num_selective"] == 5
     assert res.obj["drug_info"]["drug"] == "Bortezomib"
+    # the handler's selectivity record is kept in the call's provenance (F16), and a note says so
+    assert res.provenance.to_dict()["derived"]["selectivity"]
+    assert any("provenance" in n for n in res.header.get("notes", [])), res.header
     cmp = await _derived(gw, "functional_genomics", "compare_drug_effects",
                          {"drug_a": "Bortezomib", "drug_b": "Erdafitinib", "min_abs_log2fc": 0})
     obj = cmp.obj
@@ -202,3 +205,19 @@ async def test_qtl_colocalisation_reads_the_colocalisation_table(tmp_path) -> No
         with pytest.raises(GatewayError) as e:
             await _derived(gw, "genetics", "get_qtl_colocalization", {"study_locus_id": left, "gene_id": "PCSK9"})
         assert e.value.kind.value == "unsupported_filter"
+
+
+async def test_a_derived_refusal_reaches_the_gateway_typed(tahoe, tmp_path) -> None:
+    """A derived handler's typed error travels in ServeResponse.error and is raised with its own kind,
+    not as service_unavailable."""
+    from test_dl_native_tools import _gateway
+
+    from vbt.datalayer.errors import ErrorKind, GatewayError
+
+    gw = _gateway(tahoe, tmp_path)
+    plan = await gw.prepare("functional_genomics", "compare_drug_effects",
+                            {"drug_a": "Bortezomib", "drug_b": "Erdafitinib", "concentration": 5.0}, None)
+    with pytest.raises(GatewayError) as e:
+        await gw.finish(plan, None)
+    assert e.value.kind == ErrorKind.not_found and e.value.subkind == "combination_not_profiled", e.value.envelope()
+    assert e.value.envelope()["profiled"] and e.value.tool

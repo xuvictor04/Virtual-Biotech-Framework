@@ -23,8 +23,7 @@ UNKNOWN = "ENSG00000999999"
 CALLS: list[tuple[str, str, dict[str, Any], str, bool]] = [
     # (tool_use_id, tool, input, output, is_error)
     ("tu_nf", "mcp__target__get_target_info", {"target_id": UNKNOWN}, f"Target {UNKNOWN} not found", False),
-    ("tu_q", "mcp__association__search_literature", {"keyword_id": PCSK9},
-     json.dumps({"publications": [], "count": 0}), False),
+    ("tu_q", "mcp__clinicaltrials__clear_trial_cache", {}, json.dumps({"cleared": 0}), False),
     ("tu_abs", "mcp__drug__search_known_drugs", {"target_id": UNKNOWN},
      json.dumps({"drugs": [], "num_drugs": 0}), False),
     ("tu_gen", "mcp__thirdparty__lookup", {"q": "x"}, json.dumps({"results": [], "count": 0}), False),

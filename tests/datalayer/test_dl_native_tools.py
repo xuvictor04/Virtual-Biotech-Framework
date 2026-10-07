@@ -149,7 +149,11 @@ def test_neighbors_one_hop_on_either_side(ot) -> None:
     assert all(F.PCSK9 in (r["targetA"], r["targetB"]) and r["partner"] != F.PCSK9 or r["targetA"] == r["targetB"]
                for r in rows)
     assert any(r["targetB"] == F.PCSK9 for r in rows), "matched on side B too"
-    err(call(ot, "neighbors", table="open_targets.interaction", node="PCSK9", hops=2), "unsupported_combination")
+    two = call(ot, "neighbors", table="open_targets.interaction", node="PCSK9", hops=2, limit=100)
+    nodes = {n["node"]: n for n in two["nodes"]}                       # phase 3: a deterministic network
+    assert hdr(two)["network"]["hops"] == 2 and nodes[F.PCSK9]["is_seed"]
+    assert {r["partner"] for r in rows if r["partner"] != F.PCSK9} <= set(nodes)
+    err(call(ot, "neighbors", table="open_targets.interaction", node="PCSK9", hops=5), "invalid_argument")
 
 
 def test_withheld_and_unexposed_tables_are_refused(ot) -> None:

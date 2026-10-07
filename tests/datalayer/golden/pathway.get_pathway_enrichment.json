@@ -1,5 +1,5 @@
 {
- "description": "UNAVAILABLE: Benjamini-Hochberg over overlapping sets only (m counts pathways with at least one hit) and a background of annotated genes; set-test statistic plugins arrive in phase 3.; use pathway.get_gene_pathways, pathway.find_genes_in_pathway. Perform pathway (Reactome) enrichment analysis on a gene list.",
+ "description": "Perform pathway (Reactome) enrichment analysis on a gene list.\nData: Open Targets Platform 25.09 · table target — one record = one Ensembl human gene.\nKey: id.\nArguments: gene_list accepts ensembl gene or hgnc symbol (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\npathways: mixed direct and propagated annotations.\ngo: direct annotations only.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Every Ensembl human gene in Open Targets 25.09 (existence only).\nBH runs over every pathway within the size bounds (zero-overlap pathways included); the background is the genes with at least one Reactome annotation; annotations are propagated to ancestor pathways.\ntop_level_pathways lists the exact top-level Reactome ancestors (topLevelTerm is a lossy single label).",
  "schema": {
   "properties": {
    "gene_list": {
@@ -20,6 +20,8 @@
    },
    "limit": {
     "default": 50,
+    "maximum": 5000,
+    "minimum": 1,
     "type": "integer"
    },
    "max_pathway_size": {
@@ -40,6 +42,6 @@
   ],
   "type": "object"
  },
- "serve": "block",
+ "serve": "derived",
  "tool": "pathway.get_pathway_enrichment"
 }

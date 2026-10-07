@@ -142,9 +142,10 @@ def _strip_table(column: str, table: str) -> str:
 
 
 def tables_read(contract: Any, bound_table: str | None, args: Mapping[str, Any] | None = None) -> list[str]:
-    """The tables (and item tables) one call reads: ``reads`` (``when`` honoured), the bound table
-    after selector resolution, the derived table and its sections, ``rows_of``, result sections and
-    coverage-universe tables. Tables only reachable through an unselected selector value are left out."""
+    """The tables (and item tables) one call reads: ``reads`` (``when`` honoured; an ``upstream`` read of
+    a derived tool left out), the bound table after selector resolution, the derived table and its
+    sections, ``rows_of``, result sections and coverage-universe tables. Tables only reachable through
+    an unselected selector value are left out."""
     b = getattr(contract, "binding", None)
     if b is None:
         return []
@@ -165,6 +166,8 @@ def tables_read(contract: Any, bound_table: str | None, args: Mapping[str, Any] 
     for ref, rs in b.reads.items():
         if rs.when and any(args.get(k) != v for k, v in rs.when.items()):
             continue
+        if rs.access == "upstream" and b.serve == "derived":
+            continue                                   # only the upstream tool reads it; a derived call never does
         add(ref)
     add(bound_table)
     if b.derived is not None:

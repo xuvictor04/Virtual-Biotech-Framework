@@ -69,6 +69,8 @@ def test_explain(capsys: pytest.CaptureFixture[str]) -> None:
     assert "derived text:" in out and "derived schema:" in out
     assert "defect OT-DRUG-003" in out
     assert cli.main(["--profile", "mock", "ds", "explain", "mcp__association__search_literature"]) == 0
+    assert "serve: derived" in capsys.readouterr().out
+    assert cli.main(["--profile", "mock", "ds", "explain", "clinicaltrials.clear_trial_cache"]) == 0
     assert "serve: block" in capsys.readouterr().out
     assert cli.main(["--profile", "mock", "ds", "explain", "--all"]) == 0
     out = capsys.readouterr().out

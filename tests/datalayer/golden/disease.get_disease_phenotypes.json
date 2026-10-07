@@ -1,5 +1,5 @@
 {
- "description": "Get Human Phenotype Ontology (HPO) terms associated with a disease.\nData: Open Targets Platform 25.09 · table disease_phenotype — one record = one (disease, HPO phenotype) association with its evidence records.\nKey: disease, phenotype.\nArguments: disease_id accepts ot disease or disease name (resolved; unknown -> error).\nResults: ranked by phenotype asc (verified by the harness); `_vbt.total` counts all matches; `_vbt.grains.disease` counts diseases; `_vbt.grains.phenotype` counts phenotypes.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. HPO disease-phenotype annotations integrated by OT 25.09; negated (NOT) evidence is a negative finding, not support.",
+ "description": "Get Human Phenotype Ontology (HPO) terms associated with a disease.\nData: Open Targets Platform 25.09 · table disease_phenotype — one record = one (disease, HPO phenotype) association with its evidence records.\nKey: disease, phenotype.\nArguments: disease_id accepts ot disease or disease name (resolved; unknown -> error).\nResults: ranked by phenotype asc (verified by the harness); `_vbt.total` counts all matches; `_vbt.grains.disease` counts diseases; `_vbt.grains.phenotype` counts phenotypes.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. HPO disease-phenotype annotations integrated by OT 25.09; negated (NOT) evidence is a negative finding, not support.\ninclude_descendants=true also returns the phenotypes of every descendant disease term; each row names its own disease.",
  "schema": {
   "properties": {
    "disease_id": {
@@ -14,6 +14,9 @@
      "open_targets:disease_name"
     ],
     "x-vbt-id-type": "open_targets:ot_disease"
+   },
+   "include_descendants": {
+    "x-gateway": true
    },
    "include_negated": {
     "default": false,

@@ -1,32 +1,30 @@
 {
- "description": "UNAVAILABLE: Reads QTL colocalisation from L2G feature values rather than from the colocalisation tables, so CLPP thresholds apply to model features. A colocalisation statistic plugin and a derived replacement arrive in phase 3.; use genetics.query_colocalisation, genetics.get_colocalisation_by_chromosome. Get QTL colocalization evidence from L2G features.",
+ "description": "Get QTL colocalization evidence from L2G features.\nData: Open Targets Platform 25.09 · table colocalisation_ecaviar — one record = one eCAVIAR colocalisation test between two credible sets.\nKey: leftStudyLocusId, rightStudyLocusId.\nArguments: study_locus_id accepts study locus id (resolved; unknown -> error).\nResults: ranked by clpp desc (verified by the harness); `_vbt.total` counts all matches.\nRows with unknown clpp are excluded and counted in `_vbt.excluded_unknown`.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. eCAVIAR tests run by OT 25.09 between overlapping credible sets; absence means not tested.\nCLPP values come from the eCAVIAR colocalisation tests; qtl_type is an exact study type. Gene-level queries are not answerable from these tables.",
  "schema": {
+  "description": "Pass at least one of: study_locus_id.",
   "properties": {
    "gene_id": {
     "default": null,
-    "description": "Accepts ensembl_gene, hgnc_symbol; resolved to one ensembl_gene (unknown values are errors, never empty results).",
-    "examples": [
-     "ENSG00000169174",
-     "PCSK9"
-    ],
-    "type": "string",
-    "x-vbt-accepts": [
-     "open_targets:ensembl_gene",
-     "open_targets:hgnc_symbol"
-    ],
-    "x-vbt-id-type": "open_targets:ensembl_gene"
+    "type": "string"
    },
    "limit": {
     "default": 50,
+    "maximum": 1000,
+    "minimum": 1,
     "type": "integer"
    },
    "min_clpp": {
     "default": 0.5,
+    "description": "Keeps rows with clpp >= this value; unknown values never pass. Defaults to 0.5; pass null for no restriction.",
+    "maximum": 1.0,
+    "minimum": 0.0,
     "type": "number"
    },
    "qtl_type": {
     "default": null,
-    "type": "string"
+    "description": "Values of rightStudyType (see mcp__data__vocab).",
+    "type": "string",
+    "x-vbt-vocabulary": "open_targets.colocalisation_ecaviar.rightStudyType"
    },
    "study_locus_id": {
     "default": null,
@@ -41,8 +39,13 @@
     "x-vbt-id-type": "open_targets:study_locus_id"
    }
   },
-  "type": "object"
+  "type": "object",
+  "x-vbt-require-any": [
+   [
+    "study_locus_id"
+   ]
+  ]
  },
- "serve": "block",
+ "serve": "derived",
  "tool": "genetics.get_qtl_colocalization"
 }

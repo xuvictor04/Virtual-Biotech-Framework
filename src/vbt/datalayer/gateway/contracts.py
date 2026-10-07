@@ -535,6 +535,14 @@ def apply_arg_contracts(contract: Any, args: Mapping[str, Any], vocab: Mapping[s
             out.args_sent[name] = int(value)
             continue
 
+        if binding.role == "family_param" and isinstance(value, (int, float)) and not isinstance(value, bool):
+            # a parameter of the derived computation (max_hops, min_cell_lines, ...): its declared bounds
+            if (binding.min is not None and value < binding.min) or (binding.max is not None and value > binding.max):
+                text = " and ".join(t for t in (f"at least {binding.min:g}" if binding.min is not None else "",
+                                                f"at most {binding.max:g}" if binding.max is not None else "") if t)
+                raise _invalid(contract, name, value, f"{name} must be {text}", reason="bounds",
+                               bounds=[binding.min, binding.max])
+
         if binding.role == "unbound":
             has_default, default = _default(schema, name)
             if name in args and (not has_default or value != default) and value is not None:
@@ -791,6 +799,12 @@ def _group_args(contract: Any) -> list[str]:
     b = getattr(contract, "binding", None)
     for fm in (b.result.fields.values() if b is not None else ()):
         for g in (fm.computed or {}).get("groups") or ():
+            if g in contract.args and g not in names:
+                names.append(str(g))
+    # a derived handler that compares groups names them in its split options ({<handler>: {groups: [...]}})
+    split = (b.derived.split if b is not None and b.derived is not None else None) or {}
+    for opts in split.values():
+        for g in (opts.get("groups") or () if isinstance(opts, Mapping) else ()):
             if g in contract.args and g not in names:
                 names.append(str(g))
     for n, a in contract.args.items():

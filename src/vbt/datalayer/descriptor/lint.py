@@ -1213,6 +1213,8 @@ class _OverlayLinter:
     def lint_result(self, tool: str, b: ToolBinding) -> None:
         w = f"tools.{tool}.result"
         res = b.result
+        if res.codec and self.registry is not None and not self.registry.has("envelope", res.codec):
+            self.add("error", f"{w}.codec", f"unknown envelope plugin {res.codec!r}", "plugin", res.codec)
         if res.rows_of:
             hit = self.table_of(res.rows_of, f"{w}.rows_of")
             if hit is not None and hit[0].tables[hit[1]].items_of is None:

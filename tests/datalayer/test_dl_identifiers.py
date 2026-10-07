@@ -22,6 +22,8 @@ PHASE1 = {
 }
 #: Phase-2 identifier plugins (§9.4): NCBI, GEO, CELLxGENE and ontology-term kinds.
 PHASE2 = {"ncbi_gene", "geo_gsm", "census_joinid", "cell_barcode", "cell_ontology", "uberon"}
+#: Phase-4 identifier plugins (F20): the CELLxGENE Census feature ID.
+PHASE4 = {"census_feature"}
 
 
 @pytest.fixture(scope="module")
@@ -42,7 +44,7 @@ def value(n) -> str:
 
 
 def test_every_phase1_plugin_is_registered_and_valid(reg):
-    assert set(reg.names("identifier")) == PHASE1 | PHASE2
+    assert set(reg.names("identifier")) == PHASE1 | PHASE2 | PHASE4
     for p in reg.all("identifier"):
         validate_plugin(p)
         assert p.name == p.id_type and p.version == "1.0"

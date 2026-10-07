@@ -240,6 +240,8 @@ class ResultSpec(Strict):
     not_found_when: list[str] = []
     statistics: StatisticsSpec | None = None
     files: list[FileCheckSpec] = []
+    codec: str | None = None                           # envelope plugin decoding the reply (default jsonpath)
+    codec_options: dict[str, Any] = {}
 
     @property
     def row_paths(self) -> list[str]:
@@ -320,6 +322,8 @@ class GenericSpec(Strict):
     empty_when: list[str] = []                         # JSONPath predicates of a structural empty
     param_kinds: dict[str, list[str]] = {}             # {"<param glob>": [<id_type>, ...]}
     notes: list[str] = []
+    codec: str | None = None                           # envelope plugin decoding replies (default jsonpath)
+    codec_options: dict[str, Any] = {}
 
 
 class Overlay(Strict):

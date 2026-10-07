@@ -97,6 +97,8 @@ def _install() -> None:
                 except BudgetExceeded as exc:          # as serve.py: no rows, total null, never a partial answer
                     return ServeResponse(rows=[], total=None, truncated=True,
                                          reason=f"too_large: {exc.reason}").model_dump(mode="json")
+                except GatewayError as exc:            # a typed refusal reaches the gateway with its kind
+                    return ServeResponse(rows=[], total=None, error=exc.envelope()).model_dump(mode="json")
         return base(ctx, payload)
 
     serve._phase3 = True  # type: ignore[attr-defined]

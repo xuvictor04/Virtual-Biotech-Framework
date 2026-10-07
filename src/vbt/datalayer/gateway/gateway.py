@@ -203,8 +203,10 @@ class DataGateway:
         self.profile = settings.gateway.profile
         self.service = service or ServiceClient()
         self.index_store = index_store or IndexStore(settings.cache_dir)
-        self.admission = admission or AdmissionController(settings, MemoryEstimator.from_settings(settings),
-                                                          ResidencyLedger())
+        # measured calibrations and feedback under cache_dir sharpen the estimates; commits record feedback
+        self.admission = admission or AdmissionController(
+            settings, MemoryEstimator.from_settings(settings, load_calibrations=True), ResidencyLedger(),
+            feedback_dir=settings.cache_dir)
         self.readiness = readiness or ReadinessCache(settings.cache_dir, catalog, self.registry)
         self.readiness.load()
         self.resolver = Resolver(self.registry, catalog, self._index_provider, remote=self._remote, settings=settings)
@@ -1295,7 +1297,8 @@ class DataGateway:
         if st.mode != "enforce":
             from ...tools.mcp_bridge import legacy_result
             try:
-                cls = classify(raw, plan.contract, plan, universe_tables=self._universe_tables(plan.contract))
+                cls = classify(raw, plan.contract, plan, universe_tables=self._universe_tables(plan.contract),
+                               registry=self.registry)
                 if cls.outcome != "ok":
                     self._observe(plan, f"would_{cls.outcome}", reason=cls.reason)
             except Exception:  # noqa: BLE001
@@ -1388,7 +1391,8 @@ class DataGateway:
             raise GatewayError(ErrorKind.source_error, "no upstream result", tool=st.name)
         w = st.witness
         cls = classify(raw, contract, plan, universe_tables=self._universe_tables(contract),
-                       witness_total=w.total if w is not None and w.total_method != "unknown" else None)
+                       witness_total=w.total if w is not None and w.total_method != "unknown" else None,
+                       registry=self.registry)
         if cls.outcome == "oom":
             raise cls.error  # type: ignore[misc]
         if cls.outcome in ("not_found", "source_error"):
@@ -1845,6 +1849,8 @@ class DataGateway:
                            params={n: v for n, v in plan.args_raw.items() if isinstance(v, (str, int, float, bool))},
                            budget_bytes=self.settings.witness.repair_max_bytes)
         resp = await self.service.serve(req)
+        if resp.error:                                 # the handler refused the request: its own kind, not an outage
+            raise GatewayError.from_envelope(resp.error).with_tool(st.name)
         first = resp.rows[0] if isinstance(resp.rows, list) and resp.rows else None
         match = first.get("_match") if isinstance(first, Mapping) else None
         if st.search_text and isinstance(match, Mapping) and match.get("class") != "exact":
@@ -2100,7 +2106,7 @@ class DataGateway:
     def _finish_generic(self, plan: CallPlan, st: _CallState, raw: RawResult | None) -> DataResult:
         if raw is None:
             raise GatewayError(ErrorKind.source_error, "no upstream result", tool=st.name)
-        cls = classify(raw, plan.contract, plan)
+        cls = classify(raw, plan.contract, plan, registry=self.registry)
         if cls.outcome in ("oom", "not_found", "source_error"):
             raise cls.error  # type: ignore[misc]
         status = "empty_unverified" if cls.outcome == "empty_unverified" else "ok"
@@ -2266,12 +2272,16 @@ class DataGateway:
         if counters.items_removed.get("negated"):
             notes.append(f"{counters.items_removed['negated']} negated item(s) removed (pass include_negated=true "
                          "to keep them)")
+        records = _derived_records(serve)
+        if records:
+            notes.append("the derived " + ", ".join(sorted(records)) + " record(s) are in this call's provenance")
         # provenance
         prov = self._record(plan, st, contract, t, status=status, rows=rows, cols=cols, types=types, total=total,
                             total_method=total_method, truncated=truncated, coverage=coverage, statement=statement,
                             served_by=served_by, order=st.order[0] if st.order else None, verified=verified,
                             obj=obj, withheld_leakage=counters.withheld.get("leakage", 0),
-                            leakage_unchecked=counters.leakage_unchecked)
+                            leakage_unchecked=counters.leakage_unchecked,
+                            derived=records)
         for entry in st.materialized:
             entry["prov"] = prov.id
         header = Header(
@@ -2296,7 +2306,7 @@ class DataGateway:
                 rows: Sequence[Any], cols: Sequence[str], types: Sequence[str | None], total: int | None,
                 total_method: str, truncated: bool, coverage: str, statement: str | None, served_by: str,
                 order: Any, verified: bool | None, obj: Any, withheld_leakage: int = 0,
-                leakage_unchecked: int = 0) -> DataProvenance:
+                leakage_unchecked: int = 0, derived: dict[str, Any] | None = None) -> DataProvenance:
         b = contract.binding
         desc = t.descriptor if t is not None else None
         self._stamp_times(st)
@@ -2337,7 +2347,7 @@ class DataGateway:
             if st.leakage is not None and st.leakage.active else None,
             evidence_nature=(t.spec.evidence_nature.model_dump() if t is not None and t.spec.evidence_nature
                              else None),
-            upstream=self._upstream_info(plan), t_ms=dict(st.t_ms))
+            upstream=self._upstream_info(plan), t_ms=dict(st.t_ms), derived=derived or None)
         for name, ok, detail in st.checks:
             prov.add_check(name, ok, detail)
         if rows and cols:
@@ -2503,6 +2513,18 @@ def _rank_json(o: Any) -> dict[str, Any]:
             out["within"] = list(o.within)
     out.setdefault("direction", "desc")
     return out
+
+
+#: ServeResponse sections that carry a derived handler's record (§10.6, F16, F18): kept in provenance.
+DERIVED_RECORDS = ("_expansion", "_propagation", "_statistics", "_network", "_essentiality", "_specificity",
+                   "_selectivity")
+
+
+def _derived_records(serve: ServeResponse | None) -> dict[str, Any]:
+    """``{expansion: ..., statistics: ...}``: the records a derived handler returned beside its rows."""
+    if serve is None:
+        return {}
+    return {k[1:]: json_value(v) for k, v in serve.sections.items() if k in DERIVED_RECORDS and v}
 
 
 def _record(res: Any, arg: str) -> dict[str, Any]:
