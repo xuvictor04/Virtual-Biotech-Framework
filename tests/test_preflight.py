@@ -10,6 +10,7 @@ import pytest
 from vbt import preflight
 from vbt.config import load_config
 from vbt.preflight import (
+    DATA_TOOLS_LABEL,
     TURN_NOT_SENT,
     DataReadinessError,
     check_credentials,
@@ -18,6 +19,8 @@ from vbt.preflight import (
     check_reference_data,
     check_tahoe,
     degraded_servers,
+    degraded_tables,
+    degraded_tools,
     mcp_modules,
     require_ready,
 )
@@ -25,8 +28,10 @@ from vbt.preflight import (
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
-def _live_config(monkeypatch, tmp_path, **env):
-    """Anthropic-provider config with the default MCP servers (nothing is started)."""
+def _live_config(monkeypatch, tmp_path, *, data=False, **env):
+    """Anthropic-provider config with the default MCP servers (nothing is started). The whole-release
+    checks need the data layer off (``data.enabled: false``); ``data=True`` keeps it on, with its
+    cache under ``tmp_path``."""
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     for k, v in env.items():
         if v is None:
@@ -34,7 +39,8 @@ def _live_config(monkeypatch, tmp_path, **env):
         else:
             monkeypatch.setenv(k, v)
     # the default is a local model now; these checks exercise the Anthropic key handling
-    cfg = load_config(["claude"], overrides={"paths": {"runs_dir": str(tmp_path / "runs")}})
+    cfg = load_config(["claude"], overrides={"paths": {"runs_dir": str(tmp_path / "runs")},
+                                             "data": {"enabled": bool(data), "cache_dir": str(tmp_path / "dl")}})
     assert cfg["provider"]["name"] == "anthropic"
     return cfg
 
@@ -193,6 +199,10 @@ def test_doctor_parser():
     preflight.add_doctor_parser(sub)
     args = p.parse_args(["doctor", "--smoke", "--analysis"])
     assert args.smoke and args.analysis and args.handler is preflight._doctor_handler
+    assert args.smoke == "gateway" and not args.data
+    args = p.parse_args(["doctor", "--smoke=upstream", "--data"])
+    assert args.smoke == "upstream" and args.data
+    assert p.parse_args(["doctor"]).smoke is False
 
 
 @pytest.mark.skipif(importlib.util.find_spec("fastmcp") is None, reason="fastmcp not installed")
@@ -215,3 +225,107 @@ def test_doctor_smoke_fails_when_a_tool_call_errors(config, tmp_path):
     lines.clear()
     assert preflight.run_doctor(config, smoke=True, out=lines.append) == 0, "\n".join(lines)
     assert "[ok] MCP echo: say(text='ok')" in "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# tool-scoped readiness (data layer): the data child's check is replaced by a synthetic response
+# ---------------------------------------------------------------------------
+
+KNOWN_DRUG_READERS = {"mcp__drug__search_known_drugs"}
+
+
+def _check(**tables):
+    """A ``CheckResponse`` JSON: ``source__table=status`` (failing tables get one table-level R1 finding)."""
+    out = {}
+    for ref, status in tables.items():
+        ref = ref.replace("__", ".")
+        checks = [] if status == "ready" else [{"name": "R1:location", "ok": False, "level": "error",
+                                                "detail": f"{ref} files absent"}]
+        out[ref] = {"status": status, "checks": checks, "fingerprint": "fp1:test"}
+    return {"tables": out, "depth": "standard", "table_errors": {}}
+
+
+def _tool_scoped(monkeypatch, tmp_path, response, servers=None):
+    cfg = _live_config(monkeypatch, tmp_path, data=True, ANTHROPIC_API_KEY="sk-ant-test",
+                       OPEN_TARGETS_DATA_PATH=str(tmp_path / "ot"), TAHOE_DATA_PATH="")
+    if servers is not None:
+        cfg["mcp_servers"]["servers"] = [s for s in cfg["mcp_servers"]["servers"] if s["name"] in servers]
+    calls = []
+
+    def fake_check(config, *, tables=(), depth=None, timeout=None):
+        calls.append(list(tables))
+        return response
+    monkeypatch.setattr(preflight, "run_data_check", fake_check)
+    monkeypatch.setattr(preflight, "check_mcp_commands", lambda cfg: [])
+    return cfg, calls
+
+
+def test_one_missing_table_degrades_only_its_readers(monkeypatch, tmp_path):
+    cfg, calls = _tool_scoped(monkeypatch, tmp_path, _check(open_targets__known_drug="missing",
+                                                             open_targets__target="ready"))
+    results = require_ready(cfg)          # one missing table never blocks the session
+    assert calls == [[]]                  # one check over every table
+    finding = next(r for r in results if r.label.startswith("data: open_targets.known_drug"))
+    assert not finding.ok and finding.kind == "data" and finding.required
+    assert finding.scope == {"source": "open_targets", "table": "known_drug"}
+    assert set(finding.tools) == KNOWN_DRUG_READERS
+    assert set(degraded_tools(cfg, results)) == KNOWN_DRUG_READERS
+    assert degraded_servers(cfg, results) == {}           # drug and target keep their other tools
+    assert degraded_tables(results) == {"open_targets.known_drug": "missing"}
+    ot = next(r for r in results if "OPEN_TARGETS_DATA_PATH" in r.label)
+    assert ot.ok and ot.scope == {"source": "open_targets"}            # the legacy label, now an aggregate
+    summary = next(r for r in results if r.label == DATA_TOOLS_LABEL)
+    assert summary.ok and summary.scope["ready"] == summary.scope["granted"] - 1
+
+
+def test_blocks_only_when_no_granted_data_tool_is_ready(monkeypatch, tmp_path):
+    from vbt.preflight import data_catalog
+
+    cfg, _ = _tool_scoped(monkeypatch, tmp_path, {"tables": {}}, servers={"drug"})
+    _settings, catalog, _registry = data_catalog(cfg)
+    tables = {ref for tool in catalog.tools("drug") for ref in catalog.contract("drug", tool).tables}
+    response = _check(**{ref.replace(".", "__"): "missing" for ref in tables})
+    monkeypatch.setattr(preflight, "run_data_check", lambda config, **kw: response)
+    with pytest.raises(DataReadinessError) as exc:
+        require_ready(cfg)
+    assert DATA_TOOLS_LABEL in str(exc.value) and TURN_NOT_SENT in str(exc.value)
+    results = require_ready(cfg, allow_missing_data=True)
+    assert set(degraded_servers(cfg, results)) == {"drug"}           # every drug tool is unready
+    cfg["data"]["readiness"]["block_when"] = "never"
+    assert require_ready(cfg)
+
+
+def test_per_turn_reuses_the_session_check(monkeypatch, tmp_path):
+    cfg, calls = _tool_scoped(monkeypatch, tmp_path, _check(open_targets__known_drug="missing"))
+    require_ready(cfg)
+    assert calls == [[]]
+    calls.clear()
+    results = require_ready(cfg, per_turn=True)
+    # cached results are reused (stat-only signatures); only tables without a cached result are re-checked
+    assert all("open_targets.known_drug" not in c for c in calls)
+    assert set(degraded_tools(cfg, results)) == KNOWN_DRUG_READERS
+
+
+def test_data_check_unavailable_falls_back_to_the_release_checks(monkeypatch, tmp_path):
+    cfg = _live_config(monkeypatch, tmp_path, data=True, ANTHROPIC_API_KEY="sk-ant-test", OPEN_TARGETS_DATA_PATH="",
+                       TAHOE_DATA_PATH="")
+
+    def broken(config, **kw):
+        raise preflight.DataCheckUnavailable("no interpreter")
+    monkeypatch.setattr(preflight, "run_data_check", broken)
+    results = check_reference_data(cfg)
+    note = next(r for r in results if "tool-scoped" in r.label)
+    assert not note.ok and not note.required and "no interpreter" in note.detail
+    assert any("OPEN_TARGETS_DATA_PATH" in r.label and not r.ok and r.scope is None for r in results)
+    with pytest.raises(DataReadinessError, match="OPEN_TARGETS_DATA_PATH"):
+        require_ready(cfg)                 # the legacy checks keep their blocking semantics
+
+
+def test_doctor_lists_unready_tools(monkeypatch, tmp_path):
+    cfg, _ = _tool_scoped(monkeypatch, tmp_path, _check(open_targets__known_drug="missing"))
+    results = check_reference_data(cfg)
+    lines = preflight.tool_readiness_lines(results)
+    assert any(ln.strip().startswith("drug:") and "tools ready" in ln for ln in lines)
+    assert any("[!!] search_known_drugs" in ln and "known_drug" in ln for ln in lines)
+    every = preflight.tool_readiness_lines(results, every_tool=True)
+    assert any("[ok] get_drug_info" in ln for ln in every)

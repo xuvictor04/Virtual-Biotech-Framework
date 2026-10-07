@@ -20,8 +20,16 @@ Two entry points:
   ``open_session``: the model server's readiness check before a run starts
   (:class:`ProviderNotReadyError`) and its facts for the pinned config.
 
-The Open Targets check reuses the upstream ``tools/doctor.py::reference_files``
-(layout, truncated files, partial downloads, download manifest).
+With the data layer (``data.enabled``, gateway mode not ``off``; docs/DATA_LAYER.md
+§13) reference-data readiness is scoped to tools: :func:`check_reference_data`
+runs the data child's ``server.py --check --json`` once as a subprocess and
+returns one result per unready table, column or partition (``scope``) with the
+tools it makes unready; :func:`degraded_tools` and :func:`degraded_servers`
+(only servers whose every tool is unready) feed ``open_session``, and the
+session blocks on data only when no granted data tool is ready. Without the
+data layer (or when the data child cannot run) the Open Targets check reuses
+the upstream ``tools/doctor.py::reference_files`` (layout, truncated files,
+partial downloads, download manifest).
 """
 
 from __future__ import annotations
@@ -37,7 +45,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from .config import base_tool_env, env_files, resolve_path
 from .envpolicy import child_env
@@ -62,6 +70,8 @@ SERVER_MODULES: dict[str, tuple[str, ...]] = {
     "pubmed": ("httpx",),
 }
 FASTMCP_MAJORS = (3, 4)   # pyproject: fastmcp>=3.2,<5 (upstream pins 3.2.0)
+#: Third-party modules the data-layer child (src/vbt/datalayer/service/server.py) imports.
+DATA_CHILD_MODULES = ("pydantic", "yaml", "pyarrow")
 
 ANALYSIS_MODULES = ("scanpy", "anndata", "pydeseq2", "gseapy", "decoupler", "liana", "harmonypy",
                     "matplotlib", "seaborn", "lifelines", "statsmodels", "rpy2")
@@ -208,6 +218,11 @@ class CheckResult:
     detail: str = ""
     required: bool = True          # False: informational/optional, never fails the doctor
     kind: str = "general"          # credentials | data | mcp | analysis | general
+    # Data-layer results only: what the result is about ({source, table, column?, partition?} for a
+    # readiness finding, {source} for an aggregate, {granted, ready, bound} for the tools summary).
+    # None for the legacy checks, which keep their old blocking semantics.
+    scope: dict[str, Any] | None = None
+    tools: dict[str, str] = field(default_factory=dict)   # tools this finding makes unready {tool: reason}
 
     def line(self) -> str:
         mark = "ok" if self.ok else ("!!" if self.required else "--")
@@ -358,8 +373,34 @@ def check_tahoe(config: dict[str, Any]) -> CheckResult | None:
     return CheckResult("Tahoe-100M data (TAHOE_DATA_PATH)", True, detail=value, kind="data")
 
 
-def check_reference_data(config: dict[str, Any]) -> list[CheckResult]:
-    """Reference data needed by the enabled MCP servers (Open Targets; Tahoe when configured)."""
+def check_reference_data(config: dict[str, Any], *, per_turn: bool = False) -> list[CheckResult]:
+    """Reference data needed by the enabled MCP servers.
+
+    With the data layer (``data.enabled`` and a gateway mode other than ``off``) readiness is
+    scoped to each tool (§13): the data child's ``--check`` runs once as a subprocess and every
+    unready part (table, column, container, partition) becomes one result with ``scope`` and the
+    tools it makes unready; the legacy labels (Open Targets, Tahoe) stay as aggregates that fail
+    only when no granted tool reading that source is ready. ``per_turn`` reuses the session's
+    cached results and re-checks only tables whose stat-only signature moved. Without the data
+    layer, or when the data child cannot run, the legacy whole-release checks apply (with a note).
+    """
+    if not _servers(config):
+        return []
+    if data_layer_active(config):
+        try:
+            return check_data_readiness(config, per_turn=per_turn)
+        except DataCheckUnavailable as exc:
+            note = CheckResult("data layer readiness (tool-scoped)", False, required=False, kind="data",
+                               detail=f"the data child's check could not run ({exc}); falling back to the "
+                                      "whole-release checks",
+                               hint="check vars.mcp_python has pyarrow and the vbt data-layer dependencies "
+                                    "(`vbt doctor` lists the data child's imports)")
+            return [*_legacy_reference_data(config), note]
+    return _legacy_reference_data(config)
+
+
+def _legacy_reference_data(config: dict[str, Any]) -> list[CheckResult]:
+    """The pre-datalayer checks: whole-release layout of Open Targets (and Tahoe when configured)."""
     names = {s.get("name") for s in _servers(config)}
     out: list[CheckResult] = []
     if names & OPEN_TARGETS_SERVERS:
@@ -368,6 +409,430 @@ def check_reference_data(config: dict[str, Any]) -> list[CheckResult]:
         tahoe = check_tahoe(config)
         if tahoe is not None:
             out.append(tahoe)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# tool-scoped data readiness (the data layer, docs/DATA_LAYER.md §13)
+# ---------------------------------------------------------------------------
+
+#: The data child's entry point (``--check --json`` runs its readiness checks without MCP).
+DATA_SERVICE_SCRIPT = ("src", "vbt", "datalayer", "service", "server.py")
+DATA_CHECK_TIMEOUT_S = 1800.0
+DATA_TOOLS_LABEL = "data tools ready"
+OPEN_TARGETS_LABEL = "Open Targets reference data (OPEN_TARGETS_DATA_PATH)"
+TAHOE_LABEL = "Tahoe-100M data (TAHOE_DATA_PATH)"
+OPEN_TARGETS_HINT = ("download the Open Targets 25.09 release: python third_party/TheVirtualBiotech/tools/"
+                     "download_open_targets.py <dir> --workers 8, then set OPEN_TARGETS_DATA_PATH in .env")
+TAHOE_HINT = ("prepare the Tahoe-100M pseudobulk DE files (third_party/TheVirtualBiotech/docs/TAHOE_SETUP.md, "
+              "tools/prepare_tahoe.py) or unset TAHOE_DATA_PATH")
+#: Sources whose data is optional: unset, their findings are informational (as the legacy Tahoe check).
+OPTIONAL_SOURCES = {"tahoe_100m": "TAHOE_DATA_PATH"}
+_READY = frozenset({"ready", "awaiting_producer", "unbound"})
+_STATUS_HINTS = {
+    "missing": "the table's files are absent: download or prepare them, then rerun `vbt ds check`",
+    "partial": "a partial download or unreadable fragment: complete the download, then rerun `vbt ds check`",
+    "schema_drift": "the columns differ from the descriptor: update the descriptor or the data",
+    "encoding_drift": "stored codes differ from the descriptor's encoding",
+    "key_violation": "the declared key is not unique or has nulls",
+    "stale": "the release differs from the one the descriptor expects",
+}
+#: Tables whose ``_check`` failed in this process, with their signature (a per-turn check skips them).
+_CHECK_ERRORS: dict[tuple[str, str], tuple[str | None, str]] = {}
+
+
+#: The last full ``_check`` response per cache directory (``open_session`` hands it to the gateway).
+_LAST_CHECK: dict[str, dict[str, Any]] = {}
+
+
+def last_data_check(config: dict[str, Any]) -> dict[str, Any] | None:
+    """The ``CheckResponse`` JSON of this process's last session-start data check for ``config``."""
+    try:
+        from .datalayer.settings import DataSettings
+        return _LAST_CHECK.get(str(DataSettings.from_config(config).cache_dir))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+class DataCheckUnavailable(RuntimeError):
+    """The data child's readiness check could not run (no script, no interpreter, a crash)."""
+
+
+def data_layer_active(config: dict[str, Any]) -> bool:
+    """``data.enabled`` with a gateway mode other than ``off``: readiness is scoped to tools."""
+    try:
+        from .datalayer.settings import DataSettings
+        settings = DataSettings.from_config(config)
+    except Exception:  # noqa: BLE001 - a broken data section falls back to the legacy checks
+        log.debug("data settings unreadable", exc_info=True)
+        return False
+    return bool(settings.enabled) and settings.gateway.mode != "off"
+
+
+def data_child_command(config: dict[str, Any], *args: str) -> tuple[list[str], dict[str, str]]:
+    """``(argv, env)`` of the data child's command line (``<mcp_python> -E server.py ...``)."""
+    from .datalayer.settings import SETTINGS_ENV, DataSettings
+
+    settings = DataSettings.from_config(config)
+    python = (config.get("vars") or {}).get("mcp_python") or sys.executable
+    script = Path(settings.project_root).joinpath(*DATA_SERVICE_SCRIPT)
+    if not script.is_file():
+        raise DataCheckUnavailable(f"the data child script {script} is missing")
+    env = child_env(os.environ, extra={**base_tool_env(config), SETTINGS_ENV: settings.to_json()})
+    return [str(python), "-E", str(script), *args], env
+
+
+def run_data_check(config: dict[str, Any], *, tables: Iterable[str] = (), depth: str | None = None,
+                   timeout: float = DATA_CHECK_TIMEOUT_S) -> dict[str, Any]:
+    """Run ``server.py --check --json`` once and return its ``CheckResponse`` JSON."""
+    from .datalayer.settings import DataSettings
+
+    depth = depth or DataSettings.from_config(config).readiness.session_depth
+    args = ["--check", "--json", "--depth", depth]
+    for t in tables:
+        args += ["--table", str(t)]
+    cmd, env = data_child_command(config, *args)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise DataCheckUnavailable(f"could not run {cmd[0]}: {exc}") from exc
+    line = next((ln for ln in reversed(proc.stdout.splitlines()) if ln.startswith("{")), None)
+    if proc.returncode != 0 or line is None:
+        err = (proc.stderr or proc.stdout).strip()[-500:]
+        raise DataCheckUnavailable(f"{cmd[0]} exited {proc.returncode}: {err}")
+    try:
+        return json.loads(line)
+    except ValueError as exc:
+        raise DataCheckUnavailable(f"unreadable --check output: {exc}") from exc
+
+
+def _tool_name(server: str, tool: str) -> str:
+    return f"mcp__{server}__{tool}"
+
+
+def granted_tools(config: dict[str, Any], tools: Iterable[str]) -> set[str]:
+    """The ``tools`` some agent (or the CSO) may call; all of them when the roster cannot be loaded."""
+    tools = list(tools)
+    try:
+        from .agents import load_roster
+        cso, agents = load_roster(config)
+    except Exception:  # noqa: BLE001 - without a roster every tool counts as granted
+        return set(tools)
+    roster = [cso, *agents.values()]
+    return {t for t in tools if any(a.has_tool(t) for a in roster)}
+
+
+@dataclass
+class DataReadiness:
+    """Tool-scoped readiness of the enabled servers, from one set of ``_check`` results.
+
+    ``unready``: tools every call of which is unready, with the reason (``{table, column?, check,
+    detail, status}``); ``partial``: tools that only some partitions block (``{tool: [labels]}``);
+    ``bound``: ``{server: [tools with a reviewed, servable binding]}``; ``reads``: the physical
+    tables each tool may read; ``errors``: tables whose check failed (left unchecked)."""
+
+    tables: dict[str, Any] = field(default_factory=dict)          # ref -> TableCheckModel
+    errors: dict[str, str] = field(default_factory=dict)
+    unready: dict[str, dict[str, Any]] = field(default_factory=dict)
+    partial: dict[str, list[str]] = field(default_factory=dict)
+    bound: dict[str, list[str]] = field(default_factory=dict)
+    reads: dict[str, set[str]] = field(default_factory=dict)
+    granted: set[str] = field(default_factory=set)
+    awaiting: set[str] = field(default_factory=set)               # tables a tool writes during the run
+
+    @property
+    def used(self) -> set[str]:
+        return set().union(*self.reads.values()) if self.reads else set()
+
+    def reason(self, tool: str) -> str:
+        r = self.unready.get(tool)
+        if not r:
+            return ""
+        where = r["table"] + (f".{r['column']}" if r.get("column") else "")
+        return f"{where} {r.get('status') or 'not ready'} ({r.get('check')}: {r.get('detail')})"[:300]
+
+
+def data_catalog(config: dict[str, Any]) -> tuple[Any, Any, Any]:
+    """``(settings, catalog, registry)`` of the config's data layer (no pyarrow)."""
+    from .datalayer.catalog import build_catalog
+    from .datalayer.descriptor.load import variables_from_config
+    from .datalayer.plugins.registry import discover
+    from .datalayer.settings import DataSettings
+
+    settings = DataSettings.from_config(config)
+    registry = discover(settings)
+    return settings, build_catalog(settings, registry, variables=variables_from_config(config)), registry
+
+
+def data_readiness(config: dict[str, Any], cache: Any, catalog: Any, *, errors: Mapping[str, str] | None = None,
+                   servers: Iterable[str] | None = None) -> DataReadiness:
+    """Decide every bound tool of the enabled servers (or of ``servers``) from the cached ``_check`` results."""
+    from .datalayer.gateway.readiness import call_readiness
+
+    out = DataReadiness(tables=dict(cache.tables), errors=dict(errors or {}))
+    enabled = set(servers) if servers is not None else {s.get("name") for s in _servers(config)}
+    for server in catalog.servers():
+        if server not in enabled:
+            continue
+        for tool in catalog.tools(server):
+            try:
+                contract = catalog.contract(server, tool)
+            except Exception:  # noqa: BLE001 - a broken binding is reported by `vbt ds lint`
+                continue
+            b = contract.binding
+            if b is None or b.serve == "block" or b.hidden:
+                continue
+            name = _tool_name(server, tool)
+            out.bound.setdefault(server, []).append(name)
+            out.reads[name] = {cache.physical(ref)[0] for ref in contract.tables}
+            r = call_readiness(contract, cache, bound_table=contract.bound_table)
+            always = [x for x in r.reasons if "partition" not in x]
+            if always:
+                x = always[0]
+                m = cache.get(x["name"])
+                col = x.get("column")
+                status = ((m.columns.get(col) or m.containers.get(col)) if (m is not None and col) else None) or \
+                    (m.status if m is not None else None)
+                out.unready[name] = {"table": x["name"], **({"column": col} if col else {}), "check": x.get("check"),
+                                     "detail": x.get("detail"), "status": status}
+            elif r.unavailable_partitions:
+                out.partial[name] = sorted({p for parts in r.unavailable_partitions.values() for p in parts})
+    out.granted = granted_tools(config, [t for tools in out.bound.values() for t in tools])
+    return out
+
+
+def _mark_awaiting(response: dict[str, Any], catalog: Any) -> set[str]:
+    """Tables a tool materialises during the run (``materialized_by``) are ``awaiting_producer``,
+    never missing, before the run exists."""
+    out = set()
+    for ref, m in (response.get("tables") or {}).items():
+        try:
+            spec = catalog.table(ref).spec
+        except Exception:  # noqa: BLE001
+            continue
+        if getattr(spec, "materialized_by", None) is not None and m.get("status") not in _READY:
+            m["status"] = "awaiting_producer"
+            for c in m.get("checks") or []:
+                if not c.get("ok"):
+                    c["level"] = "info"
+            out.add(ref)
+    return out
+
+
+def load_data_readiness(config: dict[str, Any], *, per_turn: bool = False,
+                        response: Mapping[str, Any] | None = None, servers: Iterable[str] | None = None
+                        ) -> tuple[DataReadiness, Any, Any]:
+    """Run (or, per turn, reuse) the data child's check and decide the enabled servers' tools
+    (``servers``: these instead). Returns ``(readiness, cache, catalog)``; the results are persisted
+    in ``data.cache_dir``, where the session's gateway finds them."""
+    from .datalayer.gateway.readiness import ReadinessCache
+
+    settings, catalog, registry = data_catalog(config)
+    cache = ReadinessCache(settings.cache_dir, catalog, registry)
+    servers = list(servers) if servers is not None else None
+    enabled = set(servers) if servers is not None else {s.get("name") for s in _servers(config)}
+    wanted: set[str] = set()
+    for server in catalog.servers():
+        if server in enabled:
+            for tool in catalog.tools(server):
+                try:
+                    wanted.update(cache.physical(ref)[0] for ref in catalog.contract(server, tool).tables)
+                except Exception:  # noqa: BLE001
+                    continue
+    errors: dict[str, str] = {}
+    key = str(settings.cache_dir)
+    if response is None and per_turn:
+        cache.load()   # stat-only: results whose descriptor digest and layout signature still match
+        stale = []
+        for ref in sorted(wanted - set(cache.tables)):
+            known = _CHECK_ERRORS.get((key, ref))
+            if known is not None and known[0] == cache._current_signature(ref):
+                errors[ref] = known[1]
+            else:
+                stale.append(ref)
+        if stale:
+            response = run_data_check(config, tables=stale, depth=settings.readiness.session_depth)
+    elif response is None:
+        response = run_data_check(config, depth=settings.readiness.session_depth)
+    awaiting: set[str] = set()
+    if response is not None:
+        response = json.loads(json.dumps(response))
+        awaiting = _mark_awaiting(response, catalog)
+        cache.load_check_results(response)
+        if not per_turn:
+            _LAST_CHECK[key] = response
+        for ref, err in (response.get("table_errors") or response.get("errors") or {}).items():
+            errors[ref] = str(err)
+            _CHECK_ERRORS[(key, ref)] = (cache._current_signature(ref), str(err))
+    out = data_readiness(config, cache, catalog, errors=errors, servers=servers)
+    out.awaiting = awaiting | {r for r, m in cache.tables.items() if m.status == "awaiting_producer"}
+    return out, cache, catalog
+
+
+def _failed_parts(m: Any) -> dict[tuple[str | None, str | None], list[Any]]:
+    """``{(column, partition): [failed error checks]}`` of one table's check, plus parts whose
+    status is not ready without a failed check naming them."""
+    parts: dict[tuple[str | None, str | None], list[Any]] = {}
+    for c in m.checks:
+        if not c.ok and c.level == "error":
+            parts.setdefault((c.column, c.partition), []).append(c)
+    named = {col for col, _ in parts} | {part for _, part in parts}
+    for col, st in {**m.columns, **m.containers}.items():
+        if st not in _READY and col not in named:
+            parts.setdefault((col, None), [])
+    for label, st in m.partitions.items():
+        if st not in _READY and label not in named:
+            parts.setdefault((None, label), [])
+    if not parts and m.status not in _READY:
+        parts[(None, None)] = []
+    return parts
+
+
+def data_findings(config: dict[str, Any], dr: DataReadiness) -> list[CheckResult]:
+    """One :class:`CheckResult` per unready part of a table some enabled tool reads (tables no
+    enabled tool reads are ``unbound`` and never reported), then the legacy aggregates and the
+    granted-tools summary. A part is ``required`` when it makes a granted tool unready."""
+    out: list[CheckResult] = []
+    used = dr.used
+    optional = {src for src, env in OPTIONAL_SOURCES.items() if not _env_value(config, env)}
+    for ref in sorted(dr.tables):
+        m = dr.tables[ref]
+        if ref not in used or ref in dr.awaiting:
+            continue
+        parts = _failed_parts(m)
+        if m.status in _READY and not parts:
+            continue
+        source, _, table = ref.partition(".")
+        quiet: dict[str, list[str]] = {}       # columns no enabled tool reads, by status: one result per table
+        for (col, part), checks in sorted(parts.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]))):
+            status = (m.partitions.get(part) if part else None) or \
+                ((m.columns.get(col) or m.containers.get(col)) if col else None) or m.status
+            if status in _READY:
+                status = m.status if m.status not in _READY else "partial"
+            if part is not None:
+                tools = {t: f"partition {part} of {ref} is {status}" for t, labels in dr.partial.items()
+                         if part in labels}
+            else:
+                tools = {t: dr.reason(t) for t, r in dr.unready.items()
+                         if r["table"] == ref and (r.get("column") == col or (col is None and "column" not in r))}
+            if col and part is None and not tools:
+                quiet.setdefault(status, []).append(col)
+                continue
+            detail = "; ".join(f"{c.name}: {c.detail}" for c in checks[:3]) or status
+            if tools:
+                names = sorted(t.split("__", 2)[-1] for t in tools)
+                verb = "partial for" if part is not None else "unready"
+                detail += f" -- {verb}: {', '.join(names[:6])}" + (f" (+{len(names) - 6})" if len(names) > 6 else "")
+            hint = next((c.hint for c in checks if c.hint), "") or _STATUS_HINTS.get(status, "run `vbt ds check`")
+            scope: dict[str, Any] = {"source": source, "table": table}
+            if col:
+                scope["column"] = col
+            if part:
+                scope["partition"] = part
+            label = f"data: {ref}" + (f".{col}" if col else "") + (f" [{part}]" if part else "")
+            required = part is None and source not in optional and any(t in dr.granted for t in tools)
+            out.append(CheckResult(label, False, hint=hint, detail=f"{status}: {detail}"[:1500], required=required,
+                                   kind="data", scope=scope, tools=tools))
+        for status, cols in sorted(quiet.items()):
+            listed = ", ".join(cols[:8]) + (f" (+{len(cols) - 8})" if len(cols) > 8 else "")
+            out.append(CheckResult(f"data: {ref} ({len(cols)} column{'s' if len(cols) > 1 else ''})", False,
+                                   required=False, kind="data",
+                                   detail=f"{status}: {listed} -- no enabled tool's calls read them",
+                                   hint=_STATUS_HINTS.get(status, "run `vbt ds check`"),
+                                   scope={"source": source, "table": table, "columns": cols}))
+    for ref, err in sorted(dr.errors.items()):
+        if ref in used:
+            source, _, table = ref.partition(".")
+            out.append(CheckResult(f"data: {ref}", False, required=False, kind="data",
+                                   detail=f"the readiness check failed ({err[:300]}); the table is unchecked",
+                                   hint="calls reading the table run without a cached readiness result",
+                                   scope={"source": source, "table": table}))
+    out.extend(_data_aggregates(config, dr))
+    return out
+
+
+def _source_tools(dr: DataReadiness, source: str) -> list[str]:
+    return sorted(t for t, refs in dr.reads.items() if any(r.split(".")[0] == source for r in refs))
+
+
+def _data_aggregates(config: dict[str, Any], dr: DataReadiness) -> list[CheckResult]:
+    """The legacy labels (ok unless no granted tool reading that source is ready) and the summary
+    over every granted data tool, which is what ``require_ready`` blocks on."""
+    from .datalayer.settings import DataSettings
+
+    names = {s.get("name") for s in _servers(config)}
+    out = []
+    legacy = []
+    if names & OPEN_TARGETS_SERVERS:
+        legacy.append((OPEN_TARGETS_LABEL, "open_targets", "OPEN_TARGETS_DATA_PATH", OPEN_TARGETS_HINT))
+    if "functional_genomics" in names and _env_value(config, "TAHOE_DATA_PATH"):
+        legacy.append((TAHOE_LABEL, "tahoe_100m", "TAHOE_DATA_PATH", TAHOE_HINT))
+    for label, source, env, hint in legacy:
+        tools = [t for t in _source_tools(dr, source) if t in dr.granted]
+        ready = [t for t in tools if t not in dr.unready]
+        value = _env_value(config, env) or f"{env} is not set"
+        bad = sorted({dr.unready[t]["table"] for t in tools if t in dr.unready})
+        detail = f"{value}: {len(ready)} of {len(tools)} granted tools reading {source} ready"
+        if bad:
+            detail += f"; not ready: {', '.join(bad[:6])}" + (f" (+{len(bad) - 6})" if len(bad) > 6 else "")
+        out.append(CheckResult(label, bool(ready) or not tools, hint=hint, detail=detail, kind="data",
+                               scope={"source": source}))
+    block_when = DataSettings.from_config(config).readiness.block_when
+    granted = sorted(dr.granted)
+    ready = [t for t in granted if t not in dr.unready]
+    ok = (len(ready) == len(granted)) if block_when == "any_unready" else (bool(ready) or not granted)
+    unready = sorted(t for t in granted if t in dr.unready)
+    detail = f"{len(ready)} of {len(granted)} granted data tools ready"
+    if unready:
+        detail += f"; unready: {', '.join(unready[:8])}" + (f" (+{len(unready) - 8})" if len(unready) > 8 else "")
+    if dr.partial:
+        detail += f"; {len(dr.partial)} tool(s) with unavailable partitions"
+    out.append(CheckResult(DATA_TOOLS_LABEL, ok, kind="data", required=block_when != "never", detail=detail[:1500],
+                           hint="no granted data tool can be served: `vbt ds check` lists the unready tables, "
+                                "columns and partitions (or start degraded with --allow-missing-data)",
+                           scope={"granted": len(granted), "ready": len(ready),
+                                  "bound": {s: list(t) for s, t in sorted(dr.bound.items())}},
+                           tools={t: dr.reason(t) for t in unready}))
+    return out
+
+
+def check_data_readiness(config: dict[str, Any], *, per_turn: bool = False) -> list[CheckResult]:
+    """Tool-scoped readiness results (raises :class:`DataCheckUnavailable` when the data child
+    cannot run its check or the catalog cannot be loaded)."""
+    try:
+        dr, _cache, _catalog = load_data_readiness(config, per_turn=per_turn)
+    except DataCheckUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a broken catalog: the caller falls back with a note
+        raise DataCheckUnavailable(f"{type(exc).__name__}: {exc}") from exc
+    return data_findings(config, dr)
+
+
+def _data_layer_results(results: Iterable[CheckResult]) -> list[CheckResult]:
+    return [r for r in results if r.kind == "data" and r.scope is not None]
+
+
+def degraded_tools(config: dict[str, Any], results: Iterable[CheckResult]) -> dict[str, str]:
+    """``{mcp__server__tool: reason}``: tools every call of which reads an unready part, given
+    ``require_ready`` results (data layer only; tools that only some partitions block, and the
+    tools of servers the config does not enable, are left out)."""
+    names = {s.get("name") for s in _servers(config)}
+    out: dict[str, str] = {}
+    for r in _data_layer_results(results):
+        if r.scope.get("partition"):
+            continue
+        for tool, why in r.tools.items():
+            if tool.split("__")[1:2] and tool.split("__")[1] in names:
+                out.setdefault(tool, why)
+    return out
+
+
+def degraded_tables(results: Iterable[CheckResult]) -> dict[str, str]:
+    """``{source.table: status}`` of the unready tables that make some tool unready."""
+    out: dict[str, str] = {}
+    for r in _data_layer_results(results):
+        if not r.ok and r.scope.get("table") and r.tools and not r.scope.get("partition"):
+            out.setdefault(f"{r.scope['source']}.{r.scope['table']}", r.detail.split(":", 1)[0])
     return out
 
 
@@ -427,8 +892,26 @@ def probe_imports(python: str, modules: Iterable[str], *, flags: Iterable[str] =
     return json.loads(line[len("VBT_PROBE"):])
 
 
+def data_plugin_requires(config: dict[str, Any]) -> dict[str, list[str]]:
+    """``{module: [kind/plugin, ...]}``: the modules registered data-layer plugins declare in ``requires``."""
+    try:
+        from .datalayer.plugins.registry import discover
+        from .datalayer.settings import DataSettings
+        registry = discover(DataSettings.from_config(config))
+    except Exception:  # noqa: BLE001 - a broken registry is reported by `vbt ds lint`
+        log.debug("plugin discovery failed", exc_info=True)
+        return {}
+    out: dict[str, list[str]] = {}
+    for kind in registry.kinds:
+        for plugin in registry.all(kind):
+            for mod in getattr(plugin, "requires", ()) or ():
+                out.setdefault(str(mod), []).append(f"{kind}/{plugin.name}")
+    return out
+
+
 def mcp_modules(config: dict[str, Any]) -> list[str]:
-    """Modules the enabled servers launched with vars.mcp_python import."""
+    """Modules the enabled servers launched with vars.mcp_python import (and, with the data layer,
+    the data child and the plugins' ``requires``)."""
     py = (config.get("vars") or {}).get("mcp_python") or sys.executable
     mods: list[str] = []
     for s in _servers(config):
@@ -439,11 +922,14 @@ def mcp_modules(config: dict[str, Any]) -> list[str]:
         if name in OPEN_TARGETS_SERVERS:
             mods += SERVER_MODULES["_opentargets"]
         mods += SERVER_MODULES.get(name, ())
+    if mods and data_layer_active(config):
+        mods += [*SERVER_MODULES["_stdio"], *DATA_CHILD_MODULES, *data_plugin_requires(config)]
     return list(dict.fromkeys(mods))
 
 
 def check_mcp_imports(config: dict[str, Any]) -> CheckResult:
-    """Run ``<mcp_python> -E -c 'import ...'`` for the modules the enabled servers need."""
+    """Run ``<mcp_python> -E -c 'import ...'`` for the modules the enabled servers need, the data
+    child's own imports and every data-layer plugin's ``requires`` (a missing one names the plugin)."""
     py = (config.get("vars") or {}).get("mcp_python") or sys.executable
     mods = mcp_modules(config)
     label = f"MCP interpreter imports ({py})"
@@ -451,6 +937,7 @@ def check_mcp_imports(config: dict[str, Any]) -> CheckResult:
         return CheckResult(label, True, detail="no stdio servers use vars.mcp_python", required=False, kind="mcp")
     res = probe_imports(py, mods)
     missing = {m: r.get("error", "") for m, r in res.items() if not r.get("ok")}
+    needed_by = data_plugin_requires(config) if data_layer_active(config) else {}
     fm = res.get("fastmcp", {})
     detail_bits = []
     problems = []
@@ -464,7 +951,12 @@ def check_mcp_imports(config: dict[str, Any]) -> CheckResult:
         if major is not None and major not in FASTMCP_MAJORS:
             problems.append(f"fastmcp major version {major} is untested (expected {FASTMCP_MAJORS})")
     if missing:
-        problems.append("missing: " + ", ".join(f"{m} ({e})" for m, e in missing.items()))
+        problems.append("missing: " + ", ".join(
+            f"{m} ({e})" + (f" [needed by the data-layer plugin(s) {', '.join(needed_by[m])}]" if m in needed_by
+                            else " [needed by the data child]" if m in DATA_CHILD_MODULES else "")
+            for m, e in missing.items()))
+    if needed_by and not missing:
+        detail_bits.append(f"data child and {sum(map(len, needed_by.values()))} plugin requirement(s) import")
     detail = "; ".join(detail_bits + problems) or f"{len(mods)} modules import"
     return CheckResult(label, not problems, detail=detail,
                        hint="use the conda env from environment.yml (conda env create -f environment.yml) or "
@@ -510,30 +1002,157 @@ def check_analysis_stack(config: dict[str, Any]) -> list[CheckResult]:
     return out
 
 
-async def smoke_mcp(config: dict[str, Any], *, log_dir: str | os.PathLike | None = None,
-                    servers: Iterable[str] | None = None) -> list[CheckResult]:
-    """Start every enabled MCP server and make one cheap call per server.
+#: Smoke modes: ``gateway`` (sentinel positive and negative controls through the data gateway,
+#: the default with the data layer) and ``upstream`` (one ``SMOKE_CALLS`` call per server).
+SMOKE_MODES = ("gateway", "upstream")
+#: How long a gateway smoke waits for the data child's readiness check.
+SMOKE_READINESS_WAIT_S = 600.0
 
-    A server fails the smoke test when it does not start, advertises no tools,
-    or its smoke call returns an error (isError or a legacy failure envelope).
+
+def sentinel_controls(catalog: Any, server: str, schemas: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The smoke controls of ``server`` from its tables' sentinels (§13): one bound tool whose
+    identifier argument (``eq``/``in``) binds the single key column of a ``sentinels.present`` entry
+    and that needs no other argument. Returns ``[{tool, args, kind: positive|negative, key, table}]``
+    (the negative from ``sentinels.absent`` when the table declares one); [] when no tool qualifies."""
+    candidates = []
+    for tool in catalog.tools(server):
+        schema = schemas.get(tool)
+        if schema is None:
+            continue
+        try:
+            contract = catalog.contract(server, tool)
+        except Exception:  # noqa: BLE001
+            continue
+        b = contract.binding
+        bound = contract.bound_table
+        if b is None or b.serve == "block" or b.hidden or not bound:
+            continue
+        try:
+            sentinels = catalog.table(bound).spec.sentinels
+        except Exception:  # noqa: BLE001
+            continue
+        if sentinels is None or not sentinels.present:
+            continue
+        required = set(schema.get("required") or [])
+        for name, a in contract.identifier_args.items():
+            cols = [c for t, c in contract.arg_columns(name) if t == bound]
+            if not cols or a.op not in ("eq", "in") or required - {name}:
+                continue
+            pos = next((x for x in sentinels.present if list(x.key) == cols[:1] and x.via is None), None)
+            if pos is None:
+                continue
+            neg = next((x for x in sentinels.absent if list(x.key) == cols[:1] and x.via is None), None)
+
+            def value(v: Any, a: Any = a) -> Any:
+                return [v] if a.op == "in" else v
+
+            rank = (neg is None, not (tool.startswith("get_") and tool.endswith("_info")), tool)
+            controls = [{"tool": tool, "args": {name: value(pos.key[cols[0]])}, "kind": "positive",
+                         "key": dict(pos.key), "table": bound}]
+            if neg is not None:
+                controls.append({"tool": tool, "args": {name: value(neg.key[cols[0]])}, "kind": "negative",
+                                 "key": dict(neg.key), "table": bound})
+            candidates.append((rank, controls))
+            break
+    return min(candidates, key=lambda c: c[0])[1] if candidates else []
+
+
+def judge_control(control: Mapping[str, Any], out: Any = None, exc: BaseException | None = None) -> tuple[bool, str]:
+    """``(passed, detail)`` of one sentinel control. A positive control passes only with a success
+    (``ok``/``partial``, never ``empty``, ``empty_unverified`` or an error) that carries the sentinel's
+    key values; a negative control passes only with a ``not_found`` error."""
+    kind = getattr(getattr(exc, "kind", None), "value", getattr(exc, "kind", None)) if exc is not None else None
+    if control["kind"] == "negative":
+        if exc is not None and kind == "not_found":
+            return True, "not_found (as expected)"
+        if exc is not None:
+            return False, f"expected not_found for an absent key, got {kind or type(exc).__name__}: {str(exc)[:300]}"
+        return False, (f"phantom: the absent key {control['key']} was answered "
+                       f"({getattr(out, 'status', 'ok')}): {str(getattr(out, 'text', out))[:200]}")
+    if exc is not None:
+        return False, f"{kind or type(exc).__name__}: {str(exc)[:600]}"
+    status = str(getattr(out, "status", "ok")) if getattr(out, "is_data_result", False) else "ok"
+    text = str(getattr(out, "full_text", None) or getattr(out, "text", None) or out)
+    if status not in ("ok", "partial"):
+        return False, f"the sentinel came back {status}: {text[:300]}"
+    missing = [f"{k}={v}" for k, v in control["key"].items() if v is not None and str(v) not in text]
+    if missing:
+        return False, f"the result does not carry the sentinel key ({', '.join(missing)}): {text[:300]}"
+    return True, f"{status}: {text.replace(chr(10), ' ')[:140]}"
+
+
+def _smoke_call(raw: Mapping[str, Any], name: str, mode: str, controls: list[dict[str, Any]]
+                ) -> list[tuple[str, dict[str, Any], str]]:
+    """``[(tool, args, how)]`` for one server: ``explicit`` (the server's ``smoke:`` entry),
+    ``control`` (sentinel controls) or ``upstream`` (``SMOKE_CALLS``)."""
+    smoke = raw.get("smoke", None)
+    if smoke is False:
+        return []
+    if isinstance(smoke, dict) and smoke.get("tool"):
+        return [(str(smoke["tool"]), dict(smoke.get("args") or {}), "explicit")]
+    if mode == "gateway" and controls:
+        return [(c["tool"], dict(c["args"]), "control") for c in controls]
+    if name in SMOKE_CALLS and (mode == "upstream" or not (name in OPEN_TARGETS_SERVERS or
+                                                            name == "functional_genomics")):
+        tool, args = SMOKE_CALLS[name]
+        return [(tool, dict(args), "upstream")]
+    return []
+
+
+async def smoke_mcp(config: dict[str, Any], *, log_dir: str | os.PathLike | None = None,
+                    servers: Iterable[str] | None = None, mode: str = "gateway") -> list[CheckResult]:
+    """Start every enabled MCP server and make cheap calls.
+
+    ``mode="gateway"`` (the default; with the data layer): the servers start behind the data
+    gateway (with its ``data`` child) and each runs its sentinel controls (:func:`sentinel_controls`):
+    a positive control must return the sentinel's key with a success, so an empty answer fails, and
+    a negative control must return ``not_found``, so a phantom answer fails. Servers without a
+    local-table sentinel (PubMed, ClinicalTrials.gov) make their ``SMOKE_CALLS`` call; Open Targets
+    and Tahoe servers without one are reported as not smoke-tested. ``mode="upstream"`` (``vbt
+    doctor --smoke=upstream``) makes the old ``SMOKE_CALLS`` call per server, which forces the
+    upstream tools' multi-GB loads (through the gateway's admission control when the data layer is on).
+    A server's ``smoke: {tool, args}`` entry (or ``smoke: false``) overrides both.
+
+    A server fails when it does not start, advertises no tools, or a call fails (an error, or a
+    failed control).
     """
     from .tools.base import ToolFailure
     from .tools.mcp_bridge import MCPBridge, MCPServerConfig
 
+    if mode not in SMOKE_MODES:
+        raise ValueError(f"smoke mode must be one of {SMOKE_MODES}, got {mode!r}")
     specs_raw = [s for s in _servers(config) if servers is None or s.get("name") in set(servers)]
-    specs = [MCPServerConfig(**{k: v for k, v in s.items() if k in MCPServerConfig.__dataclass_fields__})
-             for s in specs_raw]
     tmp = tempfile.mkdtemp(prefix="vbt-doctor-")
     extra = base_tool_env(config)
     extra.update({"VBT_RUN_DIR": tmp, "MCP_OUTPUT_DIR": str(Path(tmp) / "mcp")})
-    bridge = MCPBridge(specs, extra_env=extra, log_dir=log_dir or Path(tmp) / "logs",
-                       options=config.get("mcp") or {})
     results: list[CheckResult] = []
+    gateway = None
+    launch = list(specs_raw)
+    if specs_raw and data_layer_active(config):
+        try:
+            from .datalayer import build_gateway
+            gateway = build_gateway(config, {"dir": tmp, "run_id": "doctor", "mcp_output_dir": str(Path(tmp) / "mcp")})
+            names = {s.get("name") for s in specs_raw}
+            launch += [s for s in gateway.extra_servers() or [] if s.get("name") not in names]
+        except Exception as exc:  # noqa: BLE001 - smoke the servers without the gateway, and say so
+            gateway = None
+            results.append(CheckResult("MCP smoke: data gateway", False, required=False, kind="mcp",
+                                       detail=f"the gateway could not be built ({type(exc).__name__}: {exc}); "
+                                              "the servers are smoke-tested without it"[:1500]))
+    specs = [MCPServerConfig(**{k: v for k, v in s.items() if k in MCPServerConfig.__dataclass_fields__})
+             for s in launch]
+    kwargs: dict[str, Any] = {"gateway": gateway} if gateway is not None else {}
+    bridge = MCPBridge(specs, extra_env=extra, log_dir=log_dir or Path(tmp) / "logs",
+                       options=config.get("mcp") or {}, **kwargs)
+    if mode == "gateway" and gateway is None and not any(isinstance(s.get("smoke"), dict) for s in specs_raw):
+        mode = "upstream"   # no gateway: no sentinel controls
     try:
         await bridge.start()
         status = bridge.status()
-        for raw, spec in zip(specs_raw, specs):
-            name = spec.name
+        if gateway is not None and mode == "gateway":
+            await gateway.wait_readiness(SMOKE_READINESS_WAIT_S)
+        for raw in specs_raw:
+            name = str(raw.get("name"))
             st = status.get(name, {})
             if st.get("state") != "ready":
                 results.append(CheckResult(f"MCP {name}: starts", False, kind="mcp",
@@ -546,28 +1165,52 @@ async def smoke_mcp(config: dict[str, Any], *, log_dir: str | os.PathLike | None
                 continue
             results.append(CheckResult(f"MCP {name}: starts", True, kind="mcp",
                                        detail=f"{st['tools']} tools in {st.get('start_duration_s')}s"))
-            smoke = raw.get("smoke", None)
-            if smoke is False:
-                continue
-            if isinstance(smoke, dict) and smoke.get("tool"):
-                tool, args = smoke["tool"], dict(smoke.get("args") or {})
-            elif name in SMOKE_CALLS:
-                tool, args = SMOKE_CALLS[name]
-            else:
-                continue
-            label = f"MCP {name}: {tool}({', '.join(f'{k}={v!r}' for k, v in args.items())})"
-            try:
-                timeout = min(float(spec.timeout_s or SMOKE_CALL_TIMEOUT_S), SMOKE_CALL_TIMEOUT_S)
-                out = await asyncio.wait_for(bridge.call(name, tool, args), timeout + 5)
-                text = out if isinstance(out, str) else str(out)
-                results.append(CheckResult(label, True, detail=text.replace("\n", " ")[:160], kind="mcp"))
-            except ToolFailure as exc:
-                results.append(CheckResult(label, False, detail=str(exc)[:1500], kind="mcp",
-                                           hint="the tool returned an error: check the reference data and the "
-                                                "server log"))
-            except Exception as exc:  # noqa: BLE001
-                results.append(CheckResult(label, False, detail=f"{type(exc).__name__}: {exc}"[:1500], kind="mcp"))
+            controls: list[dict[str, Any]] = []
+            if gateway is not None and mode == "gateway":
+                schemas = {t.name.split("__", 2)[-1]: dict(t.input_schema or {}) for t in bridge.tools
+                           if t.name.startswith(f"mcp__{name}__")}
+                controls = sentinel_controls(gateway.catalog, name, schemas)
+            calls = _smoke_call(raw, name, mode, controls)
+            if not calls and mode == "gateway" and gateway is not None:
+                results.append(CheckResult(f"MCP {name}: sentinel controls", True, required=False, kind="mcp",
+                                           detail="no tool answers a table sentinel by key alone; "
+                                                  "`vbt doctor --smoke=upstream` makes a live call"))
+            timeout = min(float(getattr(next((x for x in specs if x.name == name), None), "timeout_s", None)
+                                or SMOKE_CALL_TIMEOUT_S), SMOKE_CALL_TIMEOUT_S)
+            for i, (tool, args, how) in enumerate(calls):
+                control = controls[i] if how == "control" else None
+                tag = f" [{control['kind']} control]" if control else ""
+                label = f"MCP {name}: {tool}({', '.join(f'{k}={v!r}' for k, v in args.items())}){tag}"
+                out: Any = None
+                err: BaseException | None = None
+                try:
+                    out = await asyncio.wait_for(bridge.call(name, tool, args), timeout + 5)
+                except ToolFailure as exc:
+                    err = exc
+                except Exception as exc:  # noqa: BLE001
+                    err = exc
+                if control is not None:
+                    ok, detail = judge_control(control, out, err)
+                    results.append(CheckResult(label, ok, detail=detail[:1500], kind="mcp",
+                                               hint="" if ok else "the sentinel control failed: check the table's "
+                                                                  "readiness (`vbt ds check`) and the server log"))
+                elif isinstance(err, ToolFailure):
+                    results.append(CheckResult(label, False, detail=str(err)[:1500], kind="mcp",
+                                               hint="the tool returned an error: check the reference data and the "
+                                                    "server log"))
+                elif err is not None:
+                    results.append(CheckResult(label, False, detail=f"{type(err).__name__}: {err}"[:1500], kind="mcp"))
+                else:
+                    text = str(getattr(out, "text", out)) if getattr(out, "is_data_result", False) else \
+                        (out if isinstance(out, str) else str(out))
+                    results.append(CheckResult(label, True, detail=text.replace("\n", " ")[:160], kind="mcp"))
     finally:
+        close = getattr(gateway, "aclose", None)
+        if callable(close):
+            try:
+                await close()
+            except Exception:  # noqa: BLE001
+                pass
         await bridge.aclose()
         if log_dir:  # otherwise the server logs stay in `tmp` for the hints above
             shutil.rmtree(tmp, ignore_errors=True)
@@ -584,12 +1227,18 @@ def require_ready(config: dict[str, Any], *, per_turn: bool = False, provider: A
 
     Skipped (returns []) for the mock provider or when
     ``orchestration.require_reference_data`` is false. Missing credentials
-    always raise; missing reference data or broken MCP commands raise unless
-    ``allow_missing_data`` (the run is then degraded: the caller should mark it
-    and tell the CSO which servers lack data). With ``start_mcp=False``
-    (``--no-mcp``: no MCP server is started) only the credentials are checked,
-    since the reference data and server commands are needed only by the
-    servers. Returns the check results.
+    always raise; broken MCP commands raise unless ``allow_missing_data``.
+    Reference data: with the data layer, readiness is scoped to tools and the
+    session blocks only when no data tool granted to any agent is ready
+    (``data.readiness.block_when: all_unready``; ``any_unready`` blocks on any
+    unready granted tool, ``never`` does not block); one missing table only
+    degrades the tools that read it. Without the data layer, missing reference
+    data raises. ``allow_missing_data`` never blocks on data (the run is then
+    degraded: the caller marks it and tells the agents which tools lack data).
+    Per turn the data check reuses the session's cached results (stat-only
+    signatures; only tables whose layout changed are re-checked). With
+    ``start_mcp=False`` (``--no-mcp``: no MCP server is started) only the
+    credentials are checked. Returns the check results.
     """
     if _provider_name(config, provider) == "mock":
         return []
@@ -597,11 +1246,21 @@ def require_ready(config: dict[str, Any], *, per_turn: bool = False, provider: A
         return []
     results = [check_credentials(config, provider)]
     if start_mcp:
-        results += check_reference_data(config)
+        results += check_reference_data(config, per_turn=True) if per_turn else check_reference_data(config)
         if not per_turn:
             results += check_mcp_commands(config)
     failed = [r for r in results if r.required and not r.ok]
-    blocking = [r for r in failed if r.kind == "credentials" or not allow_missing_data]
+
+    def blocks(r: CheckResult) -> bool:
+        if r.kind == "credentials":
+            return True
+        if allow_missing_data:
+            return False
+        if r.kind == "data" and r.scope is not None:   # tool-scoped: only the granted-tools summary blocks
+            return r.label == DATA_TOOLS_LABEL
+        return True
+
+    blocking = [r for r in failed if blocks(r)]
     if blocking:
         lines = "; ".join(f"{r.label}: {r.detail or 'failed'}" + (f" (fix: {r.hint})" if r.hint else "")
                           for r in blocking)
@@ -610,9 +1269,21 @@ def require_ready(config: dict[str, Any], *, per_turn: bool = False, provider: A
 
 
 def degraded_servers(config: dict[str, Any], results: Iterable[CheckResult]) -> dict[str, str]:
-    """Servers that lack their reference data, given ``require_ready`` results ({server: reason})."""
-    out: dict[str, str] = {}
+    """Servers that lack their reference data, given ``require_ready`` results ({server: reason}).
+
+    With the data layer, only servers whose **every** bound tool is unready (one missing table no
+    longer names every Open Targets server); the unready tools are :func:`degraded_tools`."""
+    results = list(results)
     names = {s.get("name") for s in _servers(config)}
+    summary = next((r for r in _data_layer_results(results) if r.label == DATA_TOOLS_LABEL), None)
+    if summary is not None:
+        tools = degraded_tools(config, results)
+        out = {}
+        for server, bound in sorted((summary.scope.get("bound") or {}).items()):
+            if server in names and bound and all(t in tools for t in bound):
+                out[server] = f"every tool unready: {tools[bound[0]]}"[:500]
+        return out
+    out = {}
     for r in results:
         if r.ok or r.kind != "data":
             continue
@@ -754,9 +1425,43 @@ def check_bash_network(config: dict[str, Any]) -> CheckResult | None:
 # vbt doctor
 # ---------------------------------------------------------------------------
 
-def run_doctor(config: dict[str, Any], *, smoke: bool = False, analysis: bool = False,
+def tool_readiness_lines(results: Iterable[CheckResult], *, every_tool: bool = False) -> list[str]:
+    """Per-server tool readiness from data-layer results: ``target: 14 of 15 tools ready`` and the
+    unready (or, with ``every_tool``, every) tool with its reason."""
+    results = list(results)
+    summary = next((r for r in _data_layer_results(results) if r.label == DATA_TOOLS_LABEL), None)
+    if summary is None:
+        return []
+    unready: dict[str, str] = {}
+    partial: dict[str, str] = {}
+    for r in _data_layer_results(results):
+        target = partial if (r.scope or {}).get("partition") else unready
+        for tool, why in r.tools.items():
+            target.setdefault(tool, why)
+    lines = ["Data tools (tool-scoped readiness; `vbt ds check --tool server.tool` explains one):"]
+    for server, tools in sorted((summary.scope.get("bound") or {}).items()):
+        n_ready = sum(1 for t in tools if t not in unready)
+        lines.append(f"  {server}: {n_ready} of {len(tools)} tools ready"
+                     + (f", {sum(1 for t in tools if t in partial)} with unavailable partitions"
+                        if any(t in partial for t in tools) else ""))
+        for t in tools:
+            short = t.split("__", 2)[-1]
+            if t in unready:
+                lines.append(f"    [!!] {short}: {unready[t]}")
+            elif t in partial:
+                lines.append(f"    [--] {short}: {partial[t]}")
+            elif every_tool:
+                lines.append(f"    [ok] {short}")
+    return lines
+
+
+def run_doctor(config: dict[str, Any], *, smoke: bool | str = False, analysis: bool = False, data: bool = False,
                out: Callable[[str], Any] = print) -> int:
-    """Print an installation report; return 0 when every required check passes."""
+    """Print an installation report; return 0 when every required check passes.
+
+    ``smoke``: True or ``"gateway"`` runs the sentinel controls through the data gateway (the
+    upstream ``SMOKE_CALLS`` without the data layer); ``"upstream"`` the old one-call-per-server
+    smoke. ``data``: list every data tool's readiness (not only the unready ones)."""
     results: list[CheckResult] = []
 
     def add(r: CheckResult | list[CheckResult] | None) -> None:
@@ -789,7 +1494,10 @@ def run_doctor(config: dict[str, Any], *, smoke: bool = False, analysis: bool = 
     if provider is not None and has_prepare(provider) and not smoke:
         add(check_server_reachable(config, provider))
     add(check_search(config, provider))
-    add(check_reference_data(config))
+    data_results = check_reference_data(config)
+    add(data_results)
+    for line in tool_readiness_lines(data_results, every_tool=data):
+        out(line)
     add(CheckResult("upstream clinical-trial labels present",
                     (up / "datasets" / "clinical_trials" / "clinical_trial_labels_reconciled.csv").exists(),
                     hint="git submodule update --init", required=False))
@@ -811,7 +1519,8 @@ def run_doctor(config: dict[str, Any], *, smoke: bool = False, analysis: bool = 
                         pass
             add([r for r in asyncio.run(live()) if r is not None])
         if _servers(config):
-            add(asyncio.run(smoke_mcp(config)))
+            mode = smoke if smoke in SMOKE_MODES else "gateway"
+            add(asyncio.run(smoke_mcp(config, mode=str(mode))))
         else:
             add(CheckResult("MCP smoke test", True, detail="no MCP servers enabled", required=False))
     failed = [r for r in results if r.required and not r.ok]
@@ -820,17 +1529,23 @@ def run_doctor(config: dict[str, Any], *, smoke: bool = False, analysis: bool = 
 
 
 def _doctor_handler(args: Any, config: dict[str, Any]) -> int:
-    return run_doctor(config, smoke=bool(getattr(args, "smoke", False)),
-                      analysis=bool(getattr(args, "analysis", False)))
+    smoke = getattr(args, "smoke", False)
+    return run_doctor(config, smoke=smoke if smoke in SMOKE_MODES else bool(smoke),
+                      analysis=bool(getattr(args, "analysis", False)), data=bool(getattr(args, "data", False)))
 
 
 def add_doctor_parser(sub: Any) -> Any:
     """Register ``vbt doctor`` on an argparse subparsers object."""
     d = sub.add_parser("doctor", help="check installation, credentials, reference data and MCP servers")
-    d.add_argument("--smoke", action="store_true",
+    d.add_argument("--smoke", nargs="?", const="gateway", default=False, choices=SMOKE_MODES,
                    help="also contact the model server (local providers: /health, served models, max_model_len), "
-                        "run one web search, and start every MCP server with one cheap call each "
-                        "(fails on tool errors)")
+                        "run one web search, and start every MCP server: with the data layer each server runs "
+                        "its sentinel positive and negative controls through the gateway (an empty positive or "
+                        "a phantom negative fails); --smoke=upstream makes one live upstream call per server "
+                        "instead (fails on tool errors)")
+    d.add_argument("--data", action="store_true",
+                   help="list the readiness of every data tool (default: only the unready ones); "
+                        "`vbt ds check` gives the per-table, column and partition detail")
     d.add_argument("--analysis", action="store_true",
                    help="also check the Python/R analysis stack (scanpy, pydeseq2, rpy2, lme4, glmmTMB, ...)")
     d.set_defaults(handler=_doctor_handler)
@@ -838,7 +1553,11 @@ def add_doctor_parser(sub: Any) -> Any:
 
 
 __all__ = [
-    "CheckResult", "DataReadinessError", "LOCAL_PROVIDERS", "ProviderNotReadyError", "TURN_NOT_SENT",
+    "CheckResult", "DataCheckUnavailable", "DataReadiness", "DataReadinessError", "LOCAL_PROVIDERS",
+    "ProviderNotReadyError", "TURN_NOT_SENT", "DATA_TOOLS_LABEL", "check_data_readiness", "data_catalog",
+    "data_child_command", "data_findings", "data_layer_active", "data_readiness", "degraded_tables",
+    "degraded_tools", "granted_tools", "judge_control", "last_data_check", "load_data_readiness", "run_data_check",
+    "sentinel_controls", "tool_readiness_lines",
     "add_doctor_parser", "check_analysis_stack", "check_credentials", "check_mcp_commands", "check_mcp_imports",
     "check_model_server", "check_reference_data", "check_search", "check_server_reachable", "configured_models",
     "configured_window", "degraded_servers", "has_prepare", "prepare_provider", "provider_server_info", "require_ready", "run_doctor",

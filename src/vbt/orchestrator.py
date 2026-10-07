@@ -30,9 +30,13 @@ names only *unresolved* data-source failures (``vbt.failures``).
 Readiness (``vbt.preflight``): ``open_session`` refuses to create a run when
 credentials, reference data or MCP commands are missing (unless
 ``preflight.skip``; skipped for the mock provider and when
-``orchestration.require_reference_data`` is false). With
+``orchestration.require_reference_data`` is false). With the data layer,
+reference-data readiness is scoped to tools: a missing table only marks the
+tools that read it unready (``Runtime.set_tool_readiness``, MANIFEST.degraded
+``tools``/``tables``), a server is degraded only when every one of its tools is,
+and the session is refused only when no granted data tool is ready. With
 ``preflight.allow_missing_data`` the run proceeds degraded (MANIFEST.degraded)
-and every agent is told which servers lack data. Each turn re-checks
+and every agent is told which servers or tools lack data. Each turn re-checks
 credentials and data before any model call; a failing check records the turn
 as ``not_sent`` ("This turn has not been sent to the model"). A provider with a
 readiness hook (local inference servers) is ``prepare()``-d once before the run
@@ -255,11 +259,16 @@ class CSOSession:
         pre = self.config.get("preflight") or {}
         if pre.get("skip"):
             return
-        from .preflight import require_ready
+        from .preflight import degraded_tools, require_ready
         # Without MCP servers (--no-mcp) no reference data is read: check credentials only.
-        require_ready(self.config, per_turn=True, provider=self.rt.provider,
-                      allow_missing_data=bool(pre.get("allow_missing_data")),
-                      start_mcp=self.rt.mcp is not None)
+        results = require_ready(self.config, per_turn=True, provider=self.rt.provider,
+                                allow_missing_data=bool(pre.get("allow_missing_data")),
+                                start_mcp=self.rt.mcp is not None)
+        if any(getattr(r, "scope", None) is not None for r in results or []):
+            # tool-scoped readiness: a table that changed since the session check updates the prompts
+            tools = degraded_tools(self.config, results)
+            if tools != dict(self.rt.tool_readiness or {}):
+                self.rt.set_tool_readiness(tools)
 
     async def _turn(self, user_input: str) -> str:
         rt, run = self.rt, self.run
@@ -886,13 +895,27 @@ async def open_session(config: dict[str, Any], *, provider=None, on_event=None, 
             for w in resume_drift(prev, config, profiles):
                 rt.emit("warning", message=f"resumed run {w}")
         degraded: dict[str, str] = {}
-        if checks:
+        tool_scoped = any(getattr(c, "scope", None) is not None for c in checks)
+        if tool_scoped:
+            # The data layer's tool-scoped readiness (§13): unready tools and tables are recorded, and a
+            # server is degraded only when every one of its tools is unready.
+            from .preflight import degraded_servers, degraded_tables, degraded_tools
+            degraded = degraded_servers(config, checks)
+            tools = degraded_tools(config, checks)
+            tables = degraded_tables(checks)
+            rt.set_degraded(degraded)
+            rt.set_tool_readiness(tools)
+            if degraded or tools or tables:
+                run.mark_degraded(degraded, tools=tools, tables=tables)
+                rt.emit("warning", message=f"Running with {len(tools)} unready data tool(s)"
+                        + (f"; servers without data: {', '.join(sorted(degraded))}" if degraded else ""))
+        elif checks:
             from .preflight import degraded_servers
             degraded = degraded_servers(config, checks)
             failed = [c for c in checks if c.required and not c.ok and c.kind == "data"]
             if failed and not degraded:  # missing data not tied to one server (allow_missing_data)
                 degraded = {"(reference data)": "; ".join(f"{c.label}: {c.detail}" for c in failed)[:500]}
-        if degraded:
+        if degraded and not tool_scoped:
             rt.set_degraded(degraded)
             run.mark_degraded(degraded)
             rt.emit("warning", message="Running without reference data for: " + ", ".join(sorted(degraded)))
@@ -900,7 +923,15 @@ async def open_session(config: dict[str, Any], *, provider=None, on_event=None, 
             failures = await rt.start_mcp()
             if failures:
                 rt.emit("warning", message=f"MCP servers unavailable: {', '.join(sorted(failures))}")
-            if checks and rt.gateway is not None:
+            if tool_scoped and rt.gateway is not None:
+                from .preflight import last_data_check
+                response = last_data_check(config)
+                if response:
+                    try:
+                        rt.gateway.set_readiness(response)   # the session's gateway decides calls from the same check
+                    except Exception:  # noqa: BLE001 - the gateway re-checks on its own
+                        log.warning("handing the preflight readiness check to the gateway failed", exc_info=True)
+            elif checks and rt.gateway is not None:
                 degraded = await _data_degraded(rt, run, degraded)
         from .preflight import provider_server_info
         server = await provider_server_info(rt.provider)  # engine version, served models, max_model_len
@@ -922,8 +953,11 @@ async def open_session(config: dict[str, Any], *, provider=None, on_event=None, 
                       "pinning_error": f"{type(exc).__name__}: {exc}"}
         pinned["preflight"] = {"skipped": bool(pre.get("skip")) or not checks,
                                "allow_missing_data": allow_missing,
-                               "checks": [{"label": c.label, "ok": c.ok, "kind": c.kind} for c in checks],
-                               "degraded_servers": degraded}
+                               "checks": [{"label": c.label, "ok": c.ok, "kind": c.kind,
+                                           **({"scope": c.scope} if getattr(c, "scope", None) is not None
+                                              else {})} for c in checks],
+                               "degraded_servers": degraded,
+                               "degraded_tools": dict(rt.tool_readiness or {})}
         if resume:
             prev = dict(run.config or {}) if isinstance(run.config, Mapping) else {}
             resumes = list(prev.get("resumes") or [])
