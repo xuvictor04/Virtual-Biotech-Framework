@@ -17,6 +17,7 @@ for genetic evidence that your GWAS/L2G/colocalisation tools do not cover:
   `mcp__association__get_associations_for_target` / `query_associations` for
   the overall picture.
 
-A query that succeeds with zero rows is a valid outcome ("no gene-burden
-evidence in Open Targets for this target-disease pair"); a failed query is not
-evidence of absence.
+A resolved query with `status: empty` means no rows in this source's coverage;
+record it only as an absence finding (`supports: absence`), never as support. A
+`not_found` error means the identifier is wrong. A failed query is not evidence
+of absence.

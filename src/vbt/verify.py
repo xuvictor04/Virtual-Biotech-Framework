@@ -5,10 +5,15 @@ MANIFEST.json is re-hashed. A changed or missing file means the record no longer
 describes the run.
 
 **Evidence coverage** (INCOMPLETE when violated): every filed claim is
-re-validated strictly against the artifact registry and the trace; research
-turns must cite filed claims; lifecycle problems (unfinished, interrupted or
-failed turns, unavailable data sources, audit-capture errors, misplaced files,
-unreadable trace lines) are reported.
+re-validated strictly against the artifact registry and the trace (the call
+index is rebuilt with each call's data-layer status and coverage, so verify
+decides exactly as ``record_claims`` did); research turns must cite filed
+claims; lifecycle problems (unfinished, interrupted or failed turns,
+unavailable data sources, a run that proceeded without some reference data
+(``degraded_run``), audit-capture errors, misplaced files, unreadable trace
+lines) are reported. An empty data result cited other than as a covered
+absence is ``empty_result_cited``. Reference data lives outside the run
+directory, so none of the data-layer kinds is an integrity failure.
 
 **Re-execution** (opt-in, ``rerun=True``): agent scripts are re-run in a scratch
 copy and their outputs compared with the recorded hashes.
@@ -26,7 +31,13 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 
-from .audit.claims import EvidenceContext, read_claims_file, validate_claims
+from .audit.claims import (
+    EvidenceContext,
+    call_data_status,
+    empty_result_citation,
+    read_claims_file,
+    validate_claims,
+)
 from .audit.plan import reconcile
 from .audit.provenance import SUPPORT_AGENTS, build_index, read_trace, research_turns
 from .audit.render import find_refs
@@ -48,6 +59,61 @@ def _sha(p: Path) -> str | None:
 
 def _problem(kind: str, detail: str, **extra: Any) -> dict[str, Any]:
     return {"kind": kind, "detail": detail, **extra}
+
+
+def _names(value: Any) -> list[str]:
+    if isinstance(value, Mapping):
+        return sorted(str(k) for k in value)
+    if isinstance(value, (list, tuple)):
+        return sorted(str(v) for v in value)
+    return []
+
+
+def degraded_run_problem(degraded: Any) -> dict[str, Any] | None:
+    """``degraded_run`` when MANIFEST.degraded names servers or tools the run went without."""
+    if not isinstance(degraded, Mapping):
+        return None
+    servers, tools, tables = (_names(degraded.get(k)) for k in ("servers", "tools", "tables"))
+    if not servers and not tools:
+        return None
+    parts = []
+    if servers:
+        parts.append("servers " + ", ".join(servers[:8]) + (f" (+{len(servers) - 8} more)" if len(servers) > 8 else ""))
+    if tools:
+        parts.append(f"{len(tools)} tool(s) " + ", ".join(tools[:8]) + (", ..." if len(tools) > 8 else ""))
+    reason = str(degraded.get("reason") or "missing reference data")
+    return _problem("degraded_run", f"The run proceeded without some reference data ({reason}): " + "; ".join(parts)
+                    + ". Findings that needed them are missing, not negative.",
+                    servers=servers, tools=tools, tables=tables)
+
+
+def empty_result_citations(claims: list[Mapping[str, Any]],
+                           calls: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """``empty_result_cited`` problems keyed by the exact error text ``validate_claims`` reports for
+    them (``claim <id>: evidence[<j>] tool call '<id>' ...``): both come from
+    :func:`vbt.audit.claims.empty_result_citation`, so each is reported once, with this kind."""
+    out: dict[str, dict[str, Any]] = {}
+    for c in claims:
+        cid = str(c.get("id") or "").strip()
+        evs = c.get("evidence")
+        if isinstance(evs, Mapping):
+            evs = [evs]
+        for j, ev in enumerate(evs if isinstance(evs, list) else []):
+            if not isinstance(ev, Mapping) or not ev.get("tool_use_id"):
+                continue
+            tuid = str(ev.get("tool_use_id")).strip()
+            call = calls.get(tuid)
+            if not call or call.get("is_error") or call.get("pending"):
+                continue
+            status, dp = call_data_status(call)
+            supports = str(ev.get("supports") or "presence").strip().lower()
+            why = empty_result_citation(status, dp.get("coverage"), dp.get("coverage_statement"), supports,
+                                        c.get("text"))
+            if why:
+                msg = f"claim {cid}: evidence[{j}] tool call {tuid!r} {why}"
+                out[msg] = _problem("empty_result_cited", msg, claim=cid, tool_use_id=tuid, result_status=status,
+                                    coverage=dp.get("coverage"), supports=supports)
+    return out
 
 
 def _empty_report(run_dir: Path) -> dict[str, Any]:
@@ -224,6 +290,9 @@ def verify_run(run_dir: str | Path, *, rerun: bool = False, python: str | None =
         else:
             detail = str(err)[:300]
         problems.append(_problem("data_source_unavailable", detail))
+    degraded = degraded_run_problem(manifest.get("degraded"))
+    if degraded is not None:
+        problems.append(degraded)
     for err in manifest.get("audit_errors") or []:
         problems.append(_problem("audit_capture_error", str(err)[:500]))
     for m in manifest.get("misplaced_files") or []:
@@ -241,7 +310,11 @@ def verify_run(run_dir: str | Path, *, rerun: bool = False, python: str | None =
     ev["claims"] = len(claims)
     ctx = EvidenceContext(run_dir, arts, prov.calls)
     res = validate_claims(claims, ctx, strict=True, stored=True)
+    empty_cited = empty_result_citations(claims, prov.calls)
     for e in res.errors:
+        if e in empty_cited:
+            problems.append(empty_cited[e])
+            continue
         kind = "unresolved_evidence" if "evidence" in e else "invalid_claims"
         problems.append(_problem(kind, e))
     filed = {c["id"] for c in res.claims}

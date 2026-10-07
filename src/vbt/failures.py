@@ -14,11 +14,16 @@ and ``session_audit.data_failure_notice``):
 * A call the harness rejected before running it (arguments that were not valid
   JSON or did not match the tool's schema) carries ``model_error``: it is a
   model error, never a data-source failure, whichever tool it named.
+* A data-layer error of a model-side kind (``error_kind`` in
+  ``vbt.datalayer.errors.MODEL_SIDE_KINDS``: ``not_found``, ``invalid_argument``,
+  ...) is the model's input error, not an outage: it stays a failed, uncitable
+  call but never counts as a data-source failure.
 
 Record shape (what ``Runtime`` collects and ``unresolved_from_trace`` builds)::
 
     {"tool": str, "tool_name": str, "tool_use_id": str | None, "input": dict,
-     "is_error": bool, "error": str, "agent": str | None}
+     "is_error": bool, "error": str, "agent": str | None,
+     "error_kind": str (data-layer errors), "result_status": str (data-layer results)}
 """
 
 from __future__ import annotations
@@ -28,6 +33,8 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from .datalayer.errors import MODEL_SIDE_KINDS
+
 __all__ = [
     "WEB_TOOLS", "canonical_key", "input_sha256", "is_data_source", "unresolved_failures", "unresolved_from_trace",
     "data_failure_notice", "summarize", "records_from_trace",
@@ -35,6 +42,8 @@ __all__ = [
 
 WEB_TOOLS = ("WebSearch", "WebFetch")
 _EXCLUDED_PREFIXES = ("mcp__provenance__",)
+#: Data-layer error kinds that are the model's input errors (lookup misses, bad arguments).
+_MODEL_SIDE = frozenset(k.value for k in MODEL_SIDE_KINDS)
 
 NOTICE_TEMPLATE = ("Data/evidence warning: these tools failed during this turn: {names}. Their results cannot "
                    "support this answer. Any alternative sources must be identified separately; evidence "
@@ -65,8 +74,9 @@ def is_data_source(tool: str | None) -> bool:
 
 def _data_failure(rec: Mapping[str, Any]) -> bool:
     """A failed call of a data source that the tool itself reported (not a
-    harness-rejected call: ``model_error``)."""
-    return is_data_source(_tool_of(rec)) and not rec.get("model_error")
+    harness-rejected call: ``model_error``; not a model-side data-layer error)."""
+    return (is_data_source(_tool_of(rec)) and not rec.get("model_error")
+            and str(rec.get("error_kind") or "") not in _MODEL_SIDE)
 
 
 def _tool_of(rec: Mapping[str, Any]) -> str:
@@ -171,6 +181,9 @@ def records_from_trace(events: Iterable[Mapping[str, Any]], *, run_dir: str | Pa
             rec["_key"] = key
         if ev.get("model_error"):
             rec["model_error"] = ev["model_error"]
+        for k in ("error_kind", "result_status"):
+            if ev.get(k):
+                rec[k] = ev[k]
         if is_error:
             rec["error"] = str(ev.get("error") or ev.get("output") or ev.get("tool_response") or "Tool failed")[:2000]
         out.append(rec)

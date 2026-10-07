@@ -60,6 +60,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -97,7 +98,7 @@ from .providers.base import (
     validate_tool_pairing,
 )
 from .providers.retry import RetryPolicy, complete_with_retry
-from .session import Run
+from .session import Run, write_json_atomic
 from .tools.base import (
     QUERY_TOOL,
     Tool,
@@ -154,6 +155,9 @@ _INLINE_CODE_RE = re.compile(
     r"|(?:^|[\s;&|(])R\s+(?:-{1,2}[\w-]+\s+)*-e\b"           # R -e
 )
 _SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]")
+#: A trailing ``[Output truncated: ...]`` note (``truncation_note``). It must stay the last thing in a
+#: tool result: ``context._SPILLED_RE`` anchors on it to find the spill file.
+_TRUNCATION_NOTE_RE = re.compile(r"\[Output truncated: [^\n]*\]\s*\Z")
 
 #: (agent_run_id, parent_run_id) of the invocation whose code is running.
 _RUN_IDS: ContextVar[tuple[str, str | None] | None] = ContextVar("vbt_agent_run_ids", default=None)
@@ -165,6 +169,25 @@ def _safe(name: str) -> str:
 
 def _sha256_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
+
+
+def _add_note(text: str, note: str) -> str:
+    """``text`` with ``note`` added, before a trailing truncation note (never after it)."""
+    m = _TRUNCATION_NOTE_RE.search(text)
+    if m is None:
+        return text + "\n\n" + note
+    return text[:m.start()].rstrip("\n") + "\n\n" + note + "\n\n" + text[m.start():]
+
+
+def _accepted_kwargs(fn: Callable[..., Any], kwargs: dict[str, Any]) -> dict[str, Any]:
+    """The keyword arguments ``fn`` accepts (all of them when it takes ``**kwargs``)."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return dict(kwargs)
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return dict(kwargs)
+    return {k: v for k, v in kwargs.items() if k in params}
 
 
 def _is_content_parts(result: Any) -> bool:
@@ -498,6 +521,13 @@ class Runtime:
         #: Servers that started but lack their reference data (preflight with
         #: --allow-missing-data); told to every agent next to the MCP failures.
         self.degraded_servers: dict[str, str] = {}
+        #: The data-layer gateway in front of every MCP call (``start_mcp``), or None
+        #: (``data.enabled: false``, mode ``off``, or it could not be built: ``gateway_error``).
+        self.gateway: Any = None
+        self.gateway_error: str | None = None
+        self._data_settings: Any = None
+        #: Tool-scoped readiness from the data layer: {tool: reason} of unready tools.
+        self.tool_readiness: dict[str, Any] = {}
         #: {skill name: sha256} of the skills materialised into <run>/.claude/skills.
         self.skill_hashes: dict[str, str] = {}
         self.delegation_log: list[dict[str, Any]] = []
@@ -564,18 +594,107 @@ class Runtime:
             env["VBT_WORKSPACE"] = str(ctx.workspace)
         return env
 
+    def run_variables(self) -> dict[str, str]:
+        """``${run.*}`` values for data-layer descriptors (tables a tool materialises in this run)."""
+        return {"dir": str(self.run.dir), "run_id": str(getattr(self.run, "run_id", "") or ""),
+                "mcp_output_dir": str(self.run.mcp_output_dir)}
+
+    def _gateway_unavailable(self, reason: str) -> None:
+        self.gateway, self.gateway_error = None, reason
+        log.warning("data gateway unavailable; MCP calls run unguarded: %s", reason)
+        try:
+            self.run.trace("data_gateway_unavailable", reason=reason)
+        except Exception:  # noqa: BLE001 - tracing must not block MCP startup
+            log.debug("tracing data_gateway_unavailable failed", exc_info=True)
+
+    def data_settings(self) -> Any:
+        """``vbt.datalayer.settings.DataSettings`` of this run's config (parsed once)."""
+        if self._data_settings is None:
+            from .datalayer.settings import DataSettings
+            self._data_settings = DataSettings.from_config(self.config)
+        return self._data_settings
+
+    def _build_gateway(self) -> Any:
+        """The data gateway when ``data.enabled`` and the mode is not ``off``; None otherwise.
+        A gateway that cannot be built is reported (warning + ``data_gateway_unavailable``
+        trace event) and the MCP servers start without it."""
+        self.gateway, self.gateway_error, self._data_settings = None, None, None
+        try:
+            settings = self.data_settings()
+        except Exception as exc:  # noqa: BLE001
+            self._gateway_unavailable(f"data settings: {type(exc).__name__}: {exc}")
+            return None
+        if not settings.enabled or settings.gateway.mode == "off":
+            return None
+        try:
+            from . import datalayer
+            return datalayer.build_gateway(self.config, run=self.run_variables())
+        except Exception as exc:  # noqa: BLE001 - e.g. the gateway package is not installed yet
+            self._gateway_unavailable(f"{type(exc).__name__}: {exc}"[:1000])
+            return None
+
     async def start_mcp(self, servers: list[str] | None = None) -> dict[str, str]:
-        """Launch configured MCP servers (optionally a subset). Returns failures."""
+        """Launch configured MCP servers (optionally a subset) behind the data gateway
+        (when enabled; its own servers, such as the ``data`` child, are added unless the
+        config names them). Returns failures."""
+        raw_specs = [dict(s) for s in (self.config.get("mcp_servers") or {}).get("servers", [])
+                     if isinstance(s, Mapping)]
+        gateway = self._build_gateway()
+        if gateway is not None and "gateway" not in _accepted_kwargs(MCPBridge, {"gateway": gateway}):
+            self._gateway_unavailable("MCPBridge has no gateway seam in this checkout")
+            gateway = None
+        extra_names: set[str] = set()
+        if gateway is not None:
+            try:
+                configured = {s.get("name") for s in raw_specs}
+                for s in gateway.extra_servers() or []:
+                    if isinstance(s, Mapping) and s.get("name") not in configured:  # an explicit entry wins
+                        raw_specs.append(dict(s))
+                        extra_names.add(str(s.get("name")))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("data gateway extra_servers failed: %s", exc)
         specs = [MCPServerConfig(**{k: v for k, v in s.items() if k in MCPServerConfig.__dataclass_fields__})
-                 for s in (self.config.get("mcp_servers") or {}).get("servers", [])]
+                 for s in raw_specs]
+        seam: dict[str, Any] = {"on_tools_changed": self._on_tools_changed}
+        if gateway is not None:
+            seam["gateway"] = gateway
+        seam = _accepted_kwargs(MCPBridge, seam)  # a bridge without the seam gets neither
+        self.gateway = gateway
         self.mcp = MCPBridge(specs, extra_env=self.tool_env(), log_dir=self.run.dir / "logs" / "mcp",
-                             options=self.config.get("mcp") or {}, on_event=self._mcp_event)
-        tools = await self.mcp.start(set(servers) if servers else None)
+                             options=self.config.get("mcp") or {}, on_event=self._mcp_event, **seam)
+        wanted = (set(servers) | extra_names) if servers else None
+        tools = await self.mcp.start(wanted)
         self.registry.extend(tools)
         self.run.trace("mcp_started", servers=sorted(self.mcp.sessions), failures=self.mcp.failures,
-                       n_tools=len(tools))
+                       n_tools=len(tools), data_gateway=getattr(gateway, "mode", None) if gateway else None)
         self._system_cache.clear()  # the unavailable-server list may have changed
         return self.mcp.failures
+
+    def _on_tools_changed(self, tools: list[Tool]) -> None:
+        """Tools the bridge registered or updated after start (a restarted server, a late
+        listing): put them in the registry and rebuild prompts that list tools."""
+        try:
+            self.registry.extend(list(tools or []))
+        finally:
+            self._system_cache.clear()
+
+    @property
+    def data_layer_enforcing(self) -> bool:
+        """The gateway enforces its contract (agents get ``data_layer_addendum.md``)."""
+        return self.gateway is not None and getattr(self.gateway, "mode", None) == "enforce"
+
+    def set_tool_readiness(self, tools: Mapping[str, Any] | None) -> None:
+        """Record the data layer's unready tools ``{tool: reason}`` (reason: text or
+        ``{table, column, check, ...}``); ListTools and the prompts list them by table."""
+        self.tool_readiness = {str(k): v for k, v in (tools or {}).items()}
+        self._system_cache.clear()
+
+    def _prompt_unavailable(self) -> Any:
+        """Unavailable servers for the prompt; with unready tools, ``{servers, tools}``."""
+        servers = self.unavailable_servers()
+        if not self.tool_readiness:
+            return servers or None
+        return {"servers": servers, "tools": dict(self.tool_readiness)}
 
     def _mcp_event(self, kind: str, **data: Any) -> None:
         """MCP bridge lifecycle events (start, crash, restart, timeout): traced and emitted."""
@@ -699,10 +818,10 @@ class Runtime:
         prompt is built once per Runtime; others once per invocation."""
         if agent.can_delegate and agent.name in self._system_cache:
             return self._system_cache[agent.name]
-        unavailable = self.unavailable_servers() or None
         stable, volatile = system_prompt_parts(agent, run_dir=self.run.dir, workspace=workspace, config=self.config,
                                                roster=self.agents if agent.can_delegate else None,
-                                               unavailable_servers=unavailable)
+                                               unavailable_servers=self._prompt_unavailable(),
+                                               data_layer=self.data_layer_enforcing)
         system = [SystemSegment(stable, cache=True), SystemSegment(volatile)]
         if agent.can_delegate:
             self._system_cache[agent.name] = system
@@ -1394,25 +1513,98 @@ class Runtime:
             self._note_audit_error(f"tool output spill {call.id}: {type(exc).__name__}: {exc}")
             return None
 
-    def _shape_output(self, call: ToolCall, text: str, raw: Any, st: _Loop) -> tuple[str, Path | None]:
+    def _data_provenance_dir(self) -> Path:
+        rel = "logs/data_provenance"
+        try:
+            rel = self.data_settings().provenance.dir or rel
+        except Exception:  # noqa: BLE001 - fall back to the documented default
+            log.debug("data settings unreadable; provenance under %s", rel, exc_info=True)
+        p = Path(rel)
+        return p if p.is_absolute() else self.run.dir / p
+
+    def _record_data_result(self, call: ToolCall, data: Any) -> dict[str, Any]:
+        """``tool_end`` fields of a data-layer result (§15.1): ``result_status`` and the
+        ``data_provenance`` summary (status, coverage and its statement, source@release,
+        table fingerprints, counts, row-key hash, evidence nature and caveat, leakage risk,
+        whether the order was verified). The full ``vbt.dataprov/1`` record, stamped with
+        this ``tool_use_id``, is written atomically to ``logs/data_provenance/<tool_use_id>.json``."""
+        header = getattr(data, "header", None)
+        header = header if isinstance(header, Mapping) else {}
+        status = str(getattr(data, "status", None) or header.get("status") or "unknown")
+        prov = getattr(data, "provenance", None)
+        summary: dict[str, Any] = {}
+        record: dict[str, Any] | None = None
+        if prov is not None:
+            try:
+                if hasattr(prov, "tool_use_id"):
+                    prov.tool_use_id = call.id
+                if getattr(prov, "id", "") is None and callable(getattr(prov, "finalize", None)):
+                    prov.finalize()
+                record = dict(prov.to_dict()) if callable(getattr(prov, "to_dict", None)) else dict(prov)
+                record["tool_use_id"] = call.id
+                summary = dict(prov.summary()) if callable(getattr(prov, "summary", None)) else {}
+                path = self._data_provenance_dir() / f"{_safe(call.id)}.json"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                write_json_atomic(path, record)
+                summary["record"] = self.run.rel(path)
+            except Exception as exc:  # noqa: BLE001 - a provenance failure is an audit error, not a tool error
+                self._note_audit_error(f"data provenance {call.id}: {type(exc).__name__}: {exc}")
+        result = (record or {}).get("result") if isinstance((record or {}).get("result"), Mapping) else {}
+        for key, value in (("prov", (record or {}).get("id")), ("status", result.get("status")),
+                           ("coverage", result.get("coverage")),
+                           ("coverage_statement", result.get("coverage_statement")),
+                           ("returned", result.get("returned")), ("total", result.get("total")),
+                           ("truncated", result.get("truncated"))):
+            if summary.get(key) is None and value is not None:
+                summary[key] = value
+        for key in ("prov", "status", "coverage", "coverage_statement", "source", "returned", "total", "truncated"):
+            if summary.get(key) is None and header.get(key) is not None:
+                summary[key] = header[key]
+        nature = (record or {}).get("evidence_nature")
+        caveat = header.get("evidence") or (nature.get("caveat") if isinstance(nature, Mapping) else None)
+        if caveat:
+            summary["evidence_caveat"] = caveat
+        order = result.get("order") if isinstance(result.get("order"), Mapping) else {}
+        verified = order.get("verified")
+        if verified is None and isinstance(header.get("order"), str):
+            verified = True if "(verified)" in header["order"] else None
+        summary["order_verified"] = verified
+        summary.setdefault("status", status)
+        return {"result_status": status, "data_provenance": summary}
+
+    def _shape_output(self, call: ToolCall, text: str, raw: Any, st: _Loop,
+                      full_text: str | None = None) -> tuple[str, Path | None]:
         """(text for the model, spill path). Outputs longer than the trace limit are
         spilled; longer than ``tool_output_max`` are truncated for the model
-        (structure-aware for JSON) with a note naming the recovery tools."""
-        if len(text) <= self.trace_output_chars and len(text) <= self.tool_output_max:
+        (structure-aware for JSON) with a note naming the recovery tools.
+
+        ``full_text``: the unshrunk payload of a data-layer result whose ``text`` the
+        gateway already shortened. It is what gets spilled (before any cap), and the
+        model text then ends with the truncation note naming the spill."""
+        full = full_text if full_text and full_text != text else None
+        if full is None and len(text) <= self.trace_output_chars and len(text) <= self.tool_output_max:
             return text, None
         obj = raw if isinstance(raw, (dict, list)) else maybe_parse_json(text)
-        path = self._spill_output(call, text, obj)
+        if full is not None:
+            path = self._spill_output(call, full, maybe_parse_json(full))
+            total = len(full)
+        else:
+            path = self._spill_output(call, text, obj)
+            total = len(text)
         if len(text) <= self.tool_output_max:
-            return text, path
+            if full is None or path is None:
+                return text, path
+            return text + "\n\n" + truncation_note(total, str(path), structured=obj is not None,
+                                                   has_read=st.has_read), path
         if path is None:  # could not save: keep what fits, say so
             return truncate_text(text, self.tool_output_max) + (
-                f"\n\n[Output truncated: {len(text):,} chars; the full output could not be saved.]"), None
+                f"\n\n[Output truncated: {total:,} chars; the full output could not be saved.]"), None
         if obj is not None:
             body = shrink_json(obj, max(2000, self.tool_output_max - 700), spill_path=str(path))
-            note = truncation_note(len(text), str(path), structured=True, has_read=st.has_read)
+            note = truncation_note(total, str(path), structured=True, has_read=st.has_read)
         else:
             body = truncate_text(text, self.tool_output_max)
-            note = truncation_note(len(text), str(path), structured=False, has_read=st.has_read)
+            note = truncation_note(total, str(path), structured=False, has_read=st.has_read)
         return body + "\n\n" + note, path
 
     def _files_returned(self, text: str) -> list[str]:
@@ -1466,6 +1658,8 @@ class Runtime:
         raw: Any = None
         parts: list[Any] | None = None  # multimodal result (text + image/document parts)
         model_error: str | None = None  # the harness rejected the call before running it
+        data: Any = None                # a data-layer result (DataResult): status, provenance, unshrunk text
+        error_kind: str | None = None   # a data-layer error's kind (GatewayError.kind)
         try:
             rejected = self._argument_problem(call, tool) if tool is not None else None
             if tool is None:
@@ -1478,13 +1672,20 @@ class Runtime:
                                   invocation_id=st.inv)
                 try:
                     raw = await tool(ctx, call.input)
-                    if _is_content_parts(raw):
+                    if getattr(raw, "is_data_result", False):
+                        # The model sees the gateway's text (header first); shaping uses its object.
+                        data, raw = raw, getattr(raw, "obj", None)
+                        content, err = str(data.text), False
+                    elif _is_content_parts(raw):
                         content, err = content_text(raw), False
                         parts = self._supported_parts(agent, raw)
                     else:
                         content, err = to_text(raw), False
                 except ToolFailure as exc:
                     content, err = f"Error: {exc}", True
+                    kind = getattr(exc, "kind", None)  # GatewayError
+                    if kind is not None:
+                        error_kind = str(getattr(kind, "value", kind))
                 except BudgetExceeded:
                     raise
                 except Exception as exc:  # noqa: BLE001 - surface any tool crash to the model
@@ -1504,7 +1705,8 @@ class Runtime:
                              "agent": agent.name, "error": f"Interrupted: {why}"})
             raise
         duration = round(time.time() - t0, 2)
-        model_text, spill = self._shape_output(call, content, None if parts is not None else raw, st)
+        model_text, spill = self._shape_output(call, content, None if parts is not None else raw, st,
+                                               full_text=getattr(data, "full_text", None))
         if parts is not None and model_text != content:  # keep images/documents, truncate the text
             parts = [TextBlock(model_text)] + [x for x in parts if isinstance(x, (ImagePart, DocumentPart))]
         end: dict[str, Any] = {"agent": agent.name, "tool": call.name, "tool_use_id": call.id, "is_error": err,
@@ -1512,6 +1714,10 @@ class Runtime:
                                "output_chars": len(content)}
         if model_error:
             end["model_error"] = model_error
+        if data is not None:
+            end.update(self._record_data_result(call, data))
+        if error_kind:
+            end["error_kind"] = error_kind
         if spill is not None:
             end["output_path"] = self.run.rel(spill)
         if call.name.startswith("mcp__") and not err:
@@ -1530,16 +1736,23 @@ class Runtime:
         if len(errs) > n_audit0:
             note = AUDIT_NOTE.format(msg=str(errs[-1])[:500])
             if parts is not None:
-                parts = parts + [TextBlock(note)]
+                if parts and isinstance(parts[0], TextBlock) and _TRUNCATION_NOTE_RE.search(parts[0].text):
+                    parts = [TextBlock(_add_note(parts[0].text, note))] + parts[1:]
+                else:
+                    parts = parts + [TextBlock(note)]
             else:
-                model_text = model_text + "\n\n" + note
+                model_text = _add_note(model_text, note)  # a truncation note stays last
         rec = {"tool": call.name, "input": call.input, "is_error": err, "tool_use_id": call.id, "agent": agent.name}
+        if data is not None:
+            rec["result_status"] = end.get("result_status")
         if err:
             rec["error"] = content[:2000]
             entry = {"tool": call.name, "input": preview(call.input, 2000), "error": content[:500],
                      "tool_use_id": call.id}
             if model_error:
                 rec["model_error"] = entry["model_error"] = model_error
+            if error_kind:
+                rec["error_kind"] = entry["error_kind"] = error_kind
             st.result.tool_errors.append(entry)
         st.calls.append(rec)
         st.result.tool_calls += 1
@@ -1775,6 +1988,7 @@ class Runtime:
                 inventory.setdefault(t.source, []).append(f"{name}: {t.description.splitlines()[0][:160]}")
             failures_ = self.unavailable_servers()
             out: dict[str, Any] = {"tools_by_source": inventory, "unavailable_servers": failures_,
+                                   "tools_not_ready": dict(self.tool_readiness),
                                    "agents": {n: a.description for n, a in self.agents.items()}}
             if self.mcp is not None:
                 try:

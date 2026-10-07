@@ -113,7 +113,7 @@ class TrialAnnotation(BaseModel):
             "virtualbiotech_stop_reason_categories": "|".join(c.value for c in self.stop_reason_categories) or None,
             "results_source": self.results_source.value,
             "ae_source": self.ae_source.value,
-            "pubmed_ids": ",".join(self.pubmed_ids) or None,
+            "pubmed_ids": "|".join(self.pubmed_ids) or None,   # '|' as in the released labels file
             "confidence": self.confidence,
         }
         for organ in AE_ORGAN_SYSTEMS:

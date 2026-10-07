@@ -28,7 +28,8 @@ from typing import Any
 import httpx
 from fastmcp import FastMCP  # same framework as the upstream servers
 
-EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+#: E-utilities base URL; ``VBT_EUTILS_BASE`` points it at a stub server in tests.
+EUTILS = os.environ.get("VBT_EUTILS_BASE") or "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 MAXDATE_ENV = "VBT_LITERATURE_MAXDATE"
 mcp = FastMCP("pubmed")
 _last = [0.0]

@@ -81,6 +81,29 @@ def is_capture_tool(name: str | None) -> bool:
     return name in CAPTURE_TOOLS or name.startswith("mcp__")
 
 
+def data_call_fields(ev: Mapping[str, Any]) -> dict[str, Any]:
+    """The data-layer outcome recorded on a ``tool_end``/``tool_error`` event (§15.2):
+    ``result_status``, ``error_kind``, the provenance id ``prov``, ``coverage`` and the
+    provenance summary ``data_provenance``. Only the fields the event carries are returned.
+
+    The live call index (``session.Run``) and this index both use it, so record_claims and
+    ``vbt verify`` decide from the same fields."""
+    out: dict[str, Any] = {}
+    for k in ("result_status", "error_kind"):
+        if ev.get(k):
+            out[k] = str(ev[k])
+    dp = ev.get("data_provenance")
+    if isinstance(dp, Mapping):
+        out["data_provenance"] = dict(dp)
+        if dp.get("prov"):
+            out["prov"] = dp["prov"]
+        if dp.get("coverage"):
+            out["coverage"] = dp["coverage"]
+        if "result_status" not in out and dp.get("status"):
+            out["result_status"] = str(dp["status"])
+    return out
+
+
 def read_trace(path: str | Path) -> tuple[list[dict[str, Any]], int]:
     """Read a trace.jsonl, skipping malformed/partial lines. Returns (events, n_bad)."""
     return read_jsonl(path)
@@ -461,6 +484,8 @@ class Provenance:
                         "end_t": None, "duration_s": None, "is_error": False, "pending": True,
                         "input": None, "input_ref": None, "input_sha256": None, "output_path": None,
                         "files_written": [], "files_returned": [], "turn": current_turn, "_output": None,
+                        "result_status": None, "error_kind": None, "prov": None, "coverage": None,
+                        "data_provenance": None,
                     }
                 rec["tool"] = rec["tool"] or ev.get("tool") or ev.get("tool_name")
                 rec["agent"] = rec["agent"] or agent
@@ -491,6 +516,7 @@ class Provenance:
                     rec["_output"] = ev.get("output") if ev.get("output") is not None else ev.get("tool_response")
                     if ev.get("files_returned"):
                         rec["files_returned"] = list(ev.get("files_returned") or [])
+                    rec.update(data_call_fields(ev))
                 continue
             if t == "bash":
                 self.bash_events.append(dict(ev))
@@ -545,6 +571,8 @@ class Provenance:
         run = self.runs.get(str(rec.get("agent_run_id"))) if rec.get("agent_run_id") else None
         rec["parent"] = rec.get("parent_run_id") or (run or {}).get("parent_run_id") or (run or {}).get("tool_use_id")
         rec.pop("_output", None)
+        # Old traces and tools outside the data layer carry no status (§15.2).
+        rec["result_status"] = rec.get("result_status") or "unknown"
 
     # ------------------------------------------------------------ queries
 
@@ -922,5 +950,5 @@ def research_turns(prov: Provenance, artifacts: Mapping[str, Mapping[str, Any]] 
 __all__ = [
     "Provenance", "build_index", "read_trace", "research_turns", "extract_written_paths",
     "extract_returned_paths", "parse_bash", "normalize_path", "is_data_tool", "is_capture_tool",
-    "SUPPORT_AGENTS", "coerce_input", "rel_parts",
+    "SUPPORT_AGENTS", "coerce_input", "rel_parts", "data_call_fields",
 ]

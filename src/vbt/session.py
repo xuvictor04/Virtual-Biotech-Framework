@@ -43,7 +43,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from .audit import storage as st
 from .audit.claims import (
@@ -59,6 +59,7 @@ from .audit.plan import reconcile, render_plan_md, validate_plan
 from .audit.provenance import (
     ROOT_WORKSPACE_AGENTS,
     build_index,
+    data_call_fields,
     extract_returned_paths,
     is_capture_tool,
     parse_bash,
@@ -88,6 +89,17 @@ def _now() -> str:
 
 def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="seconds")
+
+
+def _reason_map(items: Mapping[str, Any] | Iterable[str] | None, reason: str) -> dict[str, str]:
+    """``{name: reason}`` from a mapping (values kept) or a list of names (each gets ``reason``)."""
+    if not items:
+        return {}
+    if isinstance(items, Mapping):
+        return {str(k): str(v) for k, v in items.items()}
+    if isinstance(items, str):
+        return {items: reason}
+    return {str(k): reason for k in items}
 
 
 def write_json_atomic(path: Path, data: Any) -> None:
@@ -226,6 +238,16 @@ def _upgrade_manifest(data: Any, run_id: str) -> dict[str, Any]:
             m[k] = []
     if not isinstance(m.get("harness_files"), dict):
         m["harness_files"] = {}
+    degraded = m.get("degraded")
+    if isinstance(degraded, dict):  # older records carry {reason, servers, at} only
+        m["degraded"] = degraded = dict(degraded)
+        for k in ("servers", "tools", "tables"):
+            if not isinstance(degraded.get(k), dict):
+                degraded[k] = _reason_map(degraded.get(k), str(degraded.get("reason") or ""))
+        degraded.setdefault("reason", None)
+        degraded.setdefault("at", None)
+    elif degraded is not None:
+        m["degraded"] = None
     return m
 
 
@@ -368,13 +390,20 @@ class Run:
         finally:
             self._noting = False
 
-    def mark_degraded(self, servers: Mapping[str, Any], reason: str = "missing reference data") -> None:
-        """Record that the run proceeds without some servers' reference data
-        (``--allow-missing-data``): MANIFEST.degraded = {reason, servers, at}."""
+    def mark_degraded(self, servers: Mapping[str, Any] | Iterable[str] | None, reason: str = "missing reference data",
+                      *, tools: Mapping[str, Any] | Iterable[str] | None = None,
+                      tables: Mapping[str, Any] | Iterable[str] | None = None) -> None:
+        """Record that the run proceeds without some reference data (``--allow-missing-data``):
+        MANIFEST.degraded = {servers, tools, tables, reason, at}. ``servers`` lists servers whose
+        every tool is unready (kept for compatibility); ``tools`` and ``tables`` name the unready
+        tools and tables of the data layer's tool-scoped readiness, each with its reason."""
         with self._guard("mark_degraded"), self._lock:
-            servers = {str(k): str(v) for k, v in (servers or {}).items()}
-            self.manifest["degraded"] = {"reason": reason, "servers": servers, "at": _now()}
-            self.trace("run_degraded", reason=reason, servers=servers)
+            servers_ = _reason_map(servers, reason)
+            tools_ = _reason_map(tools, reason)
+            tables_ = _reason_map(tables, reason)
+            self.manifest["degraded"] = {"servers": servers_, "tools": tools_, "tables": tables_, "reason": reason,
+                                         "at": _now()}
+            self.trace("run_degraded", reason=reason, servers=servers_, tools=tools_, tables=tables_)
             self._write_manifest()
 
     # ------------------------------------------------------------------ paths
@@ -456,6 +485,9 @@ class Run:
                 rec["pending"] = False
                 rec["is_error"] = bool(ev.get("is_error")) or t == "tool_error"
                 rec["end_t"] = ev.get("t")
+                # result_status, error_kind, prov, coverage and the provenance summary (§15.2),
+                # exactly as audit.provenance indexes them, so record_claims and verify agree.
+                rec.update(data_call_fields(ev))
                 if live:
                     rec["end_precise"] = time.time()
         elif t == "turn_start":
