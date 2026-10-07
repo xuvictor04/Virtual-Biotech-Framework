@@ -1,9 +1,14 @@
-# Open Targets Platform 25.09 (docs/DATA_LAYER.md §6.5, §6.6, §6.8; phase 1, strict: false).
+# Open Targets Platform 25.09 (docs/DATA_LAYER.md §6.5, §6.6, §6.8; phase 2, strict: true).
 #
-# Every table a phase-1 overlay reads is declared with its grain and complete key; columns the
-# bindings, result field maps, ranks, grains and sentinels name have roles. Facts that only the
-# full 25.09 release can confirm carry `verified: false` and are disclosure-only until readiness
-# confirms them (I9). Upstream paths are relative to third_party/TheVirtualBiotech.
+# All 38 directories of upstream src/config/datasets.py OPEN_TARGETS_DATASETS are tables here, each
+# with its grain and complete key, and every physical column and nested field has exactly one role
+# (strict: readiness reports an undeclared physical column as schema_drift). The nested containers
+# tools return as rows are item tables. Release-dependent columns are `optional: true`. Facts that
+# only the full 25.09 release can confirm carry `verified: false` and are disclosure-only until
+# readiness confirms them (I9). Facts that later phases implement are declared here already
+# (enrichment contracts, propagation through id_type hierarchies, the literature keywordId sidecar,
+# interaction-evidence identity), so phase-3/4 work never edits this file. Upstream paths are
+# relative to third_party/TheVirtualBiotech.
 schema: vbt.datasource/1
 source: open_targets
 title: Open Targets Platform
@@ -13,7 +18,7 @@ root: ${OPEN_TARGETS_DATA_PATH}
 manifests:
   - {path: .download-manifest.json, required: false, require: {complete: true}}   # bytes + sha256 per file
 defaults: {format: parquet, layout: sharded_dir, missing: unknown}
-strict: false
+strict: true
 
 id_types:
   ensembl_gene:     {plugin: ensembl_gene, universe: target.id,
@@ -46,9 +51,13 @@ id_types:
                      canonicalize: {parent: drug_molecule.parentId}}
   drug_name:        {plugin: drug_name, label_of: chembl_molecule}
   inchikey:         {plugin: inchikey, universe: drug_molecule.inchiKey, resolvable: false}
-  reactome_pathway: {plugin: reactome, universe: reactome.id, resolve_via: [reactome.label]}
+  reactome_pathway: {plugin: reactome, universe: reactome.id, resolve_via: [reactome.label],
+                     hierarchy: {table: reactome, columns: [parents], predicates: [is_a], reflexive: false}}
+                     # the Reactome event hierarchy: propagation and include_descendants walk `parents` (phase 3)
   go_term:          {plugin: go, universe: go.id, resolve_via: [go.name],
                      retired: {label_prefix: "obsolete "}}               # 8,259 obsolete names in OT go (VERIFIED)
+                     # OT's go table has no hierarchy: gene_ontology:go_term `extends` this type with the
+                     # go-basic.obo DAG (is_a and part_of propagate, regulates does not)
   so_term:          {plugin: so, options: {separator: "_"}, universe: so.id,   # 25.09 stores SO_0001583
                      resolve_via: [so.label]}
   biosample:        {plugin: local_key, options: {canonical: "^[A-Za-z]+_[A-Za-z0-9]+$", normalize: [strip]},
@@ -117,8 +126,17 @@ tables:
       pathways:
         role: member
         item_key: [pathwayId, topLevelTerm]       # a pathway can sit under two top-level terms (SCHEMA-DEPENDENT)
-        membership: {set: {path: "pathwayId", id_type: reactome_pathway}, member: {parent: id},
-                     propagation: mixed, propagate_via: {id_type: reactome_pathway, relation: ancestor}}
+        membership:
+          set: {path: "pathwayId", id_type: reactome_pathway}
+          member: {parent: id}
+          propagation: mixed
+          propagate_via: {id_type: reactome_pathway, relation: ancestor}
+          enrichment:                             # phase 3 (F16): enrich verb over this contract
+            universe: {table: target_pathways, keys: [id]}            # genes with >= 1 Reactome annotation
+            family: {include_zero_overlap: true,
+                     size_bounds: {min_arg: min_size, max_arg: max_size, counted_within: universe}}
+            test: hypergeom_enrichment
+            correction: fdr_bh
         coverage: {statement: "Lowest-level Reactome annotations (some items also list an ancestor). A gene missing from a pathway is unannotated there, not shown to be outside it.",
                    absence_means: unknown}
         rank: [{column: pathwayId, direction: asc}]
@@ -129,8 +147,19 @@ tables:
       go:
         role: member
         item_key: {columns: [id, aspect, evidence, source, geneProduct], check: sampled}
-        membership: {set: {path: id, id_type: go_term}, member: {parent: id}, propagation: direct,
-                     count_grain: go_membership}
+        membership:
+          set: {path: id, id_type: go_term}
+          member: {parent: id}
+          propagation: direct
+          count_grain: go_membership
+          propagate_via: {id_type: go_term, relation: ancestor}   # through gene_ontology:go_term (extends)
+          enrichment:                             # phase 3 (F16): background per aspect, full family, BH
+            universe: {table: target_go, keys: [id], where: {eq: ["go[].aspect", {param: aspect}]},
+                       per_scope: ["go[].aspect"]}
+            family: {include_zero_overlap: true,
+                     size_bounds: {min_arg: min_size, max_arg: max_size, counted_within: universe}}
+            test: hypergeom_enrichment
+            correction: fdr_bh
         coverage: {statement: "Direct GO annotations (all evidence codes incl. IEA), not propagated to ancestor terms. A missing annotation is not evidence the gene lacks the function.",
                    absence_means: unknown}
         rank: [{column: id, direction: asc}]
@@ -338,6 +367,29 @@ tables:
     coverage: {statement: "ChEMBL target classes integrated by OT 25.09; a gene with no class was not classified.",
                absence_means: unknown}
 
+  target_safety_liabilities:                    # item table: the liabilities get_target_safety returns
+    kind: fact
+    items_of: {table: target, path: "safetyLiabilities[]"}
+    grain: one curated safety liability (event, source) of one target
+    key: {columns: [], check: sampled}
+    grains: {target: [id], event: ["safetyLiabilities[].eventId"]}
+    coverage: {statement: "Curated target safety liabilities; an empty list means none curated, not that the target is safe.",
+               absence_means: unknown}
+
+  target_hallmark_attributes:                   # item table: hallmark attributes beside the cancer hallmarks
+    kind: fact
+    items_of: {table: target, path: "hallmarks.attributes[]"}
+    grain: one COSMIC hallmark attribute annotation of one gene
+    key: {columns: [], check: sampled}
+    coverage: {statement: "COSMIC hallmark attributes; no attribute means not annotated.", absence_means: unknown}
+
+  target_protein_ids:                           # item table: UniProt and Ensembl protein IDs of a gene
+    kind: crosswalk
+    items_of: {table: target, path: "proteinIds[]"}
+    grain: one protein ID (with its source) of one gene
+    key: {columns: [], check: sampled}
+    coverage: {statement: "Protein IDs integrated by OT 25.09.", absence_means: unknown}
+
   target_prioritisation:
     kind: entity_detail
     path: target_prioritisation
@@ -417,7 +469,22 @@ tables:
       modelPhenotypeLabel:    {role: label, of: modelPhenotypeId}
       modelPhenotypeClasses:  {role: nested, item_key: [id], fields: {id: {role: category, vocab: data},
                                                                      label: {role: label, of: id}}}
-      biologicalModels:       {role: payload}
+      biologicalModels:
+        role: nested
+        item_key: [id]
+        grain: one mouse model (allelic composition on a genetic background) showing the phenotype
+        fields:
+          id:                  {role: identifier, resolvable: false}
+          allelicComposition:  {role: text}
+          geneticBackground:   {role: category, vocab: data}
+          literature:          {role: reference, ref_kinds: [pmid], path: "[]"}
+
+  mouse_phenotype_classes:                      # item table: phenotype classes of get_mouse_phenotype rows
+    kind: fact
+    items_of: {table: mouse_phenotype, path: "modelPhenotypeClasses[]"}
+    grain: one top-level phenotype class of one mouse phenotype record
+    key: {columns: [], check: sampled}
+    coverage: {statement: "MP top-level classes of curated mouse phenotypes.", absence_means: unknown}
 
   pharmacogenomics:
     kind: fact
@@ -447,7 +514,19 @@ tables:
       phenotypeText: {role: category, vocab: data}
       phenotypeFromSourceId: {role: payload}
       variantFunctionalConsequenceId: {role: payload}
-      variantAnnotation: {role: payload}
+      variantAnnotation:
+        role: nested
+        item_key: {identity: position}
+        fields:
+          id:                         {role: identifier, resolvable: false}
+          baseAlleleOrGenotype:       {role: category, vocab: data}
+          comparisonAlleleOrGenotype: {role: category, vocab: data}
+          directionality:             {role: category, vocab: data}
+          effect:                     {role: category, vocab: data}
+          effectDescription:          {role: text}
+          effectType:                 {role: category, vocab: data}
+          entity:                     {role: category, vocab: data}
+          literature:                 {role: reference, ref_kinds: [pmid]}
       isDirectTarget: {role: flag, missing: unknown}
       studyId:       {role: payload}
       literature:    {role: reference, ref_kinds: [pmid], path: "[]"}
@@ -460,6 +539,15 @@ tables:
         fields:
           drugId:         {role: identifier, id_type: chembl_molecule, ref: drug_molecule.id, integrity: partial}
           drugFromSource: {role: label, of: drugId}
+
+  pharmacogenomics_drugs:                       # item table: the drugs of a PharmGKB annotation (pgx drug path)
+    kind: fact
+    items_of: {table: pharmacogenomics, path: "drugs[]"}
+    grain: one drug named by one PharmGKB variant or haplotype annotation
+    key: {columns: [], check: none}             # parent rows are content-identified (row_identity: content_hash)
+    grains: {drug: ["drugs[].drugId"]}
+    coverage: {statement: "Drugs of PharmGKB annotations integrated by OT 25.09; absence means none curated.",
+               absence_means: unknown}
 
   # -------------------------------------------------------------------- drugs
   drug_molecule:
@@ -494,7 +582,8 @@ tables:
                        cardinality: many}
       crossReferences: {role: nested, item_key: [source], fields: {
                           source: {role: category, vocab: data},
-                          ids: {role: payload}}}
+                          ids: {role: identifier, xref: true, path: "[]", cardinality: many, resolvable: false}}}
+                                # namespaces named by ^.source (DrugBank, PubChem ...): syntax only
       linkedTargets: {role: nested, fields: {
                           rows: {role: member, membership: {set: {parent: id}, member: {path: "[]", id_type: ensembl_gene}},
                                  ref: target.id},
@@ -521,7 +610,9 @@ tables:
           disease: {role: identifier, id_type: ot_disease, ref: disease.id, integrity: partial}
           efoName: {role: label, of: disease}
           maxPhaseForIndication: {role: measure, statistic: clinical_phase, scale: [0, 4], missing: unknown, verified: false}
-          references: {role: payload}
+          references: {role: nested, item_key: [source], fields: {
+                         source: {role: category, vocab: data},
+                         ids:    {role: reference, ref_kinds: [pmid, url, nct_id], path: "[]"}}}
       approvedIndications: {role: identifier, id_type: ot_disease, path: "[]", cardinality: many}
       indicationCount: {role: count, counts: "indications of the drug", length_of: indications}
 
@@ -553,7 +644,10 @@ tables:
       efo_term:      {role: label, of: efo_id}
       efo_id:        {role: identifier, id_type: ot_disease, integrity: partial}
       efo_id_for_warning_class: {role: identifier, id_type: ot_disease, integrity: partial}
-      references:    {role: payload}
+      references:    {role: nested, item_key: [ref_type, ref_id], fields: {
+                        ref_id:   {role: reference, ref_kinds: [url, pmid]},
+                        ref_type: {role: category, vocab: data},
+                        ref_url:  {role: reference, ref_kinds: [url]}}}
 
   drug_mechanism_of_action:
     kind: fact
@@ -569,7 +663,10 @@ tables:
       targetName:  {role: category, vocab: data}
       targetType:  {role: category, vocab: data}
       targets:     {role: identifier, id_type: ensembl_gene, path: "[]", cardinality: many, integrity: partial}
-      references:  {role: payload}
+      references:  {role: nested, item_key: [source], fields: {
+                      source: {role: category, vocab: data},
+                      ids:    {role: reference, ref_kinds: [pmid, url], path: "[]"},
+                      urls:   {role: reference, ref_kinds: [url], path: "[]"}}}
 
   known_drug:
     kind: fact
@@ -723,6 +820,9 @@ tables:
       score:         {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown}
       evidenceCount: {role: count, counts: "evidence strings behind the association"}
 
+  # Indirect associations already include every descendant disease's evidence: their diseaseId is
+  # propagated over disease.descendants, so include_descendants is refused on them (§11.5; the
+  # identifier facet `propagated_over` is requested from the column model, see the phase-2 report).
   association_by_overall_indirect:
     kind: fact
     path: association_by_overall_indirect
@@ -855,8 +955,108 @@ tables:
                          numberMutatedSamples: {role: count, counts: samples, stored_as: float64},
                          numberSamplesTested: {role: count, counts: "samples tested", stored_as: float64},
                          numberSamplesWithMutationType: {role: count, counts: "samples with the mutation type"}}}
-      textMiningSentences: {role: payload}
-      urls:         {role: payload}
+      textMiningSentences: {role: nested, item_key: {identity: position}, fields: {
+                              section: {role: category, vocab: data},
+                              text:    {role: text},
+                              dStart:  {role: position, part: start, coordinate_base: 0},
+                              dEnd:    {role: position, part: end, coordinate_base: 0},
+                              tStart:  {role: position, part: start, coordinate_base: 0},
+                              tEnd:    {role: position, part: end, coordinate_base: 0}}}
+      urls:         {role: nested, item_key: [url], fields: {niceName: {role: category, vocab: data},
+                                                           url: {role: reference, ref_kinds: [url]}}}
+      # -- partition-specific evidence fields (null outside the sources that fill them)
+      alleleOrigins:       {role: category, vocab: data, path: "[]"}
+      allelicRequirements: {role: category, vocab: data, path: "[]"}
+      ancestry:            {role: category, vocab: data, applies_when: {sourceId: [gene_burden, gwas_credible_sets]}}
+      ancestryId:          {role: payload}
+      beta:                {role: measure, statistic: numeric, direction: signed, missing: unknown,
+                            applies_when: {sourceId: [gene_burden, gwas_credible_sets]}}
+      betaConfidenceIntervalLower: {role: measure, statistic: numeric, of: beta, missing: unknown}
+      betaConfidenceIntervalUpper: {role: measure, statistic: numeric, of: beta, missing: unknown}
+      biologicalModelAllelicComposition: {role: text, applies_when: {sourceId: [impc]}}
+      biologicalModelGeneticBackground:  {role: category, vocab: data, applies_when: {sourceId: [impc]}}
+      biologicalModelId:   {role: identifier, resolvable: false, applies_when: {sourceId: [impc]}}
+      biomarkerName:       {role: label, of: targetId, applies_when: {sourceId: [cancer_biomarkers]}}
+      biomarkers:
+        role: nested
+        applies_when: {sourceId: [cancer_biomarkers]}
+        fields:
+          geneExpression:   {role: nested, item_key: [id], fields: {id: {role: identifier, resolvable: false},
+                                                                    name: {role: label, of: id}}}
+          geneticVariation: {role: nested, item_key: [id], fields: {id: {role: identifier, resolvable: false},
+                                                                    name: {role: label, of: id},
+                                                                    functionalConsequenceId: {role: category, vocab: data}}}
+      biosamplesFromSource: {role: category, vocab: data, path: "[]"}
+      cellType:            {role: category, vocab: data}
+      clinicalSignificances: {role: category, vocab: data, path: "[]"}
+      clinicalStatus:      {role: category, vocab: data, applies_when: {sourceId: [chembl]}}
+      cohortDescription:   {role: text}
+      cohortId:            {role: category, vocab: data}
+      cohortPhenotypes:    {role: category, vocab: data, path: "[]"}
+      cohortShortName:     {role: category, vocab: data}
+      confidence:          {role: category, vocab: data}
+      contrast:            {role: text}
+      crisprScreenLibrary: {role: category, vocab: data, applies_when: {sourceId: [crispr_screen]}}
+      diseaseCellLines:    {role: nested, item_key: [id], fields: {
+                              id:       {role: identifier, id_type: depmap_cell_line, resolvable: false},
+                              name:     {role: label, of: id},
+                              tissue:   {role: label, of: tissueId},
+                              tissueId: {role: category, vocab: data}}}
+      diseaseModelAssociatedHumanPhenotypes: {role: nested, item_key: [id], fields: {
+                              id: {role: identifier, id_type: hpo, integrity: partial}, label: {role: label, of: id}}}
+      diseaseModelAssociatedModelPhenotypes: {role: nested, item_key: [id], fields: {
+                              id: {role: category, vocab: data}, label: {role: label, of: id}}}
+      drugFromSource:      {role: label, of: drugId}
+      drugResponse:        {role: category, vocab: data}
+      geneticBackground:   {role: category, vocab: data}
+      log2FoldChangePercentileRank: {role: measure, statistic: ordinal, missing: unknown}
+      log2FoldChangeValue: {role: measure, statistic: numeric, direction: signed, missing: unknown,
+                            applies_when: {sourceId: [expression_atlas]}}
+      oddsRatio:           {role: measure, statistic: numeric, missing: unknown}
+      oddsRatioConfidenceIntervalLower: {role: measure, statistic: numeric, of: oddsRatio, missing: unknown}
+      oddsRatioConfidenceIntervalUpper: {role: measure, statistic: numeric, of: oddsRatio, missing: unknown}
+      pathways:            {role: nested, item_key: [id], fields: {
+                              id:   {role: identifier, id_type: reactome_pathway, integrity: partial},
+                              name: {role: label, of: id}}}
+      projectId:           {role: category, vocab: data}
+      reactionId:          {role: identifier, id_type: reactome_pathway, integrity: partial,
+                            applies_when: {sourceId: [reactome]}}
+      reactionName:        {role: label, of: reactionId}
+      releaseDate:         {role: time, precision: day, stored_as: iso8601_string, missing: unknown}
+      releaseVersion:      {role: payload}
+      sex:                 {role: category, vocab: data, path: "[]"}
+      significantDriverMethods: {role: category, vocab: data, path: "[]"}
+      statisticalMethod:   {role: category, vocab: data}
+      statisticalMethodOverview: {role: text}
+      statisticalTestTail: {role: category, vocab: data}
+      studyCases:          {role: count, counts: "cases in the study"}
+      studyCasesWithQualifyingVariants: {role: count, counts: "cases with a qualifying variant"}
+      studyOverview:       {role: text}
+      studySampleSize:     {role: count, counts: "samples in the study"}
+      studyStartDate:      {role: time, precision: day, stored_as: iso8601_string, missing: unknown}
+      studyStopReason:     {role: text}
+      studyStopReasonCategories: {role: category, vocab: data, path: "[]"}
+      targetFromSource:    {role: label, of: targetFromSourceId}
+      targetInModel:       {role: label, of: targetInModelEnsemblId}
+      targetInModelEnsemblId: {role: identifier, id_type: ensembl_gene_mouse}
+      targetInModelMgiId:  {role: payload}
+      targetModulation:    {role: category, vocab: data}
+      variantAminoacidDescriptions: {role: text, path: "[]"}
+      variantFromSourceId: {role: payload}
+      variantFunctionalConsequenceId: {role: category, vocab: data}
+      variantHgvsId:       {role: payload}
+      # release-dependent: added to the evidence schema after 25.03
+      evidenceDate:        {role: time, precision: day, stored_as: iso8601_string, missing: unknown, optional: true}
+      variantEffect:       {role: category, vocab: data, optional: true}
+      directionOnTrait:    {role: category, vocab: data, optional: true}
+
+  evidence_mutated_samples:                     # item table: mutated-sample counts per consequence
+    kind: fact
+    items_of: {table: evidence, path: "mutatedSamples[]"}
+    grain: one functional-consequence count of mutated samples behind one evidence string
+    key: {columns: [], check: sampled}
+    coverage: {statement: "Somatic mutation counts of cancer evidence (intogen, eva_somatic, cancer_gene_census).",
+               absence_means: unknown}
 
   literature:
     kind: fact
@@ -864,6 +1064,9 @@ tables:
     size_class: huge
     grain: one (publication, entity) co-mention from Europe PMC text mining
     key: {columns: [pmid, keywordId], check: sampled, verified: false}
+    access_paths:
+      - {columns: [keywordId], via: sidecar_index, build: on_demand}    # built by index_huge (phase 4, F19)
+      - {columns: [pmid], via: row_group_stats}
     coverage: {statement: "Europe PMC text-mined entity mentions integrated by OT 25.09; absence means not text-mined, not that the paper is irrelevant.",
                absence_means: unknown}
     columns:
@@ -1023,14 +1226,48 @@ tables:
       variantId:    {role: identifier, id_type: ot_variant, integrity: partial}
       chromosome:   {role: position, part: chrom, build: GRCh38, chrom_style: bare}
       position:     {role: position, part: pos}
+      region:       {role: payload}
       beta:         {role: measure, statistic: numeric, direction: signed, missing: unknown}
+      zScore:       {role: measure, statistic: numeric, direction: signed, missing: unknown}
+      standardError: {role: measure, statistic: numeric, of: beta, missing: unknown}
       pValueMantissa: {role: measure, statistic: pvalue_mantissa_exponent, columns: {mantissa: pValueMantissa, exponent: pValueExponent}}
       pValueExponent: {role: measure, statistic: numeric, part_of: pValueMantissa}
       studyType:    {role: category, vocab: data}
       finemappingMethod: {role: category, vocab: data}
       credibleSetIndex: {role: payload}
       credibleSetlog10BF: {role: measure, statistic: numeric, direction: higher_is_stronger, missing: unknown}
-      locus:        {role: payload}
+      purityMeanR2: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown}
+      purityMinR2:  {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown}
+      locusStart:   {role: position, part: start}
+      locusEnd:     {role: position, part: end}
+      sampleSize:   {role: count, counts: "samples of the study behind the credible set", missing: unknown}
+      confidence:   {role: category, vocab: data}
+      qualityControls: {role: category, vocab: data, path: "[]"}
+      locus:
+        role: nested
+        item_key: [variantId]
+        grain: one variant of one credible set with its posterior probability
+        rank: [{column: posteriorProbability, direction: desc, nulls: last}]
+        fields:
+          variantId:            {role: identifier, id_type: ot_variant, integrity: partial}
+          posteriorProbability: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown}
+          logBF:                {role: measure, statistic: numeric, missing: unknown}
+          is95CredibleSet:      {role: flag, missing: unknown}
+          is99CredibleSet:      {role: flag, missing: unknown}
+          pValueMantissa:       {role: measure, statistic: pvalue_mantissa_exponent,
+                                 columns: {mantissa: pValueMantissa, exponent: pValueExponent}}
+          pValueExponent:       {role: measure, statistic: numeric, part_of: pValueMantissa}
+          beta:                 {role: measure, statistic: numeric, direction: signed, missing: unknown}
+          standardError:        {role: measure, statistic: numeric, of: beta, missing: unknown}
+          r2Overall:            {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown}
+
+  credible_set_locus:                           # item table: the variants of a credible set
+    kind: fact
+    items_of: {table: credible_set, path: "locus[]"}
+    grain: one variant of one fine-mapped credible set
+    key: {columns: [], check: sampled}
+    rank: [{column: "locus[].posteriorProbability", direction: desc, nulls: last}]
+    coverage: {statement: "Variants in the credible set (95%/99% flags per variant).", absence_means: unknown}
 
   l2g_prediction:
     kind: fact
@@ -1050,6 +1287,13 @@ tables:
                                                              shapValue: {role: measure, statistic: numeric, missing: unknown}}}
       shapBaseValue: {role: measure, statistic: numeric, missing: unknown}
 
+  l2g_features:                                 # item table: the feature values behind one L2G score
+    kind: fact
+    items_of: {table: l2g_prediction, path: "features[]"}
+    grain: one feature value (with its SHAP contribution) of one locus-to-gene score
+    key: {columns: [], check: sampled}
+    coverage: {statement: "L2G model features of OT 25.09.", absence_means: unknown}
+
   variant:
     kind: entity
     path: variant
@@ -1066,6 +1310,7 @@ tables:
       rsIds:           {role: identifier, id_type: rsid, path: "[]", cardinality: many}   # one rsID can name several alleles
       mostSevereConsequenceId: {role: category, vocab: data}
       variantDescription: {role: text}
+      hgvsId:          {role: identifier, resolvable: false}
 
   study:
     kind: entity
@@ -1127,6 +1372,10 @@ tables:
       datasourceId:  {role: category, vocab: data, scope: {kind: stratum, pooling: group}}
       score:         {role: measure, statistic: numeric, comparable_within: [datasourceId], missing: unknown}
       distanceToTss: {role: measure, statistic: numeric, missing: unknown}
+      datatypeId:    {role: category, vocab: data, scope: {kind: stratum, pooling: group, determined_by: [datasourceId]}}
+      pmid:          {role: reference, ref_kinds: [pmid]}
+      studyId:       {role: identifier, id_type: gwas_study, integrity: partial}
+      intervalId:    {role: identifier, resolvable: false}
 
   colocalisation_coloc:
     kind: fact
@@ -1210,19 +1459,29 @@ tables:
     path: interaction_evidence
     size_class: huge
     grain: one interaction evidence record (one experiment or curated statement) for one interactor pair
+    # Rows are identified by content: one experiment can be reported twice for one pair, and the
+    # identifier is null for curated statements; key.columns are the grouping key of a record.
     key: {columns: [interactionIdentifier, intA, intB, targetA, targetB], nullable: [interactionIdentifier, targetA, targetB],
-          check: sampled, verified: false}
+          row_identity: content_hash, check: sampled, verified: false}
     edge: {a: targetA, b: targetB, directed: false, orientation: as_reported, verified: false,
-           sides: {a: [intA], b: [intB]}}
+           sides: {a: [intA, intABiologicalRole], b: [intB, intBBiologicalRole]}}
+    grains: {pair: {unordered: [targetA, targetB], by: ["interactionResources.sourceDatabase"]},
+             experiment: [interactionIdentifier]}
     coverage: {statement: "Evidence records behind OT 25.09 interactions; absence means no record in these sources.",
                absence_means: unknown}
     columns:
       interactionIdentifier: {role: identifier}
       targetA: {role: endpoint, side: a, id_type: ensembl_gene, ref: target.id, missing: non_entity}
       targetB: {role: endpoint, side: b, id_type: ensembl_gene, ref: target.id, missing: non_entity}
-      intA:    {role: identifier, side: a, resolvable: false}
+      # each evidence record belongs to one aggregated interaction row (composite reference)
+      intA:    {role: identifier, side: a, resolvable: false, integrity: partial,
+                ref: {table: interaction, on: {intA: intA, intB: intB, targetA: targetA, targetB: targetB,
+                                               sourceDatabase: "interactionResources.sourceDatabase"}}}
       intB:    {role: identifier, side: b, resolvable: false}
-      interactionResources: {role: nested, fields: {sourceDatabase: {role: category, vocab: data},
+      intABiologicalRole: {role: category, vocab: data, side: a}
+      intBBiologicalRole: {role: category, vocab: data, side: b}
+      interactionDetectionMethodShortName: {role: category, vocab: data}
+      interactionResources: {role: nested, fields: {sourceDatabase: {role: category, vocab: [intact, reactome, signor, string]},
                                                     databaseVersion: {role: payload}}}
       interactionScore: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown, verified: false}
       pubmedId: {role: identifier, id_type: pmid, integrity: partial}

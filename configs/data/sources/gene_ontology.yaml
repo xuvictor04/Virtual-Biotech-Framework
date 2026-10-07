@@ -1,0 +1,67 @@
+# The Gene Ontology DAG from go-basic.obo (docs/DATA_LAYER.md §6.8 S7/S9, §11.5; phase 2, strict: true).
+#
+# Open Targets ships GO terms without their hierarchy (`open_targets.go` has id and name only), so
+# this source `extends` open_targets:go_term with the go-basic.obo DAG: propagation of gene
+# annotations (target.go `propagate_via`) and include_descendants walk `is_a` and `part_of` edges,
+# never `regulates` (the hierarchy's `predicates` are the edges that propagate). go-basic.obo is
+# acyclic and has no cross-ontology edges. Its release is the file's `data-version` header. Obsolete
+# terms stay in the table (`is_obsolete`), with `replaced_by` (one replacement resolves) and
+# `consider` (several candidates are ambiguous). Release skew between OT's GOA snapshot and the OBO
+# file is reported by readiness (dangling term IDs), not reconciled.
+schema: vbt.datasource/1
+source: gene_ontology
+title: Gene Ontology (go-basic.obo)
+root: ${GO_DATA_PATH:-${vars.project_root}/data/go}
+release: {from: format.data-version}
+defaults: {format: obo, layout: single_file, missing: unknown}
+strict: true
+
+id_types:
+  go_term: {plugin: go, extends: "open_targets:go_term", universe: term.id,
+            resolve_via: [term.name, term.synonyms],
+            retired: {flag: term.is_obsolete, replaced_by: term.replaced_by, consider: term.consider,
+                      listed_in: [term.alt_id]},
+            hierarchy: {table: term, columns: [is_a, "relationship[].target"], predicates: [is_a, part_of],
+                        reflexive: false}}
+
+tables:
+  term:
+    kind: ontology
+    path: go-basic.obo
+    grain: one Gene Ontology term (current or obsolete) of one go-basic release
+    key: {columns: [id], check: full}
+    coverage: {statement: "Every GO term of this go-basic.obo release, obsolete terms included (existence only).",
+               absence_means: absent, applies_to: entity}
+    sentinels:
+      present: [{key: {id: "GO:0008150"}, expect: {name: biological_process}}]
+      absent:  [{key: {id: "GO:9999999"}}]
+    columns:
+      id:           {role: identifier, id_type: go_term, self: true}
+      name:         {role: label, of: id}
+      namespace:    {role: category, vocab: [biological_process, molecular_function, cellular_component],
+                     aliases: {P: biological_process, F: molecular_function, C: cellular_component}}
+      def:          {role: text}
+      synonyms:
+        role: nested
+        item_key: [text, scope]
+        grain: one synonym of one term with its scope
+        fields:
+          text:  {role: synonym, of: /id, synonym_kind_from: scope}   # OBO `synonym: "x" RELATED []`
+          scope: {role: category, vocab: [exact, related, broad, narrow]}
+      alt_id:       {role: identifier, id_type: go_term, retired_into: id, path: "[]"}
+      is_obsolete:  {role: flag, missing: "false", true_means: "the term is obsolete (kept for resolution only)"}
+      replaced_by:  {role: identifier, id_type: go_term, path: "[]", integrity: partial}
+      consider:     {role: identifier, id_type: go_term, path: "[]", integrity: partial}
+      is_a:         {role: hierarchy, relation: parent, of: id, closure: direct, predicate: is_a, target_id_type: go_term}
+      relationship:
+        role: nested
+        item_key: [type, target]
+        grain: one typed edge (part_of, regulates, ...) from the term to another term
+        fields:
+          type:   {role: category, vocab: data,
+                   values: {part_of: "propagates annotations", regulates: "does not propagate annotations"}}
+          target: {role: hierarchy, relation: parent, of: /id, closure: direct, target_id_type: go_term,
+                   predicate: [part_of, regulates, negatively_regulates, positively_regulates, has_part, occurs_in,
+                               happens_during, ends_during]}
+      xref:         {role: identifier, xref: true, id_type_from: prefix, cardinality: many, path: "[]", resolvable: false}
+      subset:       {role: category, vocab: data, path: "[]"}

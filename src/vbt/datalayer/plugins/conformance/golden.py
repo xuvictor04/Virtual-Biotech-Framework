@@ -52,7 +52,8 @@ __all__ = [
     "FormatCases", "LayoutCases", "GoldenTree", "GoldenCase", "LegacyLeafCase", "StatisticCase", "GOLDEN",
     "LEGACY_LEAF_CASES", "golden", "empty_variant", "build_big", "write_parquet", "parquet_with_paths",
     "write_tree", "truncate", "corrupt", "zero_length", "random_predicates", "nested_predicates", "CORRELATED_ANY",
-    "F9_LITERALS", "HIVE_FILES",
+    "F9_LITERALS", "HIVE_FILES", "build_text_scalars", "MatrixGolden", "MATRIX_GOLDEN", "matrix_golden",
+    "wide_golden", "DEPMAP_PATTERN",
 ]
 
 NAN = float("nan")
@@ -64,7 +65,14 @@ NAN = float("nan")
 
 @dataclass(frozen=True)
 class FormatCases:
-    """How the format suite writes goldens for a format plugin."""
+    """How the format suite writes goldens for a format plugin.
+
+    Phase 2 adds: ``scalars`` (the golden the scalar tests F-6..F-8 write: ``text_scalars`` for
+    formats without float32/timestamp types); ``projection`` (formats that hold one fixed published
+    projection, OBO, GMT, embeddings: a builder of a table in that projection, written with ``write``;
+    the generic goldens are skipped and F-1, F-2 and F-8 run on the projection instead); and the
+    matrix hooks of F-12 (``write_matrix(golden, path) -> {"options", "matrix"}`` for ``configure``,
+    the file extension, and the ``matrix_features`` the format can hold)."""
 
     extension: str                                     # ".parquet"
     write: Callable[..., None]                         # write(pa_table, path, row_group_size=None)
@@ -72,6 +80,17 @@ class FormatCases:
     with_physical_paths: Callable[[Any, Sequence[str]], Any] | None = None
     #: golden case name -> reason a format cannot hold it (beyond capability tags)
     skip: Mapping[str, str] = field(default_factory=dict)
+    scalars: str = "scalars"
+    projection: Callable[[], Any] | None = None
+    #: the projection's key columns (F-2 projects them)
+    projection_key: tuple[str, ...] = ("id",)
+    #: a damaged projection file a format cannot detect by itself (zero-length always raises)
+    undetectable: frozenset[str] = frozenset()
+    write_matrix: Callable[..., Mapping[str, Any]] | None = None
+    matrix_extension: str | None = None
+    #: header, duplicate_header, all_empty, truncation, shape_line, gct, sparse, gzip, categorical,
+    #: positional_index, wide
+    matrix_features: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -198,6 +217,24 @@ def build_scalars() -> Any:
     })
 
 
+def build_text_scalars() -> Any:
+    """The ``scalars`` rows in types every text format holds: int32 as int64, float32 widened to float64
+    (the same values, so ``0.05`` stays ``0.05000000074505806``), no timestamp column."""
+    pa = _pa()
+    t = build_scalars()
+    out = {}
+    for f in t.schema:
+        if f.name == "ts":
+            continue
+        col = t.column(f.name)
+        if pa.types.is_int32(f.type):
+            col = col.cast(pa.int64())
+        elif pa.types.is_float32(f.type):
+            col = col.cast(pa.float64())
+        out[f.name] = col
+    return pa.table(out)
+
+
 def build_lists() -> Any:
     pa = _pa()
     return pa.table({
@@ -317,6 +354,8 @@ GOLDEN: tuple[GoldenCase, ...] = (
                            "synonyms.hasBroadSynonym[]": "synonyms.hasBroadSynonym.list.element"}),
     GoldenCase("list_list", build_list_list, ("nested",),
                leaf_paths={"path[][]": "path.list.element.list.element"}),
+    GoldenCase("text_scalars", lambda: build_text_scalars(), ("tabular",),
+               leaf_paths={"id": "id", "f32": "f32", "concentration": "concentration"}),
 )
 
 
@@ -580,3 +619,158 @@ def nested_predicates() -> dict[str, list[Predicate]]:
         "list_list": [Contains("path[][]", "c"), AnyItem("path[]", Contains("[]", "a")),
                       AnyItem("path[]", NonEmpty("[]")), All("path[][]", Eq("[]", "a"))],
     }
+
+
+# ---------------------------------------------------------------------------
+# Matrix goldens (F-12)
+# ---------------------------------------------------------------------------
+
+#: DepMap ``CRISPRGeneEffect.csv`` header cells: ``SYMBOL (ENTREZ)``.
+DEPMAP_PATTERN = r"^(?P<symbol>\S+) \((?P<entrez_id>\d+)\)$"
+
+
+@dataclass(frozen=True)
+class MatrixGolden:
+    """A small matrix with a dense oracle: ``values[r][c]`` is the cell of row ``row_ids[r]`` and column
+    ``col_ids[c]`` (``None`` = empty cell, NaN = a stored NaN; both are null in the long view).
+
+    ``requires`` names the format features (``FormatCases.matrix_features``) the case needs;
+    ``truncate_rows`` drops that many trailing rows from the written file at a row boundary (the
+    oracle keeps only the rows written); ``obs`` holds row-axis attributes for AnnData-like formats
+    (``None`` in a categorical is code -1, the string ``"nan"`` is a category); ``positional_var``
+    writes the column index as positional digits and the real key into the ``feature_id`` column;
+    ``storage``/``implicit`` select sparse variants (absent cells are zero only under ``implicit:
+    zero``, else unknown)."""
+
+    name: str
+    row_ids: tuple[str, ...]
+    symbols: tuple[str, ...]
+    col_ids: tuple[str, ...]
+    values: tuple[tuple[Any, ...], ...]
+    requires: tuple[str, ...] = ()
+    row_header: str = "ModelID"
+    truncate_rows: int = 0
+    obs: Mapping[str, tuple[Any, ...]] = field(default_factory=dict)
+    categorical: tuple[str, ...] = ()
+    positional_var: bool = False
+    storage: str = "dense"
+    implicit: str = "none"
+    gzip: bool = False
+
+    @property
+    def headers(self) -> tuple[str, ...]:
+        return tuple(f"{s} ({i})" for s, i in zip(self.symbols, self.col_ids))
+
+    @property
+    def written_rows(self) -> tuple[str, ...]:
+        return self.row_ids[: len(self.row_ids) - self.truncate_rows]
+
+    def matrix_spec(self, style: str = "header", value: str = "value") -> dict[str, Any]:
+        """The ``MatrixSpec`` (dict) a reader configures: ``header`` (DepMap CSV) or ``index`` (AnnData)."""
+        measure = {"role": "measure", "statistic": "numeric", "missing": "unknown"}
+        ids = {"role": "identifier", "self": True}
+        if style == "header":
+            row = {"name": "model", "from": "column", "column": {"index": 0}, "aliases": ["ModelID", "DepMap_ID", ""],
+                   "key": {"columns": ["ModelID"]}, "columns": {"ModelID": ids}}
+            col = {"name": "gene", "from": "header", "exclude": ["ModelID", "DepMap_ID", ""],
+                   "parse": {"pattern": DEPMAP_PATTERN,
+                             "fields": {"entrez_id": ids, "symbol": {"role": "label", "of": "entrez_id"}}},
+                   "key": {"columns": ["entrez_id"]}}
+            return {"axes": {"row": row, "col": col}, "values": {value: measure}, "storage": "text"}
+        row = {"name": "sample", "from": "index", "index_name": "sample_id", "key": {"columns": ["sample_id"]},
+               "columns": {"sample_id": ids}}
+        if self.positional_var:
+            col = {"name": "gene", "from": "column", "column": "feature_id", "key": {"columns": ["feature_id"]},
+                   "columns": {"feature_id": ids}}
+        else:
+            col = {"name": "gene", "from": "index", "index_name": "entrez_id", "key": {"columns": ["entrez_id"]},
+                   "columns": {"entrez_id": ids}}
+        return {"axes": {"obs": row, "var": col}, "values": {"X": measure}, "storage": self.storage,
+                "implicit": self.implicit}
+
+    def oracle(self, *, implicit: str | None = None) -> list[tuple[str, str, float | None]]:
+        """``(row id, col id, value)`` of every written cell, NaN as None; the zeros of a sparse golden are
+        absent cells, None unless ``implicit`` is ``zero``."""
+        implicit = self.implicit if implicit is None else implicit
+        out = []
+        for r, rid in enumerate(self.written_rows):
+            for c, cid in enumerate(self.col_ids):
+                v = self.values[r][c]
+                if isinstance(v, float) and v != v:
+                    v = None
+                if self.storage != "dense" and v == 0 and implicit != "zero":
+                    v = None
+                out.append((rid, cid, v))
+        return out
+
+
+def _matrix_values(n_rows: int, n_cols: int, seed: int, *, nan_every: int = 0, none_every: int = 0,
+                   zero_fraction: float = 0.0) -> tuple[tuple[Any, ...], ...]:
+    rng = random.Random(seed)
+    rows = []
+    k = 0
+    for _r in range(n_rows):
+        row: list[Any] = []
+        for _c in range(n_cols):
+            k += 1
+            if nan_every and k % nan_every == 0:
+                row.append(NAN)
+            elif none_every and k % none_every == 0:
+                row.append(None)
+            elif zero_fraction and rng.random() < zero_fraction:
+                row.append(0.0)
+            else:
+                row.append(round(rng.uniform(-3, 2), 4))
+        rows.append(tuple(row))
+    return tuple(rows)
+
+
+def _genes(n: int, start: int = 1) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    return tuple(f"G{i}" for i in range(start, start + n)), tuple(str(1000 + i) for i in range(start, start + n))
+
+
+def _build_matrix_goldens() -> tuple[MatrixGolden, ...]:
+    models = tuple(f"ACH-{i:06d}" for i in range(1, 7))
+    sym, ids = _genes(5)
+    header = MatrixGolden("header_ids", models, sym, ids, _matrix_values(6, 5, 1, nan_every=7, none_every=11),
+                          requires=("header",))
+    dup = MatrixGolden("duplicate_header", models, sym[:3] + ("TP53", "TP53"), ids[:3] + ("7157", "7157"),
+                       _matrix_values(6, 5, 2), requires=("duplicate_header",))
+    empty_vals = tuple(tuple(None if c == 2 else v for c, v in enumerate(row)) for row in _matrix_values(6, 5, 3))
+    empty = MatrixGolden("all_empty_column", models, sym, ids, empty_vals, requires=("all_empty",))
+    trunc = MatrixGolden("row_truncation", models, sym, ids, _matrix_values(6, 5, 4), requires=("truncation",),
+                         truncate_rows=2)
+    samples = tuple(f"GSM{100 + i}" for i in range(6))
+    obs = {"patient_id": ("P1", "P1", "P2", "P3", "P3", "P4"),
+           "timepoint": ("W0", None, "nan", "W8", "W0", None),
+           "age": ("50", "50", "61", None, "44", "70")}
+    dense = MatrixGolden("anndata_dense", samples, sym, ids, _matrix_values(6, 5, 5, nan_every=9),
+                         requires=("categorical",), obs=obs, categorical=("timepoint", "patient_id"))
+    sparse_vals = _matrix_values(6, 5, 6, zero_fraction=0.6)
+    sparse = MatrixGolden("anndata_csr", samples, sym, ids, sparse_vals, requires=("sparse",), storage="csr",
+                          implicit="zero")
+    unmeasured = MatrixGolden("anndata_csr_unmeasured", samples, sym, ids, sparse_vals, requires=("sparse",),
+                              storage="csr", implicit="none")
+    gz = MatrixGolden("anndata_csr_gzip", samples, sym, ids, sparse_vals, requires=("sparse", "gzip"),
+                      storage="csr", implicit="zero", gzip=True)
+    positional = MatrixGolden("positional_var", samples, sym, ids, _matrix_values(6, 5, 7),
+                              requires=("positional_index",), positional_var=True)
+    return (header, dup, empty, trunc, dense, sparse, unmeasured, gz, positional)
+
+
+MATRIX_GOLDEN: tuple[MatrixGolden, ...] = _build_matrix_goldens()
+
+
+def matrix_golden(name: str) -> MatrixGolden:
+    for case in MATRIX_GOLDEN:
+        if case.name == name:
+            return case
+    raise KeyError(f"no matrix golden {name!r}")
+
+
+def wide_golden(n_rows: int = 50, n_cols: int = 20_000) -> MatrixGolden:
+    """The wide case (default 50 x 20k; the 2k x 20k variant runs with ``VBT_DL_SLOW=1``)."""
+    sym, ids = _genes(n_cols)
+    rows = tuple(f"ACH-{i:06d}" for i in range(1, n_rows + 1))
+    return MatrixGolden(f"wide_{n_rows}x{n_cols}", rows, sym, ids, _matrix_values(n_rows, n_cols, 8, nan_every=997),
+                        requires=("wide",))

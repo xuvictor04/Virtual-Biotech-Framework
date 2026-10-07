@@ -1,10 +1,13 @@
 # The paper's Zenodo case-study archive (doi:10.5281/zenodo.22259123), extracted by
-# `vbt data zenodo fetch` (docs/DATA_LAYER.md §6.3, §6.8 S1/S10; phase 1, strict: false).
+# `vbt data zenodo fetch` (docs/DATA_LAYER.md §6.3, §6.7 S5, §6.8 S1/S10; phase 2, strict: true).
 #
-# The Open Targets 25.09 extracts declare `implements`, so overlays bound to open_targets tables can
-# be served from them when the operator sets data.sources.alias: {open_targets: zenodo_vbt}; their
-# lineage records the upstream release in provenance. The four GEO h5ad cohorts (osmr/code/data)
-# arrive in phase 2 with the h5ad format plugin.
+# The Open Targets 25.09 extracts declare `implements` and `lineage`, so overlays bound to
+# open_targets tables can be served from them when the operator sets data.sources.alias:
+# {open_targets: zenodo_vbt}; their columns mirror the open_targets descriptor. Columns the
+# phase-1 bindings never read are `optional: true` (which columns the authors kept is
+# SCHEMA-DEPENDENT on the extract): readiness warns when one is missing, and strict readiness
+# reports any further physical column as schema_drift. The four GEO cohort files of the OSMR case
+# study are one matrix table with a fragment key and per-fragment overrides (§6.7).
 schema: vbt.datasource/1
 source: zenodo_vbt
 title: The Virtual Biotech case-study archive (Zenodo 22259123)
@@ -12,12 +15,18 @@ kind: local
 release: {expect: "22259123", from: literal}
 root: ${VBT_ZENODO_DIR:-${vars.project_root}/data/zenodo}/virtualbiotech_submission
 defaults: {format: parquet, layout: sharded_dir, missing: unknown}
-strict: false
+strict: true
 
 id_types:
-  nct_id: {plugin: nct_id, universe: clinical_trial_labels.nct_id, resolvable: false}
+  nct_id:        {plugin: nct_id, universe: clinical_trial_labels.nct_id, resolvable: false}
+  geo_gsm:       {plugin: geo_gsm, universe: {table: ibd_cohorts, keys: ["@row.sample_id"], per_fragment: true}}
+  # gene symbols as the authors' pre-2020 HGNC snapshot stores them (SEPT9, not SEPTIN9): a release
+  # snapshot, never resolved as current labels; universes are per cohort file (platform-dependent)
+  cohort_symbol: {plugin: hgnc_symbol, authority: release_snapshot,
+                  universe: {table: ibd_cohorts, keys: ["@col.gene_symbol"], per_fragment: true}}
 
 tables:
+  # -------------------------------------------------------------------- OT 25.09 extracts
   disease:
     kind: ontology
     path: clinical_trials/data/disease
@@ -36,7 +45,24 @@ tables:
       parents:          {role: hierarchy, relation: parent, of: id, closure: direct, inverse_of: children}
       children:         {role: hierarchy, relation: child, of: id, closure: direct, inverse_of: parents}
       ontology:         {role: nested, fields: {isTherapeuticArea: {role: flag, missing: unknown},
-                                                leaf: {role: flag, missing: unknown, verified: false}}}
+                                                leaf: {role: flag, missing: unknown, verified: false},
+                                                name: {role: payload, optional: true},
+                                                sources: {role: payload, optional: true}}}
+      code:             {role: reference, ref_kinds: [url], optional: true}
+      description:      {role: text, optional: true}
+      dbXRefs:          {role: identifier, xref: true, id_type_from: prefix, cardinality: many, path: "[]", optional: true}
+      obsoleteXRefs:    {role: payload, optional: true}
+      synonyms:         {role: nested, optional: true,
+                         fields: {hasExactSynonym: {role: synonym, of: /id, synonym_kind: exact, path: "[]"},
+                                  hasRelatedSynonym: {role: synonym, of: /id, synonym_kind: related, path: "[]"},
+                                  hasNarrowSynonym: {role: synonym, of: /id, synonym_kind: narrow, path: "[]"},
+                                  hasBroadSynonym: {role: synonym, of: /id, synonym_kind: broad, path: "[]"}}}
+      ancestors:        {role: hierarchy, relation: ancestor, of: id, closure: transitive, closure_of: parents,
+                         reflexive: false, verified: false, optional: true}
+      descendants:      {role: hierarchy, relation: descendant, of: id, closure: transitive, closure_of: children,
+                         reflexive: false, verified: false, optional: true}
+      directLocationIds:   {role: payload, optional: true}
+      indirectLocationIds: {role: payload, optional: true}
 
   drug_molecule:
     kind: entity
@@ -45,6 +71,7 @@ tables:
     lineage: {source: open_targets, release: "25.09", table: drug_molecule}
     grain: one ChEMBL molecule (a parent compound or one of its salt forms)
     key: {columns: [id], check: full}
+    alternate_keys: [{columns: [inchiKey], nullable: [inchiKey], check: full}]
     grains: {molecule: [id], parent_molecule: {columns: [id], canonicalize: "open_targets:chembl_molecule.parent"}}
     columns:
       id:             {role: identifier, id_type: "open_targets:chembl_molecule", self: true}
@@ -53,6 +80,29 @@ tables:
       parentId:       {role: identifier, id_type: "open_targets:chembl_molecule", ref: drug_molecule.id, integrity: partial}
       childChemblIds: {role: identifier, id_type: "open_targets:chembl_molecule", ref: drug_molecule.id,
                        integrity: partial, path: "[]"}   # 2,704 of 4,301 dangle in the extract
+      inchiKey:       {role: identifier, id_type: "open_targets:inchikey", alternate_key: true, optional: true}
+      canonicalSmiles: {role: payload, optional: true}
+      synonyms:       {role: synonym, of: id, synonym_kind: alias, path: "[]", optional: true}
+      tradeNames:     {role: synonym, of: id, synonym_kind: alias, path: "[]", optional: true}
+      description:    {role: text, optional: true}
+      blackBoxWarning: {role: flag, missing: unknown, optional: true}
+      hasBeenWithdrawn: {role: flag, missing: unknown, optional: true}
+      isApproved:     {role: flag, missing: unknown, optional: true}
+      yearOfFirstApproval: {role: time, precision: year, missing: unknown, optional: true}
+      maximumClinicalTrialPhase: {role: measure, statistic: clinical_phase, scale: [0, 4], missing_values: [-1],
+                                  encoding: {0.5: early_phase_1, 4: approved}, missing: unknown, verified: false,
+                                  optional: true}
+      crossReferences: {role: nested, item_key: [source], optional: true, fields: {
+                          source: {role: category, vocab: data},
+                          ids: {role: identifier, xref: true, path: "[]", cardinality: many, resolvable: false}}}
+      linkedTargets:  {role: nested, optional: true, fields: {
+                          rows: {role: member, membership: {set: {parent: id},
+                                                            member: {path: "[]", id_type: "open_targets:ensembl_gene"}}},
+                          count: {role: count, counts: "linked targets", length_of: rows}}}
+      linkedDiseases: {role: nested, optional: true, fields: {
+                          rows: {role: member, membership: {set: {parent: id},
+                                                            member: {path: "[]", id_type: "open_targets:ot_disease"}}},
+                          count: {role: count, counts: "linked diseases", length_of: rows}}}
 
   association_by_datatype_direct:
     kind: fact
@@ -69,6 +119,8 @@ tables:
       targetId:   {role: identifier, id_type: "open_targets:ensembl_gene"}
       datatypeId: {role: category, vocab: data, scope: {kind: stratum, pooling: forbid, pool_ok_for: [exists, count, distinct]}}
       score:      {role: measure, statistic: score_0_1, scale: [0, 1], comparable_within: [datatypeId], missing: unknown}
+      evidenceCount: {role: count, counts: "evidence strings of this data type", comparable_within: [datatypeId],
+                      optional: true}
 
   chembl_clinical_nct:
     kind: crosswalk
@@ -79,12 +131,15 @@ tables:
     columns:
       nct_id:   {role: identifier, id_type: nct_id}
       targetId: {role: identifier, id_type: "open_targets:ensembl_gene", integrity: partial}
+      # 481 salt-form IDs among 3,936 (§11.5): a parent query is answered per family
+      drugId:   {role: identifier, id_type: "open_targets:chembl_molecule", form: any, integrity: partial, optional: true}
 
+  # -------------------------------------------------------------------- case study 1 labels
   clinical_trial_labels:
     kind: records
     path: clinical_trials/data/clinical_trial_labels_reconciled.csv
     layout: single_file
-    format: none                                  # the csv format plugin arrives in phase 2 (F12)
+    format: csv
     grain: one reconciled outcome label of one ClinicalTrials.gov study (case study 1 ground truth)
     key: {columns: [nct_id], check: full}
     expose: {native: false, withhold_from: [trial-annotator, clinical-trialist],
@@ -100,3 +155,41 @@ tables:
       ae_source:                 {role: category, vocab: data}
       pubmed_ids:                {role: reference, ref_kinds: [pmid], list_delimiter: "|"}
       confidence:                {role: category, vocab: [high, medium, low]}
+
+  # -------------------------------------------------------------------- S5: GEO cohort matrices (OSMR)
+  ibd_cohorts:
+    kind: matrix
+    path: osmr/code/data/GSE*.h5ad                 # one fragment per file (single_file accepts a glob)
+    layout: single_file
+    format: {plugin: h5ad, options: {backed: r}}
+    fragment_key: {name: cohort, from: filename_regex, pattern: "(GSE\\d+)\\.h5ad$"}
+    # The response column differs per cohort (src/vbt/analysis/biomarker.py AUTHORS_IFX_COHORTS):
+    # existence of a column is evaluated per fragment, and a missing one is `not_measured_in`.
+    fragment_overrides:
+      GSE73661: {response_clinical: {absent: true}, response_mucosal_healing: {role: category, vocab: [R, NR]}}
+      GSE23597: {response_clinical_w30: {role: category, vocab: [R, NR]}}
+    grain: one (sample, gene) log2 microarray intensity in one GEO cohort file
+    key: {columns: [cohort, "@row.sample_id", "@col.gene_symbol"], check: full}
+    coverage: {statement: "A gene absent from a cohort was not on that platform; symbols are pre-2020 HGNC.",
+               absence_means: unknown, universe: {table: ibd_cohorts, keys: ["@col.gene_symbol"], per_fragment: true}}
+    matrix:
+      axes:
+        obs: {name: sample, from: index, index_name: sample_id, key: {columns: [sample_id]},
+              columns: {sample_id: {role: identifier, id_type: geo_gsm, self: true},
+                        patient_id: {role: category, vocab: data, unique_within: [cohort], scope: {kind: replicate, pooling: list}},
+                        timepoint: {role: category, vocab: data, placeholders: ["nan"]},
+                        disease: {role: category, vocab: data, optional: true},
+                        drug: {role: category, vocab: data, optional: true},
+                        is_baseline: {role: flag, missing: unknown, optional: true},
+                        response_clinical: {role: category, vocab: [R, NR], optional: true,
+                                            description: "clinical response (R) or not (NR) as the authors coded it"},
+                        response_mucosal_healing: {role: category, vocab: [R, NR], optional: true, present_in: [GSE73661]},
+                        response_clinical_w30: {role: category, vocab: [R, NR], optional: true, present_in: [GSE23597]},
+                        age: {role: measure, statistic: numeric, unit: years, missing: unknown, optional: true},
+                        sex: {role: category, vocab: data, optional: true}}}
+        var: {name: gene, from: index, index_name: gene_symbol, key: {columns: [gene_symbol]},
+              columns: {gene_symbol: {role: identifier, id_type: cohort_symbol, self: true, authority: release_snapshot}}}
+      values:
+        X: {role: measure, statistic: log2_intensity, fallback: numeric, missing: unknown,
+            comparable_within: [cohort], verified: false}   # confirmed by the sample_values readiness check
+      sections: {uns.cohort_info: {role: payload}, obsm.X_pca: {role: vector, dim: 50}}

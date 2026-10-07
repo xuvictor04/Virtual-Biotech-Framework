@@ -1,9 +1,12 @@
 # Tahoe-100M pseudobulk differential expression as prepared by tools/prepare_tahoe.py
-# (docs/DATA_LAYER.md §6.6; phase 1, strict: false).
+# (docs/DATA_LAYER.md §6.6, §13; phase 2, strict: true).
 #
 # One row of de_permissive is one gene's DESeq2 contrast for one drug at one concentration in one
 # cell line on one plate. concentration is stored as float32, so literals are compiled in the
-# storage type and rendered 0.05, never 0.05000000074505806 (C20).
+# storage type and rendered 0.05, never 0.05000000074505806 (C20). Every table the preparation
+# writes is declared with every column roled: the three DE tables (permissive, significant,
+# high_quality: one schema, three stored filters) and the four metadata tables. No tool reads the
+# significant and high-quality shards, so they are `unbound` and never gate a tool (§13).
 schema: vbt.datasource/1
 source: tahoe_100m
 title: Tahoe-100M pseudobulk differential expression (prepared by tools/prepare_tahoe.py)
@@ -11,9 +14,11 @@ release: {from: [manifest.source_revision, manifest.filters]}   # "<rev>@<sha256
 root: ${TAHOE_DATA_PATH}
 manifests:
   - {path: preparation_manifest.json, required: true, require: {complete: true},
-     checks: {de_permissive.rows: "$.rows.permissive", de_permissive.constraints: "$.filters.permissive"}}
+     checks: {de_permissive.rows: "$.rows.permissive", de_permissive.constraints: "$.filters.permissive",
+              de_significant.rows: "$.rows.significant", de_significant.constraints: "$.filters.significant",
+              de_high_quality.rows: "$.rows.high_quality", de_high_quality.constraints: "$.filters.high_quality"}}
 defaults: {format: parquet, layout: single_file, missing: unknown}
-strict: false
+strict: true
 concepts:
   plate: [de_permissive.plate, sample_metadata.plate]
   drug: [de_permissive.drug, drug_metadata.drug, sample_metadata.drug]
@@ -57,7 +62,7 @@ tables:
            {column: log2FoldChange, direction: desc_abs, nulls: last}]
     sentinels:
       present: [{key: {drug: Bortezomib}, expect: {min_rows: 1}}]
-    columns:
+    columns: &de_columns
       drug:               {role: identifier, id_type: tahoe_drug, ref: drug_metadata.drug, form: as_stored}
       concentration:      {role: scope, scope: {kind: condition, pooling: forbid}, unit_from: concentration_unit,
                            vocab: data, statistic: numeric}     # float32 storage: literals cast, rendered 0.05
@@ -79,6 +84,48 @@ tables:
                            verified: false, verified_by: upstream_doc}
       n_cells_trt:        {role: count, counts: "treated cells of this line in the pooled wells"}
       n_cells_ctrl:       {role: count, counts: "DMSO control cells of this line on the plate"}
+
+  # The stricter shards of the same preparation (tools/prepare_tahoe.py:76-77): same schema and key,
+  # subsets of de_permissive. Declared so strict readiness covers every file the preparation writes.
+  de_significant:
+    kind: fact
+    path: pseudobulk_de_significant
+    layout: sharded_dir
+    size_class: huge
+    grain: one gene's DESeq2 contrast for one drug at one concentration in one cell line on one plate, padj < 0.05
+    key: {columns: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate, gene_name],
+          check: sampled, sample_prefix: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate]}
+    grains: {gene: [gene_name], drug: [drug], contrast: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate]}
+    constraints:
+      - {column: padj, op: "<", value: 0.05, origin: "third_party/TheVirtualBiotech/tools/prepare_tahoe.py:76"}
+      - {column: padj, op: ">=", value: 0, origin: "tools/prepare_tahoe.py:71"}
+      - {column: log2FoldChange, op: is_finite, origin: "tools/prepare_tahoe.py:70"}
+    coverage:
+      statement: "Only contrasts with finite padj < 0.05 are stored (a subset of de_permissive)."
+      absence_means: censored
+      censor: {column: padj, op: ">=", value: 0.05, plus: [padj_na, not_profiled]}
+    rank: [{column: padj, direction: asc, nulls: last, within: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate]}]
+    columns: *de_columns
+
+  de_high_quality:
+    kind: fact
+    path: pseudobulk_de_high_quality
+    layout: sharded_dir
+    size_class: large
+    grain: one gene's DESeq2 contrast with padj < 0.05 and |log2FoldChange| > 0.5 for one drug, dose, cell line and plate
+    key: {columns: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate, gene_name],
+          check: sampled, sample_prefix: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate]}
+    grains: {gene: [gene_name], drug: [drug], contrast: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate]}
+    constraints:
+      - {column: padj, op: "<", value: 0.05, origin: "third_party/TheVirtualBiotech/tools/prepare_tahoe.py:76"}
+      - {column: padj, op: ">=", value: 0, origin: "tools/prepare_tahoe.py:71"}
+      - {column: log2FoldChange, op: is_finite, origin: "tools/prepare_tahoe.py:70"}
+    coverage:
+      statement: "Only contrasts with padj < 0.05 and |log2FoldChange| > 0.5 are stored (a subset of de_significant)."
+      absence_means: censored
+      censor: {column: padj, op: ">=", value: 0.05, plus: [padj_na, small_effect, not_profiled]}
+    rank: [{column: padj, direction: asc, nulls: last, within: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate]}]
+    columns: *de_columns
 
   drug_metadata:
     kind: entity
