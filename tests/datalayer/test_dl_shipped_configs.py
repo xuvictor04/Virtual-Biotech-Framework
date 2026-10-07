@@ -4,7 +4,9 @@
   the catalog builds.
 * Every tool the upstream servers register (``register_tool`` calls in
   ``src/mcp_servers/*/server.py``, provenance excluded) and both PubMed tools have a reviewed
-  binding; the serve modes are exactly Appendix A's 64 pass, 27 derived and 12 block.
+  binding; the serve modes are Appendix A's phase-1 split moved by phase 2 (F14): the comprehensive
+  target profile is a derived view and ``compare_direct_indirect`` a derived set comparison, so
+  64 pass, 29 derived and 10 block.
 * Every identifier-like parameter is bound with ``accepts`` (or is an anchor).
 * Every defect names an existing ``file:line`` and, when it names a detector, an existing test.
 * The fixture schemas of ``dl_fixtures`` conform to the descriptors (declared columns present with
@@ -38,10 +40,12 @@ SOURCES = {"open_targets", "tahoe_100m", "zenodo_vbt", "cellxgene_census", "clin
 #: Phase 2 makes these descriptors strict (§6): undeclared columns are drift, not passthrough.
 STRICT = {"open_targets", "tahoe_100m", "zenodo_vbt", "depmap", "gene_ontology", "msigdb", "cell_ontology"}
 SERVERS = {"target", "disease", "drug", "association", "genetics", "expression", "interaction", "functional_genomics",
-           "pathway", "single_cell", "clinicaltrials", "pubmed"}
+           "pathway", "single_cell", "clinicaltrials", "pubmed", "data"}
+HARNESS_SERVERS = {"pubmed", "data"}             # overlays for harness servers, not upstream code
 # Appendix A, per server: (pass, derived, block); same_as tools count on the server that registers them.
+# Phase 2 (F14) moved one target and one association tool from block to derived.
 APPENDIX_A = {
-    "target": (11, 4, 1), "disease": (2, 4, 0), "drug": (5, 4, 0), "association": (7, 2, 2), "genetics": (8, 1, 1),
+    "target": (11, 5, 0), "disease": (2, 4, 0), "drug": (5, 4, 0), "association": (7, 3, 1), "genetics": (8, 1, 1),
     "expression": (3, 2, 1), "interaction": (1, 2, 2), "functional_genomics": (4, 3, 2), "pathway": (3, 5, 2),
     "single_cell": (11, 0, 0), "clinicaltrials": (7, 0, 1), "pubmed": (2, 0, 0),
 }
@@ -130,7 +134,7 @@ def test_overlays_name_the_recorded_upstream_commit(catalog) -> None:
     if len(out) < 3:
         pytest.skip("the superproject records no submodule commit")
     for server, ov in catalog.overlays.items():
-        if server != "pubmed":                         # the harness server is not upstream code
+        if server not in HARNESS_SERVERS:              # the harness servers are not upstream code
             assert ov.upstream_commit == out[2], server
 
 
@@ -162,8 +166,9 @@ def test_every_bridged_tool_has_a_reviewed_binding(catalog) -> None:
     missing = [f"{s}.{t}" for (s, t) in TOOLS
                if (c := catalog.contract(s, t)).binding is None or c.generic or c.binding.status != "reviewed"]
     assert not missing, f"tools without a reviewed binding: {missing}"
-    bound = {(s, t) for s, ov in catalog.overlays.items() for t in ov.tools}
-    bound |= {tuple(a.split(".", 1)) for ov in catalog.overlays.values() for b in ov.tools.values() for a in b.same_as}
+    upstream = {s: ov for s, ov in catalog.overlays.items() if s != "data"}   # the data child is not bridged
+    bound = {(s, t) for s, ov in upstream.items() for t in ov.tools}
+    bound |= {tuple(a.split(".", 1)) for ov in upstream.values() for b in ov.tools.values() for a in b.same_as}
     stale = sorted(f"{s}.{t}" for s, t in bound - set(TOOLS))
     assert not stale, f"bindings for tools upstream does not register: {stale}"
 
@@ -176,7 +181,7 @@ def test_serve_modes_match_appendix_a(catalog) -> None:
         mode = catalog.contract(server, tool).binding.serve
         total[mode] += 1
         by_server.setdefault(server, Counter())[mode] += 1
-    assert dict(total) == {"pass": 64, "derived": 27, "block": 12}
+    assert dict(total) == {"pass": 64, "derived": 29, "block": 10}
     for server, (p, d, b) in APPENDIX_A.items():
         got = by_server[server]
         assert (got["pass"], got["derived"], got["block"]) == (p, d, b), server

@@ -20,8 +20,8 @@ The upstream schema from ``list_tools`` is kept and annotated (never loosened):
   schema defaults on filters disclosed; anchors described as excluded from the results.
 
 Generic (unbound) tools are returned unchanged. The data child's public verbs (``data.find`` ...) get
-their native schema from :mod:`.tools` (table enums, ``where`` schemas per long-view column); while the
-child registers each verb with one ``request`` argument, the native schema is placed under it.
+their native schema from :mod:`.tools` (table enums, ``where`` schemas per long-view column); a listing
+that takes the payload as one ``request`` argument (the hidden verbs' form) gets it under ``request``.
 """
 
 from __future__ import annotations

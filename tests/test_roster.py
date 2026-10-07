@@ -118,7 +118,10 @@ def test_every_allowlist_entry_resolves(config, roster):
     real = upstream_mcp_tools(Path(config["vars"]["upstream"]))
     if not real:
         pytest.skip("upstream servers not available")
+    from vbt.datalayer.derive.tools import NATIVE_SERVER, NATIVE_VERBS
+
     harness = {t.name for t in builtin_tools()} | {t.name for t in provenance_tools()} | {"Task", "ListTools"}
+    harness |= {f"mcp__{NATIVE_SERVER}__{verb}" for verb in NATIVE_VERBS}     # the data child's public verbs
     known = real | harness | LATER_TOOLS
     bad = [f"{a.name}: {p}" for a in [cso, *agents.values()] for p in a.tools
            if not fnmatch.filter(known, p)]

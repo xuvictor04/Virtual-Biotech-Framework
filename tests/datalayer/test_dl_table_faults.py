@@ -158,9 +158,16 @@ def test_deleted_table_calls_fail_live(faults: dict[str, Any], tmp_path: Path) -
 
     results = asyncio.run(run())
     bad = [f"{s}.{t}({a}) with {phys} deleted: {r.status} {r.text[:200]}"
-           for (phys, s, t, a), r in zip(calls, results) if not r.is_error]
+           for (phys, s, t, a), r in zip(calls, results) if not r.is_error and not _marked_partial(r)]
     assert not bad, "\n".join(bad)
     assert any(r.kind == "not_ready" for r in results), [r.kind for r in results]
+
+
+def _marked_partial(r: Any) -> bool:
+    """An honest partial answer: a view whose section over the deleted table is marked unavailable."""
+    obj = r.obj if isinstance(r.obj, dict) else {}
+    return (r.status or r.header.get("status")) == "partial" and \
+        any(isinstance(v, dict) and v.get("_vbt_unavailable") for v in obj.values())
 
 
 def _fill_args(catalog: Any, server: str, tool: str, args: dict[str, Any]) -> dict[str, Any] | None:

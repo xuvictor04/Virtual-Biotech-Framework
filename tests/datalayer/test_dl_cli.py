@@ -68,7 +68,7 @@ def test_explain(capsys: pytest.CaptureFixture[str]) -> None:
     assert "arg target_id:" in out and "accepts ensembl_gene" in out
     assert "derived text:" in out and "derived schema:" in out
     assert "defect OT-DRUG-003" in out
-    assert cli.main(["--profile", "mock", "ds", "explain", "mcp__target__get_comprehensive_target_profile"]) == 0
+    assert cli.main(["--profile", "mock", "ds", "explain", "mcp__association__search_literature"]) == 0
     assert "serve: block" in capsys.readouterr().out
     assert cli.main(["--profile", "mock", "ds", "explain", "--all"]) == 0
     out = capsys.readouterr().out

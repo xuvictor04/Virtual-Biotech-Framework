@@ -87,7 +87,7 @@ def test_public_verbs_are_registered_under_their_names() -> None:
     verbs = load_verbs()
     assert PUBLIC_VERBS == PUBLIC and set(PUBLIC) <= set(verbs)
     assert {"_aggregate", "_similar", "_compare", "_view"} <= set(verbs)
-    assert getattr(verbs[VERB_SERVE], "__vbt_phase2__", False), "the _serve seam is installed"
+    assert verbs[VERB_SERVE].__module__.endswith(".serve"), "the phase-2 verbs are routed by serve.py itself"
 
 
 def test_find_resolves_where_like_a_bound_argument(ot) -> None:
@@ -346,6 +346,24 @@ def test_serve_similar_answers_derived_requests(vectors) -> None:
     assert out["excluded_unknown"] == {"similarity": 2} and out["total"] == 3 and out["row_keys"][0] == ["B"]
 
 
+def test_serve_similar_scores_a_pair_of_anchors(vectors) -> None:
+    """Every anchor of the call reaches ``_serve``: two anchors are the cosine of the pair (the repair of
+    compute_entity_similarity), with each anchor's columns under its argument name."""
+    pair = [{"name": "entity_a", "column": "word", "value": "A"}, {"name": "entity_b", "column": "word", "value": "C"}]
+    out = call(vectors, "_serve", table="emb.vec", verb="similar", anchor=pair[0], anchors=pair, columns=["category"])
+    a, c = VECTORS["A"], VECTORS["C"]
+    cos = sum(x * y for x, y in zip(a, c)) / (math.hypot(*a) * math.hypot(*c))
+    assert out["rows"] == [{"entity_a": "A", "entity_a_category": "x", "entity_b": "C", "entity_b_category": "x",
+                            "similarity": pytest.approx(cos)}] and out["total"] == 1
+    missing = call(vectors, "_serve", table="emb.vec", verb="similar", anchors=[pair[0], {**pair[1], "value": "Q"}])
+    assert missing["rows"] == [] and missing["total"] == 0
+    from vbt.datalayer.errors import GatewayError
+
+    with pytest.raises(GatewayError) as zero:                # a zero-norm anchor has no defined cosine
+        call(vectors, "_serve", table="emb.vec", verb="similar", anchors=[pair[0], {**pair[1], "value": "D"}])
+    assert zero.value.kind.value == "invalid_argument" and zero.value.envelope()["subkind"] == "undefined"
+
+
 # ---------------------------------------------------------------------------- views
 
 
@@ -379,6 +397,13 @@ def test_view_sections_have_their_own_status(ot_root: Path, tmp_path) -> None:
         sec = {"table": "open_targets.known_drug", "key": {"targetId": F.PCSK9}}
         got = serve_sections(ctx, {"known_drugs": sec}, {})
         assert got["known_drugs"]["status"] == "not_ready" and got["known_drugs"]["_vbt_unavailable"]
+        # the same view declared in the descriptor (views.target_profile): the argument resolves like the
+        # identifier column it keys, and the sections carry the same statuses
+        desc = call(ctx, "_view", view="open_targets.target_profile", args={"target_id": "PCSK9"})
+        assert desc["_vbt"]["status"] == "partial" and desc["sections"]["target"]["record"]["id"] == F.PCSK9
+        assert {n: s["status"] for n, s in desc["sections"].items() if n != "target"} == \
+            {n: s["status"] for n, s in secs.items()}
+        err(call(ctx, "_view", view="open_targets.target_profile", args={"target_id": F.UNKNOWN_GENE}), "not_found")
 
 
 # ---------------------------------------------------------------------------- through the real gateway
@@ -456,3 +481,56 @@ async def test_target_profile_derived_through_the_gateway(ot_root: Path, tmp_pat
         assert "_vbt_unavailable" in obj["known_drugs"] and "num_drugs" not in obj
         assert isinstance(obj["pathways"], list) and obj["pathways"]
         assert res.header["status"] == "partial"
+
+
+async def test_data_verbs_through_the_gateway_carry_the_calling_agent(ot, tmp_path) -> None:
+    """The gateway passes a public verb's arguments through as the payload and sets ``agent`` from the
+    calling agent's context (never the agent's own value), so the child applies ``withhold_from``."""
+    from types import SimpleNamespace
+
+    from vbt.datalayer.api import RawResult
+    from vbt.datalayer.service.verbs import load_verbs
+
+    gw = _gateway(ot, tmp_path)
+    args = {"table": "open_targets.known_drug", "where": {"targetId": "PCSK9"}, "limit": 3, "agent": "spoofed"}
+    plan = await gw.prepare("data", "find", args, SimpleNamespace(agent="target-biologist"))
+    assert plan.route == "upstream" and plan.args_sent == {**args, "agent": "target-biologist"}
+    out = load_verbs()["find"](ot, plan.args_sent)
+    res = await gw.finish(plan, RawResult(json.dumps(out), out, None, "ok"))
+    assert res.obj["_vbt"]["total"] > len(res.obj["rows"]) == 3 and res.status == "partial", res.text
+    wrapped = await gw.prepare("data", "describe", {"request": {"source": "open_targets"}}, SimpleNamespace(agent="a"))
+    assert wrapped.args_sent == {"request": {"source": "open_targets", "agent": "a"}}
+    bare = await gw.prepare("data", "describe", {"source": "open_targets"}, None)
+    assert bare.args_sent == {"source": "open_targets"}
+
+
+async def test_compute_entity_similarity_repairs_from_both_anchors(ot_root: Path, tmp_path) -> None:
+    """Both anchors reach ``_serve``: a contradicted (or wrong) pair similarity is repaired with the
+    cosine of the two stored vectors, in upstream's record shape without the vetoed interpretation."""
+    import dl_fixtures as F
+    from test_dl_gateway_flow import raw_of
+
+    def unit(sim: float) -> list[float]:
+        return [sim, math.sqrt(1 - sim * sim)] + [0.0] * 98
+
+    root = F.copy_fixture(ot_root, tmp_path / "ot" / "25.09")
+    F.delete_table(root, "literature_vector")
+    F.write_table(root, "literature_vector", F.table("literature_vector", [
+        {"category": "target", "word": F.PCSK9, "norm": 1.0, "vector": unit(1.0)},
+        {"category": "disease", "word": "EFO_0020000", "norm": 1.0, "vector": unit(0.6)}]))
+    F.write_manifest(root)
+    a, b = F.PCSK9, "EFO_0020000"
+    wrong = {"success": True, "entity_a": a, "entity_b": b, "entity_a_category": "target",
+             "entity_b_category": "disease", "similarity": 0.123, "interpretation": "Very low/no similarity"}
+    missing = {"success": False, "error": f"Entity '{a}' not found in literature vector dataset"}
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("OPEN_TARGETS_DATA_PATH", str(root))
+        ctx = _ctx(tmp_path, REPO / "configs" / "data" / "sources", overlays=REPO / "configs" / "data" / "overlays")
+        gw = _gateway(ctx, tmp_path)
+        for raw in (wrong, missing):
+            plan = await gw.prepare("association", "compute_entity_similarity", {"entity_a": a, "entity_b": b}, None)
+            res = await gw.finish(plan, raw_of(raw))
+            assert res.header["served_by"] == "repaired", res.header
+            assert {k: v for k, v in res.obj.items() if k != "_vbt"} == {
+                "entity_a": a, "entity_a_category": "target", "entity_b": b, "entity_b_category": "disease",
+                "similarity": pytest.approx(0.6)}

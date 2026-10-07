@@ -43,7 +43,8 @@ VERB_EXPAND = "_expand"           # phase 3
 VERB_ENRICH = "_enrich"           # phase 3
 PHASE1_VERBS = (VERB_STATS, VERB_CHECK, VERB_WITNESS, VERB_SERVE, VERB_BUILD_INDEX, VERB_RESOLVE_REMOTE, VERB_VOCAB)
 
-ServeVerb = Literal["lookup", "find", "search", "members", "count", "aggregate", "similar", "expand"]
+ServeVerb = Literal["lookup", "find", "search", "members", "count", "aggregate", "similar", "compare", "view",
+                    "expand"]
 TotalMethod = Literal["scan", "footer", "index", "unknown"]
 Existence = Literal["exists", "absent", "unknown"]
 Depth = Literal["shallow", "standard", "deep"]
@@ -196,6 +197,7 @@ class ServeRequest(IpcModel):
     aggregate: dict[str, dict[str, str]] = {}          # aggregate: {output: {count_distinct|count|first|distinct: column}}
     sections: dict[str, dict[str, Any]] = {}
     anchor: dict[str, Any] | None = None               # {column, value} for similar
+    anchors: list[dict[str, Any]] = []                 # every anchor argument: [{name, column, value}]
     search_text: str | None = None
     id_type: str | None = None
     params: dict[str, Any] = {}

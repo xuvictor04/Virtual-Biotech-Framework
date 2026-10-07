@@ -266,6 +266,7 @@ def cmd_check(args: argparse.Namespace, config: dict[str, Any]) -> int:
         contract = catalog.contract(*tool)
         r = call_readiness(contract, cache, bound_table=contract.bound_table)
         tool_result = {"tool": f"mcp__{tool[0]}__{tool[1]}", "ready": r.ready, "reasons": r.reasons,
+                       "sections_unavailable": [x["name"] for x in r.soft],
                        "unchecked": r.unchecked, "unavailable_partitions": r.unavailable_partitions}
     if args.json:
         body = {"tables": response.get("tables") or {}, "table_errors": response.get("table_errors") or {},

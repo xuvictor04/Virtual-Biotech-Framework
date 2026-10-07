@@ -455,7 +455,7 @@ class DataGateway:
                 self._observe(plan, f"would_{exc.kind.value}", error=exc.envelope())
             except Exception as exc:  # noqa: BLE001 - observe mode never changes a call
                 self._observe(plan, "observe_failed", error=f"{type(exc).__name__}: {exc}")
-            plan.args_sent = dict(args)
+            plan.args_sent = self._with_agent(server, tool, dict(args), ctx)
             plan.route = "upstream"
             plan.cold_lock = None
             return plan
@@ -464,9 +464,24 @@ class DataGateway:
         except GatewayError as exc:
             exc.with_tool(st.name)
             raise
+        plan.args_sent = self._with_agent(server, tool, plan.args_sent, ctx)
         st.t_ms["prepare"] = _ms(st.t0)
         st.t_prepared = time.monotonic()
         return plan
+
+    @staticmethod
+    def _with_agent(server: str, tool: str, args: dict[str, Any], ctx: Any) -> dict[str, Any]:
+        """A data-child public verb's payload with the calling agent, so the child applies the tables'
+        ``expose.withhold_from`` per call (the agent's own ``agent`` argument never counts)."""
+        agent = getattr(ctx, "agent", None)
+        if server != DATA_SERVER or tool.startswith("_") or not agent:
+            return args
+        out = dict(args)
+        if set(out) == {"request"} and isinstance(out["request"], Mapping):
+            out["request"] = {**out["request"], "agent": str(agent)}
+        else:
+            out["agent"] = str(agent)
+        return out
 
     async def _prepare(self, plan: CallPlan, st: _CallState) -> None:
         contract: ToolContract = plan.contract
@@ -635,30 +650,14 @@ class DataGateway:
                 st.notes.append("data-layer service unavailable: readiness and witness checks skipped")
             r = call_readiness(contract, self.readiness, bound_table=selected, args=plan.args_raw,
                                partition_values=parts)
-        sections = self._section_tables(contract)
-        hard = [x for x in r.reasons if x["name"] not in sections and
-                x["name"].split(".")[-1] not in {s.split(".")[-1] for s in sections}]
-        for x in r.reasons:
-            if x not in hard:
-                st.soft_sections[x["name"]] = f"{x['name']} not ready: {x['check']}"
+        for x in r.soft:                               # section tables mark their sections unavailable
+            st.soft_sections[x["name"]] = f"{x['name']} not ready: {x['check']}"
+        hard = r.hard
         if hard:
             first = hard[0]
             raise GatewayError(ErrorKind.not_ready, f"{first['name']} is not ready ({first['check']}: "
                                f"{first['detail']})", tool=st.name, payload=not_ready_payload(hard))
         st.notes.extend(r.notes)
-
-    def _section_tables(self, contract: ToolContract) -> set[str]:
-        b = contract.binding
-        out: set[str] = set()
-        if b is None:
-            return out
-        main = {b.result.rows_of, contract.bound_table, b.derived.table if b.derived is not None else None}
-        for s in b.result.sections.values():
-            out.add(s.table)
-        if b.derived is not None:
-            for s in b.derived.sections.values():
-                out.add(s.table)
-        return {t for t in out if t not in main}
 
     # ---------------------------------------------------------------- vocabularies
 
@@ -1816,9 +1815,10 @@ class DataGateway:
             sections[sname] = {"path": sec.path, "table": sec.table, "verb": sec.verb, "single": sec.single,
                                "key": json_value(key), "value": sec.value}
         anchor = None
-        if st.anchors:
-            arg, (column, value) = next(iter(st.anchors.items()))
-            anchor = {"column": column, "value": json_value(value)}
+        anchors = [{"name": arg, "column": column, "value": json_value(value)}
+                   for arg, (column, value) in st.anchors.items()]     # every anchor (a pair for a similarity)
+        if anchors:
+            anchor = {"column": anchors[0]["column"], "value": anchors[0]["value"]}
         pred = _on_items(st.predicate, contract, d.table, plan.bound_table)
         nest = dict(d.nest) if d.nest else None
         if nest is not None:
@@ -1840,7 +1840,7 @@ class DataGateway:
                            columns=list(d.columns), order=[RankKeyModel(**_rank_json(o)) for o in st.order],
                            limit=limit, limit_grain=limit_grain, group_by=within + list(d.group_by),
                            explode=list(d.explode), carry=list(d.carry), rename=dict(d.rename), split=d.split,
-                           nest=nest, aggregate=dict(d.aggregate), sections=sections, anchor=anchor,
+                           nest=nest, aggregate=dict(d.aggregate), sections=sections, anchor=anchor, anchors=anchors,
                            search_text=st.search_text,
                            params={n: v for n, v in plan.args_raw.items() if isinstance(v, (str, int, float, bool))},
                            budget_bytes=self.settings.witness.repair_max_bytes)

@@ -627,7 +627,7 @@ def data_readiness(config: dict[str, Any], cache: Any, catalog: Any, *, errors: 
             out.bound.setdefault(server, []).append(name)
             out.reads[name] = {cache.physical(ref)[0] for ref in contract.tables}
             r = call_readiness(contract, cache, bound_table=contract.bound_table)
-            always = [x for x in r.reasons if "partition" not in x]
+            always = [x for x in r.hard if "partition" not in x]       # a section table only degrades its section
             if always:
                 x = always[0]
                 m = cache.get(x["name"])

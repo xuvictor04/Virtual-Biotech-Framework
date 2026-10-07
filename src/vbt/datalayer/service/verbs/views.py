@@ -27,7 +27,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from ...errors import ErrorKind, GatewayError, json_value
-from ...predicate import And, Eq
+from ...predicate import And, Eq, from_json
 from ...result import Header, inject_header
 from .. import ServiceContext, ServiceError
 from ..reader import BudgetExceeded
@@ -47,6 +47,8 @@ def read_section(ctx: ServiceContext, name: str, sec: Mapping[str, Any], params:
         reader = ctx.reader(table)
         key = sec.get("key") or {}
         parts = [Eq("/" + str(c), v) for c, v in key.items()]
+        if sec.get("predicate"):                       # a section's own filter, in its JSON form
+            parts.insert(0, from_json(sec["predicate"]) if isinstance(sec["predicate"], Mapping) else sec["predicate"])
         pred = parts[0] if len(parts) == 1 else (And(tuple(parts)) if parts else None)
         rows, _keys, stats = reader.rows(pred, sec.get("columns") or (), sec.get("order") or (), sec.get("limit"),
                                          params=dict(params or {}), budget_bytes=ctx.scan_budget(t, None))
@@ -117,6 +119,12 @@ def view_sections(ctx: ServiceContext, payload: Mapping[str, Any]) -> tuple[dict
     return {"_main": main, **secs}, contract
 
 
+def _bound_id_type(ctx: ServiceContext, table: str, column: str) -> str | None:
+    t = ctx.table(table)
+    idt = getattr(t.columns.get(column), "id_type", None)
+    return ctx.catalog.qualify_id_type(idt, t.descriptor.source) if idt else None
+
+
 def view(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     """Every section of a view for one entity, each with its own status."""
     secs, contract = view_sections(ctx, payload)
@@ -129,9 +137,12 @@ def view(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
         bound = None
         if a is not None and a.accepts and isinstance(a.binds, str):
             table, _, col = a.binds.rpartition(".")
-            t = ctx.table(table)
-            idt = getattr(t.columns.get(col), "id_type", None)
-            bound = ctx.catalog.qualify_id_type(idt, t.descriptor.source) if idt else None
+            bound = _bound_id_type(ctx, table, col)
+        elif contract is None:
+            # a descriptor view: the argument is resolved as the first identifier column it keys
+            keyed = [(str(sec.get("table")), col) for sec in secs.values()
+                     for col, arg in (sec.get("key_from_args") or {}).items() if arg == name]
+            bound = next((b for b in (_bound_id_type(ctx, t, c) for t, c in keyed) if b), None)
         values[name] = _resolve_value(ctx, name, value, bound, notes, resolved) if bound else value
     sections: dict[str, Any] = {}
     for name, sec in secs.items():

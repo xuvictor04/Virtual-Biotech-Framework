@@ -254,4 +254,5 @@ tools:
                entity_a_category: {column: category}, entity_b_category: {column: category}}
       drop_fields: {$.interpretation: "fixed cosine cut-offs (0.8, 0.6, 0.4, 0.2) are uncalibrated for these embeddings and read as biological similarity"}
     serve: pass
-    on_contradiction: tool_defect
+    on_contradiction: derived                     # phase 2 (F14): both anchors reach _serve, which scores the pair
+    derived: {verb: similar, table: open_targets.literature_vector, columns: [category]}

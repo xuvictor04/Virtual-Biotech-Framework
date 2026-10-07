@@ -388,10 +388,6 @@ async def test_ct1_today_claim(tmp_path_factory, data_env) -> None:
 # ============================================================================ CT-2
 
 
-def _ct2_quarantined(r: CallResult, root: Path) -> None:
-    err(r, "quarantined")
-
-
 def _ct2_safety_tp53(r: CallResult, root: Path) -> None:
     header = empty(r, coverage="unknown")
     assert "not evidence of safety" in str(header.get("coverage_statement")), header
@@ -442,7 +438,7 @@ CT2: dict[str, Check] = {
     "safety_unknown": lambda r, root: _not_found(r, root),
     "prio_unknown": lambda r, root: _not_found(r, root),
     "probes_unknown": lambda r, root: _not_found(r, root),
-    "profile_unknown": _ct2_quarantined,
+    "profile_unknown": lambda r, root: _not_found(r, root),        # phase 2: the target_profile view
     "safety_tp53": _ct2_safety_tp53,
     "probes_tp53": _ct2_probes_tp53,
     "probes_null": _ct2_coverage_unknown,
@@ -602,7 +598,11 @@ async def test_ct2_deleted_table_is_not_ready(variant: str, mode: str, ot_root, 
     assert mentions(payload.get("tables"), "open_targets.known_drug"), payload
     ok(info)
     assert info.obj.get("id") == T
-    err(profile, "quarantined")
+    # phase 2: the target_profile view answers with the section marked unavailable, never num_drugs: 0
+    ok(profile)
+    assert status(profile) == "partial", profile.header
+    assert dig(profile.obj, "known_drugs", "_vbt_unavailable"), show(profile)
+    assert "num_drugs" not in profile.obj and dig(profile.obj, "summary_stats", "num_drugs") is None, show(profile)
     if mode == "enforce":
         snap = bridge.readiness_snapshot()
         assert any("known_drug" in p for p in readiness_problems(snap, ("known_drug",))), snap
@@ -1034,8 +1034,11 @@ def _ct5_tahoe_two_plates(r: CallResult, root: Path) -> None:
 
 
 def _ct5_direct_indirect(r: CallResult, root: Path) -> None:
-    payload = err(r, "quarantined")
-    assert mentions(payload, "query_associations"), payload
+    """Phase 2: a derived set comparison on the complete key sets (direct is a subset of indirect)."""
+    ok(r)
+    assert r.header.get("served_by") == "derived", r.header
+    assert dig(r.obj, "counts", "unique_to_direct_count") == 0, show(r)
+    assert dig(r.obj, "direct_only") == [], show(r)
 
 
 CT5: dict[str, Check] = {

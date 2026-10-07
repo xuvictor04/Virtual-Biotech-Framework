@@ -29,7 +29,7 @@ from ..ipc import CheckResponse, TableCheckModel
 from ..plugins.base import LayoutSpec
 
 __all__ = ["READY_STATUSES", "TABLE_LEVEL_STATUSES", "CallReadiness", "ReadinessCache", "call_readiness",
-           "layout_spec", "table_signature", "tables_read", "columns_read", "degraded_tools", "norm_path",
+           "section_tables", "layout_spec", "table_signature", "tables_read", "columns_read", "degraded_tools", "norm_path",
            "parse_partition_label", "table_status"]
 
 READY_STATUSES = frozenset({"ready", "awaiting_producer", "unbound"})
@@ -113,6 +113,28 @@ class CallReadiness:
     unchecked: list[str] = field(default_factory=list)            # tables without a cached result
     notes: list[str] = field(default_factory=list)
     unavailable_partitions: dict[str, list[str]] = field(default_factory=dict)
+    soft: list[dict[str, Any]] = field(default_factory=list)      # the reasons on section-only tables
+
+    @property
+    def hard(self) -> list[dict[str, Any]]:
+        """The reasons that fail the call (an unready section table only marks its section unavailable)."""
+        return [x for x in self.reasons if x not in self.soft]
+
+
+def section_tables(contract: Any) -> set[str]:
+    """Tables read only for result or derived sections: an unready one marks its section
+    unavailable (``partial``) instead of failing the call."""
+    b = getattr(contract, "binding", None)
+    out: set[str] = set()
+    if b is None:
+        return out
+    main = {b.result.rows_of, contract.bound_table, b.derived.table if b.derived is not None else None}
+    for s in b.result.sections.values():
+        out.add(s.table)
+    if b.derived is not None:
+        for s in b.derived.sections.values():
+            out.add(s.table)
+    return {t for t in out if t and t not in main}
 
 
 def _strip_table(column: str, table: str) -> str:
@@ -448,13 +470,18 @@ def call_readiness(contract: Any, cache: ReadinessCache, *, bound_table: str | N
         own = table_status(m)                          # findings scoped to parts this call skips do not count
         if own not in READY_STATUSES and not bad_cols and not bad_parts and own != "partial":
             out.reasons.append(_reason(phys, own, f"table is {own}", status=own))
+    sections = section_tables(contract)
+    if sections:
+        tails = {t.split(".")[-1] for t in sections}
+        out.soft = [x for x in out.reasons if x["name"] in sections or x["name"].split(".")[-1] in tails]
     out.ready = not out.reasons
     return out
 
 
 def degraded_tools(catalog: Any, cache: ReadinessCache) -> dict[str, str]:
     """``{mcp__server__tool: reason}`` for reviewed tools that every call would find unready (a
-    table or column they always read failed; a failed partition may be excluded by arguments)."""
+    table or column they always read failed; a failed partition may be excluded by arguments, and an
+    unready section table only marks that section unavailable)."""
     out: dict[str, str] = {}
     for server in catalog.servers():
         for tool in catalog.tools(server):
@@ -465,7 +492,7 @@ def degraded_tools(catalog: Any, cache: ReadinessCache) -> dict[str, str]:
             if contract.binding is None or contract.binding.serve == "block":
                 continue
             r = call_readiness(contract, cache, bound_table=contract.bound_table)
-            always = [x for x in r.reasons if "partition" not in x]   # a partition may be excluded by arguments
+            always = [x for x in r.hard if "partition" not in x]      # a partition may be excluded by arguments
             if always:
                 x = always[0]
                 out[f"mcp__{server}__{tool}"] = f"{x['name']} not ready: {x['check']} ({x['detail']})"[:300]

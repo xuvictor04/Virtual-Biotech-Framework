@@ -6,9 +6,13 @@ reaper). ``-E`` ignores ``PYTHONPATH`` and ``vbt`` may not be installed in that 
 first thing this file does is put ``Path(__file__).resolve().parents[3]`` (``src/``) on ``sys.path``.
 
 Settings come from ``VBT_DATA_SETTINGS`` (JSON written by ``DataGateway.extra_servers()``); without
-it the in-code defaults apply. Every module of ``service/verbs/`` contributes ``VERBS``; each verb is
-registered as a tool with exactly one parameter, ``request`` (the ipc request model as a JSON
-object, or JSON text). At most ``data.service.max_concurrency`` verbs run at once.
+it the in-code defaults apply. Every module of ``service/verbs/`` contributes ``VERBS``; each hidden
+verb is registered as a tool with exactly one parameter, ``request`` (the ipc request model as a JSON
+object, or JSON text). The public verbs (``PUBLIC_VERBS``, listed as ``mcp__data__<verb>``) take their
+own arguments, which are the payload: the child lists the catalog-free skeleton of each verb's schema
+(``derive.tools.native_input_schema``) and the gateway's listing adds the table enums and ``where``
+schemas. The gateway adds the calling ``agent`` to the arguments, so the child's listed schemas
+accept extra properties. At most ``data.service.max_concurrency`` verbs run at once.
 
 Command line (preflight and ``vbt ds`` use it without MCP)::
 
@@ -36,7 +40,7 @@ from vbt.datalayer.ipc import VERB_CHECK  # noqa: E402
 from vbt.datalayer.service import ServiceContext  # noqa: E402
 from vbt.datalayer.service.verbs import load_verbs  # noqa: E402
 
-__all__ = ["build_context", "make_server", "tool_function", "main"]
+__all__ = ["build_context", "make_server", "tool_function", "public_schema", "main"]
 
 
 def build_context() -> ServiceContext:
@@ -69,8 +73,51 @@ def tool_function(ctx_ref: Callable[[], ServiceContext], name: str,
     return tool
 
 
+def public_schema(verb: str) -> dict[str, Any]:
+    """The child's listed schema of one public verb: its arguments without the catalog's enums (the
+    gateway's listing derives those), open to the ``agent`` the gateway adds."""
+    from types import SimpleNamespace
+
+    from vbt.datalayer.derive.tools import native_input_schema
+
+    schema = native_input_schema(SimpleNamespace(sources={}), verb, [])
+    for prop in schema["properties"].values():
+        if prop.get("enum") == []:
+            del prop["enum"]
+        prop.pop("x-vbt-where", None)
+    schema["additionalProperties"] = True
+    return schema
+
+
+def _public_tool(ctx_ref: Callable[[], ServiceContext], name: str,
+                 verb: Callable[[ServiceContext, Mapping[str, Any]], dict[str, Any]]) -> Any:
+    """The FastMCP tool of one public verb: the call's arguments are the payload (a lone ``request``
+    argument, the hidden verbs' form, is accepted too)."""
+    import anyio
+    from fastmcp.tools import Tool
+
+    class PublicVerb(Tool):
+        async def run(self, arguments: dict[str, Any]) -> Any:
+            args = dict(arguments or {})
+            payload = _payload(args["request"]) if set(args) == {"request"} else args
+
+            def call() -> dict[str, Any]:
+                ctx = ctx_ref()
+                with ctx.slots:
+                    return verb(ctx, payload)
+
+            return self.convert_result(await anyio.to_thread.run_sync(call))
+
+    from vbt.datalayer.derive.tools import VERB_DESCRIPTIONS
+
+    return PublicVerb(name=name, description=VERB_DESCRIPTIONS.get(name, f"data-layer verb {name}"),
+                      parameters=public_schema(name))
+
+
 def make_server(ctx: ServiceContext | None = None) -> Any:
     from fastmcp import FastMCP
+
+    from vbt.datalayer.service.verbs.public import PUBLIC_VERBS
 
     holder: dict[str, ServiceContext] = {}
     if ctx is not None:
@@ -83,6 +130,9 @@ def make_server(ctx: ServiceContext | None = None) -> Any:
 
     mcp = FastMCP("data")
     for name, verb in sorted(load_verbs().items()):
+        if name in PUBLIC_VERBS:
+            mcp.add_tool(_public_tool(ctx_ref, name, verb))
+            continue
         fn = tool_function(ctx_ref, name, verb)
         mcp.tool(name=name, description=fn.__doc__)(fn)
     return mcp

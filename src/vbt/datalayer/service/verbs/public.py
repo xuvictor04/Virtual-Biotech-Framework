@@ -19,14 +19,11 @@ that is not a column of the DepMap matrix) gives ``status: empty`` with ``covera
 Results carry the ``_vbt`` header first (status, returned, total, truncated, order, coverage and its
 statement, resolutions, excluded unknowns); errors are the typed envelopes of §12.1
 (``status: tool_error``). Tables with ``expose.native: false`` are refused, and so are tables whose
-``expose.withhold_from`` names the calling ``agent`` (the payload's ``agent``, set by the bridge).
+``expose.withhold_from`` names the calling ``agent`` (the payload's ``agent``, set by the gateway).
 
-Interim seam (contract request): ``service/server.py`` registers every verb with a single ``request``
-argument and ``ipc.ServeVerb`` has no ``compare``/``view``, so :func:`install_serve_extensions` wraps
-the ``_serve`` verb in place (this module is loaded before ``serve.py``): ``verb: similar`` requests,
-``split: {compare_with: ...}`` requests and the sections of every request are answered by the phase-2
-modules (``similar.py``, ``setcompare.py``, ``views.py``). A section that cannot be read becomes
-``{_vbt_unavailable: <reason>, status: not_ready}`` instead of failing the call.
+The gateway's ``_serve`` requests for the phase-2 derived bindings (``verb: similar``, set
+comparisons, sections with a per-section status) are routed by ``serve.py`` to ``similar.py``,
+``setcompare.py`` and ``views.py``.
 """
 
 from __future__ import annotations
@@ -38,7 +35,6 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ...errors import ErrorKind, GatewayError, error_envelope, invalid_argument_payload, json_value, nearest
-from ...ipc import VERB_SERVE
 from ...predicate import And, Cmp, Contains, Eq, In, Not, Or, Predicate, evaluate
 from ...result import Header, inject_header
 from ...rowkey import canonical
@@ -47,7 +43,7 @@ from .. import ServiceContext, ServiceError
 __all__ = [
     "PUBLIC_VERBS", "LongView", "long_view", "table_access", "compile_where", "resolver", "header", "guarded",
     "find", "lookup", "search", "vocab", "members", "neighbors", "resolve", "coverage_of", "order_rows",
-    "install_serve_extensions", "VERBS",
+    "VERBS",
 ]
 
 #: The public verbs, in listing order (each is ``mcp__data__<name>``).
@@ -871,48 +867,6 @@ def _similar(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     from .similar import similar
 
     return similar(ctx, payload)
-
-
-# ---------------------------------------------------------------------------- the _serve seam
-
-def _serve_extension(base: Callable[[ServiceContext, Mapping[str, Any]], dict[str, Any]]
-                     ) -> Callable[[ServiceContext, Mapping[str, Any]], dict[str, Any]]:
-    """``_serve`` with the phase-2 verbs: ``similar``, ``split.compare_with`` and per-section status."""
-    if getattr(base, "__vbt_phase2__", False):
-        return base
-
-    def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
-        req = dict(payload)
-        if req.get("verb") == "similar":
-            from .similar import serve_similar
-
-            return serve_similar(ctx, req)
-        split = req.get("split") or {}
-        if isinstance(split, Mapping) and split.get("compare_with"):
-            from .setcompare import serve_compare
-
-            return serve_compare(ctx, req)
-        sections = req.pop("sections", None) or {}
-        out = base(ctx, req)
-        if sections:
-            from .views import serve_sections
-
-            out.setdefault("sections", {}).update(serve_sections(ctx, sections, dict(req.get("params") or {})))
-        return out
-
-    serve.__vbt_phase2__ = True  # type: ignore[attr-defined]
-    serve.__doc__ = base.__doc__
-    return serve
-
-
-def install_serve_extensions() -> None:
-    """Wrap the ``_serve`` verb in place (see the module docstring); idempotent."""
-    from . import serve as serve_module
-
-    serve_module.VERBS[VERB_SERVE] = _serve_extension(serve_module.VERBS[VERB_SERVE])
-
-
-install_serve_extensions()
 
 
 # ---------------------------------------------------------------------------- the in-process client's reads

@@ -21,6 +21,7 @@ pq = pytest.importorskip("pyarrow.parquet")
 import yaml  # noqa: E402
 
 from vbt.datalayer.ipc import PHASE1_VERBS, REQUEST_ARG, WitnessRequest, parse_response, request_payload  # noqa: E402
+from vbt.datalayer.service.verbs.public import PUBLIC_VERBS  # noqa: E402
 from vbt.datalayer.settings import SETTINGS_ENV, DataSettings  # noqa: E402
 
 SERVER = Path(__file__).resolve().parents[2] / "src" / "vbt" / "datalayer" / "service" / "server.py"
@@ -84,8 +85,8 @@ async def test_launch_with_dash_E_lists_the_hidden_verbs_and_serves_them(data_en
     transport = StdioTransport(command=sys.executable, args=["-E", str(SERVER)], env=data_env, cwd="/")
     async with Client(transport) as client:
         tools = {t.name: t for t in await client.list_tools()}
-        assert set(PHASE1_VERBS) <= set(tools)
-        assert all(name.startswith("_") for name in tools)
+        public = {name for name in tools if not name.startswith("_")}
+        assert set(PHASE1_VERBS) <= set(tools) and public == set(PUBLIC_VERBS)
         schema = getattr(tools["_witness"], "input_schema", None) or tools["_witness"].inputSchema
         assert list(schema["properties"]) == [REQUEST_ARG]
         payload = request_payload(WitnessRequest(table="s.t", predicate={"ge": ["score", 0.2]},
@@ -97,3 +98,10 @@ async def test_launch_with_dash_E_lists_the_hidden_verbs_and_serves_them(data_en
         assert (w.total, w.topk) == (3, [["r4"], ["r3"]])
         text = await client.call_tool("_witness", {REQUEST_ARG: json.dumps({"table": "s.t"})})
         assert parse_response("_witness", text.structured_content).total == 5
+        # a public verb takes its own arguments (the payload), open to the agent the gateway adds
+        find = getattr(tools["find"], "input_schema", None) or tools["find"].inputSchema
+        assert {"table", "where", "limit"} <= set(find["properties"]) and find["additionalProperties"] is True
+        got = await client.call_tool("find", {"table": "s.t", "where": {"score": {"ge": 0.2}}, "limit": 2,
+                                              "rank_by": "score desc", "agent": "someone"})
+        body = got.structured_content
+        assert body["_vbt"]["total"] == 3 and [r["id"] for r in body["rows"]] == ["r4", "r3"], body

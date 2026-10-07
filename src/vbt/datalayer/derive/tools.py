@@ -28,13 +28,14 @@ from ..roles import Role
 __all__ = [
     "NATIVE_SERVER", "NATIVE_VERBS", "NativeTool", "native_tools", "native_tool", "native_tool_names",
     "tables_for", "visible_to", "long_columns", "where_schema", "native_input_schema", "wrap_request",
+    "VERB_DESCRIPTIONS",
 ]
 
 NATIVE_SERVER = "data"
 NATIVE_VERBS = ("resolve", "describe", "lookup", "find", "search", "vocab", "members", "aggregate", "similar",
                 "neighbors")
 
-_DESCRIPTIONS = {
+VERB_DESCRIPTIONS = {
     "resolve": "Resolve identifiers (symbols, aliases, retired IDs, cross-references) to one canonical key of an "
                "id_type by a recorded rule; unknown values are not_found, several matches are ambiguous.",
     "describe": "Describe a data source or one of its tables: grain, complete key, every column's role and facets, "
@@ -253,7 +254,7 @@ def native_tool(catalog: Any, verb: str, *, agent: str | None = None,
     if not tables:
         return None
     schema = native_input_schema(catalog, verb, tables, enum_max=enum_max)
-    return NativeTool(verb=verb, name=f"mcp__{NATIVE_SERVER}__{verb}", description=f"{_DESCRIPTIONS[verb]} {_TAIL}",
+    return NativeTool(verb=verb, name=f"mcp__{NATIVE_SERVER}__{verb}", description=f"{VERB_DESCRIPTIONS[verb]} {_TAIL}",
                       input_schema=schema, tables=tables)
 
 
@@ -274,6 +275,6 @@ def native_tool_names(catalog: Any, *, agent: str | None = None,
 
 
 def wrap_request(schema: Mapping[str, Any]) -> dict[str, Any]:
-    """The schema of a data-child tool that takes its payload as one ``request`` argument (the interim
-    registration of ``service/server.py``): the native schema under ``request``."""
+    """The schema of a data-child tool that takes its payload as one ``request`` argument (the form of
+    the hidden verbs): the native schema under ``request``."""
     return {"type": "object", "properties": {"request": copy.deepcopy(dict(schema))}, "required": ["request"]}

@@ -13,7 +13,10 @@ key column's id_type and every kind with an edge to it), and:
 
 ``serve_similar`` answers the gateway's ``_serve`` requests with ``verb: similar`` (derived serving and
 repairs of ``find_similar_entities``): ``anchor: {column, value}`` already resolved, the predicate in
-its JSON form, ``limit`` as ``top_k``.
+its JSON form, ``limit`` as ``top_k``. With two ``anchors`` (``[{name, column, value}]``, every anchor
+argument of the call) it is the cosine of the pair (repairs of ``compute_entity_similarity``): one row
+with each anchor under its argument name, the request's ``columns`` of each as ``<name>_<column>`` and
+``similarity``; a missing anchor gives no row, a zero-norm one ``invalid_argument`` (``undefined``).
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from ...rowkey import canonical
 from .. import ServiceContext, ServiceError
 from .public import LongView, _invalid, _limit, compile_where, guarded, header, long_view, table_access
 
-__all__ = ["similar", "serve_similar", "cosine_ranking", "vector_column", "VERBS"]
+__all__ = ["similar", "serve_similar", "cosine_ranking", "pair_similarity", "vector_column", "VERBS"]
 
 
 def vector_column(view: LongView) -> str:
@@ -62,11 +65,7 @@ def cosine_ranking(view: LongView, anchor: Any, pred: Predicate | None, k: int |
     anchor_rows, _t, _e = view.rows(Eq(key, anchor), columns=[key, vcol], limit=1, budget=budget)
     if not anchor_rows:
         return [], 0, 0, False
-    a = _vec(anchor_rows[0].get(vcol))
-    if a is None or not all(math.isfinite(x) for x in a) or _norm(a) == 0:
-        raise GatewayError(ErrorKind.invalid_argument, f"the anchor {anchor!r} has no defined similarity (its vector "
-                           "has norm 0 or non-finite components)", argument="anchor", value=anchor,
-                           subkind="undefined")
+    a = _anchor_vector(anchor, anchor_rows[0], vcol)
     na = _norm(a)
     out_cols = list(columns) or [c for c in view.columns if c != vcol]
     rows, _total, _eu = view.rows(pred, columns=list(dict.fromkeys([*out_cols, key, vcol])), order=[], limit=None,
@@ -93,6 +92,38 @@ def cosine_ranking(view: LongView, anchor: Any, pred: Predicate | None, k: int |
     if k is not None:
         scored = scored[: int(k)]
     return [s[2] for s in scored], total, bad, True
+
+
+def _anchor_vector(anchor: Any, row: Mapping[str, Any], vcol: str) -> list[float]:
+    a = _vec(row.get(vcol))
+    if a is None or not all(math.isfinite(x) for x in a) or _norm(a) == 0:
+        raise GatewayError(ErrorKind.invalid_argument, f"the anchor {anchor!r} has no defined similarity (its vector "
+                           "has norm 0 or non-finite components)", argument="anchor", value=anchor,
+                           subkind="undefined")
+    return a
+
+
+def pair_similarity(view: LongView, anchors: Sequence[Mapping[str, Any]], *, columns: Sequence[str] = (),
+                    budget: int | None = None) -> dict[str, Any] | None:
+    """The cosine of the first two ``anchors`` (``{name, value}``) as one row, None when one has no row."""
+    vcol = vector_column(view)
+    key = view.key[0]
+    extra = [c for c in columns if c not in (key, vcol)]
+    out: dict[str, Any] = {}
+    vectors = []
+    for a in anchors[:2]:
+        rows, _t, _e = view.rows(Eq(key, a["value"]), columns=[key, vcol, *extra], limit=1, budget=budget)
+        if not rows:
+            return None
+        vectors.append(_anchor_vector(a["value"], rows[0], vcol))
+        name = str(a.get("name") or f"entity_{len(vectors)}")
+        out[name] = rows[0].get(key)
+        out.update({f"{name}_{c}": rows[0].get(c) for c in extra})
+    x, y = vectors
+    if len(x) != len(y):
+        raise ServiceError(f"{view.ref}: the anchors' vectors differ in length ({len(x)} and {len(y)})")
+    out["similarity"] = round(sum(p * q for p, q in zip(x, y)) / (_norm(x) * _norm(y)), 12)
+    return out
 
 
 def similar(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -126,6 +157,14 @@ def similar(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
 def serve_similar(ctx: ServiceContext, req: Mapping[str, Any]) -> dict[str, Any]:
     """The ``_serve`` form (``verb: similar``) used by derived bindings."""
     view = long_view(ctx, str(req.get("table")))
+    anchors = [a for a in req.get("anchors") or [] if isinstance(a, Mapping) and a.get("value") is not None]
+    if len(anchors) >= 2:
+        row = pair_similarity(view, anchors, columns=list(req.get("columns") or []), budget=req.get("budget_bytes"))
+        if row is None:
+            return ServeResponse(rows=[], total=0, key_columns=list(view.key),
+                                 reason="an anchor has no vector").model_dump(mode="json")
+        return ServeResponse(rows=[json_value(row)], total=1, key_columns=[str(a.get("name")) for a in anchors[:2]],
+                             served_by="derived").model_dump(mode="json")
     anchor = req.get("anchor") or {}
     if not isinstance(anchor, Mapping) or anchor.get("value") is None:
         raise ServiceError("similar needs anchor {column, value}")

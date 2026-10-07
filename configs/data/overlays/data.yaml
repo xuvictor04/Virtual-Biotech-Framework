@@ -4,8 +4,9 @@
 # The data child answers from the descriptors itself (identifiers resolved by the same resolver the
 # gateway uses, honest totals, coverage, typed errors), so every binding is `serve: pass` without a
 # witness: the child is the source of truth, not an upstream tool to check. What the gateway adds is the
-# listing: the table enums of ready tables, minus `expose.native: false` tables and tables whose
-# `expose.withhold_from` names the agent, and the per-column `where` schemas (derive/tools.py).
+# listing (the table enums minus `expose.native: false` tables, and the per-column `where` schemas;
+# derive/tools.py) and the calling agent: every call carries `agent`, so the child refuses the tables
+# whose `expose.withhold_from` names it.
 # Hidden verbs (`_serve`, `_witness`, ...) are never listed and need no binding.
 schema: vbt.overlay/1
 server: data

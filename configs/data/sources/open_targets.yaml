@@ -1523,3 +1523,16 @@ tables:
     columns:
       id:    {role: identifier, id_type: so_term, self: true}
       label: {role: label, of: id}
+
+views:
+  # The target profile (§10.6, F14; read by `_view` with view: open_targets.target_profile): the target
+  # record and its sections, each read on its own with its own status. target.get_comprehensive_target_profile
+  # serves the same sections through its overlay's derived binding.
+  target_profile:
+    sections:
+      target:           {table: open_targets.target, verb: lookup, single: true, key_from_args: {id: target_id}}
+      known_drugs:      {table: open_targets.known_drug, verb: find, key_from_args: {targetId: target_id}}
+      pathways:         {table: open_targets.target_pathways, verb: find, key_from_args: {id: target_id}}
+      adverse_events:   {table: open_targets.openfda_significant_adverse_target_reactions, verb: find,
+                         key_from_args: {targetId: target_id}}
+      mouse_phenotypes: {table: open_targets.mouse_phenotype, verb: find, key_from_args: {targetFromSourceId: target_id}}

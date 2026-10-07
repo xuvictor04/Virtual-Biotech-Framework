@@ -9,7 +9,7 @@ Verbs (phase 1):
   item_filter, include_negated}`` groups rows **after** dropping negated rows and items (a ``qualifier``
   with ``effect: negate`` that is true) and items failing ``item_filter``, keeps groups whose count
   satisfies ``having`` (``min_arg`` reads the bound from an argument) and cuts the groups to ``limit``; ``split: {by, limit, values}`` returns ``{value: rows}`` with a limit per list.
-  ``sections: {name: {table, verb, predicate, key, columns, order, limit, single}}`` are served
+  ``sections: {name: {table, verb, key, columns, order, limit, single, value}}`` are served
   per section; a section over an ``entity_detail`` table is always a list.
 * ``search``: ``search_text`` against the key, label and synonym leaves, ranked by match class
   (exact > casefold > previous symbol > alias > other synonym > prefix > word > substring), then
@@ -19,6 +19,17 @@ Verbs (phase 1):
 * ``count``: the total (and every declared grain's distinct count) with the unknown attribution.
 * ``aggregate`` (phase 1 subset): one row per ``group_by`` value with ``count_distinct``, ``count``,
   ``first`` and ``distinct`` outputs (``gene_count`` of ``search_go_terms``), sorted by ``order``.
+
+Verbs (phase 2, answered by the phase-2 modules):
+
+* ``similar`` (``similar.serve_similar``): the cosine top-k around ``anchor`` (``find_similar_entities``),
+  or with two ``anchors`` the cosine of the pair (``compute_entity_similarity``);
+* ``compare``, or any request with ``split: {compare_with}`` (``setcompare.serve_compare``): the set
+  comparison of two tables on complete keys (``compare_direct_indirect``);
+* ``view``: the main record looked up like ``lookup``, with its sections.
+
+``sections`` of every request are read one by one (``views.serve_sections``): a section whose table
+cannot be read becomes ``{_vbt_unavailable, status: not_ready}`` instead of failing the call.
 
 ``served_by`` is ``derived``. Over the scan budget the response has no rows, ``total: null`` and a
 ``reason`` starting with ``too_large:`` (never a partial answer presented as complete). Counters that
@@ -35,7 +46,7 @@ from typing import Any, Mapping, Sequence
 
 from ...descriptor.columns import is_container
 from ...ipc import VERB_SERVE, ServeRequest, ServeResponse
-from ...predicate import And, Eq, evaluate, from_json
+from ...predicate import evaluate, from_json
 from ...roles import parse_path
 from .. import ServiceContext, ServiceError
 from .. import items as _items
@@ -200,26 +211,6 @@ def _split(rows: list[dict[str, Any]], spec: Mapping[str, Any], per_list: int | 
     return out
 
 
-def _section(ctx: ServiceContext, name: str, sec: Mapping[str, Any], params: Mapping[str, Any]) -> Any:
-    table = str(sec.get("table") or "")
-    if not table:
-        raise ServiceError(f"section {name!r} names no table")
-    pred = sec.get("predicate")
-    key = sec.get("key") or {}
-    if key:
-        parts = [Eq("/" + str(c), v) for c, v in key.items()]
-        kp = parts[0] if len(parts) == 1 else And(tuple(parts))
-        pred = kp if pred is None else And((from_json(pred) if isinstance(pred, Mapping) else pred, kp))
-    reader = ctx.reader(table)
-    rows, _keys, _st = reader.rows(pred, sec.get("columns") or (), sec.get("order") or (), sec.get("limit"),
-                                   params=params)
-    if sec.get("single") and reader.table.kind != "entity_detail":
-        row = rows[0] if rows else None
-        field = sec.get("value")
-        return row.get(str(field)) if field and isinstance(row, Mapping) else row
-    return rows
-
-
 def search(reader: TableReader, text: str, predicate: Any, limit: int | None, params: Mapping[str, Any],
            budget: int | None) -> tuple[list[dict[str, Any]], list[list[Any]], int]:
     """Rows ranked by match class, then the table's rank, then the key; ``(rows, keys, total matches)``."""
@@ -359,6 +350,14 @@ def aggregate_rows(reader: TableReader, req: ServeRequest, params: Mapping[str, 
 
 def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     req = ServeRequest.model_validate(dict(payload))
+    if req.verb == "similar":
+        from .similar import serve_similar
+
+        return serve_similar(ctx, req.model_dump(mode="json"))
+    if req.verb == "compare" or (req.split or {}).get("compare_with"):
+        from .setcompare import serve_compare
+
+        return serve_compare(ctx, req.model_dump(mode="json"))
     reader = ctx.reader(req.table)
     params = dict(req.params)
     order = [o.model_dump() for o in req.order]
@@ -384,9 +383,9 @@ def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
             resp = ServeResponse(rows=out, total=total, truncated=total > len(out),
                                  key_columns=[req.rename.get(c, c) for c in req.group_by])
             return resp.model_dump(mode="json")
-        if req.verb not in ("lookup", "find", "members"):
-            raise ServiceError(f"_serve verb {req.verb!r} arrives in a later phase (phase 1: lookup, find, search, "
-                               "members, count, aggregate)")
+        if req.verb not in ("lookup", "find", "members", "view"):
+            raise ServiceError(f"_serve verb {req.verb!r} arrives in a later phase (lookup, find, search, members, "
+                               "count, aggregate, similar, compare, view)")
         stats = ScanStats()
         limit = None if (req.nest or req.split) else req.limit   # nest and split limit per group / list
         rows, keys, stats = reader.rows(req.predicate, req.columns, order, limit, req.limit_grain,
@@ -409,8 +408,10 @@ def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
         if req.split:
             out_rows = _split(out_rows, req.split, req.limit)
             truncated = sum(len(v) for v in out_rows.values()) < len(rows)
-        for name, sec in req.sections.items():
-            sections[name] = _section(ctx, name, sec, params)
+        if req.sections:
+            from .views import serve_sections
+
+            sections.update(serve_sections(ctx, req.sections, params))
         grains = _grain_counts(reader, req.predicate, params, rows) if not req.nest else {}
         resp = ServeResponse(rows=out_rows, total=total, truncated=truncated, key_columns=list(reader.key),
                              grains=grains, excluded_unknown=dict(stats.excluded_unknown),
