@@ -307,6 +307,25 @@ class DataGateway:
         self.readiness.load_check_results(resp)
         return True
 
+    async def aclose(self) -> None:
+        """Stop background work (the session's readiness check) before the bridge closes."""
+        task, self._check_task = self._check_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await asyncio.wait({task}, timeout=5.0)
+
+    async def wait_readiness(self, timeout_s: float | None = None) -> bool:
+        """Wait for the session's readiness check (the one the listing started, else a new one)."""
+        task = self._check_task
+        try:
+            if task is not None:
+                await asyncio.wait_for(asyncio.shield(task), timeout_s)
+                return bool(task.result())
+            return await asyncio.wait_for(self.refresh_readiness(), timeout_s)
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001 - readiness stays unchecked
+            return False
+
     def set_readiness(self, results: Any) -> list[str]:
         """Store ``_check`` results computed elsewhere (preflight)."""
         return self.readiness.load_check_results(results)

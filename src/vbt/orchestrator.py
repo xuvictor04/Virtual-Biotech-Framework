@@ -795,6 +795,36 @@ def _copy_environment_spec(run) -> None:
         (run.dir / "inputs" / "environment.yml").write_text(text)
 
 
+#: How long a session waits for the data child's readiness check before recording degradation.
+_READINESS_WAIT_S = 600.0
+
+
+async def _data_degraded(rt: Runtime, run: Any, degraded: dict[str, str]) -> dict[str, str]:
+    """With the data gateway in front of the servers, readiness is tool-scoped (§13): the unready tools
+    and tables are recorded, and a server stays degraded only when every one of its tools is unready
+    (one missing table no longer degrades every Open Targets server)."""
+    gw = rt.gateway
+    if not await gw.wait_readiness(_READINESS_WAIT_S):
+        return degraded
+    names = rt.registry.names()
+    tools = {n: r for n, r in gw.degraded_tools().items() if n in set(names)}   # the servers this run started
+    snap = gw.readiness_snapshot()
+    tables = {ref: t.get("status") for ref, t in (snap.get("tables") or {}).items()
+              if t.get("status") not in ("ready", "awaiting_producer", "unbound")
+              and any(ref in str(reason) for reason in tools.values())}
+    servers: dict[str, str] = {}
+    for server, reason in degraded.items():
+        own = [n for n in names if n.startswith(f"mcp__{server}__")]
+        if not own or all(n in tools for n in own):
+            servers[server] = reason
+    rt.set_degraded(servers)
+    if servers or tools or tables:
+        run.mark_degraded(servers, tools=tools, tables=tables)
+    elif degraded:
+        run.mark_degraded({})
+    return servers
+
+
 async def open_session(config: dict[str, Any], *, provider=None, on_event=None, run_id: str | None = None,
                        start_mcp: bool = True, interface: str = "chat", profiles: tuple[str, ...] | list[str] = (),
                        resume: str | Path | None = None) -> CSOSession:
@@ -870,6 +900,8 @@ async def open_session(config: dict[str, Any], *, provider=None, on_event=None, 
             failures = await rt.start_mcp()
             if failures:
                 rt.emit("warning", message=f"MCP servers unavailable: {', '.join(sorted(failures))}")
+            if checks and rt.gateway is not None:
+                degraded = await _data_degraded(rt, run, degraded)
         from .preflight import provider_server_info
         server = await provider_server_info(rt.provider)  # engine version, served models, max_model_len
         from .preflight import configured_window

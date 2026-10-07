@@ -320,7 +320,7 @@ def empty_result_citation(status: str | None, coverage: Any, coverage_statement:
             return None
         return (f"cites a censored empty result; the claim text must carry the censor statement "
                 f"{censor_phrase(coverage_statement)!r}")
-    return (f"cites an empty result with coverage {cov!r} as an absence; only 'covered' coverage makes "
+    return (f"cites an empty result with coverage {cov!r} (coverage {cov}) as an absence; only 'covered' coverage makes "
             "an empty result an absence finding")
 
 

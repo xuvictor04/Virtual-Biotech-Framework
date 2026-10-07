@@ -644,7 +644,8 @@ class Runtime:
             self._gateway_unavailable("MCPBridge has no gateway seam in this checkout")
             gateway = None
         extra_names: set[str] = set()
-        if gateway is not None:
+        guarded = any(s.get("enabled", True) is not False for s in raw_specs)
+        if gateway is not None and guarded:          # the data child serves the gateway of real servers
             try:
                 configured = {s.get("name") for s in raw_specs}
                 for s in gateway.extra_servers() or []:
@@ -722,6 +723,12 @@ class Runtime:
             await self.bus.drain(timeout=10)
         except Exception:  # noqa: BLE001
             log.debug("event drain failed", exc_info=True)
+        close = getattr(self.gateway, "aclose", None)
+        if callable(close):
+            try:
+                await close()                          # the gateway's background check, before its bridge
+            except Exception:  # noqa: BLE001
+                log.debug("data gateway close failed", exc_info=True)
         if self.mcp:
             await self.mcp.aclose()
         await self.provider.aclose()
