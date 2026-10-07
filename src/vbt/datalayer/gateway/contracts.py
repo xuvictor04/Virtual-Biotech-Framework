@@ -481,9 +481,10 @@ def _order_columns(contract: Any, table: str | None) -> list[str]:
 def apply_arg_contracts(contract: Any, args: Mapping[str, Any], vocab: Mapping[str, Any] | None = None,
                         fixed_scope: Mapping[str, Any] | None = None, *, schema: Mapping[str, Any] | None = None,
                         output_dir: str | Path | None = None, registry: Any = None,
-                        enum_max: int = 64) -> PreparedArgs:
+                        enum_max: int = 64, dry: bool = False) -> PreparedArgs:
     """Check and rewrite ``args`` (see the module docstring). ``vocab`` maps ``"source.table.column"``
-    to :class:`VocabSnapshot`-like objects; ``fixed_scope`` holds scope values fixed elsewhere."""
+    to :class:`VocabSnapshot`-like objects; ``fixed_scope`` holds scope values fixed elsewhere.
+    ``dry`` (observe mode): output paths are confined and recorded, but no existing file is renamed."""
     vocab = dict(vocab or {})
     fixed_scope = dict(fixed_scope or {})
     args = dict(args or {})
@@ -562,6 +563,10 @@ def apply_arg_contracts(contract: Any, args: Mapping[str, Any], vocab: Mapping[s
                 # upstream resolves a relative path under its own dated folder: send the confined absolute
                 # path, so the file that is confined and kept write-once is the file upstream writes
                 out.args_sent[name] = str(target)
+            if dry:
+                if output_dir and target.exists():
+                    out.notes.append(f"{name}: the existing {target.name} would be kept as a write-once copy")
+                continue
             renamed = write_once(target) if output_dir else None
             if renamed is not None:
                 out.renamed_outputs[name] = {"from": str(target), "to": str(renamed)}

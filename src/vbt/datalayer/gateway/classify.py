@@ -181,9 +181,13 @@ def classify(raw: Any, contract: Any, plan: Any = None, *,
         preds.extend(gspec.not_found_when)
     codec, parsed = decode(raw, contract, registry)
 
-    # 1b. HTTP failures: a 5xx is an outage; a 404 means not found only where a binding says so
-    failed = envelope in ("is_error", "legacy_error") or parsed.unparsed or not is_json or (
-        isinstance(obj, Mapping) and bool(obj.get("error")))
+    # 1b. HTTP failures: a 5xx is an outage; a 404 means not found only where a binding says so. A
+    # plain-text success (ok envelope, default codec) is never a failure: a status code its prose
+    # mentions ("the API returned HTTP 503", "404 Not Found is ...") is content, not the call's status;
+    # a non-default codec that reports a status has parsed it from the payload's own structure.
+    own_codec = codec != DEFAULT_ENVELOPE
+    failed = envelope in ("is_error", "legacy_error") or (parsed.unparsed and (is_json or own_codec)) or (
+        own_codec and parsed.http_status is not None) or (isinstance(obj, Mapping) and bool(obj.get("error")))
     status = parsed.http_status
     if failed and status is not None and status >= 500:
         return Classification("source_error", f"HTTP {status} from the source", obj, is_json,

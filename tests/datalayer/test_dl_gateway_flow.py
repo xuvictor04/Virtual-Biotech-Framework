@@ -758,6 +758,8 @@ async def test_service_down_strict_vs_lenient(tmp_path):
 
 async def test_observe_mode_never_raises_and_returns_upstream_unchanged(tmp_path):
     gw = world(tmp_path, data={"gateway": {"mode": "observe"}})
+    await gw._ensure_index("open_targets:ensembl_gene")     # observe mode never builds one in the call path
+    await gw._ensure_index("open_targets:hgnc_symbol")
     plan = await gw.prepare("drug", "search_known_drugs", {"target_id": "PCSK99"}, None)
     assert plan.route == "upstream" and plan.args_sent == {"target_id": "PCSK99"}
     out = await gw.finish(plan, raw_of({"success": True, "drugs": []}))

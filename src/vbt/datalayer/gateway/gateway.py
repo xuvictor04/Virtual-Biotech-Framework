@@ -27,6 +27,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import sys
 import time
 from dataclasses import dataclass, field
@@ -114,6 +115,10 @@ _STATE = "_vbt_state"
 _INCLUDE_NEGATED = "include_negated"
 _INCLUDE_DUPLICATES = "include_duplicates"
 _SERVICE_SCRIPT = ("src", "vbt", "datalayer", "service", "server.py")
+#: Seconds before a resolver index build that failed on an outage (not a rejection) is tried again.
+INDEX_RETRY_S = 60.0
+#: Seconds a failed readiness check of the same tables answers False without asking the child again.
+CHECK_FAILURE_TTL_S = 5.0
 
 
 @dataclass
@@ -240,6 +245,10 @@ class DataGateway:
         self._stats: dict[str, Any] = {}
         self._index_fp: dict[str, str] = {}
         self._index_failed: dict[str, str] = {}
+        self._index_retry_at: dict[str, float] = {}     # monotonic time a failed build may be retried (inf: never)
+        self._check_inflight: dict[tuple[tuple[str, ...], str], asyncio.Task[bool]] = {}
+        self._index_builds: dict[str, asyncio.Task[bool]] = {}   # observe mode's background builds
+        self._check_failed_until: dict[tuple[tuple[str, ...], str], float] = {}
         self._soma_vocab = soma_filter.VocabCache(settings.resolution.remote_ttl_s)
         self._check_task: asyncio.Task[Any] | None = None
         self._readiness_supplied = False
@@ -295,6 +304,7 @@ class DataGateway:
                         input_schema: dict[str, Any]) -> ListingDecision:
         if server == DATA_SERVER and tool.startswith("_"):
             if tool == "_check":
+                self._forget_transient_index_failures()   # a (re)started data child gets another try
                 self._schedule_check()
             return ListingDecision(False, description, input_schema, reason="internal data-child verb")
         self._schemas[(server, tool)] = dict(input_schema or {})
@@ -349,9 +359,30 @@ class DataGateway:
         return sorted(out)
 
     async def refresh_readiness(self, tables: Sequence[str] = (), depth: str | None = None) -> bool:
-        """Run the data child's ``_check`` (all tables by default) and cache the results."""
+        """Run the data child's ``_check`` (all tables by default) and cache the results. Single-flight:
+        concurrent calls for the same tables and depth (parallel specialists reading one unchecked table)
+        await one check, and a failed check answers False for :data:`CHECK_FAILURE_TTL_S` seconds."""
+        depth = depth or self.settings.readiness.session_depth
+        key = (tuple(sorted(set(tables))), depth)
+        if time.monotonic() < self._check_failed_until.get(key, 0.0):
+            return False
+        task = self._check_inflight.get(key)
+        if task is None or task.done():
+            task = asyncio.get_running_loop().create_task(self._run_check(list(tables), depth))
+            self._check_inflight[key] = task
+
+            def _done(t: asyncio.Task[bool], key: tuple[tuple[str, ...], str] = key) -> None:
+                if self._check_inflight.get(key) is t:
+                    self._check_inflight.pop(key, None)
+                if not t.cancelled() and t.exception() is None and not t.result():
+                    self._check_failed_until[key] = time.monotonic() + CHECK_FAILURE_TTL_S
+
+            task.add_done_callback(_done)
+        return await asyncio.shield(task)
+
+    async def _run_check(self, tables: list[str], depth: str) -> bool:
         try:
-            resp = await self.service.check(list(tables), depth or self.settings.readiness.session_depth)
+            resp = await self.service.check(tables, depth)
         except ServiceError as exc:
             log.info("readiness check unavailable: %s", exc.message)
             return False
@@ -361,10 +392,15 @@ class DataGateway:
     async def aclose(self) -> None:
         """Stop background work (the session's readiness check) before the bridge closes."""
         task, self._check_task = self._check_task, None
-        if task is not None and not task.done():
-            task.cancel()
+        tasks = {t for t in [task, *self._check_inflight.values(), *self._index_builds.values()]
+                 if t is not None and not t.done()}
+        self._check_inflight.clear()
+        self._index_builds.clear()
+        for t in tasks:
+            t.cancel()
+        if tasks:
             with contextlib.suppress(BaseException):
-                await asyncio.wait({task}, timeout=5.0)
+                await asyncio.wait(tasks, timeout=5.0)
 
     async def wait_readiness(self, timeout_s: float | None = None) -> bool:
         """Wait for the session's readiness check (the one the listing started, else a new one)."""
@@ -443,21 +479,46 @@ class DataGateway:
         if self._index_provider(src, bare) is not None:
             self.readiness.set_index(qualified, "ready", fingerprint=self._index_fp.get(qualified))
             return True
-        if qualified in self._index_failed:
+        if qualified in self._index_failed and time.monotonic() < self._index_retry_at.get(qualified, math.inf):
             return False
         try:
             resp = await self.service.build_index(src, bare)
         except ServiceError as exc:
+            # a rejected build (a configuration fault) or a child the bridge gave up on stays failed; an
+            # outage (timeout, crash, restart) is retried after a back-off, or when the child is relisted
             self._index_failed[qualified] = exc.message
-            self.readiness.set_index(qualified, "missing", detail=exc.message)
+            self._index_retry_at[qualified] = math.inf if exc.subkind in ("rejected", "down") else \
+                time.monotonic() + INDEX_RETRY_S
+            # keep a fingerprint already known: an index built later (``vbt ds index build``) is still found
+            known = (self.readiness.indexes.get(qualified) or {}).get("fingerprint")
+            self.readiness.set_index(qualified, "missing", fingerprint=known, detail=exc.message)
             return False
         self._index_fp[qualified] = resp.fingerprint
         ok = self._index_provider(src, bare) is not None
         self.readiness.set_index(qualified, "ready" if ok else "missing", fingerprint=resp.fingerprint,
                                  detail="" if ok else f"index file not found at {resp.path}")
-        if not ok:
+        if ok:
+            self._index_failed.pop(qualified, None)
+            self._index_retry_at.pop(qualified, None)
+        else:
             self._index_failed[qualified] = f"no index at {resp.path}"
+            self._index_retry_at[qualified] = math.inf
         return ok
+
+    def _build_in_background(self, qualified: str) -> None:
+        """Observe mode: build ``qualified`` off the call path, so later calls trace full decisions."""
+        task = self._index_builds.get(qualified)
+        if task is not None and not task.done():
+            return
+        try:
+            self._index_builds[qualified] = asyncio.get_running_loop().create_task(self._ensure_index(qualified))
+        except RuntimeError:
+            pass
+
+    def _forget_transient_index_failures(self) -> None:
+        for q in [q for q, at in self._index_retry_at.items() if at != math.inf]:
+            self._index_failed.pop(q, None)
+            self._index_retry_at.pop(q, None)
 
     # ================================================================== prepare
 
@@ -536,13 +597,16 @@ class DataGateway:
             if arg in args:
                 st.auto_fixed[column] = args.pop(arg)
         # 4. argument contracts
-        vocab = await self._vocab_for(contract, args, selected)
+        # observe mode adds no latency and no side effects: only cached vocabularies, and output paths
+        # are confined and recorded but an existing file is never renamed (the call goes upstream unchanged)
+        observe = st.mode != "enforce"
+        vocab = await self._vocab_for(contract, args, selected, fetch=not observe)
         for column, value in list(st.auto_fixed.items()):
             snap = vocab.get(vocab_key(selected or contract.bound_table or "", column))
             st.auto_fixed[column] = self._snap_auto(contract, column, value, snap, st)
         prepared = apply_arg_contracts(contract, args, vocab, fixed_scope=st.auto_fixed, schema=schema,
                                        output_dir=self.run.get("mcp_output_dir"), registry=self.registry,
-                                       enum_max=self.settings.derive.enum_max)
+                                       enum_max=self.settings.derive.enum_max, dry=observe)
         st.prepared = prepared
         st.notes.extend(prepared.notes)
         plan.args_sent = prepared.args_sent
@@ -685,9 +749,10 @@ class DataGateway:
 
     # ---------------------------------------------------------------- vocabularies
 
-    async def _vocab_for(self, contract: ToolContract, args: Mapping[str, Any], selected: str | None) -> dict[str, Any]:
+    async def _vocab_for(self, contract: ToolContract, args: Mapping[str, Any], selected: str | None, *,
+                         fetch: bool = True) -> dict[str, Any]:
         """Vocabulary snapshots for category/scope arguments with values (and free-text substring
-        arguments, and the auto-derived scope arguments)."""
+        arguments, and the auto-derived scope arguments). ``fetch=False`` (observe mode): cached only."""
         wanted: list[tuple[str, str]] = []
         for name, a in contract.args.items():
             if args.get(name) is None and not a.gateway_only:
@@ -714,6 +779,8 @@ class DataGateway:
         for table, column in dict.fromkeys(wanted):
             key = vocab_key(table, column)
             if key not in self._vocab:
+                if not fetch:
+                    continue
                 resp = await self.service.try_call("_vocab", _vocab_request(table, column))
                 if resp is None:
                     continue
@@ -881,6 +948,14 @@ class DataGateway:
                     needed = self._index_needed(q)
                     ok = True
                     for n in needed:
+                        if st.mode != "enforce":
+                            # observe mode never builds an index inside the agent's call
+                            n_src, _, n_bare = n.partition(":")
+                            if self._index_provider(n_src, n_bare) is None:
+                                st.notes.append(f"observe mode: {n} index not built in the call path")
+                                self._build_in_background(n)
+                                ok = False
+                            continue
                         if not await self._ensure_index(n):
                             ok = False
                     if ok:
@@ -1303,6 +1378,13 @@ class DataGateway:
         st = _state(plan)
         decision = crash_decision(reason, log_tail, server=server, tool=plan.tool, attempt=st.attempts)
         st.attempts += 1
+        if decision.oom and self._mode_for(server) != "enforce":
+            # observe mode keeps the reaper's containment but not its crash policy: the memory kill is
+            # traced, and the call is retried once as it would be without a gateway
+            self._observe(plan, "would_oom", error=decision.error.envelope() if decision.error else None)
+            return CrashDecision(retry=st.attempts == 1, oom=False, error=GatewayError(
+                ErrorKind.server_crashed, f"{server}.{plan.tool}: the server connection failed ({reason})",
+                tool=st.name, payload={"server": server}))
         if decision.oom:
             adm = st.admission
             if adm is not None:

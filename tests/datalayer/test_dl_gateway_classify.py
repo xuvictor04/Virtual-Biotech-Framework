@@ -138,6 +138,12 @@ def test_generic_guard(catalog):
     assert classify(raw_of([]), c, plan(c, {})).outcome == "empty_unverified"
     assert classify(raw_of({"count": 1, "results": [{"x": 1}]}), c, plan(c, {})).outcome == "ok"
     assert classify(raw_of("plain text answer"), c, plan(c, {})).outcome == "ok"
+    # a plain-text success that mentions an HTTP status is content, not the call's status (R4)
+    for text in ("Abstract: during the outage the API returned HTTP 503 for 2 hours.",
+                 "Wikipedia: The 404 Not Found error is an HTTP status code.", "server error 500 explained"):
+        assert classify(raw_of(text), c, plan(c, {})).outcome == "ok", text
+    # the same text as an error envelope still reads its status
+    assert classify(raw_of("upstream failed: HTTP 503", is_error=True), c, plan(c, {})).outcome == "source_error"
 
 
 def test_structural_empty_and_path_predicates():
