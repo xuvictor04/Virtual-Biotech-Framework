@@ -552,16 +552,32 @@ class DataReadiness:
         return f"{where} {r.get('status') or 'not ready'} ({r.get('check')}: {r.get('detail')})"[:300]
 
 
+_CATALOGS: dict[str, tuple[Any, Any, Any]] = {}
+
+
 def data_catalog(config: dict[str, Any]) -> tuple[Any, Any, Any]:
-    """``(settings, catalog, registry)`` of the config's data layer (no pyarrow)."""
+    """``(settings, catalog, registry)`` of the config's data layer (no pyarrow). Kept per process
+    while the settings, variables and descriptor/overlay files are unchanged (the per-turn check)."""
     from .datalayer.catalog import build_catalog
     from .datalayer.descriptor.load import variables_from_config
     from .datalayer.plugins.registry import discover
     from .datalayer.settings import DataSettings
 
     settings = DataSettings.from_config(config)
-    registry = discover(settings)
-    return settings, build_catalog(settings, registry, variables=variables_from_config(config)), registry
+    variables = variables_from_config(config)
+    stamps = []
+    for d in (settings.descriptors_dir, settings.overlays_dir):
+        for p in sorted(Path(d).glob("*.y*ml")) if Path(d).is_dir() else []:
+            try:
+                stamps.append((str(p), p.stat().st_mtime_ns))
+            except OSError:
+                continue
+    key = json.dumps([settings.to_json(), variables, stamps], sort_keys=True, default=str)
+    if key not in _CATALOGS:
+        registry = discover(settings)
+        _CATALOGS.clear()
+        _CATALOGS[key] = (settings, build_catalog(settings, registry, variables=variables), registry)
+    return _CATALOGS[key]
 
 
 def data_readiness(config: dict[str, Any], cache: Any, catalog: Any, *, errors: Mapping[str, str] | None = None,
