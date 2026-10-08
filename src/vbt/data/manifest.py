@@ -210,7 +210,7 @@ def write_manifest(spec: Any, downloads: Path, listing: Sequence[RemoteFile], *,
     covered = sorted({g for g in declared for rel in entries if pats[g][0] and matches(rel, *pats[g])})
     algo = ", ".join(sorted(algos_seen)) or "size"
     index = dict(about or {})
-    against = str(index.get("url") or "the listing").rstrip("/").rsplit("/", 1)[-1]
+    against = str(index.get("url") or "the listing").split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
     report.verified_by = against
     listed_all = sum(1 for p in by_path if any(matches(p, *pats[g]) for g in declared if pats[g][0]))
     data = {"release": release, "base": base, "expected_files": len(entries), "complete": bool(entries),

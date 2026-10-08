@@ -416,10 +416,12 @@ def _classify(downloads: Path, f: RemoteFile, entries: Mapping[str, Any], mtime:
 
 def plan_source(desc: Any, names: Sequence[str], settings: AcquisitionSettings, *, home: Path | None = None,
                 root: Path | None = None, registry: Any = None, session: HttpSession | None = None,
-                offline: bool = False, sizes: bool = True, index_cache: bool = True) -> SourcePlan:
+                offline: bool = False, sizes: bool = True, index_cache: bool = True,
+                write_index: bool = True) -> SourcePlan:
     """The plan of one source: ``names`` (tables or extra groups) acquired into ``home`` (default: its home under
     ``root``). The source is listed once through its transport (``offline``: declared sizes only); files without
-    a listed or declared size are sized with HEAD requests when ``sizes``."""
+    a listed or declared size are sized with HEAD requests when ``sizes``. The transport keeps its index in the
+    ``index_cache`` directory; without ``write_index`` (a plan only) an existing one is read and none is created."""
     from .manifest import group_patterns
 
     acq = desc.acquisition
@@ -463,6 +465,8 @@ def plan_source(desc: Any, names: Sequence[str], settings: AcquisitionSettings, 
     session = session or HttpSession(timeout=settings.timeout_s, retries=settings.retries)
     try:
         cache = (sp.downloads / acq.index_cache) if acq.index_cache and index_cache else None
+        if cache is not None and not write_index and not cache.is_dir():
+            cache = None
         try:
             listed = plugin.listing(opts, session, index_cache=cache)
         except AcquisitionError as exc:
@@ -500,7 +504,7 @@ def plan_source(desc: Any, names: Sequence[str], settings: AcquisitionSettings, 
 
 def plan_acquisition(catalog: Any, wanted: Mapping[str, Sequence[str]], settings: AcquisitionSettings, *,
                      root: Path | None = None, registry: Any = None, session: HttpSession | None = None,
-                     offline: bool = False, sizes: bool = True) -> AcquisitionPlan:
+                     offline: bool = False, sizes: bool = True, write_index: bool = True) -> AcquisitionPlan:
     """The plan for ``wanted`` (``{source: [tables or extra groups]}``), one :func:`plan_source` per source."""
     root = Path(root or settings.root)
     registry = registry or acquisition_registry()
@@ -515,7 +519,7 @@ def plan_acquisition(catalog: Any, wanted: Mapping[str, Sequence[str]], settings
                 plan.notes.append(f"{source}: the descriptor declares no acquisition section")
                 continue
             plan.sources.append(plan_source(desc, names, settings, root=root, registry=registry, session=session,
-                                            offline=offline, sizes=sizes))
+                                            offline=offline, sizes=sizes, write_index=write_index))
         return plan
     finally:
         if own:
@@ -603,6 +607,7 @@ class AcquisitionReport:
     sources: list[SourceResult] = field(default_factory=list)
     seconds: float = 0.0
     bytes_downloaded: int = 0
+    transfer_seconds: float = 0.0                      # the download phases only (the measured rate)
 
     @property
     def ok(self) -> bool:
@@ -786,6 +791,7 @@ def execute(plan: AcquisitionPlan, settings: AcquisitionSettings, *, registry: A
                 else:
                     todo.append(pf)
             todo.sort(key=lambda p: -(p.remote.size or 0))
+            t_xfer = time.monotonic()
             with ThreadPoolExecutor(max_workers=n_workers) as pool:
                 pending = {pool.submit(xfer.download, pf) for pf in todo}
                 last = time.monotonic()
@@ -798,6 +804,8 @@ def execute(plan: AcquisitionPlan, settings: AcquisitionSettings, *, registry: A
                         on_event("progress", {"source": sp.source, "done": len(res.files), "of": len(sp.files),
                                               "received": xfer.received})
             report.bytes_downloaded += xfer.received
+            if todo:
+                report.transfer_seconds += time.monotonic() - t_xfer
             known = {r.rel: {"bytes": r.bytes, **r.digests} for r in res.files if r.status in ("downloaded", "present")}
             failed_groups = {g for r in res.failed for g in r.groups}
             good = [g for g in sp.groups if g not in failed_groups and (acq.tables.get(g) or acq.extra.get(g)).files]
@@ -817,7 +825,8 @@ def execute(plan: AcquisitionPlan, settings: AcquisitionSettings, *, registry: A
         if own:
             session.close()
     report.seconds = round(time.monotonic() - t_all, 2)
-    _record_rate(settings, report.bytes_downloaded, report.seconds)
+    report.transfer_seconds = round(report.transfer_seconds, 2)
+    _record_rate(settings, report.bytes_downloaded, report.transfer_seconds)
     return report
 
 
@@ -885,11 +894,11 @@ def _run_prepare(desc: Any, sp: SourcePlan, step: str, failed: set[str], config:
     if on_event:
         on_event("prepare", {"step": step, "argv": argv})
     t0 = time.monotonic()
-    before = _children_rss()
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     proc = subprocess.run(argv, cwd=str(sp.home), env=env, capture_output=True, text=True)
+    # ru_maxrss of the waited-for children: the step's peak unless an earlier child of this process was larger
     out = {"status": "ran" if proc.returncode == 0 else "failed", "argv": argv, "returncode": proc.returncode,
-           "seconds": round(time.monotonic() - t0, 2), "peak_rss_mb": max(0, _children_rss() - before) or None,
+           "seconds": round(time.monotonic() - t0, 2), "children_max_rss_mb": _children_rss() or None,
            "stdout_tail": proc.stdout[-2000:], "stderr_tail": proc.stderr[-2000:]}
     if proc.returncode != 0:
         out["detail"] = (proc.stderr.strip() or proc.stdout.strip())[-300:]

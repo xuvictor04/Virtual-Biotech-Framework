@@ -217,11 +217,11 @@ def resolve_targets(catalog: Any, config: Mapping[str, Any], names: Sequence[str
         out.errors.append(f"{a}: unknown agent (configs/agents.yaml)")
     found, missing = expand_tools(catalog, tool_names)
     for name in missing:
-        s, t = _split(name)
-        if s in set(catalog.servers()) or s in {"data", "provenance", "pubmed"}:
-            out.notes.append(f"{name}: no reviewed binding names its tables")
+        s, _t = _split(name)
+        if s in set(catalog.servers()):
+            out.notes.append(f"{name}: no reviewed binding of {s} has this name (nothing to acquire for it)")
         else:
-            out.notes.append(f"{name}: not a data tool (no overlay binding)")
+            out.notes.append(f"{name}: no binding names a table it reads (nothing to acquire for it)")
     for server, tool in found:
         for ref in tool_tables(catalog, server, tool):
             out.add(catalog, ref, f"mcp__{server}__{tool}")

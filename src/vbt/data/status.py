@@ -137,6 +137,9 @@ def collect_status(config: Mapping[str, Any], *, sources: Sequence[str] = (), ch
                              acquirable=acq is not None and (tname in acq.tables or phys.split(".")[1] in acq.tables))
             if not remote:
                 root = str(ct.descriptor.root or "")
+                if not root and not Path(str(ct.physical_spec.path or "")).is_absolute():
+                    st.tables.append(ts)                # the root variable is unset: nothing to look at
+                    continue
                 n, nbytes, paths, err = _fragments(ct, registry, root)
                 if err and err != "no local layout":
                     ts.present = f"error: {err}"

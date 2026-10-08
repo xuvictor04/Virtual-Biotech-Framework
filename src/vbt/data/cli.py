@@ -103,7 +103,8 @@ def cmd_acquire(args: Any, config: Mapping[str, Any]) -> int:
         return 0
     root = Path(args.dest).expanduser().resolve() if args.dest else settings.root
     try:
-        plan = A.plan_acquisition(catalog, targets.wanted, settings, root=root, offline=args.offline)
+        plan = A.plan_acquisition(catalog, targets.wanted, settings, root=root, offline=args.offline,
+                                  write_index=not args.plan)
     except AcquisitionError as exc:
         _err(f"error: {exc}")
         return 2
