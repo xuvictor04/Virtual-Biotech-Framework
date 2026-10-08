@@ -322,6 +322,26 @@ async def test_a_refused_server_is_never_started_lazily(config: Any, scripted_se
     await session.close()
 
 
+async def test_a_server_the_bridge_refuses_is_never_started(tmp_path: Path) -> None:
+    """``MCPBridge.refuse``: callers that build their own bridge (doctor smoke, replay) cannot start a refused
+    server either: not at start, not by a retry, not lazily on a call."""
+    from vbt.tools.base import ToolFailure
+    from vbt.tools.mcp_bridge import MCPBridge, MCPServerConfig
+
+    state = tmp_path / "fixture"
+    bridge = MCPBridge([MCPServerConfig("target", command=sys.executable, args=["-E", str(FIXTURE_SERVER), str(state)])],
+                       log_dir=tmp_path / "logs")
+    bridge.refuse("target", "target.yaml is quarantined")
+    try:
+        await bridge.start()
+        await bridge.retry_failed()
+        with pytest.raises(ToolFailure, match="refused: target.yaml is quarantined"):
+            await bridge.call("target", "lookup", {"target_id": PCSK9})
+        assert bridge.failures == {"target": "target.yaml is quarantined"} and not state.exists()
+    finally:
+        await bridge.aclose()
+
+
 def test_preflight_names_the_file_and_marks_only_dependent_tools_unready(
         config: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from vbt import preflight

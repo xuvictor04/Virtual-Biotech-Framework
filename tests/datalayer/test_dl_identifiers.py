@@ -22,8 +22,8 @@ PHASE1 = {
 }
 #: Phase-2 identifier plugins (§9.4): NCBI, GEO, CELLxGENE and ontology-term kinds.
 PHASE2 = {"ncbi_gene", "geo_gsm", "census_joinid", "cell_barcode", "cell_ontology", "uberon"}
-#: Phase-4 identifier plugins (F20): the CELLxGENE Census feature ID.
-PHASE4 = {"census_feature"}
+#: Phase-4 identifier plugins (F20): the CELLxGENE Census feature ID; Europe PMC article IDs (OT literature.pmid).
+PHASE4 = {"census_feature", "europepmc_id"}
 
 
 @pytest.fixture(scope="module")

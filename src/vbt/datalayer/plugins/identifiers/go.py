@@ -21,19 +21,27 @@ _IRI = re.compile(r"https?://\S+/([A-Za-z]+[_:]\d+)")
 class OboTerm(KeyIdentifier):
     """``PREFIX:NNNNNNN`` OBO term IDs (``prefix`` and ``digits`` set by subclasses).
     ``options.separator: "_"`` makes ``PREFIX_NNNNNNN`` canonical, for sources that store that form
-    (Open Targets stores ``SO_0001583``); either form is accepted as input."""
+    (Open Targets variant consequences store ``SO_0001583``); either form is accepted as input.
+    ``options.also_prefixes`` names further prefixes the ontology file itself uses for its terms
+    (cl-basic.obo keeps 9 obsolete ``CP:NNNNNNN`` terms that moved into CL)."""
 
     prefix = "GO"
     digits = 7
     separator = ":"
+    prefixes: tuple[str, ...] = ()
     capabilities = frozenset({"options"})
 
     def configure(self, options: Mapping[str, Any], universe_sample: Sequence[str] | None) -> Self:
         other = super().configure(options, universe_sample)
-        if (options or {}).get("separator") == "_":
-            set_attr(other, "separator", "_")
-            set_attr(other, "canonical", rf"^{self.prefix}_\d{{{self.digits}}}$")
-            set_attr(other, "examples", tuple(e.replace(":", "_", 1) for e in self.examples))
+        opts = options or {}
+        extra = tuple(str(p).upper() for p in opts.get("also_prefixes") or () if str(p).upper() != self.prefix)
+        sep = "_" if opts.get("separator") == "_" else ":"
+        if sep == "_" or extra:
+            names = "|".join((self.prefix, *extra))
+            set_attr(other, "separator", sep)
+            set_attr(other, "prefixes", (self.prefix, *extra))
+            set_attr(other, "canonical", rf"^(?:{names}){sep}\d{{{self.digits}}}$")
+            set_attr(other, "examples", tuple(e.replace(":", sep, 1) for e in self.examples))
         return other
 
     def _normalize(self, text: str, stored: bool) -> Normalized | Rejected:
@@ -41,7 +49,8 @@ class OboTerm(KeyIdentifier):
         m = _IRI.fullmatch(t.value)
         if m:
             t.apply("strip_prefix", m.group(1))
-        m = re.fullmatch(rf"({self.prefix})([_:])(\d{{{self.digits}}})", t.value, re.IGNORECASE)
+        names = "|".join(self.prefixes or (self.prefix,))
+        m = re.fullmatch(rf"({names})([_:])(\d{{{self.digits}}})", t.value, re.IGNORECASE)
         if m is None:
             return self.reject(t.value)
         if m.group(2) != self.separator:

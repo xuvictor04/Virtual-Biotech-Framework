@@ -9,7 +9,7 @@ tools:
   search_pubmed:
     reads: {pubmed.records: {access: upstream, est_row_bytes: 600}}
     args:
-      query:       {role: free_text, interpreted_as: engine,
+      query:       {role: free_text, interpreted_as: engine, engine_param: term,
                     engine_doc: "PubMed query syntax: automatic term mapping, field tags ([tiab], [si]) and Boolean operators"}
       max_results: {role: limit, min: 1, max: 200}
       sort:        {role: order_by, values: {relevance: server_relevance,

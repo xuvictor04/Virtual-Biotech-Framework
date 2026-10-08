@@ -461,9 +461,7 @@
    "unmatched_by_source": {}
   }
  },
- "refuted": [
-  "target_prioritisation.hasSafetyEvent"
- ],
+ "refuted": [],
  "refuted_keys": {
   "interaction_evidence": {
    "content_duplicates": 24280,

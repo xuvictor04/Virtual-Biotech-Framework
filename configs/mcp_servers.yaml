@@ -71,6 +71,10 @@ servers:
     args: ["-E", "${vars.upstream}/src/mcp_servers/single_cell_mcp/server.py"]
     timeout_s: 7200
     enabled: true
+    # TileDB reserves 1 GiB read buffers per obs column: Census pulls fail with std::bad_alloc under any
+    # RLIMIT_DATA (4,500 to 40,000 MB tested) while RSS stays under 3 GB, so this server is contained by its
+    # resident memory (a memory cgroup, else the RSS watchdog) at data.memory.default_server_mb
+    limit_kind: rss
   - name: association
     # Open Targets target-disease associations + literature
     command: ${vars.mcp_python}

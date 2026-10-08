@@ -64,6 +64,12 @@ def _overlaps(a: str, b: str) -> bool:
     return a == b or a.startswith(b + ".") or b.startswith(a + ".")
 
 
+def _within(path: str, column: str) -> bool:
+    """``path`` is ``column`` or a field under it."""
+    p, c = norm_path(path), norm_path(column)
+    return p == c or p.startswith(c + ".")
+
+
 def parse_partition_label(label: str) -> dict[str, str]:
     out: dict[str, str] = {}
     for part in str(label).split("/"):
@@ -468,9 +474,12 @@ def call_readiness(contract: Any, cache: ReadinessCache, *, bound_table: str | N
         for c in failed:
             if c.column is not None and c.partition is None and c.column not in facts_only:
                 bad_cols.setdefault(c.column, status if status not in READY_STATUSES else "schema_drift")
+        # an optional column the data lacks (R4 warning, status missing) blocks the calls that read it or a field
+        # under it, never the container that would hold it (25.09 tissues.protein.cell_type, absent elsewhere)
+        absent = {k for k, v in m.columns.items() if v == "missing"} - {c.column for c in failed if c.column}
         hit = False
         for col, st in sorted(bad_cols.items()):
-            if any(_overlaps(col, w) for w in wanted):
+            if any(_within(w, col) if col in absent else _overlaps(col, w) for w in wanted):
                 detail = next((c.detail for c in failed if c.column == col), "") or f"column {col} is {st}"
                 check = next((c.name for c in failed if c.column == col), st)
                 out.reasons.append(_reason(phys, check, detail, column=col, status=st))

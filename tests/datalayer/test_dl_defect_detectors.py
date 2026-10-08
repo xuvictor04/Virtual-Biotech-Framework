@@ -92,15 +92,15 @@ def test_ot_target_001(ot_root: Path, tmp_path: Path) -> None:
 
 
 def test_ot_target_005(ot_root: Path, tmp_path: Path) -> None:
-    """prioritize_targets(no_safety_events=True) keeps -1 (event recorded) and null/NaN (not assessed)."""
+    """prioritize_targets(no_safety_events=True) keeps -1 (event recorded) and null (not assessed): 25.09 stores
+    no 0, so every target it returns is either known unfavourable or unassessed."""
     import dl_fixtures as F
 
     out = ot_call(ot_root, tmp_path, "target", "prioritize_targets", no_safety_events=True, limit=100)
     returned = {r["targetId"] for r in out["targets"]}
     oracle = F.oracle_no_safety_events(ot_root)
-    assert set(oracle["ids"]) == {F.PRIO["C"]}
-    assert returned == set(F.PRIO.values())                      # A (-1), B (null), D (NaN) included
-    assert returned - set(oracle["ids"]) == {F.PRIO["A"], F.PRIO["B"], F.PRIO["D"]}
+    assert oracle["ids"] == [] and oracle["unknown"] == 2
+    assert returned == set(F.PRIO.values())                      # A, D (-1) and B, C (null) included
 
 
 def test_ot_target_007(ot_root: Path, tmp_path: Path) -> None:

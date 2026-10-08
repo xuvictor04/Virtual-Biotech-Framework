@@ -18,8 +18,8 @@ from typing import Any
 
 from ..api import LaunchSpec
 
-__all__ = ["REAPER", "EXIT_MARKER", "CHILD_ENV", "DATA_SERVER", "build_launch_spec", "server_limit_mb",
-           "host_memory_mb", "status_path"]
+__all__ = ["REAPER", "EXIT_MARKER", "CHILD_ENV", "DATA_SERVER", "LIMIT_KINDS", "build_launch_spec", "limit_kind",
+           "server_limit_mb", "host_memory_mb", "status_path"]
 
 #: The launcher script, executed by path (it never imports vbt).
 REAPER = Path(__file__).resolve().with_name("reaper.py")
@@ -61,6 +61,21 @@ def _as_mb(value: Any) -> int | None:
     return None
 
 
+LIMIT_KINDS = ("rlimit_data", "cgroup", "watchdog", "rss", "none")
+
+
+def limit_kind(cfg: Any, settings: Any = None) -> str:
+    """How a server's memory is contained: its own ``limit_kind`` (``configs/mcp_servers.yaml``), else
+    ``data.memory.limit_kind``. ``rss`` contains resident memory only (a memory cgroup, else the RSS watchdog)
+    and sets no ``RLIMIT_DATA``, which TileDB's Census reads and Arrow's thread stacks fail under."""
+    own = None if isinstance(cfg, str) else getattr(cfg, "limit_kind", None)
+    if own:
+        if own not in LIMIT_KINDS:
+            raise ValueError(f"server {getattr(cfg, 'name', cfg)!r}: limit_kind {own!r} is not one of {LIMIT_KINDS}")
+        return str(own)
+    return str(getattr(getattr(settings, "memory", None), "limit_kind", "rlimit_data") or "rlimit_data")
+
+
 def server_limit_mb(cfg: Any, settings: Any = None) -> int:
     """The memory limit (MB) a server runs under; 0 means no limit.
 
@@ -70,7 +85,7 @@ def server_limit_mb(cfg: Any, settings: Any = None) -> int:
     per-server value from estimates (§14.2). ``limit_kind: none`` disables the limit.
     """
     memory = getattr(settings, "memory", None)
-    if getattr(memory, "limit_kind", "rlimit_data") == "none":
+    if limit_kind(cfg, settings) == "none":
         return 0
     name = cfg if isinstance(cfg, str) else getattr(cfg, "name", "")
     explicit = None if isinstance(cfg, str) else _as_mb(getattr(cfg, "mem_limit_mb", None))
@@ -109,8 +124,8 @@ def build_launch_spec(cfg: Any, settings: Any = None, log_dir: str | Path | None
     limit = server_limit_mb(cfg, settings)
     status = status_path(Path(log_dir) if log_dir is not None else Path.cwd(), name)
     args = ["-E", str(REAPER), "--limit-mb", str(limit), "--status", str(status), "--server", name]
-    kind = getattr(getattr(settings, "memory", None), "limit_kind", "rlimit_data")
-    if kind in ("cgroup", "watchdog"):                 # rlimit_data is the reaper's default; none sets limit 0
+    kind = limit_kind(cfg, settings)
+    if kind in ("cgroup", "watchdog", "rss"):          # rlimit_data is the reaper's default; none sets limit 0
         args += ["--containment", str(kind)]
     relay_mb = float(getattr(getattr(settings, "memory", None), "relay_max_message_mb", 0) or 0)
     if relay_mb > 0:                                   # data.memory.relay_max_message_mb (off by default)

@@ -305,9 +305,24 @@ def container_counts(rows: Sequence[Mapping[str, Any]], items_path: str) -> Cont
 
 def item_key_duplicates(row: Mapping[str, Any], container: str, item_key: Sequence[str],
                         identity: str = "key") -> list[str]:
-    """Canonical item keys that occur more than once in one row's container (``container`` is the
-    list path relative to the row, item key columns relative to the item)."""
-    items = path_values(row, container if container.endswith("]") else container + "[]")
+    """Canonical item keys that occur more than once under one parent (``container`` is the list path
+    relative to the row, item key columns relative to the item). The parent of a list nested in a list
+    (``indications[].references[]``) is its enclosing item: one source cited under two indications of a
+    drug is not a repeat."""
+    path = container if container.endswith("]") else container + "[]"
+    lvls = levels(path)
+    if len(lvls) > 1:
+        inner = path[len(lvls[-2].text) + 1:]
+        out: set[str] = set()
+        for view, _ in explode(row, lvls[:-1]):
+            parent = innermost(view, lvls[:-1])
+            if isinstance(parent, Mapping):
+                out.update(_repeated(path_values(parent, inner), item_key, identity))
+        return sorted(out)
+    return _repeated(path_values(row, path), item_key, identity)
+
+
+def _repeated(items: Sequence[Any], item_key: Sequence[str], identity: str) -> list[str]:
     seen: dict[str, int] = {}
     for item in items:
         if item is None:

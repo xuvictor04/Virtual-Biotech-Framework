@@ -274,6 +274,31 @@ def test_watchdog_kill_is_oom_and_never_retried(tmp_path: Path) -> None:
     assert decision.oom and not decision.retry and decision.error.kind == ErrorKind.oom
 
 
+@linux_only
+def test_rss_containment_sets_no_data_limit(tmp_path: Path) -> None:
+    """``limit_kind: rss`` (single_cell): TileDB reserves 1 GiB read buffers per column and fails with
+    std::bad_alloc under any RLIMIT_DATA while its RSS stays low, so the child is contained by its resident
+    memory (cgroup, else the watchdog) with no data limit."""
+    status = tmp_path / "r.status.json"
+    probe = [sys.executable, "-c", "import resource; print(resource.getrlimit(resource.RLIMIT_DATA)[0])"]
+    env = {"VBT_REAPER_CGROUP_ROOT": str(tmp_path / "none"), "VBT_REAPER_CGROUP_V1_ROOT": str(tmp_path / "none-v1"),
+           "XDG_RUNTIME_DIR": ""}
+    proc = _reaper(["--limit-mb", "1000", "--status", str(status), "--server", "r", "--containment", "rss"], probe,
+                   env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert int(proc.stdout.decode().split()[-1]) == reaper_mod.resource.RLIM_INFINITY
+    data = json.loads(status.read_text())
+    assert data["containment"] == "watchdog" and data["rlimit_data"] is False and data["watchdog_kill_mb"] == 500.0
+    # a reservation far beyond the limit succeeds (RSS stays low); under RLIMIT_DATA the same mmap fails
+    reserve = [sys.executable, "-c", "import mmap; m = mmap.mmap(-1, 3 << 30, flags=mmap.MAP_PRIVATE | "
+               "mmap.MAP_ANONYMOUS); print('reserved')"]          # private writable: what RLIMIT_DATA counts
+    ok = _reaper(["--limit-mb", "1000", "--status", str(status), "--server", "r", "--containment", "rss"], reserve,
+                 env=env)
+    assert ok.returncode == 0 and b"reserved" in ok.stdout, ok.stderr
+    limited = _reaper(["--limit-mb", "1000", "--status", str(status), "--server", "r"], reserve)
+    assert limited.returncode != 0 and b"reserved" not in limited.stdout
+
+
 def test_watchdog_threshold() -> None:
     assert reaper_mod.watchdog_threshold_mb(12000) == 12000 - 600
     assert reaper_mod.watchdog_threshold_mb(4000) == 4000 - 512

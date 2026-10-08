@@ -13,7 +13,8 @@ specified traversal over an ``edges`` table (``TableSpec.edge``):
   sources are never pooled, and the same gene pair reported by two sources is two edges;
 * undirected edges join their endpoints both ways; with ``orientation: both`` storage (every edge
   stored A-B and B-A) the two stored rows are one edge (an unordered canonical pair of the endpoint
-  sides); ``directed`` is reported per edge (``directed_when``);
+  sides); ``directed`` is reported per edge (``directed_when``, or ``direction_from_roles``: the two stored
+  rows of a SIGNOR relation, roles swapped, are one directed edge with ``source_node`` and ``target_node``);
 * a row whose endpoint is null (``missing: non_entity``: an interactor not mapped to a gene) is
   excluded and counted (``excluded_non_entity``), never a node named ``None``;
 * ``max_nodes`` cuts the last hop deterministically (candidates in key order): the result is
@@ -79,21 +80,47 @@ def _edge_spec(view: LongView) -> Any:
     return edge
 
 
+def _role_direction(row: Mapping[str, Any], edge: Any) -> tuple[str, str] | None:
+    """``("a", "b")`` or ``("b", "a")``: the source and the target side when ``direction_from_roles`` gives the
+    row a direction, else None."""
+    spec = getattr(edge, "direction_from_roles", None)
+    if spec is None or any(row.get(col) not in values for col, values in spec.when.items()):
+        return None
+    roles = (row.get(spec.columns["a"]), row.get(spec.columns["b"]))
+    if roles == (spec.source, spec.target):
+        return ("a", "b")
+    if roles == (spec.target, spec.source):
+        return ("b", "a")
+    return None
+
+
 def _directed(row: Mapping[str, Any], edge: Any) -> bool:
-    if edge.directed:
+    if edge.directed or _role_direction(row, edge) is not None:
         return True
     return any(row.get(col) in values for col, values in (edge.directed_when or {}).items())
 
 
 def _identity(row: Mapping[str, Any], key: Sequence[str], edge: Any) -> str:
-    """The edge's identity: its full key; for ``orientation: both`` the two endpoint sides are unordered."""
-    if edge.orientation != "both" or _directed(row, edge):
+    """The edge's identity: its full key; for ``orientation: both`` the two endpoint sides are unordered, or
+    ordered source first when the roles give the direction (the two stored rows of one directed edge)."""
+    roles = _role_direction(row, edge)
+    if edge.orientation != "both" or (roles is None and _directed(row, edge)):
         return canonical([row.get(k) for k in key])
     side_a = [edge.a, *[c for c in edge.sides.get("a", []) if c in key]]
     side_b = [edge.b, *[c for c in edge.sides.get("b", []) if c in key]]
     rest = [k for k in key if k not in side_a and k not in side_b]
-    sides = sorted([canonical([row.get(c) for c in side_a]), canonical([row.get(c) for c in side_b])])
+    va, vb = canonical([row.get(c) for c in side_a]), canonical([row.get(c) for c in side_b])
+    sides = sorted([va, vb]) if roles is None else [va, vb] if roles == ("a", "b") else [vb, va]
     return canonical([*[row.get(k) for k in rest], *sides])
+
+
+def _direction_fields(row: Mapping[str, Any], edge: Any) -> dict[str, Any]:
+    """``source_node`` and ``target_node`` of an edge whose roles give its direction ({} otherwise)."""
+    roles = _role_direction(row, edge)
+    if roles is None:
+        return {}
+    ends = {"a": row.get(edge.a), "b": row.get(edge.b)}
+    return {"source_node": ends[roles[0]], "target_node": ends[roles[1]]}
 
 
 def _score_column(view: LongView) -> tuple[str | None, list[str]]:
@@ -161,7 +188,7 @@ def expand_network(view: LongView, seeds: Sequence[Any], hops: int, *, pred: Pre
                                         **({score: r.get(score)} if score else {}),
                                         **{c: r.get(c) for c in view.columns if c not in key and c != score and
                                            getattr(view.column(c), "role", None) in ("count", "measure")},
-                                        "directed": _directed(r, edge)}
+                                        "directed": _directed(r, edge), **_direction_fields(r, edge)}
         net.frontier.append({"hop": hop, "expanded": len(frontier), "added": len(added), "not_added": not_added})
         if net.truncated:
             break

@@ -813,20 +813,21 @@ def lookup(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     """The record of a complete key (every key column of the long view; identifiers resolved)."""
     table = table_access(ctx, payload.get("table"), agent=payload.get("agent"))
     key = payload.get("key")
-    if is_live(ctx, table):
-        if not isinstance(key, Mapping):
-            raise _invalid("key", key, "key maps every key column to one value", list(table.key))
-        return find(ctx, {"table": str(table.ref), "where": dict(key), "limit": 10, "agent": payload.get("agent")})
-    view = long_view(ctx, str(table.ref))
+    live = is_live(ctx, table)
+    view = None if live else long_view(ctx, str(table.ref))
+    names = [k for k in (table.key if view is None else view.key) if not k.endswith("#")]
     if not isinstance(key, Mapping):
-        raise _invalid("key", key, "key maps every key column to one value", view.key)
-    names = [k for k in view.key if not k.endswith("#")]
+        raise _invalid("key", key, "key maps every key column to one value", names)
+    # a key column is named by its full path or its last field (nctId for protocolSection...nctId), live or not
     short = {k.split(".")[-1].replace("[]", ""): k for k in names}
     missing = [s for s, k in short.items() if s not in key and k not in key]
     if missing:
-        raise GatewayError(ErrorKind.incomplete_key, f"key misses {', '.join(missing)} of {view.ref}",
+        raise GatewayError(ErrorKind.incomplete_key, f"key misses {', '.join(missing)} of {table.ref}",
                            payload={"argument": "key", "missing": missing, "key": names})
-    where = {(k if k in view.columns else s): key.get(s, key.get(k)) for s, k in short.items()}
+    if view is None:
+        where = {k: key.get(k, key.get(s)) for s, k in short.items()}
+    else:
+        where = {(k if k in view.columns else s): key.get(s, key.get(k)) for s, k in short.items()}
     return find(ctx, {"table": str(table.ref), "where": where, "limit": 10, "agent": payload.get("agent")})
 
 

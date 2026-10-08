@@ -12,8 +12,9 @@ tools:
     args:
       target_id:       {binds_any: [open_targets.interaction.targetA, open_targets.interaction.targetB],
                         accepts: [ensembl_gene, hgnc_symbol]}           # either side of an undirected edge
-      species:         {binds_any: [open_targets.interaction.speciesA.scientificName, open_targets.interaction.speciesB.scientificName],
-                        match: casefold}                                 # species on either side
+      # species on either side; 25.09 spells the field scientific_name (scientificName in older releases)
+      species:         {binds_any: [open_targets.interaction.speciesA.scientific_name, open_targets.interaction.speciesB.scientific_name],
+                        match: casefold}
       source_database: {binds: open_targets.interaction.sourceDatabase, match: casefold}
       limit:           {role: limit, min: 1, max: 1000, limit_mode: per_group}   # scores rank only within one source
     result:

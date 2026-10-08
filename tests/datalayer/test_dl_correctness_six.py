@@ -704,7 +704,7 @@ def _ct3_go(r: CallResult, root: Path) -> None:
     expected = F.oracle_go_items(root, F.PCSK9)
     assert sorted(g.get("id") for g in r.rows("go_terms")) == sorted(k[1] for k in expected), show(r)
     served_full(r)
-    # the item table's complete keys (parent id, GO id, aspect, evidence, source, gene product), exactly
+    # the item table's complete keys (parent id, GO id, aspect, evidence, source, gene product, ECO id), exactly
     assert sorted(tuple(k) for k in row_keys(r)) == sorted(tuple(k) for k in expected)
 
 
@@ -1172,10 +1172,12 @@ def test_ct5_today(case: str, live, tahoe_root, ot_root) -> None:
 
 
 def _ct6_no_safety(r: CallResult, root: Path) -> None:
-    ok(r)
+    # 25.09 stores hasSafetyEvent -1 or null, never 0: "no safety event" cannot be told from "not assessed",
+    # so the flag is refused rather than answered with the two unassessed targets
     oracle = F.oracle_no_safety_events(root)
-    assert [t.get("targetId") for t in r.rows("targets")] == oracle["ids"] == [F.PRIO["C"]], show(r)
-    assert excluded_unknown(r.header, "hasSafetyEvent") == oracle["unknown"] == 2, r.header
+    assert oracle["ids"] == [] and oracle["unknown"] == 2
+    payload = err(r, "unsupported_filter")
+    assert payload.get("column") == "hasSafetyEvent" or mentions(payload, "hasSafetyEvent"), payload
 
 
 def _ct6_years(min_year: int | None, max_year: int | None) -> Check:

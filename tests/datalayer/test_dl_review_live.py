@@ -163,7 +163,8 @@ def test_cell_line_name_resolves_to_its_depmap_id(live, fixture_ready) -> None:
 
 
 @pytest.mark.parametrize("so_id", ["SO:0001583", "SO_0001583"])
-def test_so_terms_stored_with_underscore_are_ready(live, fixture_ready, so_id: str) -> None:
+def test_so_terms_are_ready_in_either_spelling(live, fixture_ready, so_id: str) -> None:
+    """so.id stores SO:0001583 (25.09); the SO_ spelling variant consequences use resolves to it."""
     r = ok(enforce(live, fixture_ready).call("pathway", "get_sequence_ontology_term", {"so_id": so_id}))
     assert r.obj.get("label") == "missense_variant"
 

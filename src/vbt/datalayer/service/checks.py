@@ -52,7 +52,7 @@ from ..plugins.base import ColumnStats, FormatError, Normalized, ValueSnapshot
 from ..plugins.layouts import PROBE_STATUS, partition_label
 from ..predicate import And, Eq, In, is_null
 from ..roles import arrow_compatible, parse_path
-from ..rowkey import canonical, render_value
+from ..rowkey import canonical, content_hash, render_value
 from . import ServiceContext, ServiceError, json_path, layout_spec
 from . import items as _items
 from .reader import BudgetExceeded, TableReader, TableUnavailable, logical_leaves
@@ -471,8 +471,12 @@ def r4_types(run: CheckRun) -> None:
     spec = reader.spec
     strict = reader.desc.table_strict(reader.table.physical.table)
     declared_top = set(spec.columns) | set(spec.partitions)
+    absent_optional: list[str] = []
     for path, col in _walk_columns(spec.columns):
         role = getattr(col, "role", None)
+        if any(path.startswith(a + ".") for a in absent_optional):
+            run.columns.setdefault(path, "missing")     # a field of an optional container the data lacks
+            continue
         t = _arrow_type_of(reader, path)
         optional = bool(getattr(col, "optional", False))
         if t is None:
@@ -480,6 +484,7 @@ def r4_types(run: CheckRun) -> None:
                 run.add("R4", False, f"optional column {path} is absent from the data", level="warning",
                         column=path)
                 run.columns.setdefault(path, "missing")
+                absent_optional.append(path)
             else:
                 run.add("R4", False, f"declared column {path} is absent from the data", status="schema_drift",
                         column=path, hint="the release changed; update the descriptor or the data")
@@ -530,9 +535,12 @@ def is_matrix(reader: TableReader) -> bool:
 def r4_r5_matrix(run: CheckRun) -> None:
     """R4/R5 of a matrix table (§6.7): the format's header-axis findings per fragment (unparseable or
     duplicate headers, positional indexes, missing values; duplicate or null axis keys). Matrix columns
-    are axis members, never declared columns, so the strict undeclared-column check does not apply."""
+    are axis members, never declared columns; under ``strict`` the attribute columns of an axis that
+    declares ``columns`` (an h5ad's obs/var) must be declared, as a table's columns must."""
     reader = run.reader
     assert reader is not None
+    strict = reader.desc.table_strict(reader.table.physical.table)
+    matrix = reader.spec.matrix
     n = 0
     for frag in reader.fragments():
         part = partition_label(frag.partition) or None
@@ -543,14 +551,32 @@ def r4_r5_matrix(run: CheckRun) -> None:
             run.add(f"{'R5' if key else 'R4'}:{item.name}", item.ok, f"{where}: {item.detail}",
                     status="key_violation" if key else "schema_drift", level=item.level, hint=item.hint,
                     column=item.column, partition=part)
+        if strict and matrix is not None:
+            for axis, spec in matrix.axes.items():
+                if not spec.columns or spec.from_ not in ("index", "column", "table"):
+                    continue
+                try:
+                    names = list(reader.fmt.axis_values(frag, axis).schema.names)
+                except (FormatError, ValueError, AttributeError, NotImplementedError):
+                    continue
+                known = {*spec.columns, *spec.key.columns, *(spec.parse.fields if spec.parse else ()),
+                         *([spec.index_name] if spec.index_name else []),
+                         *([spec.column] if isinstance(spec.column, str) else []), "position"}
+                extra = [c for c in names if c not in known and not str(c).startswith("_")]
+                if extra:
+                    n += 1
+                    run.add("R4:undeclared", False, f"{where}: undeclared {axis} axis columns under strict: "
+                            f"{', '.join(map(str, extra[:20]))}", status="schema_drift", column=f"@{axis}",
+                            partition=part)
     bad = [c for c in run.checks if not c.ok and c.name.startswith(("R4:", "R5:"))]
     if not bad:
         run.add("R4", True, f"matrix axes of {len(reader.fragments())} fragment(s) parse"
                 + ("" if n else " with no findings"))
 
 
-def _universe_columns(run: CheckRun) -> list[tuple[str, str, Any]]:
-    """``(qualified id_type, physical column, IdTypeSpec)`` whose identity universe is a column of this table."""
+def _universe_columns(run: CheckRun) -> list[tuple[str, str, Any, Any]]:
+    """``(qualified id_type, physical column, IdTypeSpec, where)`` whose identity universe is a column of this
+    table (``where``: the universe's row or item filter, JSON form, or None)."""
     t = run.table
     desc = t.descriptor
     out = []
@@ -560,31 +586,101 @@ def _universe_columns(run: CheckRun) -> list[tuple[str, str, Any]]:
         for r in refs:
             if r is None:
                 continue
+            where = None
             if isinstance(r, str):
                 table, _, column = r.partition(".")
                 cols = [column]
             else:
-                table, cols = r.table, list(r.keys)
+                table, cols, where = r.table, list(r.keys), r.where
             if table.count(".") == 1:
                 src, table = table.split(".")
                 if src != desc.source:
                     continue
             if table == t.ref.table:
                 for c in cols[-1:]:
-                    out.append((f"{desc.source}:{name}", c, it))
+                    out.append((f"{desc.source}:{name}", c, it, where))
     return out
+
+
+#: Distinct universe keys R4b reads before it samples them (see :func:`_spread`).
+UNIVERSE_SCAN_VALUES = 100_000
+#: Keys of every prefix R4b always checks, however rare the prefix.
+_PER_PREFIX = 20
+
+
+def _excluded_values(reader: TableReader, column: str) -> set[str]:
+    """Rendered ``missing_values`` and ``placeholders`` of a column: declared non-keys, never universe keys."""
+    col = reader.column_spec(column)
+    return {render_value(x) for x in [*(getattr(col, "missing_values", None) or []),
+                                      *(getattr(col, "placeholders", None) or [])]}
+
+
+def _spread(values: Sequence[str], n: int) -> list[str]:
+    """At most ``n`` of ``values``: the first few of every prefix (a rare prefix at the end of a file is still
+    checked), the rest evenly spaced over the sorted values."""
+    ordered = sorted(set(values))
+    if len(ordered) <= n:
+        return ordered
+    by_prefix: dict[str, list[str]] = {}
+    for v in ordered:
+        by_prefix.setdefault(_prefix(v), []).append(v)
+    picked: set[str] = set()
+    for vs in by_prefix.values():
+        picked.update(vs[:_PER_PREFIX])
+        if len(picked) >= n:
+            break
+    need = n - len(picked)
+    if need > 0:
+        others = [v for v in ordered if v not in picked]
+        step = len(others) / need                       # >= 1: there are more values than n
+        picked.update(others[int(i * step)] for i in range(need))
+    return sorted(picked)[:n]
+
+
+def _universe_sample(run: CheckRun, column: str, where: Any) -> list[str]:
+    """The universe keys of ``column`` R4b checks: the values the universe's ``where`` keeps (applied to each
+    item when the column is inside a list), without the column's declared missing values and placeholders."""
+    reader = run.reader
+    assert reader is not None
+    excluded = _excluded_values(reader, column)
+    budget = int(run.ctx.settings.readiness.vocab_budget_bytes)
+    if where is None:
+        snap = reader.snapshot(column, budget_bytes=budget, max_values=UNIVERSE_SCAN_VALUES)
+        raw: list[Any] = list(snap.values)
+    else:
+        from ..predicate import evaluate, from_json
+        from .reader import predicate_paths
+
+        pred = from_json(where)
+        physical = reader.physical_path(column)
+        container = physical[: physical.rindex("[]") + 2] if "[]" in physical else None
+        lvls = _items.levels(container) if container else []
+        found: dict[str, Any] = {}
+        for m in reader.scan(pred, columns=[physical, *predicate_paths(pred)], budget_bytes=budget,
+                             attribute_unknown=False):
+            views = [v for v, _ in _items.explode(m.row, lvls)] if lvls else [m.row]
+            for view in views:
+                if lvls and evaluate(pred, view, None) is not True:
+                    continue                        # another item of the same row matched the filter
+                for v in _items.path_values(view, physical):
+                    if v is not None:
+                        found.setdefault(render_value(v), v)
+            if len(found) >= UNIVERSE_SCAN_VALUES:
+                break
+        raw = list(found.values())
+    keep = [str(v) for v in raw if v is not None and render_value(v) not in excluded]
+    return _spread(keep, SAMPLE_VALUES)
 
 
 def r4b_universe(run: CheckRun) -> None:
     reader = run.reader
     assert reader is not None
-    for qid, column, it in _universe_columns(run):
+    for qid, column, it, where in _universe_columns(run):
         try:
-            snap = reader.snapshot(column, max_values=SAMPLE_VALUES)
-        except (ServiceError, BudgetExceeded) as exc:
+            sample = _universe_sample(run, column, where)
+        except (ServiceError, BudgetExceeded, FormatError) as exc:
             run.add("R4b", False, f"{qid}: universe sample not read ({exc})", level="warning", column=column)
             continue
-        sample = [str(v) for v in snap.values if v is not None][:SAMPLE_VALUES]
         try:
             plugin = run.ctx.identifier(qid, sample)
         except Exception as exc:  # noqa: BLE001 - a plugin that cannot be configured is reported, not raised
@@ -598,15 +694,16 @@ def r4b_universe(run: CheckRun) -> None:
             if not isinstance(n, Normalized) or n.value != v or not isinstance(again, Normalized) or \
                     again.value != n.value:
                 bad.setdefault(_prefix(v), []).append(v)
+        scope = " (filtered by the universe's where)" if where is not None else ""
         if bad:
             total = sum(len(v) for v in bad.values())
             share = total / max(len(sample), 1)
             names = ", ".join(f"{p} ({len(v)})" for p, v in sorted(bad.items(), key=lambda kv: -len(kv[1]))[:10])
-            run.add("R4b", False, f"{qid}: {total} of {len(sample)} sampled universe keys ({share:.1%}) are not in "
-                    f"the canonical form of {it.plugin}; failing prefixes: {names}", status="encoding_drift",
+            run.add("R4b", False, f"{qid}: {total} of {len(sample)} sampled universe keys{scope} ({share:.1%}) are "
+                    f"not in the canonical form of {it.plugin}; failing prefixes: {names}", status="encoding_drift",
                     column=column, hint="extend the plugin options (e.g. prefixes) or use prefixes: from_universe")
         else:
-            run.add("R4b", True, f"{qid}: {len(sample)} universe keys canonical", column=column)
+            run.add("R4b", True, f"{qid}: {len(sample)} universe keys canonical{scope}", column=column)
 
 
 def _prefix(value: str) -> str:
@@ -628,12 +725,17 @@ def _hash(text: str) -> int:
 
 
 def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
-    """R5 (non-nullable key parts without nulls) and R5b (uniqueness) for a table or item table."""
+    """R5 (non-nullable key parts without nulls) and R5b (uniqueness) for a table or item table.
+
+    With ``row_identity: content_hash`` the key is a grouping key that may repeat: R5b then tests that
+    no two rows are equal (their content hashes), sampled on the same key-prefix blocks (equal rows
+    share every key part, so a sampled block holds every copy of its rows)."""
     reader = run.ctx.reader(ref or run.ref)
     t = reader.table
     key = list(reader.key)
     spec_key = t.spec.key
     nullable = set(t.nullable_key)
+    content = spec_key.row_identity == "content_hash" and not t.is_item_table
     method = spec_key.check
     full_max = int(run.ctx.settings.readiness.key_check_full_max_rows)
     total_rows = run.rows if not t.is_item_table else None
@@ -670,7 +772,7 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
     scanned = 0
     types = reader.storage_types(key)
     try:
-        for m in reader.scan(None, columns=[], attribute_unknown=False):
+        for m in reader.scan(None, columns=None if content else [], attribute_unknown=False):
             scanned += 1
             for k, v in zip(key, m.key):
                 if v is None and k in nulls and (t.is_item_table or k not in flat):
@@ -679,7 +781,7 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
                 # the sample is decided on the prefix block before the full key is rendered
                 if _hash(canonical([m.key[i] for i in prefix_idx])) % buckets >= keep_below:
                     continue
-            ck = canonical(list(m.key), types)
+            ck = content_hash(m.row) if content else canonical(list(m.key), types)
             if fraction < 1.0 and not prefix_idx and _hash(ck) % buckets >= keep_below:
                 continue
             if spill is not None:
@@ -720,9 +822,15 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
     else:
         run.add("R5", True, f"no nulls in non-nullable key parts{where} ({scanned} keys)")
     sampled = f"sampled {fraction:.1%} of prefix blocks" if fraction < 1.0 else "every key"
-    if dups:
+    if dups and content:
+        run.add("R5b", False, f"{dups} row(s) equal to another row ({sampled}; content hashes {', '.join(examples)})",
+                status="key_violation", hint="row_identity content_hash needs rows that are never equal; every "
+                "count over the rows would be wrong")
+    elif dups:
         run.add("R5b", False, f"{dups} duplicate key(s){where} ({sampled}): {', '.join(examples)}",
                 status="key_violation", hint="the declared key is not unique; every count over it would be wrong")
+    elif content:
+        run.add("R5b", True, f"no two rows equal (content identity; {method}: {sampled})")
     else:
         run.add("R5b", True, f"key unique{where} ({method}: {sampled})")
     model.ok = not dups and not null_bad
@@ -1061,7 +1169,9 @@ def r7_vocab(run: CheckRun) -> None:
         if snap.fingerprint:
             run.vocab[path] = snap.fingerprint
             run.ctx.vocab[snap.fingerprint] = snap
-        odd = [v for v in values if isinstance(v, str) and v.strip() in _SUSPICIOUS]
+        meanings = getattr(col, "values", None) or {}
+        # a placeholder-like word the descriptor gives a meaning (`values: {"None": "no coating"}`) is a value
+        odd = [v for v in values if isinstance(v, str) and v.strip() in _SUSPICIOUS and v not in meanings]
         if odd:
             run.add("R7", False, f"{path}: placeholder-like value(s) {odd!r} in a categorical column; declare them as "
                     "placeholders or missing_values", level="warning", column=path)
@@ -1206,6 +1316,53 @@ def r8_sentinels(run: CheckRun, ref: str | None = None) -> None:
                 status="partial")
 
 
+def r8_matrix_sentinels(run: CheckRun) -> None:
+    """R8 for a matrix: each sentinel key names axis members (``{ModelID: ACH-000001, entrez_id: "6122"}``); the
+    long view reads those cells (no identifier resolution: sentinels are stored values)."""
+    from .verbs.public import long_view
+
+    spec = run.table.spec.sentinels
+    if spec is None or not run.ctx.settings.readiness.sentinels:
+        return
+    try:
+        view = long_view(run.ctx, run.ref)
+    except (ServiceError, FormatError) as exc:
+        run.add("R8", False, f"sentinels not checked ({exc})", level="warning")
+        return
+
+    def cells(key: Mapping[str, Any]) -> list[dict[str, Any]]:
+        parts = [Eq(str(c), v) for c, v in key.items()]
+        pred = parts[0] if len(parts) == 1 else And(tuple(parts))
+        rk = [str(key[view.row_key[0]])] if view.row_key and view.row_key[0] in key else None
+        ck = [str(key[view.col_key[0]])] if view.col_key and view.col_key[0] in key else None
+        rows, _total, _eu = view.rows(pred, order=[], limit=10, row_keys=rk, col_keys=ck)
+        return rows
+
+    for s in spec.present:
+        if s.via is not None:
+            continue
+        try:
+            rows = cells(s.key)
+        except (ServiceError, FormatError) as exc:
+            run.add("R8", False, f"sentinel {s.key} not checked ({exc})", level="warning")
+            continue
+        if not rows:
+            run.add("R8", False, f"present sentinel {s.key} is missing", status="partial",
+                    hint="a positive control is absent: the data is incomplete or from another release")
+            continue
+        ok, why = _expect_ok(run.reader, rows, s.expect)     # type: ignore[arg-type]
+        run.add("R8", ok, f"present sentinel {s.key}" + ("" if ok else f": {why}"), status="partial")
+    for s in spec.absent:
+        if s.via is not None:
+            continue
+        try:
+            rows = cells(s.key)
+        except (ServiceError, FormatError):
+            continue
+        run.add("R8", not rows, f"absent sentinel {s.key}" + (f" found {len(rows)} cell(s)" if rows else ""),
+                status="partial")
+
+
 # ---------------------------------------------------------------------------
 # R9: referential samples
 # ---------------------------------------------------------------------------
@@ -1282,9 +1439,18 @@ def _composite_ref(run: CheckRun, path: str, ref: CompositeRef) -> None:
     rows = reader.sample_rows(min(SAMPLE_VALUES, 500), seed=2, columns=local)
     tuples = {tuple(_items.path_value(r, c) for c in local) for r in rows}
     tuples = {t for t in tuples if all(v is not None for v in t)}
-    found = set()
-    for m in target.scan(None, columns=remote, attribute_unknown=False):
-        found.add(tuple(_items.path_value(m.row, c) for c in remote))
+    # only the sampled tuples are looked up (the scan is pruned on the first part and nothing else is kept):
+    # holding every target tuple took 10.3 GiB for interaction_evidence -> interaction (14.5M rows)
+    found: set[tuple[Any, ...]] = set()
+    firsts = sorted({t[0] for t in tuples}, key=str)
+    for i in range(0, len(firsts), 1000):
+        pred = In("/" + remote[0], tuple(firsts[i:i + 1000]))
+        for m in target.scan(pred, columns=remote, attribute_unknown=False):
+            t = tuple(_items.path_value(m.row, c) for c in remote)
+            if t in tuples:
+                found.add(t)
+        if len(found) == len(tuples):
+            break
     dangling = [t for t in tuples if t not in found]
     level = "warning" if getattr(reader.column_spec(path), "integrity", "full") == "partial" else "error"
     run.add("R9", not dangling, f"{path} -> {ref.table}{list(ref.on)}: {len(dangling)} of {len(tuples)} sampled "
@@ -1312,9 +1478,10 @@ def _stored_forms(run: CheckRun) -> None:
                         level="warning", column=column)
                 continue
             bad = []
+            excluded = _excluded_values(reader, column)
             for v in snap.values:
-                if v is None:
-                    continue
+                if v is None or render_value(v) in excluded:
+                    continue                            # a declared missing value or placeholder, not an id
                 n = plugin.normalize_stored(str(v))
                 if not isinstance(n, Normalized) or (universe is not None and n.value not in universe):
                     bad.append(v)
@@ -1543,10 +1710,48 @@ def _edges(run: CheckRun, rows: Sequence[Mapping[str, Any]]) -> None:
         bad = sum(1 for a, b in pairs if str(a) > str(b))
         detail = f"{bad} sampled edge(s) not in canonical (a <= b) order"
     else:
-        bad = sum(1 for a, b in pairs if a != b and (b, a) not in pairs)
-        detail = f"{bad} sampled edge(s) without their reverse"
+        # the sample holds whole row groups, so the reverse of a sampled edge is usually elsewhere: look the
+        # reverses up in the table (one scan of the two endpoint columns, restricted to the sampled endpoints)
+        missing = [(a, b) for a, b in pairs if a != b and (b, a) not in pairs]
+        found = _reverse_edges(reader, edge, missing) if missing else set()
+        if found is not None:
+            missing = [(a, b) for a, b in missing if (b, a) not in found]
+        bad = len(missing)
+        detail = (f"{bad} of {len(pairs)} sampled edge(s) without their reverse" +
+                  ("" if found is not None else " in the sample (the table could not be scanned for them)") +
+                  (f", e.g. {missing[0]}" if missing else ""))
     run.confirmed["edge.orientation"] = {"confirmed": bad == 0, "orientation": edge.orientation}
     run.add("R10:edges", bad == 0, detail, level=None if not bad else "warning")
+
+
+def _reverse_edges(reader: TableReader, edge: Any, pairs: Sequence[tuple[Any, Any]]) -> set[tuple[Any, Any]] | None:
+    """The ``(a, b)`` edges of the table whose ``a`` is the ``b`` of a pair and whose ``b`` is its ``a``: the two
+    endpoint columns read row group by row group and matched with Arrow's ``is_in`` (14.5 M interaction rows
+    would take minutes as Python rows). None when the endpoints are nested or the columns cannot be read."""
+    if any(ch in str(edge.a) + str(edge.b) for ch in ".[]"):
+        return None
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    sep = "\x1f"
+    wanted = pa.array(sorted({f"{b}{sep}{a}" for a, b in pairs}), type=pa.large_string())
+
+    def text(arr: Any) -> Any:
+        return arr if pa.types.is_large_string(arr.type) else pc.cast(arr, pa.large_string())
+
+    out: set[tuple[Any, Any]] = set()
+    try:
+        for (fa, ra, xa), (fb, rb, xb) in zip(reader.leaf_arrays(edge.a), reader.leaf_arrays(edge.b), strict=True):
+            if (fa.uri, ra) != (fb.uri, rb) or len(xa) != len(xb):
+                return None
+            # only the exact reverses: "a<US>b" of each row against "b<US>a" of each pair
+            joined = pc.binary_join_element_wise(text(xa), text(xb), pa.scalar(sep, pa.large_string()))
+            mask = pc.is_in(joined, value_set=wanted)
+            if pc.any(mask).as_py():
+                out.update(zip(pc.filter(xa, mask).to_pylist(), pc.filter(xb, mask).to_pylist()))
+    except (ServiceError, FormatError, ValueError, TypeError, NotImplementedError):
+        return None
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1596,6 +1801,9 @@ def check_table(ctx: ServiceContext, ref: str, depth: str = "standard", *,
         r2_manifest_checks(run)
         if is_matrix(run.reader):
             r4_r5_matrix(run)                       # the long view's keys are axis members, not columns
+            if depth != "standard_files" and not any(c.name in ("R4", "R5") and not c.ok and c.level == "error"
+                                                     for c in run.checks):
+                r8_matrix_sentinels(run)            # read as long cells (axis keys are not columns)
             return run.model()
         r4_types(run)
         if depth == "standard_files":

@@ -362,3 +362,9 @@ tool_env:
   OPEN_TARGETS_DATA_PATH: ${OPEN_TARGETS_DATA_PATH:-}
   TAHOE_DATA_PATH: ${TAHOE_DATA_PATH:-}
   VBT_ZENODO_DIR: ${VBT_ZENODO_DIR:-}   # the zenodo_vbt descriptor root (default <project>/data/zenodo)
+  # the roots of the depmap, gene_ontology, msigdb and cell_ontology descriptors (defaults under <project>/data
+  # and tests/fixtures/mini_cl.obo): the data child sees only the environment passed here
+  DEPMAP_DATA_PATH: ${DEPMAP_DATA_PATH:-}
+  GO_DATA_PATH: ${GO_DATA_PATH:-}
+  MSIGDB_DATA_PATH: ${MSIGDB_DATA_PATH:-}
+  VBT_CL_OBO: ${VBT_CL_OBO:-}

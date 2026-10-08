@@ -37,7 +37,7 @@ from .roles import LIST, Role, parse_path
 
 __all__ = [
     "TableRef", "CatalogTable", "ToolContract", "Catalog", "CatalogError", "UnknownTable", "UnknownIdType",
-    "AmbiguousIdType", "build_catalog", "load_catalog", "compose_key", "POSITION_MARK",
+    "AmbiguousIdType", "build_catalog", "load_catalog", "compose_key", "compose_nullable", "POSITION_MARK",
 ]
 
 #: Marks a positional item-key part (``identity: position`` without ``max_items: 1``): ``"<container>[]#"``.
@@ -121,7 +121,12 @@ class CatalogTable:
 
     @property
     def nullable_key(self) -> tuple[str, ...]:
-        return tuple(self.physical_spec.key.nullable) if self.is_item_table else tuple(self.spec.key.nullable)
+        """Key parts that may be null: the table's ``key.nullable``; for an item table, the parent's and the
+        ``item_key.nullable`` parts of every container on its path (as composed key paths)."""
+        if not self.is_item_table:
+            return tuple(self.spec.key.nullable)
+        return compose_nullable(self.descriptor, self.ref.table if self.served_from is None else
+                                self.served_from.table)
 
     def scope_columns(self) -> dict[str, Any]:
         """Columns of this table that are scope dimensions (role scope or a scope facet), by path."""
@@ -178,6 +183,31 @@ def compose_key(desc: SourceDescriptor, table: str) -> tuple[tuple[str, ...], st
         container = col
         fields = dict(col.fields)
     return tuple(key), text, container, fields, physical
+
+
+def compose_nullable(desc: SourceDescriptor, table: str) -> tuple[str, ...]:
+    """The nullable parts of :func:`compose_key`'s key of ``table``: the physical table's ``key.nullable`` and
+    each list container's ``item_key.nullable`` (prefixed by the container path)."""
+    spec = desc.tables[table]
+    if spec.items_of is None:
+        return tuple(spec.key.nullable)
+    parent = spec.items_of.table
+    if parent not in desc.tables:
+        raise UnknownTable(f"{desc.source}.{table}: items_of names unknown table {parent!r}")
+    out = list(compose_nullable(desc, parent))
+    _key, ppath, _cont, fields, _physical = compose_key(desc, parent)
+    prefix = (ppath + ".") if ppath else ""
+    for seg in _segments(spec.items_of.path):
+        col = fields.get(seg.name)
+        if col is None or not is_container(col):
+            raise UnknownTable(f"{desc.source}.{table}: container {seg.name!r} not found on {parent!r}")
+        text = prefix + seg.name + (LIST * len(seg.brackets) if seg.is_list else "")
+        ik = col.item_key if seg.is_list else None
+        if ik is not None and ik.identity == "key":
+            out.extend(f"{text}.{c}" if c != LIST else text for c in ik.nullable)
+        prefix = text + "."
+        fields = dict(col.fields)
+    return tuple(out)
 
 
 @dataclass

@@ -70,7 +70,7 @@ from ..ipc import (
 from ..launch import build_launch_spec
 from ..memory import AdmissionController, MemoryEstimator, ResidencyLedger, TableRead, crash_decision, read_status
 from ..memory.host import host_budget_mb
-from ..predicate import And, Eq, IsNull, Not, Predicate, map_columns, to_json
+from ..predicate import And, Eq, IsNull, Not, Predicate, TextMatch, map_columns, to_json
 from ..record import (
     DataProvenance,
     OrderInfo,
@@ -198,6 +198,7 @@ class _CallState:
     t_prepared: float | None = None                                 # end of prepare (the upstream call starts)
     t_finish: float | None = None                                   # start of finish
     soma_added: bool = False
+    native_header: dict[str, Any] | None = None                     # a native data tool: the child's own _vbt
     soma_predicate: Predicate | None = None
     resolved_columns: dict[str, str] = field(default_factory=dict)   # identifier argument -> bound column
     force_partial: bool = False
@@ -205,6 +206,8 @@ class _CallState:
     null_container: bool = False                                    # the rows' list is null (not assessed)
     derived_withheld: int = 0                                       # derived rows dropped by T4/T6 in the gateway
     engine_matched: bool = False                                    # the source's engine matches an argument
+    engine_text: dict[str, str] = field(default_factory=dict)       # engine_param -> the text sent upstream
+    serve_as_of: str | None = None                                  # derived rows of a live table: its release
     order_verified: bool | None = None
     not_found_items: list[Any] | None = None
     short_page: str | None = None
@@ -690,6 +693,11 @@ class DataGateway:
                                        enum_max=self.settings.derive.enum_max, dry=observe)
         st.prepared = prepared
         st.notes.extend(prepared.notes)
+        for n, a in contract.args.items():
+            if a.engine_param and isinstance(prepared.args_sent.get(n), str):
+                # the text as sent upstream (escaped, wrapped), before the leakage filter joins it: the
+                # remote witness adds the evidence ceiling itself
+                st.engine_text[a.engine_param] = prepared.args_sent[n]
         plan.args_sent = prepared.args_sent
         plan.gateway_args = dict(prepared.gateway_args)
         plan.scope.update(prepared.scope)
@@ -1296,9 +1304,13 @@ class DataGateway:
                 st.per_arg.pop(name, None)
                 return
 
-    def _inexpressible(self, plan: CallPlan, contract: ToolContract) -> str | None:
+    def _inexpressible(self, plan: CallPlan, contract: ToolContract, *, remote: bool = False) -> str | None:
+        """Why the witness cannot count this call (None: it can). A remote count request sends an engine
+        argument with an ``engine_param`` to that parameter, so the source's engine matches it there too."""
         for name, a in contract.args.items():
             if not is_present(plan.args_raw.get(name)):
+                continue
+            if remote and a.engine_param:
                 continue
             # text matched over several columns (binds_any) is the source's matching, not one column's
             if a.role == "free_text" and (a.interpreted_as in ("engine", "regex") or not a.binds):
@@ -1322,18 +1334,26 @@ class DataGateway:
         if not remote and not self._scannable(contract, table):
             st.witness_reason = f"{table} is not scannable by the data child and declares no count capability"
             return
-        why = self._inexpressible(plan, contract)
+        why = self._inexpressible(plan, contract, remote=remote)
         if why:
             st.witness_reason = why
             st.engine_matched = True
             return
+        if st.engine_text:
+            st.engine_matched = True                   # counted by the source's engine; its order stays unverified
         dims = [d for d in self._scope_dims(contract, table)
                 if _last(d) not in {_last(k) for k in self._fixed(st, st.prepared)}]
         if derived and not dims:
             return                                     # derived serving counts itself (one scan)
         if remote:
-            # one independent count request under the bound predicate: only a total, no ranking or keys
-            req = WitnessRequest(table=table, predicate=to_json(st.predicate) if st.predicate else None,
+            # one independent count request under the bound predicate: only a total, no ranking or keys.
+            # Engine text goes to its request parameter (TextMatch on "@query.cond"), never into per_arg:
+            # the returned rows carry no such column to re-check
+            parts = [] if st.predicate is None else list(st.predicate.preds if isinstance(st.predicate, And)
+                                                          else (st.predicate,))
+            parts.extend(TextMatch(f"@{param}", text) for param, text in st.engine_text.items())
+            pred = None if not parts else (parts[0] if len(parts) == 1 else And(tuple(parts)))
+            req = WitnessRequest(table=table, predicate=to_json(pred) if pred is not None else None,
                                  key=[], params=self._params(plan, st))
             try:
                 st.witness = await self.service.witness(req)
@@ -1418,6 +1438,9 @@ class DataGateway:
             return False
         if any(a.role == "output_path" and is_present(plan.args_raw.get(n)) for n, a in contract.args.items()):
             return False
+        if self._remote_countable(contract, plan.bound_table or contract.bound_table):
+            return False                               # a remote count has no keys to check more rows against,
+                                                       # and more pages spend the source's request budget
         n = int(w.total) + int(w.unknown_total or 0)
         if n > self.settings.witness.max_inflate_rows:
             return False
@@ -1670,11 +1693,14 @@ class DataGateway:
                                 total=0, total_method="anchor", status="empty")
         if plan.route == "derived":
             obj, rows, resp = await self._serve(plan, st, contract)
+            st.serve_as_of = getattr(resp, "as_of", None)
             if not rows:
                 st.in_universe = await self._in_coverage_universe(st, self._rows_table(plan, contract))
             return self._finish_rows(plan, st, contract, obj, rows, counters, served_by="derived", serve=resp)
         if raw is None:
             raise GatewayError(ErrorKind.source_error, "no upstream result", tool=st.name)
+        if plan.server == DATA_SERVER:
+            st.native_header = self._native_envelope(raw, st)
         w = st.witness
         cls = classify(raw, contract, plan, universe_tables=self._universe_tables(contract),
                        witness_total=w.total if w is not None and w.total_method != "unknown" else None,
@@ -1700,6 +1726,24 @@ class DataGateway:
                                 total_method="unknown", status="partial" if cls.outcome == "partial" else "ok",
                                 text_rows=True)
         return await self._process_upstream(plan, st, contract, obj, raw, counters)
+
+    @staticmethod
+    def _native_envelope(raw: RawResult, st: _CallState) -> dict[str, Any] | None:
+        """A native data tool answered: its typed error envelope is raised as that error (not an
+        ``empty_unverified`` success around a not_found), and its own ``_vbt`` header is kept for the result
+        (the child is the source of truth: its source, totals and ``served_by``)."""
+        obj = raw.structured if isinstance(raw.structured, Mapping) else None
+        if obj is None:
+            try:
+                obj = json.loads(raw.text) if raw.text else None
+            except ValueError:
+                obj = None
+        if not isinstance(obj, Mapping):
+            return None
+        if obj.get("status") == "tool_error" and obj.get("kind"):
+            raise GatewayError.from_envelope(obj).with_tool(st.name)
+        vbt = obj.get("_vbt")
+        return dict(vbt) if isinstance(vbt, Mapping) else None
 
     # ---------------------------------------------------------------- upstream rows
 
@@ -2511,7 +2555,7 @@ class DataGateway:
         cols = list(cols if cols is not None else self._key_columns(contract, t))
         types = [st.storage_types.get(c) for c in cols]
         desc = t.descriptor if t is not None else None
-        release = desc.release.expect if desc is not None else None
+        release = self._release_of(desc, st)
         source = f"{desc.source}@{release}" if desc is not None and release else (desc.source if desc else None)
         excluded_unknown = dict(counters.excluded_unknown)
         w = st.witness
@@ -2628,6 +2672,12 @@ class DataGateway:
             coverage=coverage,  # type: ignore[arg-type]
             coverage_statement=statement, evidence=evidence.caveat if evidence is not None else None,
             served_by=served_by, hash_seed=self._hash_seed(plan.server), notes=notes, cite=cite, prov=prov.id)
+        if st.native_header:
+            # a native data tool: the data child's source, totals and serving, not "upstream"/"unknown"
+            nh = st.native_header
+            for name in ("source", "total", "total_method", "served_by", "truncated", "coverage", "coverage_statement"):
+                if nh.get(name) is not None:
+                    setattr(header, name, nh[name])
         if st.soft_sections:
             header.extra["unavailable_sections"] = dict(st.soft_sections)
         if st.section_meta:
@@ -2641,6 +2691,25 @@ class DataGateway:
                 header.cite += (f"; empty section(s) {', '.join(blind)} are not evidence of absence "
                                 "(coverage unknown)")
         return DataResult.build(obj, header, prov)
+
+    @staticmethod
+    def _release_of(desc: Any, st: _CallState) -> str | None:
+        """The release a result names: the descriptor's pinned one, else what the call observed of a live
+        source (the remote witness's ``as_of``: CT.gov ``dataTimestamp``; the release of derived rows read
+        from a live table; the Census release count-first resolved), never an alias such as ``stable``."""
+        if desc is None:
+            return None
+        if desc.release.expect:
+            return str(desc.release.expect)
+        w = st.witness
+        if w is not None and getattr(w, "as_of", None):
+            return str(w.as_of)
+        if st.serve_as_of:
+            return str(st.serve_as_of)
+        cf = (st.count_first or {}).get("release") if isinstance(st.count_first, Mapping) else None
+        if isinstance(cf, Mapping) and cf.get("resolved"):
+            return str(cf["resolved"])
+        return None
 
     def _record(self, plan: CallPlan, st: _CallState, contract: ToolContract, t: Any, *, status: str,
                 rows: Sequence[Any], cols: Sequence[str], types: Sequence[str | None], total: int | None,
@@ -2670,7 +2739,7 @@ class DataGateway:
         prov = DataProvenance(
             tool=st.name, server=plan.server, mode=st.mode, profile=self.profile, gateway_version=GATEWAY_VERSION,
             served_by=served_by,
-            source=SourceInfo(name=desc.source if desc else None, release=desc.release.expect if desc else None,
+            source=SourceInfo(name=desc.source if desc else None, release=self._release_of(desc, st),
                               descriptor_sha256=self._safe_digest(desc.source) if desc else None,
                               overlay_sha256=self.catalog.overlay_digest(plan.server),
                               serving_source=str(t.served_from) if t is not None and t.served_from else None),

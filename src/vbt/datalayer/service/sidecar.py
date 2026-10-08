@@ -90,12 +90,20 @@ def read_footer(frag: Fragment) -> FooterInfo:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    path = frag.uri[len("file://"):] if frag.uri.startswith("file://") else frag.uri
+    from ..plugins.layouts.zip_member import local_path, open_fragment
+
+    path = local_path(frag)
+    raw = None
     try:
-        md = pq.ParquetFile(path).metadata
+        if path is None:
+            raw = open_fragment(frag)                  # http(s):// or zip://: only the footer is transferred
+        md = pq.ParquetFile(raw if raw is not None else path).metadata
     except (pa.ArrowException, OSError, ValueError) as exc:
-        raise FormatError(f"{path}: not a readable data file ({type(exc).__name__}: {exc})", fragment=frag.uri,
-                          partition=frag.partition) from exc
+        raise FormatError(f"{path or frag.uri}: not a readable data file ({type(exc).__name__}: {exc})",
+                          fragment=frag.uri, partition=frag.partition) from exc
+    finally:
+        if raw is not None:
+            raw.close()
     leaves = tuple(md.schema.column(i).path for i in range(md.num_columns))
     groups = []
     for r in range(md.num_row_groups):

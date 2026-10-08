@@ -1,5 +1,5 @@
 {
- "description": "Search publication metadata.\nData: Open Targets Platform 25.09 · table literature — one record = one (publication, entity) co-mention from Europe PMC text mining.\nKey: pmid, keywordId.\nArguments: pmid accepts pmid (resolved; unknown -> error); keyword_id accepts literature word or ensembl gene or ot disease or chembl molecule (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Europe PMC text-mined entity mentions integrated by OT 25.09; absence means not text-mined, not that the paper is irrelevant.\nserved from the literature table by the data layer: keyword_id uses its sidecar index and pmid its row-group statistics; a year-only search is refused as too large",
+ "description": "Search publication metadata.\nData: Open Targets Platform 25.09 · table literature — one record = one (publication, entity) co-mention from Europe PMC text mining.\nKey: pmid, keywordId.\nArguments: pmid accepts europepmc id (resolved; unknown -> error); keyword_id accepts literature word or ensembl gene or ot disease or chembl molecule (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Europe PMC text-mined entity mentions integrated by OT 25.09; absence means not text-mined, not that the paper is irrelevant.\nserved from the literature table by the data layer: keyword_id and pmid use their sidecar indexes; a year-only search is refused as too large",
  "schema": {
   "properties": {
    "keyword_id": {
@@ -27,16 +27,16 @@
    },
    "pmid": {
     "default": null,
-    "description": "Accepts pmid; resolved to one pmid (unknown values are errors, never empty results).",
+    "description": "Accepts europepmc_id; resolved to one europepmc_id (unknown values are errors, never empty results).",
     "examples": [
      "30595370"
     ],
-    "pattern": "^[1-9]\\d{0,8}$",
+    "pattern": "^(?:[1-9]\\d{0,8}|(?:PPR|PMC|IND|CAIN|FNI|c)\\d+)$",
     "type": "string",
     "x-vbt-accepts": [
-     "open_targets:pmid"
+     "open_targets:europepmc_id"
     ],
-    "x-vbt-id-type": "open_targets:pmid"
+    "x-vbt-id-type": "open_targets:europepmc_id"
    },
    "year": {
     "default": null,

@@ -128,6 +128,13 @@ def test_build_launch_spec(tmp_path):
     wd = build_launch_spec(cfg, DataSettings.from_dict({"memory": {"limit_kind": "watchdog"}}), tmp_path)
     assert wd.args[wd.args.index("--containment") + 1] == "watchdog" and wd.args.index("--containment") < \
         wd.args.index("--")
+    # a server's own limit_kind wins over data.memory.limit_kind (single_cell: rss, no RLIMIT_DATA)
+    own = build_launch_spec(MCPServerConfig("single_cell", command=sys.executable, args=["-E", "/srv/sc.py"],
+                                            limit_kind="rss"), settings, tmp_path)
+    assert own.args[own.args.index("--containment") + 1] == "rss"
+    with pytest.raises(ValueError, match="limit_kind"):
+        build_launch_spec(MCPServerConfig("x", command="python", limit_kind="rlimit"), settings, tmp_path)
+    assert server_limit_mb(MCPServerConfig("x", command="python", limit_kind="none"), settings) == 0
     # the stdout relay is configured by data.memory.relay_max_message_mb (off by default)
     assert "--relay-max-mb" not in spec.args
     rl = build_launch_spec(cfg, DataSettings.from_dict({"memory": {"relay_max_message_mb": 64}}), tmp_path)

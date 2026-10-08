@@ -12,6 +12,7 @@
 # predicate by CURIE (RO:0002202 develops from: 396, BFO:0000050 part of: 3) and every target is a CL term:
 # cl-basic has no UBERON edges (the full cl.obo has). One term (CL:4023064) asserts the same RELATED
 # synonym twice with different PMIDs, so a synonym item has no key (the projection keeps text and scope).
+# The 9 CP: IDs are terms of this file, so the id type accepts that prefix (`also_prefixes: [CP]`).
 schema: vbt.datasource/1
 source: cell_ontology
 title: Cell Ontology (CL)
@@ -20,7 +21,8 @@ defaults: {format: obo, layout: single_file, missing: unknown}
 strict: true
 
 id_types:
-  cell_ontology: {plugin: cell_ontology, universe: term.id, resolve_via: [term.name, term.synonyms],
+  cell_ontology: {plugin: cell_ontology, options: {also_prefixes: [CP]}, universe: term.id,
+                  resolve_via: [term.name, term.synonyms],
                   rules: [exact, normalized, "label_exact:name", "label_casefold:name", "synonym:exact"],
                   retired: {flag: term.is_obsolete, replaced_by: term.replaced_by, consider: term.consider,
                             listed_in: [term.alt_id]},

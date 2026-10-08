@@ -123,6 +123,7 @@ class MCPServerConfig:
     start_timeout_s: float | None = None    # per startup attempt; None -> options.start_timeout_s
     # Data layer (docs/DATA_LAYER.md §11.1, §14.2); runtime and preflight keep only declared fields.
     mem_limit_mb: int | str | None = None   # MB or "auto"; None -> data.memory.default_server_mb
+    limit_kind: str | None = None           # rlimit_data|cgroup|watchdog|rss|none; None -> data.memory.limit_kind
     overlay: str | None = None              # None -> configs/data/overlays/<name>.yaml
     sources: list[str] = field(default_factory=list)
     launcher: bool | None = None            # False: launch without the reaper (no memory limit)
@@ -135,7 +136,7 @@ class _ConfigError(Exception):
 @dataclass
 class _Server:
     cfg: MCPServerConfig
-    state: str = "stopped"            # stopped | starting | ready | broken | failed | closed
+    state: str = "stopped"            # stopped | starting | ready | broken | failed | refused | closed
     session: Any = None
     generation: int = 0               # bumped on every successful (re)start
     restarts: int = 0
@@ -667,13 +668,23 @@ class MCPBridge:
         self._tools_changed(new + updated)
         return new
 
+    def refuse(self, name: str, reason: str) -> None:
+        """Never start ``name``: not at :meth:`start`, not by a retry, not lazily on a call (the data layer
+        refuses a server whose overlay or descriptors are quarantined; started anyway, it would serve
+        unguarded). Its calls fail with ``reason``; a running session is not stopped (refuse before start)."""
+        st = self._servers.get(name)
+        if st is None:
+            return
+        st.state, st.last_error, st.lazy_retry_used = "refused", reason, True
+        self.failures[name] = reason
+
     async def start(self, only: set[str] | None = None, connect_timeout: float | None = None) -> list[Tool]:
         """Start the configured servers (optionally a subset) in parallel; returns all bridged tools."""
         wanted = [st for name, st in self._servers.items() if only is None or name in only]
 
         async def one(st: _Server) -> None:
             async with st.lock:
-                if st.state != "ready":
+                if st.state not in ("ready", "refused"):
                     await self._start(st, timeout=connect_timeout)
 
         await asyncio.gather(*(one(st) for st in wanted))
@@ -699,6 +710,8 @@ class MCPBridge:
                 raise ToolFailure("MCP bridge is closed")
             if st.state == "ready" and st.session is not None:
                 return st.session, st.generation
+            if st.state == "refused":
+                raise ToolFailure(f"MCP server {name!r} is refused: {st.last_error}")
             if st.state == "broken":
                 await self._restart_broken(st)
                 return st.session, st.generation

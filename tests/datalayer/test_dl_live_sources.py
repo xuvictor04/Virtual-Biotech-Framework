@@ -264,6 +264,55 @@ async def test_shipped_count_tool_gets_the_remote_witness(stub: Stub, tmp_path: 
     assert res.header.get("total") == 17
 
 
+async def test_engine_text_goes_to_its_request_parameter(stub: Stub, tmp_path: Path) -> None:
+    """Free text the source's engine matches (``condition``, ``advanced_filter``) is sent to the request parameter
+    it fills (``engine_param``), so the realistic CT.gov count gets an independent count of the same search; the
+    advanced filter keeps the caller's text, and the evidence ceiling is the witness's own conjunct."""
+    desc = _source("clinicaltrials", stub)
+    ov = load_yaml(SOURCES.parent / "overlays" / "clinicaltrials.yaml", _variables(stub))
+    gw = make_gateway(tmp_path, [desc], [ov], {})
+    ctx = ServiceContext(gw.settings, catalog=gw.catalog, registry=REGISTRY)
+    gw.service.witness_hook = lambda req, resp: WitnessResponse.model_validate(
+        load_verbs()["_witness"](ctx, WitnessRequest.model_validate(req.model_dump()).model_dump(mode="json")))
+    stub.count = 17
+    args = {"condition": "glioblastoma", "status": ["RECRUITING"], "country": None,
+            "advanced_filter": "AREA[Phase]PHASE3"}
+    seen = len(stub.requests)
+    with pytest.raises(GatewayError) as e:
+        await call(gw, "clinicaltrials", "count_clinical_trials", args, lambda a: {"total_count": 0})
+    assert e.value.kind == ErrorKind.tool_defect and "independent count request counted 17" in e.value.message
+    counts = [q for p, q in stub.requests[seen:] if p == "/ctgov/studies" and q.get("countTotal") == "true"]
+    assert len(counts) == 1, stub.requests[seen:]
+    assert counts[0]["query.cond"] == "(glioblastoma)" and counts[0]["filter.overallStatus"] == "RECRUITING"
+    assert counts[0]["filter.advanced"] == "(AREA[Phase]PHASE3)", counts[0]
+    plan, res = await call(gw, "clinicaltrials", "count_clinical_trials", args, lambda a: {"total_count": 17})
+    assert res.header.get("total") == 17 and plan.witness["total"] == 17
+    # without an engine_param the text stays the source's own matching: no count request, no witness
+    seen = len(stub.requests)
+    plan, res = await call(gw, "clinicaltrials", "count_clinical_trials",
+                           {"eligibility_text": ["glioblastoma"], "country": None}, lambda a: {"total_count": 3})
+    assert plan.witness is None and res.header.get("total") == 3
+    assert not [p for p, q in stub.requests[seen:] if q.get("countTotal") == "true"]
+
+
+async def test_pubmed_query_is_counted_by_esearch(stub: Stub, tmp_path: Path) -> None:
+    """``search_pubmed(query=...)``: the query goes to esearch's ``term`` in the count request (``rettype=count``)."""
+    desc = _source("pubmed", stub)
+    ov = load_yaml(SOURCES.parent / "overlays" / "pubmed.yaml", _variables(stub))
+    gw = make_gateway(tmp_path, [desc], [ov], {})
+    ctx = ServiceContext(gw.settings, catalog=gw.catalog, registry=REGISTRY)
+    gw.service.witness_hook = lambda req, resp: WitnessResponse.model_validate(
+        load_verbs()["_witness"](ctx, WitnessRequest.model_validate(req.model_dump()).model_dump(mode="json")))
+    seen = len(stub.requests)
+    rows = [{"pmid": str(30000000 + i), "title": f"t{i}"} for i in range(5)]
+    plan, res = await call(gw, "pubmed", "search_pubmed", {"query": "pcsk9[tiab]", "max_results": 5},
+                           lambda a: {"count": 23, "results": rows})
+    counts = [q for p, q in stub.requests[seen:] if p == "/eutils/esearch.fcgi" and q.get("rettype") == "count"]
+    assert len(counts) == 1 and counts[0]["term"] == "pcsk9[tiab]", stub.requests[seen:]
+    assert plan.witness["total"] == 23 and res.header.get("total") == 23 and res.header.get("truncated")
+    assert plan.args_sent["max_results"] == 5                  # a remote count never inflates the page
+
+
 def test_classify_compares_remote_totals_only() -> None:
     src = {"schema": "vbt.datasource/1", "source": "reg", "title": "r", "kind": "remote", "release": {"from": "as_of"},
            "defaults": {"format": "none", "layout": "upstream_only"},
@@ -317,6 +366,58 @@ def test_public_find_and_lookup_serve_live_tables(ctx: ServiceContext, stub: Stu
     assert [r["patientId"] for r in split_header(rec)[0]["rows"]] == ["p2"]
     refused = verbs["find"](ctx, {"table": "cbioportal.patient_clinical", "where": {"studyId": "s1"}, "rank_by": "x"})
     assert refused["kind"] == "unsupported_combination"
+
+
+def test_serve_answers_find_on_live_tables(ctx: ServiceContext, stub: Stub) -> None:
+    """``_serve`` lookup/find on a live table goes through ``_live_find`` (served derived, with the source's
+    release), orders complete reads only, and refuses what a paged source cannot answer."""
+    from vbt.datalayer.ipc import RankKeyModel, ServeRequest
+
+    serve = load_verbs()["_serve"]
+    req = ServeRequest(table="cbioportal.patient_clinical", verb="find", predicate=to_json(Eq("studyId", "s1")),
+                       order=[RankKeyModel(column="OS_MONTHS", direction="desc")], limit=1)
+    out = serve(ctx, req.model_dump(mode="json"))
+    assert [r["patientId"] for r in out["rows"]] == ["p2"] and out["truncated"] and out["total"] == 2
+    assert out["served_by"] == "derived" and out["key_columns"] == ["studyId", "patientId"]
+    one = serve(ctx, ServeRequest(table="cbioportal.patient_clinical", verb="lookup",
+                                  predicate=to_json(And((Eq("studyId", "s1"), Eq("patientId", "p1"))))
+                                  ).model_dump(mode="json"))
+    assert [r["OS_STATUS"] for r in one["rows"]] == ["1:DECEASED"] and not one["truncated"]
+    trials = serve(ctx, ServeRequest(table="clinicaltrials_gov.studies", verb="find", limit=5).model_dump(mode="json"))
+    assert trials["as_of"] == "2026-10-01T09:30:00" and trials["rows"]
+    # an ordered cut of a truncated read (one page of two within a one-page budget) is refused, never guessed
+    d = _source("clinicaltrials", stub)
+    d["budget"]["max_pages"] = 1
+    one_page = ServiceContext(ctx.settings, catalog=Catalog({d["source"]: SourceDescriptor.model_validate(d)}, {}, [],
+                                                            registry=REGISTRY), registry=REGISTRY)
+    nct = RankKeyModel(column="protocolSection.identificationModule.nctId", direction="asc")
+    cut = serve(one_page, ServeRequest(table="clinicaltrials_gov.studies", verb="find", limit=1,
+                                       order=[nct]).model_dump(mode="json"))
+    assert cut["rows"] == [] and cut["truncated"] and cut["reason"].startswith("too_large:"), cut
+    with pytest.raises(Exception, match="live table"):
+        serve(ctx, ServeRequest(table="cbioportal.patient_clinical", verb="find", group_by=["studyId"],
+                                predicate=to_json(Eq("studyId", "s1"))).model_dump(mode="json"))
+
+
+async def test_derived_binding_reads_a_live_table(stub: Stub, tmp_path: Path) -> None:
+    """A ``serve: derived`` binding over a live table (patient-level clinical data, one row per patient) is answered
+    by the data child's ``_serve`` through ``_live_find``; the result names the source's release."""
+    from vbt.datalayer.ipc import ServeResponse
+
+    desc = _source("cbioportal", stub)
+    ov = {"schema": "vbt.overlay/1", "server": "cbio_derived", "sources": ["cbioportal"], "tools": {"patients": {
+        "reads": {"cbioportal.patient_clinical": {"access": "remote"}},
+        "args": {"study_id": {"binds": "cbioportal.patient_clinical.studyId", "existence": "off"}},
+        "result": {"rows": "$.rows", "row_key": ["studyId", "patientId"]},
+        "serve": "derived", "derived": {"verb": "find", "table": "cbioportal.patient_clinical"}}}}
+    gw = make_gateway(tmp_path, [desc], [ov], {})
+    ctx = ServiceContext(gw.settings, catalog=gw.catalog, registry=REGISTRY)
+    gw.service._serve = lambda req: ServeResponse.model_validate(
+        load_verbs()["_serve"](ctx, req.model_dump(mode="json")))
+    plan, res = await call(gw, "cbio_derived", "patients", {"study_id": "s1"})
+    assert plan.route == "derived" and res.header["served_by"] == "derived", res.header
+    assert sorted(r["patientId"] for r in res.obj["rows"]) == ["p1", "p2"] and res.header["total"] == 2
+    assert res.header["source"].startswith("cbioportal@"), res.header      # the page's time: no release endpoint
 
 
 def test_record_version_change_is_flagged_source_updated(ctx: ServiceContext, stub: Stub) -> None:
@@ -388,6 +489,13 @@ def test_rest_json_compile_partial_and_ranges() -> None:
                       "filter.advanced": "AREA[StartDate]RANGE[2020-01-01,MAX]"}
     assert residual == Not(Eq("x", 1))
     assert essie_quote("OR") == '"OR"' and essie_quote("PHASE2") == "PHASE2"
+    # an Or over one list column (the phase overlap of count_clinical_trials) is one Essie fragment; an Or
+    # across columns stays a residual (a count request cannot express it)
+    phases = Or((Contains("phases[]", "PHASE2"), Contains("phases[]", "PHASE3")))
+    params, residual = fmt.compile(phases, {"remote_names": {"phases": "AREA[Phase]"}})
+    assert params == {"filter.advanced": "AREA[Phase](PHASE2 OR PHASE3)"} and residual is None
+    mixed = Or((Contains("phases[]", "PHASE2"), Eq("s", "A")))
+    assert fmt.compile(mixed, {"remote_names": {"phases": "AREA[Phase]", "s": "AREA[OverallStatus]"}})[1] == mixed
 
 
 # --------------------------------------------------------------------------- Census

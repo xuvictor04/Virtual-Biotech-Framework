@@ -458,7 +458,8 @@ def test_keys_partitions_and_sizes(catalog) -> None:
     leaf = [c for c in _table(catalog, "open_targets.disease").constraints if c.column == "ontology.leaf"]
     assert leaf and leaf[0].on_refute == "drop_field" and leaf[0].verified is False
     hse = _table(catalog, "open_targets.target_prioritisation").columns["hasSafetyEvent"]
-    assert hse.encoding == {-1: "known_unfavourable", 0: "none_recorded"} and hse.scale == [-1, 0] and not hse.verified
+    # 25.09 stores -1 or null, never 0 (R1): the encoding is the observed code
+    assert hse.encoding == {-1: "known_unfavourable"} and hse.scale == [-1, 0] and hse.verified
 
 
 def test_tahoe_and_census_facts(catalog) -> None:
@@ -498,7 +499,9 @@ def test_binding_facts(catalog) -> None:
     b = _binding(catalog, "clinicaltrials.get_clinical_data")
     assert b.result.exists_when and b.args["sample_ids"].min_items == 1 and b.result.levels["patient"]
     b = _binding(catalog, "target.prioritize_targets")
-    assert b.args["no_safety_events"].when_true == {"in": ["none_recorded"]}
+    # "no safety event" cannot be told from "not assessed" in 25.09: the flag is refused
+    assert b.args["no_safety_events"].role == "unbound" and b.args["no_safety_events"].when_true is None
+    assert b.args["min_clinical_phase"].max == 1                     # maxClinicalTrialPhase is 0-1 (0.25 per phase)
     assert b.args["sort_by"].role == "order_by" and b.result.order_from_arg == "sort_by"
     b = _binding(catalog, "association.find_similar_entities")
     assert b.args["entity_id"].role == "anchor" and b.result.order_source == "upstream_full_sort"

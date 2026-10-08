@@ -49,6 +49,9 @@ class CellOntologyTerm(OboTerm):
         {"raw": "fibroblast", "rejected": True},
         {"raw": "CL:57", "rejected": True},
         {"raw": "CL:0000057", "expected": "CL_0000057", "options": {"separator": "_"}, "requires": "options"},
+        {"raw": "CP:0000001", "rejected": True},
+        # cl-basic.obo keeps 9 obsolete CP: terms (moved into CL): the descriptor names the prefix
+        {"raw": "cp:0000001", "expected": "CP:0000001", "options": {"also_prefixes": ["CP"]}, "requires": "options"},
     )
 
     # -- hierarchy (wraps vbt.analysis.ontology; data child only) -------------------------------

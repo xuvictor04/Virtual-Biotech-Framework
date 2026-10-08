@@ -171,7 +171,7 @@ class DeriveSettings:
 @dataclass(frozen=True)
 class MemorySettings:
     default_server_mb: int | str = 12000            # 'auto' derives from estimates (§14.2)
-    limit_kind: Literal["rlimit_data", "cgroup", "watchdog", "none"] = "rlimit_data"
+    limit_kind: Literal["rlimit_data", "cgroup", "watchdog", "rss", "none"] = "rlimit_data"   # per server too
     estimate_safety: float = 1.3
     expansion: Mapping[str, float] = field(default_factory=lambda: dict(DATA_DEFAULTS["memory"]["expansion"]))
     object_overhead_bytes: Mapping[str, int] = field(

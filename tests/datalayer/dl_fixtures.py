@@ -71,7 +71,7 @@ PCSK9_MOUSE = "ENSMUSG00000044254"
 
 T = PCSK9                          # "T" of CT-2..CT-6 (pharmacogenomics, known_drug, interaction, evidence)
 T2 = TP53                          # the second pharmacogenomics target
-PRIO = {"A": PCSK9, "B": TP53, "C": TP53BP1, "D": TP53I3}   # hasSafetyEvent -1, null, 0, NaN
+PRIO = {"A": PCSK9, "B": TP53, "C": TP53BP1, "D": TP53I3}   # hasSafetyEvent -1, null, null, -1 (25.09: no 0)
 
 T2D = "MONDO_0005148"
 T2D_NAME = "type 2 diabetes mellitus (T2D)"
@@ -239,20 +239,19 @@ SCHEMAS: dict[str, list[Any]] = {
         ("references", pa.list_(pa.struct([("ref_id", STR), ("ref_type", STR), ("ref_url", STR)]))),
         ("warningType", STR), ("year", I64), ("efo_term", STR), ("efo_id", STR), ("efo_id_for_warning_class", STR),
     ],
-    "disease": [
+    "disease": [   # 25.09 has no directLocationIds, indirectLocationIds or ontology.name
         ("id", STR), ("code", STR), ("dbXRefs", pa.list_(STR)), ("description", STR), ("name", STR),
-        ("directLocationIds", pa.list_(STR)), ("obsoleteTerms", pa.list_(STR)), ("obsoleteXRefs", pa.list_(STR)),
-        ("indirectLocationIds", pa.list_(STR)),
+        ("obsoleteTerms", pa.list_(STR)), ("obsoleteXRefs", pa.list_(STR)),
         ("synonyms", pa.struct([("hasBroadSynonym", pa.list_(STR)), ("hasExactSynonym", pa.list_(STR)),
                                 ("hasNarrowSynonym", pa.list_(STR)), ("hasRelatedSynonym", pa.list_(STR))])),
         ("parents", pa.list_(STR)), ("children", pa.list_(STR)), ("ancestors", pa.list_(STR)),
         ("descendants", pa.list_(STR)), ("therapeuticAreas", pa.list_(STR)),
-        ("ontology", pa.struct([("isTherapeuticArea", BOOL), ("leaf", BOOL), ("name", STR),
+        ("ontology", pa.struct([("isTherapeuticArea", BOOL), ("leaf", BOOL),
                                 ("sources", pa.struct([("name", STR), ("url", STR)]))])),
     ],
-    "disease_hpo": [
-        ("id", STR), ("code", STR), ("dbXRefs", pa.list_(STR)), ("description", STR), ("name", STR),
-        ("namespace", pa.list_(STR)), ("obsoleteTerms", pa.list_(STR)), ("parents", pa.list_(STR)),
+    "disease_hpo": [   # 25.09 (written by Polars) has no code or namespace
+        ("id", STR), ("dbXRefs", pa.list_(STR)), ("description", STR), ("name", STR),
+        ("obsoleteTerms", pa.list_(STR)), ("parents", pa.list_(STR)),
     ],
     "disease_phenotype": [
         ("disease", STR), ("phenotype", STR),
@@ -269,11 +268,11 @@ SCHEMAS: dict[str, list[Any]] = {
         ("modelPhenotypeId", STR), ("modelPhenotypeLabel", STR), ("targetFromSourceId", STR),
         ("targetInModel", STR), ("targetInModelEnsemblId", STR), ("targetInModelMgiId", STR),
     ],
-    "target_prioritisation": [
-        ("targetId", STR), ("isInMembrane", F64), ("isSecreted", F64), ("hasSafetyEvent", F64), ("hasPocket", F64),
-        ("hasLigand", F64), ("hasSmallMoleculeBinder", F64), ("geneticConstraint", F64),
+    "target_prioritisation": [   # 25.09: the coded factors are int32, the scaled ones double
+        ("targetId", STR), ("isInMembrane", I32), ("isSecreted", I32), ("hasSafetyEvent", I32), ("hasPocket", I32),
+        ("hasLigand", I32), ("hasSmallMoleculeBinder", I32), ("geneticConstraint", F64),
         ("paralogMaxIdentityPercentage", F64), ("mouseOrthologMaxIdentityPercentage", F64),
-        ("isCancerDriverGene", F64), ("hasTEP", F64), ("mouseKOScore", F64), ("hasHighQualityChemicalProbes", F64),
+        ("isCancerDriverGene", I32), ("hasTEP", I32), ("mouseKOScore", F64), ("hasHighQualityChemicalProbes", I32),
         ("maxClinicalTrialPhase", F64), ("tissueSpecificity", F64), ("tissueDistribution", F64),
     ],
     "l2g_prediction": [
@@ -284,9 +283,10 @@ SCHEMAS: dict[str, list[Any]] = {
     "interaction": [
         ("sourceDatabase", STR), ("targetA", STR), ("intA", STR), ("intABiologicalRole", STR), ("targetB", STR),
         ("intB", STR), ("intBBiologicalRole", STR),
-        ("speciesA", pa.struct([("mnemonic", STR), ("scientificName", STR), ("taxonId", I64)])),
-        ("speciesB", pa.struct([("mnemonic", STR), ("scientificName", STR), ("taxonId", I64)])),
-        ("count", I64), ("scoring", F64), ("intASource", STR), ("intBSource", STR),
+        # 25.09 spells the species fields scientific_name and taxon_id and has no intASource/intBSource
+        ("speciesA", pa.struct([("mnemonic", STR), ("scientific_name", STR), ("taxon_id", I64)])),
+        ("speciesB", pa.struct([("mnemonic", STR), ("scientific_name", STR), ("taxon_id", I64)])),
+        _nn("count", I64), ("scoring", F64),
     ],
     "study": [
         ("studyId", STR), ("geneId", STR), ("projectId", STR), ("studyType", STR), ("traitFromSource", STR),
@@ -319,10 +319,11 @@ SCHEMAS: dict[str, list[Any]] = {
     ],
     "expression": [
         ("id", STR),
-        ("tissues", pa.list_(pa.struct([
+        # 25.09: int32 codes; tissues, its items, rna and protein are never null (their fields may be)
+        _nn("tissues", pa.list_(_el(pa.struct([
             ("efo_code", STR), ("label", STR), ("organs", pa.list_(STR)), ("anatomical_systems", pa.list_(STR)),
-            ("rna", pa.struct([("value", F64), ("zscore", I64), ("level", I64), ("unit", STR)])),
-            ("protein", pa.struct([("reliability", BOOL), ("level", I64)]))]))),
+            _nn("rna", pa.struct([("value", F64), ("zscore", I32), ("level", I32), ("unit", STR)])),
+            _nn("protein", pa.struct([("reliability", BOOL), ("level", I32)]))])))),
     ],
     "evidence": [   # all 90 columns of 25.09 (hive-partitioned by sourceId, which is not stored in the files)
         ("id", STR), ("datasourceId", STR), ("targetId", STR), ("alleleOrigins", pa.list_(STR)),
@@ -388,9 +389,9 @@ SCHEMAS.update({
         ("alternateAllele", STR), ("mostSevereConsequenceId", STR), ("rsIds", pa.list_(STR)), ("hgvsId", STR),
         ("variantDescription", STR),
     ],
-    "interval": [
-        ("chromosome", STR), ("start", I64), ("end", I64), ("geneId", STR), ("biosampleName", STR),
-        ("intervalType", STR), ("distanceToTss", I64), ("score", F64), ("datasourceId", STR), ("datatypeId", STR),
+    "interval": [   # 25.09: int32 positions, no datatypeId
+        ("chromosome", STR), ("start", I32), ("end", I32), ("geneId", STR), ("biosampleName", STR),
+        ("intervalType", STR), ("distanceToTss", I32), ("score", F64), ("datasourceId", STR),
         ("pmid", STR), ("biosampleId", STR), ("studyId", STR), ("intervalId", STR),
     ],
     "interaction_evidence": [
@@ -422,6 +423,19 @@ def _default(typ: pa.DataType) -> Any:
     return ""
 
 
+def _fill(value: Any, field: pa.Field) -> Any:
+    """``value`` with every non-nullable field it leaves out (or null) set to its default, at any depth: Parquet
+    writes a null in a non-nullable field as zeros, which would read back as real values."""
+    typ = field.type
+    if value is None:
+        return None if field.nullable else _default(typ)
+    if pa.types.is_struct(typ) and isinstance(value, Mapping):
+        return {**value, **{f.name: _fill(value.get(f.name), f) for f in typ}}
+    if (pa.types.is_list(typ) or pa.types.is_large_list(typ)) and isinstance(value, (list, tuple)):
+        return [_fill(v, typ.value_field) for v in value]
+    return value
+
+
 def table(name: str, rows: Sequence[Mapping[str, Any]]) -> pa.Table:
     """``rows`` as a table with the 25.09 schema of ``name`` (absent nullable fields are null)."""
     sch = schema(name)
@@ -430,7 +444,7 @@ def table(name: str, rows: Sequence[Mapping[str, Any]]) -> pa.Table:
         unknown = set(row) - set(sch.names)
         if unknown:
             raise KeyError(f"{name}: columns not in the 25.09 schema: {sorted(unknown)}")
-        filled.append({f.name: row.get(f.name, None if f.nullable else _default(f.type)) for f in sch})
+        filled.append({f.name: _fill(row.get(f.name), f) for f in sch})
     return pa.Table.from_pylist(filled, schema=sch)
 
 
@@ -519,7 +533,7 @@ def _disease_rows() -> list[dict[str, Any]]:
                 "hasRelatedSynonym": list(related)}
 
     def onto(leaf=True, ta=False):
-        return {"isTherapeuticArea": ta, "leaf": leaf, "name": None,
+        return {"isTherapeuticArea": ta, "leaf": leaf,
                 "sources": {"name": "MONDO", "url": "http://purl.obolibrary.org/obo/MONDO"}}
 
     rows = [
@@ -633,7 +647,7 @@ def _l2g_rows() -> list[dict[str, Any]]:
 
 def _interaction_rows(sources: Sequence[str]) -> list[dict[str, Any]]:
     """CT-4: T's partners with ``scoring`` ascending in file order, T on side B in half the rows."""
-    sp = {"mnemonic": "human", "scientificName": "Homo sapiens", "taxonId": 9606}
+    sp = {"mnemonic": "human", "scientific_name": "Homo sapiens", "taxon_id": 9606}
     rows = []
     n = 12
     for s_i, src in enumerate(sources):
@@ -643,11 +657,10 @@ def _interaction_rows(sources: Sequence[str]) -> list[dict[str, Any]]:
             rows.append({"sourceDatabase": src, "targetA": T if a_side else partner, "intA": f"P{s_i}A{i:03d}",
                          "intABiologicalRole": "unspecified role", "targetB": partner if a_side else T,
                          "intB": f"P{s_i}B{i:03d}", "intBBiologicalRole": "unspecified role", "speciesA": sp,
-                         "speciesB": sp, "count": 1 + i % 4, "scoring": round(0.15 + 0.07 * i + 0.003 * s_i, 4),
-                         "intASource": "uniprotkb", "intBSource": "uniprotkb"})
+                         "speciesB": sp, "count": 1 + i % 4, "scoring": round(0.15 + 0.07 * i + 0.003 * s_i, 4)})
     rows.append({"sourceDatabase": sources[0], "targetA": TP53, "intA": "PX", "intABiologicalRole": "unspecified role",
                  "targetB": TP53BP1, "intB": "PY", "intBBiologicalRole": "unspecified role", "speciesA": sp,
-                 "speciesB": sp, "count": 9, "scoring": 0.999, "intASource": "uniprotkb", "intBSource": "uniprotkb"})
+                 "speciesB": sp, "count": 9, "scoring": 0.999})
     return rows
 
 
@@ -684,19 +697,20 @@ def _study_rows() -> list[dict[str, Any]]:
 
 
 def _prioritisation_rows(variant: str) -> list[dict[str, Any]]:
-    """CT-6 ``hasSafetyEvent``: default A -1, B null, C 0, D NaN; ``no_zero`` uses only {-1, null}
-    (the 0 code is never observed); ``refuted`` uses {1, 0, null} (1 is not a declared code)."""
-    values = {"default": {"A": -1.0, "B": None, "C": 0.0, "D": float("nan")},
-              "no_zero": {"A": -1.0, "B": None, "C": None, "D": -1.0},
-              "refuted": {"A": 1.0, "B": None, "C": 0.0, "D": None}}[variant]
+    """CT-6 ``hasSafetyEvent``: as in 25.09 the default stores only -1 (A, D) and null (B, C), never 0;
+    ``no_zero`` is the same; ``refuted`` uses {1, 0, null} (codes 25.09 never stores)."""
+    values = {"default": {"A": -1, "B": None, "C": None, "D": -1},
+              "no_zero": {"A": -1, "B": None, "C": None, "D": -1},
+              "refuted": {"A": 1, "B": None, "C": 0, "D": None}}[variant]
     rows = []
     for i, (k, tgt) in enumerate(PRIO.items()):
-        # every binary factor shows both codes, as in the release (readiness confirms them)
-        rows.append({"targetId": tgt, "hasSafetyEvent": values[k], "isInMembrane": float(i % 2),
-                     "isSecreted": 1.0 if k == "A" else 0.0, "hasPocket": 1.0 if i < 2 else 0.0,
-                     "hasLigand": 1.0 if i < 3 else 0.0, "hasSmallMoleculeBinder": 1.0 if i == 0 else 0.0,
-                     "isCancerDriverGene": float(i % 2), "hasTEP": 1.0 if i == 1 else 0.0,
-                     "hasHighQualityChemicalProbes": 1.0 if i == 2 else 0.0,
+        # every binary factor shows both codes, as in the release (readiness confirms them); as in 25.09,
+        # isCancerDriverGene is -1 or null and hasTEP 1 or null
+        rows.append({"targetId": tgt, "hasSafetyEvent": values[k], "isInMembrane": i % 2,
+                     "isSecreted": 1 if k == "A" else 0, "hasPocket": 1 if i < 2 else 0,
+                     "hasLigand": 1 if i < 3 else 0, "hasSmallMoleculeBinder": 1 if i == 0 else 0,
+                     "isCancerDriverGene": -1 if i % 2 else None, "hasTEP": 1 if i == 1 else None,
+                     "hasHighQualityChemicalProbes": 1 if i == 2 else 0,
                      "geneticConstraint": -0.5 + 0.3 * i, "maxClinicalTrialPhase":
                      [1.0, 0.75, 0.25, 0.0][i], "tissueSpecificity": 0.1, "tissueDistribution": -0.2})
     return rows
@@ -759,7 +773,7 @@ def _genetics_rows() -> dict[str, list[dict[str, Any]]]:
                                      "is99CredibleSet": True}]}],
         "interval": [{"chromosome": "1", "start": 55030000, "end": 55031000, "geneId": PCSK9, "biosampleName": "liver",
                       "intervalType": "enhancer", "distanceToTss": 9366, "score": 0.8, "datasourceId": "e2g",
-                      "datatypeId": "interval", "biosampleId": "UBERON_0002107"}],
+                      "biosampleId": "UBERON_0002107"}],
         "interaction_evidence": [{"interactionIdentifier": "EBI-0000001", "intA": "P04637", "intB": "Q8NBP7",
                                   "targetA": TP53, "targetB": PCSK9, "interactionScore": 0.4, "pubmedId": "15805190",
                                   "interactionResources": {"sourceDatabase": "intact",
@@ -774,10 +788,8 @@ def ot_rows(*, safety_variant: str = "default", interaction_sources: Sequence[st
     rows: dict[str, list[dict[str, Any]]] = {
         "target": _target_rows(),
         "disease": _disease_rows(),
-        "disease_hpo": [{"id": SEIZURE, "code": "http://purl.obolibrary.org/obo/HP_0001250", "name": "Seizure",
-                         "namespace": ["human_phenotype"], "parents": ["HP_0012638"]},
-                        {"id": "HP_0000822", "code": "http://purl.obolibrary.org/obo/HP_0000822",
-                         "name": "Hypertension", "namespace": ["human_phenotype"], "parents": []}],
+        "disease_hpo": [{"id": SEIZURE, "name": "Seizure", "parents": ["HP_0012638"]},
+                        {"id": "HP_0000822", "name": "Hypertension", "parents": []}],
         "disease_phenotype": _disease_phenotype_rows(),
         "drug_molecule": _drug_rows(r["drugId"] for r in known),
         "known_drug": known,
@@ -820,7 +832,8 @@ def ot_rows(*, safety_variant: str = "default", interaction_sources: Sequence[st
                       "path": [["R-HSA-382551", "R-HSA-8964043"]]},
                      {"id": "R-HSA-382551", "label": "Transport of small molecules", "ancestors": [],
                       "descendants": ["R-HSA-8964043"], "children": ["R-HSA-8964043"], "parents": [], "path": []}],
-        "so": [{"id": "SO_0001583", "label": "missense_variant"}, {"id": "SO_0001587", "label": "stop_gained"}],
+        # 25.09 stores SO:NNNNNNN in so.id and SO_NNNNNNN in variant.mostSevereConsequenceId
+        "so": [{"id": "SO:0001583", "label": "missense_variant"}, {"id": "SO:0001587", "label": "stop_gained"}],
         "biosample": [
             {"biosampleId": "UBERON_0002048", "biosampleName": "lung", "description": "respiration organ",
              "synonyms": [BIOSAMPLE_SYNONYM, "respiratory organ"], "parents": [], "ancestors": [], "children": [],
@@ -831,7 +844,8 @@ def ot_rows(*, safety_variant: str = "default", interaction_sources: Sequence[st
         "colocalisation_ecaviar": _colocalisation_rows("ecaviar"),
         "expression": [{"id": PCSK9, "tissues": [
             {"efo_code": "UBERON_0002107", "label": "liver", "organs": ["liver"], "anatomical_systems": [],
-             "rna": {"value": 120.0, "zscore": 4, "level": 3, "unit": "TPM"}, "protein": None}]}],
+             "rna": {"value": 120.0, "zscore": 4, "level": 3, "unit": "TPM"},
+             "protein": {"reliability": None, "level": -1}}]}],   # 25.09: level -1 = not measured
     }
     rows.update(_association_rows())
     rows.update(_genetics_rows())
@@ -854,7 +868,7 @@ def _close_references(rows: dict[str, list[dict[str, Any]]]) -> None:
                                 "descendants": [], "therapeuticAreas": [],
                                 "synonyms": {"hasBroadSynonym": [], "hasExactSynonym": [], "hasNarrowSynonym": [],
                                              "hasRelatedSynonym": []},
-                                "ontology": {"isTherapeuticArea": False, "leaf": True, "name": None,
+                                "ontology": {"isTherapeuticArea": False, "leaf": True,
                                              "sources": {"name": "EFO", "url": "http://www.ebi.ac.uk/efo"}}})
     genes = {r["id"] for r in rows["target"]}
     partners = {r[side] for r in rows["interaction"] for side in ("targetA", "targetB") if r.get(side)}
@@ -1139,7 +1153,7 @@ def oracle_mouse(root: Path, target_id: str) -> list[dict[str, Any]]:
     return oracle_rows(root, "mouse_phenotype", lambda r: r["targetFromSourceId"] == target_id)
 
 
-GO_ITEM_KEY = ("id", "aspect", "evidence", "source", "geneProduct")
+GO_ITEM_KEY = ("id", "aspect", "evidence", "source", "geneProduct", "ecoId")   # 25.09: unique only with ecoId
 
 
 def oracle_go_items(root: Path, target_id: str) -> list[tuple]:
@@ -1218,12 +1232,12 @@ def oracle_studies(root: Path, min_sample_size: int) -> dict[str, Any]:
             "unknown": len(rows) - len(known)}
 
 
-SAFETY_CODES = {-1.0: "known_unfavourable", 0.0: "none_recorded"}
+SAFETY_CODES = {-1.0: "known_unfavourable"}
 
 
 def oracle_no_safety_events(root: Path) -> dict[str, Any]:
-    """Targets whose ``hasSafetyEvent`` is the declared ``none_recorded`` code (0), and the rows
-    whose value is unknown (null or NaN)."""
+    """Targets whose ``hasSafetyEvent`` is 0 (stored as "none recorded" by releases that have the code; 25.09
+    never does), and the rows whose value is unknown (null or NaN)."""
     rows = read_rows(root, "target_prioritisation")
     return {"ids": [r["targetId"] for r in rows if r["hasSafetyEvent"] == 0.0],
             "unknown": sum(is_unknown(r["hasSafetyEvent"]) for r in rows),

@@ -94,6 +94,19 @@
     ],
     "nextPageToken": "ZVNj7o2Elu8o3lpwRM-l47L2mpOQJJxtZfCh0A"
    }
+  },
+  {
+   "url": "https://clinicaltrials.gov/api/v2/version",
+   "params": {},
+   "status": 200,
+   "headers": {
+    "date": "Thu, 08 Oct 2026 02:45:11 GMT",
+    "content-type": "application/json"
+   },
+   "body": {
+    "apiVersion": "2.0.5",
+    "dataTimestamp": "2026-10-07T09:00:06"
+   }
   }
  ]
 }

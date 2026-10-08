@@ -187,6 +187,7 @@ class ItemKey(Strict):
     """The key of one item of a nested or member container (a bare list is shorthand for ``columns``)."""
 
     columns: list[str] = []
+    nullable: list[str] = []                           # item-key parts that may be null (NULLS NOT DISTINCT)
     identity: Literal["key", "value", "position"] = "key"
     check: Literal["full", "sampled", "none"] = "sampled"
     max_items: int | None = None
@@ -202,6 +203,9 @@ class ItemKey(Strict):
     def _consistent(self) -> "ItemKey":
         if self.identity == "key" and not self.columns and self.max_items != 1:
             raise ValueError("item_key with identity 'key' needs columns (use identity value/position otherwise)")
+        extra = [c for c in self.nullable if c not in self.columns]
+        if extra:
+            raise ValueError(f"item_key.nullable names parts that are not item-key columns: {extra}")
         return self
 
 

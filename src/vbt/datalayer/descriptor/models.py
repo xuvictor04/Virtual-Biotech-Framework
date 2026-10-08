@@ -320,11 +320,32 @@ class AggregatedOver(Strict):
     origin: str | None = None
 
 
+class EdgeRoles(Strict):
+    """An edge's direction read from per-side role columns: the side whose role is ``source`` is the edge's
+    source and the side whose role is ``target`` its target, on rows matching ``when``. Rows stored in both
+    orientations with the roles swapped (25.09 SIGNOR: "regulator" / "regulator target") are one directed edge."""
+
+    columns: dict[Literal["a", "b"], str]
+    source: str
+    target: str
+    when: dict[str, list[Any]] = {}
+    verified: bool = False
+
+    @model_validator(mode="after")
+    def _both_sides(self) -> "EdgeRoles":
+        if set(self.columns) != {"a", "b"}:
+            raise ValueError("edge.direction_from_roles.columns names the role column of side a and of side b")
+        if self.source == self.target:
+            raise ValueError("edge.direction_from_roles: source and target roles must differ")
+        return self
+
+
 class EdgeSpec(Strict):
     a: str
     b: str
     directed: bool = False
     directed_when: dict[str, list[Any]] = {}
+    direction_from_roles: EdgeRoles | None = None
     orientation: Literal["canonical", "as_reported", "both"] = "as_reported"
     verified: bool = False
     sides: dict[Literal["a", "b"], list[str]] = {}

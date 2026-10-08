@@ -51,11 +51,11 @@ tools:
   count_clinical_trials:
     reads: {clinicaltrials_gov.studies: {access: upstream}}
     args: &ctgov_args
-      condition:        {role: free_text, interpreted_as: engine, wrap: "({value})", forbid: ['"'],
+      condition:        {role: free_text, interpreted_as: engine, wrap: "({value})", forbid: ['"'], engine_param: query.cond,
                          engine_doc: "registry search: synonym expansion and word match ('Korea' matches both Koreas)"}
-      term:             {role: free_text, interpreted_as: engine, wrap: "({value})", forbid: ['"'],
+      term:             {role: free_text, interpreted_as: engine, wrap: "({value})", forbid: ['"'], engine_param: query.term,
                          engine_doc: "registry search over every indexed field"}
-      intervention:     {role: free_text, interpreted_as: engine, wrap: "({value})", forbid: ['"'],
+      intervention:     {role: free_text, interpreted_as: engine, wrap: "({value})", forbid: ['"'], engine_param: query.intr,
                          engine_doc: "registry search over intervention names and synonyms"}
       status:           {binds: clinicaltrials_gov.studies.protocolSection.statusModule.overallStatus, op: in, each: true}
       phase:            {binds: "clinicaltrials_gov.studies.protocolSection.designModule.phases[]", op: overlaps, each: true}
@@ -64,7 +64,7 @@ tools:
                          engine_doc: "each phrase is quoted into AREA[EligibilityCriteria]\"...\""}
       country:          {binds: "clinicaltrials_gov.studies.protocolSection.contactsLocationsModule.locations[].country",
                          op: contains, interpreted_as: engine, default_disclosed: true, forbid: ['"']}   # default 'United States'
-      advanced_filter:  {role: free_text, interpreted_as: engine, wrap: "({value})",
+      advanced_filter:  {role: free_text, interpreted_as: engine, wrap: "({value})", engine_param: filter.advanced,
                          engine_doc: "an Essie expression ANDed with the other filters"}
     leakage_filter: {arg: advanced_filter, template: "AREA[StudyFirstPostDate]RANGE[MIN,{ceiling}]"}
     result:

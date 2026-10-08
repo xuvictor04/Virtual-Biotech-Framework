@@ -143,6 +143,8 @@ class CheckResponse(IpcModel):
     depth: Depth = "standard"
     hash_randomization: int | None = None              # sys.flags.hash_randomization of the child
     errors: dict[str, str] = Field(default_factory=dict, alias=TABLE_ERRORS)
+    #: R8: descriptor and overlay files the child's catalog left out ({file, kind, name, error})
+    quarantined: list[dict[str, Any]] = []
 
 
 # --------------------------------------------------------------------------- _witness
@@ -177,6 +179,7 @@ class WitnessResponse(IpcModel):
     one_to_many: dict[str, int] = {}                   # canonical key -> rows sharing it
     scanned_bytes: int | None = None
     reason: str | None = None
+    as_of: str | None = None                           # remote witness: the source's data release when it has one
 
 
 # --------------------------------------------------------------------------- _serve
@@ -219,6 +222,7 @@ class ServeResponse(IpcModel):
     row_keys: list[list[Any]] = []
     reason: str | None = None
     error: dict[str, Any] | None = None                # a §12.1 envelope: the derived handler refused the request
+    as_of: str | None = None                           # a live table's release (CT.gov dataTimestamp)
 
 
 # --------------------------------------------------------------------------- _build_index

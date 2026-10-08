@@ -58,31 +58,16 @@ UPDATE = os.environ.get("VBT_UPDATE_REAL_SNAPSHOT", "") == "1"
 _TEXT = 40                                             # recorded string bounds are cut to this length
 
 #: Physical nested fields the descriptor leaves undeclared on purpose: {table: {path: why}}.
-KNOWN_UNDECLARED: dict[str, dict[str, str]] = {
-    "expression": {
-        "tissues.protein.cell_type": "an optional nested field absent from the fixtures marks its container "
-                                     "unready (readiness contract request)",
-        "tissues.protein.cell_type.name": "see tissues.protein.cell_type",
-        "tissues.protein.cell_type.reliability": "see tissues.protein.cell_type",
-        "tissues.protein.cell_type.level": "see tissues.protein.cell_type",
-    },
-}
+KNOWN_UNDECLARED: dict[str, dict[str, str]] = {}
 
 #: Facts the release refutes whose correction needs files other than the descriptor (contract requests).
 #: Each entry is asserted to be still drift, so a fix must remove it here.
 KNOWN_DRIFT = {
-    "so_term separator": "so.id is SO:NNNNNNN in 25.09; the descriptor (and the fixtures) use SO_",
-    "hasSafetyEvent code 0": "25.09 stores only -1 and null; the encoding (pinned by the overlay and tests) has 0",
     "ontology.leaf": "false for every disease term; the constraint stays verified: false with on_refute: drop_field",
-    "hpo universe column": "disease_hpo.id also holds non-HP terms; readiness R4b ignores universe.where",
-    "uniprot universe column": "target.proteinIds[].id also holds ENSP ids; readiness R4b ignores universe.where",
-    "nullable item-key parts": "item keys unique only with null parts; an item key cannot declare them nullable",
 }
-#: Item keys the release refutes whose correction needs files other than the descriptor (the CT-3 GO
-#: oracle of the test fixtures pins the five-part key; ecoId is also null in 4,837 items).
-REFUTED_ITEM_KEYS = {
-    "target.go": "(id, aspect, evidence, source, geneProduct) repeats in 98,095 items; unique with ecoId",
-}
+#: Item keys the release refutes whose correction needs files other than the descriptor (none left: the
+#: six-part target.go key with a nullable ecoId replaced the five-part one together with the CT-3 oracle).
+REFUTED_ITEM_KEYS: dict[str, str] = {}
 
 
 # ---------------------------------------------------------------------------- snapshot form
@@ -454,6 +439,8 @@ def test_measured_values_match_the_verified_facts(ot, values) -> None:
             assert fact["former_duplicate_items"] > 0, ref
             continue
         assert list(col.item_key.columns) == fact["unique"], f"{ref}: item_key {col.item_key.columns}"
+        # parts measured null in some items are declared nullable (NULLS NOT DISTINCT), and only those
+        assert set(col.item_key.nullable) == set(fact.get("null_parts") or ()), f"{ref}: nullable {col.item_key.nullable}"
     for table, fact in values["keys"].items():
         key = tables[table].key
         assert list(key.columns) == fact["columns"], f"{table}: key {key.columns} vs measured {fact['columns']}"
@@ -467,30 +454,40 @@ def test_measured_values_match_the_verified_facts(ot, values) -> None:
 
 
 def test_known_drift_is_still_drift(ot, values) -> None:
-    so = ot.id_types["so_term"]
-    assert (so.options or {}).get("separator") == "_" and values["ids"]["so.id"] == {"SO:": 2611}, \
-        KNOWN_DRIFT["so_term separator"]
-    hse = ot.tables["target_prioritisation"].columns["hasSafetyEvent"]
-    assert 0 in hse.encoding and not hse.verified and "0" not in values["codes"]["target_prioritisation.hasSafetyEvent"], \
-        KNOWN_DRIFT["hasSafetyEvent code 0"]
     leaf = [c for c in ot.tables["disease"].constraints if c.column == "ontology.leaf"]
     assert leaf and leaf[0].verified is False and values["ids"]["disease.ontology.leaf"] == {"False": 39530}, \
         KNOWN_DRIFT["ontology.leaf"]
+
+
+def test_so_ids_are_canonical_with_a_colon(ot, values) -> None:
+    """25.09 so.id is SO:NNNNNNN (2,611 terms); variant.mostSevereConsequenceId stores SO_NNNNNNN as a stored form."""
+    so = ot.id_types["so_term"]
+    assert "separator" not in (so.options or {}) and values["ids"]["so.id"] == {"SO:": 2611}
+    assert so.stored_forms == {"variant.mostSevereConsequenceId": "as_stored"}
+    col = ot.tables["variant"].columns["mostSevereConsequenceId"]
+    assert col.id_type == "so_term" and col.form == "as_stored"
+
+
+def test_universe_filters_keep_the_canonical_ids(ot, values) -> None:
+    """The universes whose column also holds other ids filter them with ``where`` (readiness R4b samples
+    what the filter keeps): disease_hpo.id holds 12,081 non-HP terms, target.proteinIds[].id 112,428 ENSP ids."""
     hpo = ot.id_types["hpo"]
-    assert hpo.universe.where is not None and set(values["ids"]["disease_hpo.id"]) - {"HP"}, \
-        KNOWN_DRIFT["hpo universe column"]
+    assert hpo.universe.where == {"text": ["id", "HP_", "substring"]} and set(values["ids"]["disease_hpo.id"]) - {"HP"}
     uni = ot.id_types["uniprot_accession"]
     sources = values["ids"]["target.proteinIds.source"]
     canonical = values["ids"]["target.proteinIds.uniprot_canonical"]
     kept = set(uni.universe.where["in"][1])
-    assert kept < set(sources) and all(canonical.get(s) == sources[s] for s in kept) and \
-        "ensembl_PRO" not in canonical, KNOWN_DRIFT["uniprot universe column"]
+    assert kept < set(sources) and all(canonical.get(s) == sources[s] for s in kept) and "ensembl_PRO" not in canonical
+
+
+def test_item_tables_with_null_item_key_parts_are_checked(ot, values) -> None:
+    """Item keys unique only with NULLS NOT DISTINCT declare their null parts, so the item tables keep a key check."""
     for table, container in (("target_chemical_probes", "target.chemicalProbes"),
                              ("target_safety_liabilities", "target.safetyLiabilities"),
                              ("target_essentiality_screens", "target_essentiality.geneEssentiality.depMapEssentiality")):
         nullable = set(values["item_keys"][container]["null_parts"])
         assert nullable and nullable <= set(values["item_keys"][container]["unique"]), table
-        assert ot.tables[table].key.check == "none", KNOWN_DRIFT["nullable item-key parts"]
+        assert ot.tables[table].key.check == "sampled", table
 
 
 def test_interaction_rows_are_stored_in_both_orientations(ot, values) -> None:
@@ -608,6 +605,39 @@ def test_remote_footers_report_what_local_footers_report(tmp_path, no_proxy) -> 
         assert fmt.metadata(remote)["num_rows"] == str(n)
         leaves = fmt.read_leaves(remote, ["go[].aspect"], [1])
         assert leaves.equals(fmt.read_leaves(here, ["go[].aspect"], [1]))
+    finally:
+        server.close()
+
+
+def test_remote_scans_and_sidecar_footers_read_what_local_ones_read(tmp_path, no_proxy) -> None:
+    """Value scans and sidecar footers of an http_range table: ParquetFormat.scan reads the remote row groups
+    (pruned and filtered as locally) and the sidecar footer reader parses the remote footer."""
+    from vbt.datalayer.predicate import Eq
+    from vbt.datalayer.service.sidecar import read_footer
+
+    n = 300_000
+    tbl = pa.table({"pmid": pa.array([str(10_000_000 + i) for i in range(n)], pa.large_string()),
+                    "code": pa.array([(-1 if i % 7 == 0 else None) for i in range(n)], pa.int32())})
+    local = tmp_path / "t.parquet"
+    pq.write_table(tbl, local, row_group_size=100_000)
+    blob = local.read_bytes()
+    server = _RangeServer({"/t.parquet": blob})
+    try:
+        fmt = discover(entry_points=False).get("format", "parquet")
+        remote = Fragment(uri=f"{server.base}/t.parquet", size=None, mtime_ns=None)
+        here = Fragment(uri=str(local), size=len(blob), mtime_ns=None)
+
+        def scanned(frag: Fragment, **kw: Any) -> pa.Table:
+            batches = list(fmt.scan([frag], columns=["pmid", "code"], predicate=Eq("code", -1), partitions={}, **kw))
+            return pa.Table.from_batches(batches) if batches else pa.table({})
+
+        want, got = scanned(here), scanned(remote)
+        assert got.num_rows == len(range(0, n, 7)) and got.equals(want)
+        assert scanned(remote, row_groups={remote.uri: [2]}).equals(scanned(here, row_groups={here.uri: [2]}))
+        before = server.bytes
+        rf, lf = read_footer(remote), read_footer(here)
+        assert server.bytes - before < len(blob) / 4, "only the footer is transferred"
+        assert (rf.leaves, rf.row_groups) == (lf.leaves, lf.row_groups) and len(rf.row_groups) == 3
     finally:
         server.close()
 

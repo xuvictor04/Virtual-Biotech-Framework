@@ -104,7 +104,7 @@ def _decode(values: Any) -> list[str]:
 
 
 def read_h5ad_header(path: str | Path, max_index: int = 200_000) -> dict[str, Any] | None:
-    """``{n_obs, n_vars, obs_columns, var_index}`` from an h5ad file's HDF5 groups (h5py only,
+    """``{n_obs, n_vars, obs_columns, var_columns, var_index}`` from an h5ad file's HDF5 groups (h5py only,
     imported lazily). None when h5py is missing or the layout is not the group encoding."""
     try:
         import h5py  # noqa: PLC0415 - optional, never pandas/anndata
@@ -124,10 +124,9 @@ def read_h5ad_header(path: str | Path, max_index: int = 200_000) -> dict[str, An
                 if idx is None:
                     return None
                 out[n_key] = int(idx.shape[0])
-                if axis == "obs":
-                    order = grp.attrs.get("column-order", [])
-                    out["obs_columns"] = _decode(order) if len(order) else [k for k in grp.keys() if k != index_name]
-                else:
+                order = grp.attrs.get("column-order", [])
+                out[f"{axis}_columns"] = _decode(order) if len(order) else [k for k in grp.keys() if k != index_name]
+                if axis == "var":
                     out["var_index"] = _decode(idx[: min(int(idx.shape[0]), max_index)])
             return out
     except Exception:  # noqa: BLE001 - an unreadable header is an unmade check
@@ -169,7 +168,8 @@ def reconcile(specs: Sequence[Any], obj: Any, *, output_dir: str | Path | None =
             checks.append(FileCheck("file_exists", False if spec.must_exist else None, f"{path} does not exist"))
             continue
         checks.append(FileCheck("file_exists", True, str(path)))
-        needs_header = bool(spec.echo_checks or spec.key_columns or spec.forbid_positional_index)
+        var_keys = list(getattr(spec, "var_key_columns", None) or [])
+        needs_header = bool(spec.echo_checks or spec.key_columns or var_keys or spec.forbid_positional_index)
         header = header_reader(path) if needs_header else None
         if needs_header and header is None:
             checks.append(FileCheck("file_header", None, f"the header of {path.name} could not be read"))
@@ -187,6 +187,11 @@ def reconcile(specs: Sequence[Any], obj: Any, *, output_dir: str | Path | None =
             missing = [c for c in spec.key_columns if c not in cols]
             checks.append(FileCheck("file_key_columns", not missing,
                                     f"missing key columns {missing}" if missing else "key columns present"))
+        if var_keys:
+            vcols = set((header or {}).get("var_columns") or [])
+            missing = [c for c in var_keys if c not in vcols]
+            checks.append(FileCheck("file_var_key_columns", not missing,
+                                    f"missing var key columns {missing}" if missing else "var key columns present"))
         if spec.forbid_positional_index:
             index = list((header or {}).get("var_index") or [])
             if positional_index(index):

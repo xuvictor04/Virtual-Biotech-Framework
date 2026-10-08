@@ -4,7 +4,7 @@
 Usage::
 
     python -E reaper.py --limit-mb N --status PATH --server NAME [--strip-python-flags]
-                        [--containment rlimit_data|cgroup|watchdog|auto|none] [--relay-max-mb M] -- cmd args...
+                        [--containment rlimit_data|cgroup|watchdog|auto|rss|none] [--relay-max-mb M] -- cmd args...
 
 The reaper forks. The **child** puts itself in its own process group, asks the kernel to
 kill it when the reaper dies, sets ``RLIMIT_DATA`` to N MB when N > 0 (Linux >= 4.7 counts
@@ -44,7 +44,11 @@ Containment (phase 4, F19; ``--containment``, default ``rlimit_data`` or ``$VBT_
 * ``watchdog``: ``RLIMIT_DATA`` plus a watchdog that SIGKILLs the child's process group when the
   group's RSS reaches ``limit - max(512 MB, 5%)`` (at least half the limit), and reports
   ``reason: memory_limit``, which the bridge classifies ``oom`` and never retries.
-``RLIMIT_DATA`` stays set under every mode with a limit. ``VBT_REAPER_CGROUP_ROOT`` (v2) and
+* ``rss``: resident memory only, no ``RLIMIT_DATA``: the memory cgroup as ``cgroup`` does, else the RSS
+  watchdog. For children whose libraries reserve address space far beyond what they touch (TileDB read
+  buffers in Census pulls fail with ``std::bad_alloc`` under any tested ``RLIMIT_DATA`` while RSS stays
+  under 3 GB; Arrow thread stacks count against it too).
+``RLIMIT_DATA`` stays set under every other mode with a limit. ``VBT_REAPER_CGROUP_ROOT`` (v2) and
 ``VBT_REAPER_CGROUP_V1_ROOT`` (v1) point the cgroup code at another mount (tests).
 
 Relay (optional, off by default; ``--relay-max-mb`` or ``$VBT_REAPER_RELAY_MAX_MB``): the child's
@@ -90,7 +94,7 @@ STATUS_EVERY_S = 1.0          # status file rewrite
 MEMORY_LIMIT_FRACTION = 0.9   # an abnormal exit at this share of the limit is a memory exit
 FORWARDED = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 
-CONTAINMENTS = ("rlimit_data", "cgroup", "watchdog", "auto", "none")
+CONTAINMENTS = ("rlimit_data", "cgroup", "watchdog", "auto", "rss", "none")
 CONTAINMENT_ENV = "VBT_REAPER_CONTAINMENT"
 RELAY_ENV = "VBT_REAPER_RELAY_MAX_MB"
 CGROUP_ROOT_ENV = "VBT_REAPER_CGROUP_ROOT"
@@ -288,16 +292,18 @@ def kernel_oom_killed(pid: int, since_us: int = 0, *, path: str = "/dev/kmsg",
 
 
 def exit_cause(*, abnormal: bool, signum: int | None, limit_mb: int, peak_mb: float, watchdog: bool = False,
-               cgroup_oom: bool = False, stderr_tail: str = "", kernel_oom: bool = False
-               ) -> tuple[str | None, str | None]:
-    """``(cause, memory_error line)`` of a child's exit; cause None when it was not a memory exit."""
+               cgroup_oom: bool = False, stderr_tail: str = "", kernel_oom: bool = False,
+               data_limited: bool | None = None) -> tuple[str | None, str | None]:
+    """``(cause, memory_error line)`` of a child's exit; cause None when it was not a memory exit.
+    ``data_limited``: the child ran under ``RLIMIT_DATA`` (default: whenever ``limit_mb`` is set; not under
+    the ``rss`` containment)."""
     if watchdog:
         return "watchdog", None
     if cgroup_oom:
         return "cgroup_oom_kill", None
     if not abnormal:
         return None, None
-    line = memory_signature(stderr_tail, limited=limit_mb > 0)
+    line = memory_signature(stderr_tail, limited=limit_mb > 0 if data_limited is None else data_limited)
     if line is not None:
         return "memory_error", line
     if signum == signal.SIGKILL and kernel_oom:
@@ -722,7 +728,7 @@ def contain(mode: str, server: str, limit: int) -> tuple[str, Cgroup | None, lis
         return "none", None, None, False
     if mode == "rlimit_data":
         return "rlimit_data", None, None, False
-    if mode in ("cgroup", "auto"):
+    if mode in ("cgroup", "auto", "rss"):
         cg = make_cgroup_v2(server, limit)
         if cg is not None:
             return "cgroup_v2", cg, None, False
@@ -748,6 +754,7 @@ def main(argv: list[str] | None = None) -> int:
         env = child_environment(env, isolated="-I" in stripped)
     limit = max(0, int(ns.limit_mb))
     containment, cgroup, prefix, watchdog = contain(ns.containment, ns.server, limit)
+    data_limit = 0 if ns.containment == "rss" else limit       # rss: contained by resident memory only
     if prefix:
         command = [*prefix, *command]
     relay_cap = int(float(ns.relay_max_mb or 0) * MB)
@@ -762,7 +769,7 @@ def main(argv: list[str] | None = None) -> int:
     parent = os.getpid()
     pid = os.fork()
     if pid == 0:
-        _exec_child(command, env, limit, parent, cgroup=cgroup, stdout_fd=relay_w, stderr_fd=err_w,
+        _exec_child(command, env, data_limit, parent, cgroup=cgroup, stdout_fd=relay_w, stderr_fd=err_w,
                     close_fds=tuple(fd for fd in (relay_r, relay_w, out_fd, err_r, err_w) if fd is not None))
 
     # ---- parent (the reaper)
@@ -815,7 +822,7 @@ def main(argv: list[str] | None = None) -> int:
         "rss_mb": None, "peak_rss_mb": None, "ts": round(time.time(), 3),
     }
     if containment not in ("none", "rlimit_data"):
-        status["rlimit_data"] = limit > 0
+        status["rlimit_data"] = data_limit > 0
     if cgroup is not None:
         status["cgroup"] = cgroup.path
     if watchdog:
@@ -886,7 +893,7 @@ def main(argv: list[str] | None = None) -> int:
         kernel_oom = logged
     cause, memory_line = exit_cause(
         abnormal=rc != 0, signum=signum, limit_mb=limit, peak_mb=peak, watchdog=killed_by_watchdog,
-        cgroup_oom=cgroup_oom, stderr_tail=stderr_tail, kernel_oom=kernel_oom)
+        cgroup_oom=cgroup_oom, stderr_tail=stderr_tail, kernel_oom=kernel_oom, data_limited=data_limit > 0)
     reason = "memory_limit" if cause else ("signal" if signum is not None else "exit_code")
     marker: dict[str, Any] = {"pid": pid, "code": code, "signal": signum, "maxrss_kb": maxrss_kb, "reason": reason}
     if cause:

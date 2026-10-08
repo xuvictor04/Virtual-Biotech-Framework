@@ -35,12 +35,12 @@ id_types:
                                     de_high_quality.drug: as_stored}}
                      # 'Erdafitinib ' and 'Selinexor ' (DE, sample_metadata) vs 'Erdafitinib' and 'Selinexor'
                      # (drug_metadata): the index keeps both forms; the 379 DE drugs strip to the 379 metadata drugs (VERIFIED)
-  depmap_cell_line: {plugin: depmap_cell_line, universe: cell_line_metadata.Cell_ID_DepMap,
+  depmap_cell_line: {plugin: depmap_cell_line, universe: {table: de_permissive, keys: [Cell_ID_DepMap]},
                      resolve_via: [cell_line_metadata.cell_name]}
                      # qualified name tahoe_100m:depmap_cell_line: never confused with Open Targets' universe.
                      # The 99 DepMap IDs of cell_line_metadata (102 lines, 3 without an ID); the DE profiles 50
-                     # lines: 49 of them plus hTERT-HPNE, stored as the string 'NA' (VERIFIED). The universe is
-                     # the metadata column because readiness R4b samples the DE column with 'NA' in it.
+                     # lines: 49 of them plus hTERT-HPNE, stored as the string 'NA' (VERIFIED). The universe is the
+                     # profiled lines: 'NA' is a declared missing value of the DE column, which readiness R4b skips.
   cellosaurus:      {plugin: cellosaurus, resolvable: false}
   tahoe_gene:       {plugin: tahoe_gene_name, universe: gene_metadata.gene_symbol,
                      crosswalks: [{name: tahoe_ensembl, table: gene_metadata, from: ensembl_id, to: gene_symbol, cardinality: one}],

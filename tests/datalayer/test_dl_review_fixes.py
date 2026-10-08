@@ -401,7 +401,7 @@ def test_r5_sampling_skips_rows_before_rendering_their_key(monkeypatch: pytest.M
         return real(values, types)
 
     monkeypatch.setattr(checks, "canonical", counting)
-    spec = SimpleNamespace(key=SimpleNamespace(check="sampled", sample_prefix=["g"]))
+    spec = SimpleNamespace(key=SimpleNamespace(check="sampled", sample_prefix=["g"], row_identity="key"))
     table = SimpleNamespace(spec=spec, nullable_key=[], is_item_table=False, ref="s.t")
     reader = SimpleNamespace(table=table, key=["g", "d"], partitions={}, storage_types=lambda k: [None, None],
                              scan=lambda *a, **kw: iter(rows))

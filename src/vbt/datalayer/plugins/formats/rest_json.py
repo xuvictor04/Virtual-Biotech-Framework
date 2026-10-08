@@ -13,8 +13,8 @@ The format of ``live_api`` tables (ClinicalTrials.gov v2, E-utilities, cBioPorta
        "text_params": {<column> | "*": <param>}}              # TextMatch: the source's own search engine
                                                               # (a TextMatch on "@<param>" sets <param>)
 
-  ``Eq``/``In`` (and ``Contains`` on a list column) on a filtered column become one parameter (values
-  joined); ``Range``/``Cmp`` with a ``range`` entry become the lo/hi parameters; a column with a
+  ``Eq``/``In`` (and ``Contains`` on a list column, and an ``Or`` of those on one column) on a filtered column
+  become one parameter (values joined); ``Range``/``Cmp`` with a ``range`` entry become the lo/hi parameters; a column with a
   ``remote_name`` becomes an Essie fragment (``AREA[Phase](PHASE2 OR PHASE3)``, ``AREA[StartDate]RANGE[2020-01-01,MAX]``)
   with every literal quoted by :func:`essie_quote`. Anything else (``Not``, ``Or`` across columns,
   ``IsNull``, an unmapped column) is returned as the residual, evaluated on the returned rows; a
@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable, ClassVar, Iterator, Mapping, Sequence
 
-from ...predicate import All, And, Any as AnyP, Cmp, Contains, Eq, In, Predicate, Range, TextMatch
+from ...predicate import All, And, Any as AnyP, Cmp, Contains, Eq, In, Or, Predicate, Range, TextMatch
 from ..base import Fragment, FormatError, FragmentStats, Page, PluginBase
 from ..registry import register
 
@@ -154,6 +154,13 @@ class RestJsonFormat(PluginBase):
                 return False
             params[param] = str(p.text)
             return True
+        if isinstance(p, Or):
+            # one column equal to (or a list holding) any of several values: the same request as In
+            # (phase PHASE2 or PHASE3 -> AREA[Phase](PHASE2 OR PHASE3))
+            cols = {getattr(q, "column", None) or getattr(q, "path", None) for q in p.preds}
+            if len(cols) != 1 or None in cols or not all(isinstance(q, (Eq, Contains)) for q in p.preds):
+                return False
+            p = In(str(next(iter(cols))), tuple(q.value for q in p.preds))  # type: ignore[union-attr]
         column = getattr(p, "column", None) or getattr(p, "path", None)
         if isinstance(p, (AnyP, All)):
             return False

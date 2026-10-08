@@ -234,7 +234,7 @@ tools:
   get_sequence_ontology_term:
     reads: {open_targets.so: {access: full_table}}
     args:
-      so_id: {binds: open_targets.so.id, accepts: [so_term]}      # 'SO:0001583' normalised to SO_0001583; labels resolve
+      so_id: {binds: open_targets.so.id, accepts: [so_term]}      # 'SO_0001583' normalised to SO:0001583; labels resolve
     result:
       kind: record
       rows: $

@@ -369,6 +369,12 @@ class _DescriptorLinter:
                     self.resolve(name, c, where=f"{where}.edge.sides.{side}", rule="reference_soft", level=lvl)
             for c in spec.edge.directed_when:
                 self.resolve(name, c, where=f"{where}.edge.directed_when", rule="reference")
+            roles = spec.edge.direction_from_roles
+            if roles is not None:
+                for side, c in roles.columns.items():
+                    self.resolve(name, c, where=f"{where}.edge.direction_from_roles.columns.{side}", rule="reference")
+                for c in roles.when:
+                    self.resolve(name, c, where=f"{where}.edge.direction_from_roles.when", rule="reference")
         elif spec.kind == "edges":
             self.add("error", where, "kind: edges needs an `edge` block (endpoints, orientation)", "reference",
                      table=name)

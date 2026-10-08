@@ -15,9 +15,9 @@
 #
 # Checked against the real Census (2025-11-08) through the unmodified server on 2026-10-08: an h5ad written
 # by cellxgene_census.get_anndata keeps soma_joinid as an obs column, feature_id as a var column and a
-# positional var index ('0', '1', ...) by construction, so the file checks ask for obs.soma_joinid only
-# (FileCheckSpec.key_columns are obs columns; var.feature_id is the descriptor's matrix key) and no longer
-# refuse the positional var index (genes are matched on var.feature_name/feature_id, never var_names).
+# positional var index ('0', '1', ...) by construction, so the file checks ask for obs.soma_joinid (key_columns)
+# and var.feature_id (var_key_columns, the descriptor's matrix key) and no longer refuse the positional var index
+# (genes are matched on var.feature_name/feature_id, never var_names).
 # obs_columns is passed as given: as a `projection` the gateway added the key of the bound table, which is
 # var when genes are named, so upstream was asked for an obs column feature_id (a real source_error); name
 # soma_joinid in obs_columns to keep the cell key (get_anndata without obs_columns returns every obs column).
@@ -101,7 +101,7 @@ tools:
       rows: null
       files:
         - {path_from: $.output_path, must_exist: true, echo_checks: {n_obs: $.n_cells, n_vars: $.n_genes},
-           key_columns: [soma_joinid], write_once: true}
+           key_columns: [soma_joinid], var_key_columns: [feature_id], write_once: true}
     serve: pass
 
   count_cells:
@@ -186,7 +186,7 @@ tools:
       summary_fields: {$.summary_stats: drop}    # over non-zero values of the truncated cells only
       files:
         - {path_from: $.output_path, must_exist: true, echo_checks: {n_obs: $.n_cells, n_vars: $.n_genes},
-           key_columns: [soma_joinid], write_once: true}
+           key_columns: [soma_joinid], var_key_columns: [feature_id], write_once: true}
     serve: pass
     text:
       notes: ["without value_filter upstream keeps soma_joinid < max_cells: the first cells by join id, not a sample (disclosed in _vbt.scope)",
@@ -219,7 +219,7 @@ tools:
         $.n_donors: "donor_id is unique only within dataset_id; donors of different datasets with one label merge"
         $.donor_summary: "keyed by donor_id alone, which merges donors of different datasets"
       files:
-        - {path_from: $.output_path, must_exist: true, key_columns: [soma_joinid],
+        - {path_from: $.output_path, must_exist: true, key_columns: [soma_joinid], var_key_columns: [feature_id],
            write_once: true}
     serve: pass
     text:

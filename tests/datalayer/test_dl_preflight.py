@@ -64,7 +64,7 @@ def test_subprocess_check_gives_one_result_per_part(baseline: dict[str, Any]) ->
     for r in _findings(results):
         assert r.scope["source"] and r.scope["table"] and r.label.startswith("data: ")
         assert set(r.scope) <= {"source", "table", "column", "columns", "partition"}
-    # Open Targets stores SO_0001583: the so plugin's canonical form for it, so no encoding drift (F12)
+    # Open Targets stores SO:0001583 in so.id: the so plugin's canonical form, so no encoding drift (F12)
     assert not [r for r in _findings(results) if r.scope["table"] == "so"], [r.line() for r in _findings(results)]
     labels = {r.label for r in results}
     assert "Open Targets reference data (OPEN_TARGETS_DATA_PATH)" in labels
@@ -82,7 +82,7 @@ def test_column_finding_names_its_column_and_readers(ot_root: Path, tahoe_root: 
     import dl_fixtures as F
 
     root = _copy(ot_root, tmp_path_factory, "pf-so")
-    rows = [{**r, "id": str(r["id"]).replace("_", ":", 1)} for r in F.read_rows(root, "so")]
+    rows = [{**r, "id": str(r["id"]).replace(":", "_", 1)} for r in F.read_rows(root, "so")]
     F.delete_table(root, "so")
     F.write_table(root, "so", F.table("so", rows))
     F.write_manifest(root)

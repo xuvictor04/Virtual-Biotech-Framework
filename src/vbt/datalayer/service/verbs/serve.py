@@ -31,6 +31,12 @@ Verbs (phase 2, answered by the phase-2 modules):
 ``sections`` of every request are read one by one (``views.serve_sections``): a section whose table
 cannot be read becomes ``{_vbt_unavailable, status: not_ready}`` instead of failing the call.
 
+A **live table** (layout capability ``live`` without ``scan``: CT.gov, cBioPortal) is never scanned:
+``lookup`` and ``find`` are answered by ``witness.live_find`` (the pages of one request within the source's
+budget; a ``pivot`` table reshaped to one row per index), with the source's release as ``as_of``. Its rows
+are ordered here only when every page was read (an ordered cut of a truncated read is refused); nesting,
+splitting, exploding, grouping and sections are refused on it.
+
 ``served_by`` is ``derived``. Over the scan budget the response has no rows, ``total: null`` and a
 ``reason`` starting with ``too_large:`` (never a partial answer presented as complete). Counters that
 have no field of their own (``excluded_negated``, groups ``filtered`` empty) are reported in
@@ -53,7 +59,7 @@ from .. import items as _items
 from ..reader import BudgetExceeded, ScanStats, TableReader, UnboundParameter
 from .index_build import text_leaf
 
-__all__ = ["serve", "search", "aggregate_rows", "VERBS", "MATCH_CLASSES"]
+__all__ = ["serve", "serve_live", "search", "aggregate_rows", "VERBS", "MATCH_CLASSES"]
 
 MATCH_CLASSES = ("exact", "casefold", "previous_synonym", "alias", "related_synonym", "broad_synonym",
                  "narrow_synonym", "prefix", "word", "substring")
@@ -348,8 +354,82 @@ def aggregate_rows(reader: TableReader, req: ServeRequest, params: Mapping[str, 
     return out, len(groups)
 
 
+def _order_value(v: Any, direction: str) -> Any:
+    if direction.endswith("_abs") and isinstance(v, (int, float)) and not isinstance(v, bool):
+        return abs(v)
+    return v
+
+
+def _sort_live(rows: list[dict[str, Any]], order: Sequence[Any], key: Sequence[str]) -> list[dict[str, Any]]:
+    """``order`` on live rows (stable sorts, last key first): nulls last unless asked first, ties by the key."""
+    from ...gateway.fields import get_path
+
+    def canon(v: Any) -> tuple[int, Any]:
+        return (0, v) if isinstance(v, (int, float)) and not isinstance(v, bool) else (1, str(v))
+
+    out = sorted(rows, key=lambda r: tuple(canon(get_path(r, k)) for k in key))
+    for o in reversed(list(order)):
+        present = [r for r in out if get_path(r, o.column) is not None]
+        nulls = [r for r in out if get_path(r, o.column) is None]
+        present.sort(key=lambda r: canon(_order_value(get_path(r, o.column), o.direction)),
+                     reverse=o.direction.startswith("desc"))
+        out = nulls + present if o.nulls == "first" else present + nulls
+    return out
+
+
+def serve_live(ctx: ServiceContext, req: ServeRequest) -> dict[str, Any] | None:
+    """``lookup``/``find`` on a live table through ``_live_find`` (module docstring); None for other tables."""
+    from .public import is_live
+
+    try:
+        t = ctx.table(req.table)
+    except Exception:  # noqa: BLE001 - unknown tables are the reader's to report
+        return None
+    if not is_live(ctx, t):
+        return None
+    refused = [name for name, v in (("nest", req.nest), ("split", req.split), ("explode", req.explode),
+                                    ("group_by", req.group_by), ("distinct", req.distinct),
+                                    ("sections", req.sections), ("limit_grain", req.limit_grain),
+                                    ("aggregate", req.aggregate)) if v]
+    if req.verb not in ("lookup", "find") or refused:
+        raise ServiceError(f"{req.table} is a live table: _serve answers lookup and find on it "
+                           f"({req.verb if req.verb not in ('lookup', 'find') else ', '.join(refused)} is not "
+                           "available: the source pages it)")
+    from ...predicate import to_json
+    from ..reader import bind_params
+    from .witness import live_find
+
+    try:
+        pred = bind_params(from_json(req.predicate), req.params) if req.predicate else None
+    except UnboundParameter as exc:
+        raise ServiceError(str(exc)) from None
+    order = list(req.order)
+    got = live_find(ctx, {"table": req.table, "predicate": to_json(pred) if pred is not None else None,
+                          "columns": list(req.columns), "limit": None if order else req.limit})
+    rows = [dict(r) for r in got.get("rows") or []]
+    key = [k for k in t.spec.key.columns if not k.endswith("#")]
+    truncated = bool(got.get("truncated"))
+    if order:
+        if truncated:
+            return ServeResponse(rows=[], total=got.get("total"), truncated=True, key_columns=key,
+                                 as_of=got.get("as_of"),
+                                 reason=f"too_large: {got.get('pages')} page(s) read within the source's budget; "
+                                        "an ordered cut needs every row: narrow the filter").model_dump(mode="json")
+        rows = _sort_live(rows, order, key)
+        if req.limit is not None and len(rows) > int(req.limit):
+            rows, truncated = rows[: int(req.limit)], True
+    if req.rename:
+        rows = [{req.rename.get(k, k): v for k, v in r.items()} for r in rows]
+    resp = ServeResponse(rows=rows, total=got.get("total"), truncated=truncated, key_columns=key,
+                         served_by="derived", as_of=got.get("as_of"))
+    return resp.model_dump(mode="json")
+
+
 def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     req = ServeRequest.model_validate(dict(payload))
+    live = serve_live(ctx, req)
+    if live is not None:
+        return live
     if req.verb == "similar":
         from .similar import serve_similar
 

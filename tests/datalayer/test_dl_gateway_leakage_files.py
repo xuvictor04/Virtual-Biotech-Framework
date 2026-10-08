@@ -122,7 +122,8 @@ def test_prepare_leakage_stamp_and_partial_dates():
 # --------------------------------------------------------------------------- files
 
 
-def _h5ad(path: Path, obs_index: list[str], var_index: list[str], obs_cols: list[str]) -> None:
+def _h5ad(path: Path, obs_index: list[str], var_index: list[str], obs_cols: list[str],
+          var_cols: tuple[str, ...] = ()) -> None:
     h5py = pytest.importorskip("h5py")
     with h5py.File(path, "w") as f:
         obs = f.create_group("obs")
@@ -133,7 +134,22 @@ def _h5ad(path: Path, obs_index: list[str], var_index: list[str], obs_cols: list
             obs.create_dataset(c, data=[b"x"] * len(obs_index))
         var = f.create_group("var")
         var.attrs["_index"] = "_index"
+        var.attrs["column-order"] = list(var_cols)
         var.create_dataset("_index", data=[s.encode() for s in var_index])
+        for c in var_cols:
+            var.create_dataset(c, data=[b"x"] * len(var_index))
+
+
+def test_file_checks_find_key_columns_on_either_axis(tmp_path):
+    """A Census h5ad keeps soma_joinid on obs and feature_id on var (positional var index): both are checked."""
+    _h5ad(tmp_path / "census.h5ad", ["0", "1"], ["0", "1", "2"], ["soma_joinid"], ("feature_id", "feature_name"))
+    spec = FileCheckSpec(path_from="$.output_path", key_columns=["soma_joinid"], var_key_columns=["feature_id"])
+    checks = {c.name: c for c in reconcile([spec], {"output_path": "census.h5ad"}, output_dir=tmp_path)}
+    assert checks["file_key_columns"].ok and checks["file_var_key_columns"].ok
+    assert read_h5ad_header(tmp_path / "census.h5ad")["var_columns"] == ["feature_id", "feature_name"]
+    _h5ad(tmp_path / "nofeature.h5ad", ["0"], ["0"], ["soma_joinid"])
+    checks = {c.name: c for c in reconcile([spec], {"output_path": "nofeature.h5ad"}, output_dir=tmp_path)}
+    assert checks["file_var_key_columns"].ok is False and "feature_id" in checks["file_var_key_columns"].detail
 
 
 def test_file_checks_echo_key_columns_and_var_index(tmp_path):

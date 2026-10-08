@@ -3,7 +3,8 @@
 ``depth``: ``shallow`` (layout and manifest probes only), ``standard`` (every check, keys streamed
 in full only up to ``data.readiness.key_check_full_max_rows``, samples elsewhere), ``deep`` (full
 uniqueness and referential passes). The response also reports the child's
-``sys.flags.hash_randomization``, so the gateway can verify that the launcher's hash seed took effect.
+``sys.flags.hash_randomization``, so the gateway can verify that the launcher's hash seed took effect, and the
+descriptor and overlay files its catalog quarantined (R8), so ``vbt ds check`` can name them.
 """
 
 from __future__ import annotations
@@ -21,8 +22,10 @@ __all__ = ["check", "VERBS"]
 def check(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     req = CheckRequest.model_validate(dict(payload))
     tables, errors = check_tables(ctx, req.tables, req.depth)
+    quarantined = [{"file": q.file, "kind": q.kind, "name": q.name, "error": q.summary}
+                   for q in getattr(ctx.catalog, "quarantined", ()) or ()]
     resp = CheckResponse(tables=tables, depth=req.depth, hash_randomization=int(sys.flags.hash_randomization),
-                         errors=errors)
+                         errors=errors, quarantined=quarantined)
     return resp.model_dump(mode="json", by_alias=True)
 
 

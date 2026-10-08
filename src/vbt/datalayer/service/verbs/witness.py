@@ -111,7 +111,22 @@ def remote_witness(ctx: ServiceContext, req: WitnessRequest) -> WitnessResponse:
     if total is None:
         return WitnessResponse(total_method="unknown",
                                reason="the bound predicate cannot be expressed as a count request to the source")
-    return WitnessResponse(total=int(total), total_method="scan", reason=reason, scanned_bytes=0)
+    return WitnessResponse(total=int(total), total_method="scan", reason=reason, scanned_bytes=0,
+                           as_of=_release(layout, t))
+
+
+def _release(layout: Any, t: Any) -> str | None:
+    """The source's data release (CT.gov ``dataTimestamp``), cached by the layout; None when it has none or the
+    request fails (provenance then names no release rather than a guess)."""
+    if not callable(getattr(layout, "release", None)):
+        return None
+    from ...plugins.layouts.live_api import RELEASE_TTL_S, Budget
+
+    try:
+        got = layout.release(layout_spec(t), Budget.of(t.descriptor.budget), max_age_s=RELEASE_TTL_S)
+    except Exception:  # noqa: BLE001 - provenance only: the count stands without a release
+        return None
+    return str(got) if got else None
 
 
 def leakage_conjunct(ctx: ServiceContext, t: Any) -> Any:

@@ -75,12 +75,11 @@ id_types:
                                                                          # (25.09: 8,259 of 48,165 names; ids GO:NNNNNNN)
                      # OT's go table has no hierarchy: gene_ontology:go_term `extends` this type with the
                      # go-basic.obo DAG (is_a and part_of propagate, regulates does not)
-  so_term:          {plugin: so, options: {separator: "_"}, universe: so.id,
-                     resolve_via: [so.label]}
-                     # REFUTED: the real 25.09 so.id is SO:NNNNNNN (all 2,611 terms, written by Polars; the
-                     # SO_0001583 form is what variant.mostSevereConsequenceId stores). The test fixtures store
-                     # SO_, so the separator and the fixtures change together (contract request); until then
-                     # readiness R4b reports encoding_drift on the real so table.
+  so_term:          {plugin: so, universe: so.id, resolve_via: [so.label],
+                     stored_forms: {variant.mostSevereConsequenceId: as_stored}}
+                     # 25.09: so.id is SO:NNNNNNN (all 2,611 terms, written by Polars) while
+                     # variant.mostSevereConsequenceId stores SO_NNNNNNN: the canonical form is SO:, and the
+                     # variant column is a stored form the so plugin maps SO_ -> SO: (curie_underscore_to_colon).
   biosample:        {plugin: local_key, options: {canonical: "^\\S+$", normalize: [strip]},
                      universe: biosample.biosampleId, resolve_via: [biosample.biosampleName, biosample.synonyms]}
                      # 25.09: 33,902 of 35,007 ids are PREFIX_LOCAL (UBERON 16,054, GO 8,703, CL 3,402, ...); the
@@ -104,7 +103,10 @@ id_types:
                      universe: {table: target_essentiality,
                                 keys: ["geneEssentiality[].depMapEssentiality[].screens[].depmapId"]},
                      resolve_via: ["target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].cellLineName"]}
-  pmid:             {plugin: pmid, universe: literature.pmid, resolvable: false}
+  pmid:             {plugin: pmid, resolvable: false}
+  # literature.pmid holds Europe PMC article IDs: PMIDs, plus 2,349,085 rows (759,406 IDs) with PPR, IND, PMC,
+  # CAIN, c or FNI IDs (25.09, every shard's pmid column read remotely)
+  europepmc_id:     {plugin: europepmc_id, universe: literature.pmid, resolvable: false}
   pmcid:            {plugin: pmcid, resolvable: false}
   europepmc_ppr:    {plugin: europepmc_ppr, resolvable: false}
   ot_evidence:      {plugin: local_key, options: {canonical: "^[0-9a-f]{32}$|^[A-Za-z0-9_\\-]+$"}, resolvable: false}
@@ -176,13 +178,11 @@ tables:
           topLevelTerm: {role: category, vocab: data, projection_of: reactome_pathway, lossy: true}
       go:
         role: member
-        # REFUTED (the §23 target.go item-key question): in 25.09 (id, aspect, evidence, source, geneProduct)
-        # repeats in 12,806 genes (98,095 items) that differ only in ecoId (GO:0005794/C/IEA/GO_REF:0000043 with
+        # The §23 target.go item-key question: in 25.09 (id, aspect, evidence, source, geneProduct) repeats in
+        # 12,806 genes (98,095 items) that differ only in ecoId (GO:0005794/C/IEA/GO_REF:0000043 with
         # ECO:0000265, ECO:0000256, ECO:0007322); with ecoId the key is unique over all 821,377 items (20,998
-        # genes; 57,728 genes null, none empty; ecoId null in 4,837 items). The CT-3 oracle in the test fixtures
-        # pins the five-part key and an item key cannot declare a nullable part, so the key changes together
-        # with them (contract request); until then readiness reports key_violation on the real target_go.
-        item_key: {columns: [id, aspect, evidence, source, geneProduct], check: sampled}
+        # genes; 57,728 genes null, none empty; ecoId null in 4,837 items, NULLS NOT DISTINCT).
+        item_key: {columns: [id, aspect, evidence, source, geneProduct, ecoId], nullable: [ecoId], check: sampled}
         membership:
           set: {path: id, id_type: go_term}
           member: {parent: id}
@@ -230,7 +230,8 @@ tables:
         role: nested
         # 25.09: (id, origin) repeats in 16 genes (17 items: one probe listed by two portals, or with two drugIds,
         # e.g. DGY-09-192 from Chemical Probes.org and Gray Laboratory Probes); unique with drugId and urls
-        item_key: [id, origin, drugId, urls]
+        # (drugId null in 141 items)
+        item_key: {columns: [id, origin, drugId, urls], nullable: [drugId]}
         null_means: unknown
         empty_means: absent
         # 25.09: 917 genes list probes (5,090 items), 77,809 are null and none is empty: a gene without probes
@@ -254,8 +255,9 @@ tables:
       safetyLiabilities:
         role: nested
         # 25.09: (event, eventId, datasource) repeats in 22 genes (50 items: one AOP-Wiki event from several
-        # pathways, e.g. "Increased Mortality" with aops/363 and aops/159); unique with url
-        item_key: [event, eventId, datasource, url]
+        # pathways, e.g. "Increased Mortality" with aops/363 and aops/159); unique with url (eventId null in
+        # 1,360 items, url in 1,941)
+        item_key: {columns: [event, eventId, datasource, url], nullable: [eventId, url]}
         coverage: {statement: "Curated target safety liabilities; an empty list means none curated, not that the target is safe.",
                    absence_means: unknown}
         fields:
@@ -382,9 +384,8 @@ tables:
     items_of: {table: target, path: "chemicalProbes[]"}
     grain: one chemical probe of one target from one origin
     # 25.09: (id, chemicalProbes[].id, origin, drugId, urls) is unique over all 5,090 items with NULLS NOT DISTINCT;
-    # drugId is null in 141 and an item key cannot declare a nullable part, so R5 would report a false
-    # key_violation: check: none until item keys take `nullable` (contract request)
-    key: {columns: [], check: none}
+    # drugId is null in 141 (a nullable item-key part)
+    key: {columns: [], check: sampled}
     coverage: {statement: "Probes listed by Probes & Drugs as integrated in OT 25.09; covered for genes whose list is present (empty = none listed).",
                absence_means: absent, verified: false}
 
@@ -425,8 +426,8 @@ tables:
     items_of: {table: target, path: "safetyLiabilities[]"}
     grain: one curated safety liability (event, source) of one target
     # 25.09: (id, event, eventId, datasource, url) is unique over all 4,484 items with NULLS NOT DISTINCT; eventId
-    # is null in 1,360 and url in 1,941, so check: none for the reason given at target_chemical_probes
-    key: {columns: [], check: none}
+    # is null in 1,360 and url in 1,941 (nullable item-key parts)
+    key: {columns: [], check: sampled}
     grains: {target: [id], event: ["safetyLiabilities[].eventId"]}
     coverage: {statement: "Curated target safety liabilities; an empty list means none curated, not that the target is safe.",
                absence_means: unknown}
@@ -462,13 +463,12 @@ tables:
       hasPocket:         {role: measure, statistic: binary_factor, missing: unknown, verified: true}
       hasLigand:         {role: measure, statistic: binary_factor, missing: unknown, verified: true}
       hasSmallMoleculeBinder: {role: measure, statistic: binary_factor, missing: unknown, verified: true}
-      # REFUTED (the SCHEMA-DEPENDENT question of DATA_LAYER.md §23): 25.09 stores only -1 (943 genes) and null
-      # (77,783); "none recorded" is never 0, so `no_safety_events` cannot be answered and readiness refutes
-      # the 0 code (unsupported_filter, as designed). The encoding, the overlay flag and the tests that pin
-      # them change together (contract request).
+      # The SCHEMA-DEPENDENT question of DATA_LAYER.md §23: 25.09 stores only -1 (943 genes) and null (77,783);
+      # "none recorded" is never stored as 0, so null cannot be told from "not assessed" and the overlay's
+      # `no_safety_events` flag is an unbound argument (unsupported_filter).
       hasSafetyEvent:    {role: measure, statistic: signed_factor, scale: [-1, 0], missing: unknown,
-                          encoding: {-1: known_unfavourable, 0: none_recorded}, verified: false,
-                          description: "-1 = a safety event is recorded, 0 = none recorded, null = not assessed"}
+                          encoding: {-1: known_unfavourable}, verified: true,
+                          description: "-1 = a safety event is recorded, null = none recorded or not assessed"}
       geneticConstraint: {role: measure, statistic: signed_factor, scale: [-1, 1], direction: lower_is_stronger,
                           missing: unknown, verified: true}   # lower = more constrained (LoF-intolerant); 25.09: [-1, 1]
       paralogMaxIdentityPercentage: {role: measure, statistic: signed_factor, scale: [-1, 0], missing: unknown,
@@ -574,11 +574,10 @@ tables:
     # key leads with studyId (the PharmGKB clinical annotation, never null). The former grouping key repeats
     # 9,703 times and no column set short of the whole row is unique (studyId + genotype + haplotypeId + target
     # + phenotypeText + drugs still repeats 1,074 times), while no two rows are equal: content identity holds.
-    # check: none because R5b tests the grouping key, not the content hash (contract request); with it, every
-    # real check would be a false key_violation.
+    # With row_identity content_hash, R5b tests that no two rows are equal (sampled on the grouping key).
     key: {columns: [studyId, targetFromSourceId, variantRsId, genotypeId, haplotypeId, phenotypeText],
           nullable: [targetFromSourceId, variantRsId, genotypeId, haplotypeId, phenotypeText], row_identity: content_hash,
-          check: none, verified: true}
+          check: sampled, verified: true}
     grains: {drug: ["drugs[].drugId"], variant: [variantRsId]}
     rank: [{column: evidenceLevel, direction: asc, nulls: last, statistic: ordinal}, {column: variantRsId, direction: asc}]
     coverage: {statement: "PharmGKB clinical annotations integrated by OT 25.09; absence means none curated.",
@@ -701,9 +700,8 @@ tables:
           maxPhaseForIndication: {role: measure, statistic: clinical_phase, scale: [0, 4], missing: unknown, verified: true}
                                  # 25.09: 0.5-4.0, and -1 (unknown) in 614 items
           # 25.09: source is unique within every one of the 61,629 indication items (up to 5 references each);
-          # check: none because R5b:items flattens a list nested in a list per row, so the same source under
-          # two indications of one drug reads as a repeat (1,130 of 2,000 sampled rows; contract request)
-          references: {role: nested, item_key: {columns: [source], check: none}, fields: {
+          # R5b:items checks it per indication (the same source under two indications of a drug is no repeat)
+          references: {role: nested, item_key: [source], fields: {
                          source: {role: category, vocab: data},
                          ids:    {role: reference, ref_kinds: [pmid, url, nct_id], path: "[]"}}}
       approvedIndications: {role: identifier, id_type: ot_disease, path: "[]", cardinality: many}
@@ -749,10 +747,10 @@ tables:
     grain: one mechanism of action (action on one target) shared by one or more molecules
     # 25.09 (6,332 rows): the grouping key repeats 4,651 times (one row per set of 1-2 chemblIds, e.g.
     # "Antithrombin-III activator" for [CHEMBL1200644, CHEMBL1201202] and for [CHEMBL1201414]); no two rows
-    # are equal, and with chemblIds the key is unique, so content identity holds. check: none for the same
-    # reason as pharmacogenomics (R5b tests the grouping key; contract request).
+    # are equal, and with chemblIds the key is unique, so content identity holds (R5b tests that no two rows
+    # are equal).
     key: {columns: [mechanismOfAction, actionType, targetName], nullable: [actionType, targetName],
-          row_identity: content_hash, check: none, verified: true}
+          row_identity: content_hash, check: sampled, verified: true}
     coverage: {statement: "ChEMBL mechanisms of action; absence means none curated.", absence_means: unknown}
     columns:
       mechanismOfAction: {role: category, vocab: data, match: casefold}
@@ -1183,15 +1181,17 @@ tables:
     # shards (of the pmids of 4 sampled shards, 203,994 occur in two of them) and every shard spans
     # pmid "100".."PPR..."/"c83..", so row-group statistics on pmid prune nothing. (pmid, keywordId) is unique
     # over all 151,961,320 rows (the pmid and keywordId column chunks of every shard read remotely, 1.42 GB);
-    # 2,349,085 rows (759,406 ids) carry a non-numeric Europe PMC id in pmid (IND20360743, PPR..., c8345).
+    # 2,349,085 rows (759,406 ids) carry a non-numeric Europe PMC id in pmid (PPR 1,659,430 rows, IND 388,537,
+    # PMC 301,096, CAIN 12, c 8, FNI 2): the column's id type is europepmc_id.
     key: {columns: [pmid, keywordId], check: sampled, verified: true}
     access_paths:
       - {columns: [keywordId], via: sidecar_index, build: on_demand}    # built by index_huge (phase 4, F19)
-      - {columns: [pmid], via: row_group_stats}
+      # row-group statistics on pmid prune nothing in 25.09 (every shard spans "100".."c8345"): a sidecar index
+      - {columns: [pmid], via: sidecar_index, build: on_demand}
     coverage: {statement: "Europe PMC text-mined entity mentions integrated by OT 25.09; absence means not text-mined, not that the paper is irrelevant.",
                absence_means: unknown}
     columns:
-      pmid:        {role: identifier, id_type: pmid}
+      pmid:        {role: identifier, id_type: europepmc_id}
       pmcid:       {role: identifier, id_type: pmcid, resolvable: false}
       date:        {role: time, precision: day, missing: unknown}
       year:        {role: time, precision: year, missing: unknown}
@@ -1267,11 +1267,17 @@ tables:
             fields:
               reliability: {role: flag, missing: unknown}
               level:       {role: measure, statistic: ordinal, missing_values: [-1], missing: unknown}
-              # 25.09 also stores protein.cell_type, list<struct<name, reliability, level>> (HPA cell types of the
-              # tissue, 1,109,986 items, level -1 in 278). It is not declared yet: an optional field absent from
-              # the data (the test fixtures) marks its container unready, which would take the tissue tools
-              # down there (contract request); strict readiness checks top-level columns only, so the real
-              # release is unaffected.
+              # 25.09: HPA cell types of the tissue, list<struct<name, reliability, level>> (1,109,986 items,
+              # level -1 in 278); optional (absent from older files): only a call reading it needs it. A name
+              # repeats with another level in 12,998 of the 4,940,421 lists; (name, level) is unique in every one
+              cell_type:
+                role: nested
+                optional: true
+                item_key: [name, level]
+                fields:
+                  name:        {role: category, vocab: data}
+                  reliability: {role: flag, missing: unknown}
+                  level:       {role: measure, statistic: ordinal, missing_values: [-1], missing: unknown}
 
   expression_tissues:                           # item table: rows of the per-tissue expression tools
     kind: fact
@@ -1326,7 +1332,7 @@ tables:
             # 25.09 (17,867 genes, 517,111 tissue items, 20,955,265 screens): every gene has exactly one item with
             # tissueId null and tissueName "other" (1,593,364 screens); (gene, tissueId, depmapId) and
             # (gene, depmapId) are both unique
-            item_key: [tissueId]
+            item_key: {columns: [tissueId], nullable: [tissueId]}
             fields:
               tissueId:   {role: category, vocab: data}
               tissueName: {role: label, of: tissueId}
@@ -1349,9 +1355,9 @@ tables:
     items_of: {table: target_essentiality, path: "geneEssentiality[].depMapEssentiality[].screens[]"}
     grain: one DepMap CRISPR screen result of one gene in one cell line (grouped by tissue)
     # composed: (id, depMapEssentiality[].tissueId, screens[].depmapId); 25.09: unique over all 20,955,265
-    # screens (deep check), but tissueId is null for the "other" tissue group (1,593,364 screens) and an item
-    # key cannot declare a nullable part: check: none for the reason given at target_chemical_probes
-    key: {columns: [], check: none}
+    # screens (deep check) with NULLS NOT DISTINCT: tissueId is null for the "other" tissue group (1,593,364
+    # screens), declared by the item key's nullable
+    key: {columns: [], check: sampled}
     grains: {gene: [id], cell_line: ["geneEssentiality[].depMapEssentiality[].screens[].depmapId"]}
     rank: [{column: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect", direction: asc, nulls: last}]
     coverage: {statement: "DepMap CRISPR screens of cancer cell lines only; a missing gene or line means not screened.",
@@ -1465,7 +1471,7 @@ tables:
       referenceAllele: {role: payload}
       alternateAllele: {role: payload}
       rsIds:           {role: identifier, id_type: rsid, path: "[]", cardinality: many}   # one rsID can name several alleles
-      mostSevereConsequenceId: {role: category, vocab: data}   # 25.09: SO_NNNNNNN (so.id stores SO:NNNNNNN)
+      mostSevereConsequenceId: {role: identifier, id_type: so_term, form: as_stored}   # 25.09: SO_NNNNNNN (so.id: SO:)
       variantDescription: {role: text}
       hgvsId:          {role: identifier, resolvable: false}
       # in the 25.09 files (6,795,269 variants, 25 shards), absent from the test fixtures:
@@ -1630,13 +1636,14 @@ tables:
           nullable: [targetB], check: full}
     # 25.09: every gene pair (A != B) is stored in both orientations in every source (1,094,900 intact,
     # 49,310 reactome, 35,070 signor and 12,990,032 string ordered pairs, each with its reverse), so the two
-    # stored rows are one edge (orientation: both). SIGNOR is mirrored too, with the roles swapped
-    # ("regulator" / "regulator target"): its causal direction is in the roles, not in the A/B order, so
-    # reading the A/B order as directed (the former directed_when: {sourceDatabase: [signor]}) would add a
-    # reversed edge for every SIGNOR relation; edges are undirected until direction can come from the roles
-    # (contract request). 6,086 rows pair a gene with itself.
+    # stored rows are one edge (orientation: both). SIGNOR is mirrored too, with the roles swapped: all 36,636
+    # SIGNOR rows pair "regulator" with "regulator target" (18,221 A->B, 18,415 B->A; 36,404 have their mirror
+    # stored), so the causal direction is in the roles, not in the A/B order (reading the A/B order as directed
+    # would add a reversed edge for every relation): the regulator is the source. 6,086 rows pair a gene with itself.
     edge: {a: targetA, b: targetB, directed: false, orientation: both, verified: true,
-           sides: {a: [intA, intABiologicalRole, speciesA], b: [intB, intBBiologicalRole, speciesB]}}
+           sides: {a: [intA, intABiologicalRole, speciesA], b: [intB, intBBiologicalRole, speciesB]},
+           direction_from_roles: {columns: {a: intABiologicalRole, b: intBBiologicalRole}, source: regulator,
+                                  target: "regulator target", when: {sourceDatabase: [signor]}, verified: true}}
     grains: {edge: {unordered: [targetA, targetB], by: [sourceDatabase]}, partner: {unordered: [targetA, targetB]}}
     rank: [{column: scoring, direction: desc, nulls: last, within: [sourceDatabase]}]
     coverage:
@@ -1658,8 +1665,7 @@ tables:
       intBBiologicalRole: {role: category, vocab: data, side: b}
       # 25.09 names the species fields scientific_name and taxon_id (interaction_evidence keeps scientificName
       # and taxonId); speciesA is Homo sapiens (9606) in every row, speciesB taxon_id ranges -2..3052342.
-      # Both spellings are declared optional; the overlay's `species` argument binds scientificName (contract
-      # request: bind scientific_name).
+      # Both spellings are declared optional; the overlay's `species` argument binds scientific_name.
       speciesA: {role: nested, side: a, fields: {mnemonic: {role: category, vocab: data},
                                                  scientificName: {role: category, vocab: data, match: casefold, optional: true},
                                                  taxonId: {role: identifier, id_type: ncbi_taxon, optional: true},

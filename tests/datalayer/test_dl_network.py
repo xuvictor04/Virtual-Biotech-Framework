@@ -40,11 +40,10 @@ def build(root: Path) -> Path:
     import dl_fixtures as F
 
     ot = root / "ot" / "25.09"
-    sp = {"mnemonic": "human", "scientificName": "Homo sapiens", "taxonId": 9606}
+    sp = {"mnemonic": "human", "scientific_name": "Homo sapiens", "taxon_id": 9606}
     rows = [{"sourceDatabase": s, "targetA": N[a], "targetB": N[b] if b else None, "intA": f"P{a}{s}",
              "intB": f"P{b or 'X'}{s}", "intABiologicalRole": "unspecified role", "intBBiologicalRole": "unspecified role",
-             "speciesA": sp, "speciesB": sp, "count": 1, "scoring": score, "intASource": "uniprotkb",
-             "intBSource": "uniprotkb"} for s, a, b, score in EDGES]
+             "speciesA": sp, "speciesB": sp, "count": 1, "scoring": score} for s, a, b, score in EDGES]
     F.write_table(ot, "interaction", F.table("interaction", rows))
     targets = [{"id": g, "approvedSymbol": f"SYM{c}" if g != PCSK9 else "PCSK9", "biotype": "protein_coding",
                 "approvedName": c,

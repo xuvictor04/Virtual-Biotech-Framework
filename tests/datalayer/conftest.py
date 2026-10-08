@@ -7,7 +7,9 @@
   xfail of the correct-behaviour assertion) and ``enforce`` (skipped until
   ``vbt.datalayer.gateway`` and ``configs/data/overlays/target.yaml`` exist).
 * ``live`` starts the unmodified upstream servers once per mode on the shared fixtures;
-  ``live_variant`` starts extra bridges for variant fixtures and config overrides.
+  ``live_variant`` starts extra bridges for variant fixtures and config overrides. At most
+  ``MAX_LIVE_BRIDGES`` run at once (least recently used closed first) and a module's bridges stop
+  with the module, which keeps the whole directory in one process within a few GB.
 * ``fixture_ready`` (enforce mode): the gateway's readiness must report every table the six
   tests read and the ``ensembl_gene``, ``ot_disease`` and ``chembl_molecule`` indexes ready;
   otherwise the test fails with a ``FIXTURE:`` message (a fixture error, not a CT failure).
@@ -116,13 +118,23 @@ def live_servers() -> tuple[str, ...]:
     return ALL_SERVERS + (("pubmed",) if pubmed_hook_missing() is None else ())
 
 
+#: Bridges kept running at once. A bridge runs up to eleven upstream servers plus the data child
+#: (about 2 GB resident), so keeping every variant for the whole session outgrows a 6 GB test budget;
+#: the least recently used bridge is closed and starts again on its next use (results are cached per
+#: bridge, the fixtures are read-only).
+MAX_LIVE_BRIDGES = 2
+_POOLS: list["_Bridges"] = []
+
+
 class _Bridges:
-    """Started bridges keyed by (mode, label); closed at the end of the session."""
+    """Started bridges keyed by (mode, label): at most :data:`MAX_LIVE_BRIDGES` at once, all closed at
+    the end of each test module that started any (the next module starts them again)."""
 
     def __init__(self, tmp_path_factory: pytest.TempPathFactory) -> None:
         self.tmp = tmp_path_factory
         self.started: dict[tuple[str, str], Any] = {}
         self.failed: dict[tuple[str, str], str] = {}
+        _POOLS.append(self)
 
     def get(self, mode: str, label: str, servers: Sequence[str], env: Any,
             overrides: Mapping[str, Any] | None = None) -> Any:
@@ -131,12 +143,15 @@ class _Bridges:
         key = (mode, label)
         if key in self.failed:
             pytest.fail(self.failed[key])
-        if key not in self.started:
+        if key in self.started:
+            self.started[key] = self.started.pop(key)          # most recently used last
+        else:
             reason = upstream_missing()
             if reason:
                 pytest.skip(reason)
             if mode == "enforce" and gateway_missing():
                 pytest.skip(f"enforce mode: {gateway_missing()}")
+            self._evict(MAX_LIVE_BRIDGES - 1)
             try:
                 self.started[key] = LiveBridge(servers, env=env, gateway=mode == "enforce",
                                                tmp_path=self.tmp.mktemp(f"bridge-{mode}-{label}"),
@@ -149,13 +164,21 @@ class _Bridges:
                 pytest.fail(msg)
         return self.started[key]
 
+    def _evict(self, keep: int) -> None:
+        while len(self.started) > keep:
+            _close(self.started.pop(next(iter(self.started))))      # the least recently used
+
     def close(self) -> None:
         for bridge in self.started.values():
-            try:
-                bridge.close()
-            except Exception:  # noqa: BLE001 - shutdown noise
-                pass
+            _close(bridge)
         self.started.clear()
+
+
+def _close(bridge: Any) -> None:
+    try:
+        bridge.close()
+    except Exception:  # noqa: BLE001 - shutdown noise
+        pass
 
 
 @pytest.fixture(scope="session")
@@ -163,6 +186,14 @@ def bridges(tmp_path_factory: pytest.TempPathFactory):
     b = _Bridges(tmp_path_factory)
     yield b
     b.close()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _close_bridges_after_module():
+    """The bridges a module started stop with it, so they never add up with the next module's servers."""
+    yield
+    for pool in _POOLS:
+        pool.close()
 
 
 @pytest.fixture(scope="session")

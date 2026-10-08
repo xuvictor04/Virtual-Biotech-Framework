@@ -64,7 +64,7 @@ tools:
       drop_fields: {$.message: "no prioritisation row means not scored, not deprioritised"}
     serve: pass
     text:
-      notes: ["hasSafetyEvent: -1 = a safety event is recorded, 0 = none recorded, null = not assessed",
+      notes: ["hasSafetyEvent: -1 = a safety event is recorded, null = none recorded or not assessed (no 0 is stored)",
               "maxClinicalTrialPhase is normalised to 0-1 in this table (0.25 per phase), not 0-4"]
 
   prioritize_targets:
@@ -73,10 +73,12 @@ tools:
       has_pocket:      {role: flag, binds: open_targets.target_prioritisation.hasPocket, when_true: {in: [yes]}, when_false: {in: [no]}}
       has_small_molecule_binder: {role: flag, binds: open_targets.target_prioritisation.hasSmallMoleculeBinder,
                                   when_true: {in: [yes]}, when_false: {in: [no]}}
-      no_safety_events: {role: flag, binds: open_targets.target_prioritisation.hasSafetyEvent,
-                         when_true: {in: [none_recorded]}}       # positive form: -1 and null never pass
+      # 25.09 stores hasSafetyEvent -1 or null, never 0: "no safety event" cannot be told from "not assessed",
+      # so the flag is refused (unsupported_filter) instead of returning unassessed targets as safe
+      no_safety_events: {role: unbound, binds: open_targets.target_prioritisation.hasSafetyEvent}
       min_genetic_constraint: {binds: open_targets.target_prioritisation.geneticConstraint, op: le, min: -1, max: 1}
-      min_clinical_phase: {binds: open_targets.target_prioritisation.maxClinicalTrialPhase, op: ge, min: 0, max: 4}
+      # maxClinicalTrialPhase is 0-1 here (0.25 per phase: phase 3 = 0.75), not the 0-4 of known_drug
+      min_clinical_phase: {binds: open_targets.target_prioritisation.maxClinicalTrialPhase, op: ge, min: 0, max: 1}
       is_membrane:     {role: flag, binds: open_targets.target_prioritisation.isInMembrane, when_true: {in: [yes]}, when_false: {in: [no]}}
       is_secreted:     {role: flag, binds: open_targets.target_prioritisation.isSecreted, when_true: {in: [yes]}, when_false: {in: [no]}}
       sort_by:

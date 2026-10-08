@@ -56,6 +56,8 @@ class ArgBinding(Strict):
     when_false: dict[str, Any] | None = None
     interpreted_as: Literal["exact", "regex", "substring", "casefold_substring", "engine"] = "exact"
     engine_doc: str | None = None
+    engine_param: str | None = None                    # engine args: the source's request parameter the value
+                                                       # fills (query.cond): the remote witness counts that search
     escape: str | None = None                          # format plugin whose quote() escapes the value
     forbid: list[str] = []
     pattern: str | None = None
@@ -101,6 +103,12 @@ class ArgBinding(Strict):
             raise ValueError("min_items > max_items")
         if self.min is not None and self.max is not None and self.min > self.max:
             raise ValueError("min > max")
+        return self
+
+    @model_validator(mode="after")
+    def _engine_param(self) -> "ArgBinding":
+        if self.engine_param is not None and (self.role != "free_text" or self.interpreted_as != "engine"):
+            raise ValueError("engine_param is for free_text arguments interpreted_as: engine")
         return self
 
     @model_validator(mode="after")
@@ -190,7 +198,8 @@ class FileCheckSpec(Strict):
     path_from: str
     must_exist: bool = True
     echo_checks: dict[str, str] = {}                   # {n_obs: $.n_cells}
-    key_columns: list[str] = []
+    key_columns: list[str] = []                        # obs columns the file must hold
+    var_key_columns: list[str] = []                    # var columns the file must hold (Census: feature_id)
     forbid_positional_index: bool = False
     write_once: bool = True
 

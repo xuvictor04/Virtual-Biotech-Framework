@@ -543,9 +543,34 @@ def data_child_command(config: dict[str, Any], *args: str) -> tuple[list[str], d
     return [str(python), "-E", str(script), *args], env
 
 
+def run_contained(config: Mapping[str, Any], argv: list[str], env: Mapping[str, str], *,
+                  timeout: float) -> subprocess.CompletedProcess[str]:
+    """Run a data-child command line under the reaper with the data child's memory limit
+    (``data.service.mem_limit_mb``, ``data.memory.limit_kind``), as the bridge launches it: decoding
+    reference data never runs unlimited in, or next to, the harness (I12). A deep ``--check`` of a 27M-row
+    table reached 10.3 GiB resident when it ran uncontained. Where the reaper is not available (not Linux,
+    ``limit_kind: none`` aside) the command runs as given."""
+    import tempfile
+
+    from .datalayer.launch import DATA_SERVER, build_launch_spec
+    from .datalayer.settings import DataSettings
+    from .tools.mcp_bridge import MCPServerConfig
+
+    with tempfile.TemporaryDirectory(prefix="vbt-ds-") as status_dir:
+        try:
+            spec = build_launch_spec(MCPServerConfig(DATA_SERVER, command=argv[0], args=list(argv[1:])),
+                                     DataSettings.from_config(dict(config)), status_dir)
+        except Exception:  # noqa: BLE001 - run unguarded rather than not at all
+            spec = None
+        if spec is not None:
+            argv, env = [spec.command, *spec.args], {**env, **spec.env}
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=dict(env))
+
+
 def run_data_check(config: dict[str, Any], *, tables: Iterable[str] = (), depth: str | None = None,
                    timeout: float = DATA_CHECK_TIMEOUT_S) -> dict[str, Any]:
-    """Run ``server.py --check --json`` once and return its ``CheckResponse`` JSON."""
+    """Run ``server.py --check --json`` once, under the data child's memory limit, and return its
+    ``CheckResponse`` JSON."""
     from .datalayer.settings import DataSettings
 
     depth = depth or DataSettings.from_config(config).readiness.session_depth
@@ -554,7 +579,7 @@ def run_data_check(config: dict[str, Any], *, tables: Iterable[str] = (), depth:
         args += ["--table", str(t)]
     cmd, env = data_child_command(config, *args)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        proc = run_contained(config, cmd, env, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise DataCheckUnavailable(f"could not run {cmd[0]}: {exc}") from exc
     line = next((ln for ln in reversed(proc.stdout.splitlines()) if ln.startswith("{")), None)

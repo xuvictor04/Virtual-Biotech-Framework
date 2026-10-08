@@ -803,13 +803,22 @@ class ParquetFormat(PluginBase):
         projection = self._projection(columns, residual, schema)
         fmt = ds.ParquetFileFormat()
         fs = pafs.LocalFileSystem()
+        from ..layouts.zip_member import local_path, open_fragment
+
         for frag in keep:
             expr = self._partition_expr(frag, schema)
+            path = local_path(frag)
+            raw = None
             try:
-                dataset = ds.FileSystemDataset.from_paths([os.path.abspath(_path(frag))], schema=schema, format=fmt,
-                                                          filesystem=fs, partitions=[expr])
-                fragments = list(dataset.get_fragments(filter=pushdown) if pushdown is not None
-                                 else dataset.get_fragments())
+                if path is not None:
+                    dataset = ds.FileSystemDataset.from_paths([os.path.abspath(path)], schema=schema, format=fmt,
+                                                              filesystem=fs, partitions=[expr])
+                    fragments = list(dataset.get_fragments(filter=pushdown) if pushdown is not None
+                                     else dataset.get_fragments())
+                else:
+                    # an http(s):// (http_range) or zip:// fragment: one seekable reader, row groups read by range
+                    raw = open_fragment(frag)
+                    fragments = [fmt.make_fragment(raw, partition_expression=expr)]
                 for piece in fragments:
                     for ids in _row_group_chunks(piece, (row_groups or {}).get(frag.uri), pushdown, schema,
                                                  batch_rows):
@@ -821,6 +830,9 @@ class ParquetFormat(PluginBase):
                             del batch                       # never hold two batches while the next decodes
             except (pa.ArrowException, OSError) as exc:
                 raise _unreadable(frag, exc) from exc
+            finally:
+                if raw is not None:
+                    raw.close()
 
     def read_leaves(self, frag: Fragment, leaves: list[str], row_groups: Sequence[int] | None) -> Any:
         pa = _arrow()

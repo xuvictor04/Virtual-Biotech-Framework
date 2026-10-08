@@ -323,7 +323,7 @@ def cmd_check(args: argparse.Namespace, config: dict[str, Any]) -> int:
                        "unchecked": r.unchecked, "unavailable_partitions": r.unavailable_partitions}
     if args.json:
         body = {"tables": response.get("tables") or {}, "table_errors": response.get("table_errors") or {},
-                "depth": response.get("depth"), "indexes": indexes,
+                "quarantined": response.get("quarantined") or [], "depth": response.get("depth"), "indexes": indexes,
                 "tools": {"unready": dr.unready, "partial": dr.partial,
                           "bound": {s: list(t) for s, t in sorted(dr.bound.items())}}}
         if tool_result is not None:
@@ -348,6 +348,8 @@ def cmd_check(args: argparse.Namespace, config: dict[str, Any]) -> int:
     for ref, err in sorted(dr.errors.items()):
         if not shown or ref in shown:
             _out(f"{ref}: check failed: {err}")
+    for q in response.get("quarantined") or []:
+        _out(f"quarantined {q.get('kind')} {q.get('file')}: {q.get('error')} (the tools depending on it are refused)")
     if not shown:
         _out("")
         for r in data_findings(config, dr):
@@ -736,25 +738,11 @@ def cmd_fingerprint(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
 def _run_reaped(config: Mapping[str, Any], argv: list[str], env: Mapping[str, str], *,
                 timeout: float) -> subprocess.CompletedProcess[str]:
-    """Run a data-child command line under the reaper with the data child's memory limit
-    (``data.service.mem_limit_mb``, ``data.memory.limit_kind``), as the bridge launches it: decoding
-    reference data never runs unlimited in, or next to, the harness (I12). Where the reaper is not
-    available (not Linux, ``limit_kind: none`` aside) the command runs as given."""
-    import tempfile
+    """Run a data-child command line under the reaper with the data child's memory limit (see
+    :func:`vbt.preflight.run_contained`)."""
+    from ..preflight import run_contained
 
-    from ..tools.mcp_bridge import MCPServerConfig
-    from .launch import DATA_SERVER, build_launch_spec
-    from .settings import DataSettings
-
-    with tempfile.TemporaryDirectory(prefix="vbt-ds-") as status_dir:
-        try:
-            spec = build_launch_spec(MCPServerConfig(DATA_SERVER, command=argv[0], args=list(argv[1:])),
-                                     DataSettings.from_config(dict(config)), status_dir)
-        except Exception:  # noqa: BLE001 - run unguarded rather than not at all
-            spec = None
-        if spec is not None:
-            argv, env = [spec.command, *spec.args], {**env, **spec.env}
-        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=dict(env))
+    return run_contained(config, argv, env, timeout=timeout)
 
 
 def _run_child(config: dict[str, Any], *child_args: str, timeout: float = 3600.0) -> tuple[int, str, str]:

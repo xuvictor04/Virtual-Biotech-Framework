@@ -21,6 +21,12 @@ leakage:
   available_at: protocolSection.statusModule.studyFirstPostDateStruct.date
   changed_at: protocolSection.statusModule.lastUpdatePostDateStruct.date
   partial_dates: latest                       # "2004-01" counts as 2004-01-31
+  # withhold, not redact (decided at the Wave A integration): the registry serves only the current record, and
+  # an update after the ceiling can change more than the redact list (completion dates turn ACTUAL, enrollment
+  # becomes the actual count, conditions and arms are edited), so a redacted row would still carry
+  # post-ceiling facts. The cost is recall: under a 2017-12-31 ceiling, 8 of 21 GBM phase 3 trials first posted
+  # before it were withheld only because they were updated later, while the count (ceiling injected on
+  # StudyFirstPostDate) still counts them; each result states how many rows it withheld.
   rows: withhold
   redact: [protocolSection.statusModule.overallStatus, protocolSection.statusModule.whyStopped, resultsSection, hasResults]
   counts: inject_filter

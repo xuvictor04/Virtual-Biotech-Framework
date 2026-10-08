@@ -3115,8 +3115,14 @@ The launcher is one stdlib-only file executed by path with the harness interpret
    depends on the seed: gateway output is sorted by the full canonical key (I13), and the network tools
    stay blocked until the phase-3 traversal orders its frontier by key.
 5. Phase 4 adds cgroup v2 (`memory.max`, `memory.oom.group`) or cgroup v1 where delegated, and an RSS
-   watchdog fallback that kills the child at `limit − max(512 MB, 5%)` on hosts without delegation
-   (this host mounts cgroup v1 on tmpfs).
+   watchdog fallback that kills the child at `limit − max(512 MB, 5%)` on hosts without delegation.
+   (VERIFIED, R3) This host mounts the cgroup v1 `memory` controller at `/sys/fs/cgroup/memory`, and the
+   session's own cgroup is writable as root, so `--containment cgroup` selects `cgroup_v1` here: a child
+   over its 200 MB cgroup was SIGKILLed and labelled `cgroup_oom_kill`. `RLIMIT_DATA` stays set under
+   `cgroup` and `watchdog`; a server whose libraries reserve far more address space than they touch (the
+   Census server's TileDB reads failed with `std::bad_alloc` under `RLIMIT_DATA` of 4,500, 12,000 and 40,000 MB
+   while under 3 GB was resident) declares `limit_kind: rss` in `configs/mcp_servers.yaml`: no data limit, contained
+   by its resident memory (cgroup, else the watchdog).
 
 Per-server `mem_limit_mb` comes from `configs/mcp_servers.yaml` or defaults to
 `data.memory.default_server_mb`; `auto` = `min(0.8 × host budget, max(2048, baseline + 1.3 × max over
@@ -3824,13 +3830,35 @@ Existing tests that change on purpose: `tests/test_mcp_bridge.py` keeps its brid
 
 ## 23. Risks and open questions
 
-- **Schema facts to confirm on the full real 25.09 release**: `hasSafetyEvent` encoding (−1 vs null for
-  "no event"), `maxClinicalTrialPhase` scale, mouse_phenotype column semantics, interaction orientation
-  storage, Tahoe `cell_line_metadata` columns, `pharmacogenomics` key uniqueness, `homologues.speciesId`
-  type, the item-key uniqueness of `target.go` and `target.pathways`, expression in-band codes
-  (`rna.level = -1`, empty `unit`), the 25.09 `disease_hpo` columns. All are `verified: false`;
-  readiness confirms or refutes them, and I9 keeps them disclosure-only until then. If "no safety
-  event" is stored as null, `no_safety_events` becomes `unsupported_filter`. Several revision-1
+- **Schema facts to confirm on the full real 25.09 release** (RESOLVED on the real release; footers and value
+  facts in `tests/datalayer/real/ot_25_09/`, checked by `tests/datalayer/test_dl_real_ot_schema.py`, opt-in
+  with `VBT_DL_REAL_DATA` / `VBT_DL_NETWORK`):
+  - `hasSafetyEvent`: only −1 (943 rows) and null (77,783); "no event" is null, so `no_safety_events` is
+    `unsupported_filter` and the encoding is `{-1}`.
+  - `maxClinicalTrialPhase`: scale [0, 1], observed [0.25, 1.0] (0.25 per phase); `min_clinical_phase` has
+    maximum 1.
+  - mouse_phenotype: the key is unique over 210,579 rows, with ENSMUSG, `MGI:` and `MP:` id forms.
+  - Interaction orientation: every gene pair is stored in both orientations in every source
+    (`orientation: both`). In SIGNOR the two rows of a pair swap the biological roles (36,636 rows: 18,221
+    with the regulator as A, 18,415 reversed), so the direction comes from the roles
+    (`edges.direction_from_roles`).
+  - Tahoe `cell_line_metadata`: 1,000 rows, 102 cell names, 99 DepMap ids (5 rows without one); the DE
+    shards' `Cell_ID_DepMap` holds the string `NA` for one line, declared missing (R4).
+  - pharmacogenomics: the grouping key repeats 9,703 times with no two rows equal; the table is
+    content-identified (`row_identity: content_hash`), and so is drug_mechanism_of_action.
+  - `homologues.speciesId` is a string.
+  - `target.go`: `(id, aspect, evidence, source, geneProduct)` repeats in 12,806 genes; with `ecoId` (nullable)
+    the item key is unique over all 821,377 items. `target.pathways` `(pathwayId, topLevelTerm)` is unique.
+  - Expression in-band codes: `rna.unit` "" in 2,732,448 items, `rna.level` −1 in 2,525,761, `protein.level`
+    −1 in 4,350,738, `rna.zscore` −1 in 3,763,002. `protein.cell_type` repeats a name in 12,998 of 4,940,421
+    lists; `(name, level)` is unique.
+  - The 25.09 `disease_hpo` file has exactly id, name, description, dbXRefs, parents and obsoleteTerms; `id`
+    holds 19,034 `HP_` terms and 12,081 imported terms, so the hpo universe is restricted to `HP_` (`where`).
+  - Also found: `so.id` is `SO:NNNNNNN`; `literature.pmid` holds Europe PMC ids (2,349,085 of 151,961,320
+    rows are PPR, IND, PMC, CAIN, c or FNI ids), typed `europepmc_id`.
+  Still `verified: false`, with the counts in the descriptor: the disease `ontology.leaf` flag, biosample
+  closures, chemical-probe coverage, and the content identity of interval and interaction_evidence (exact
+  duplicate rows exist). Several revision-1
   assumptions were refuted by the stress test on real extracts and are corrected here: `known_drug`
   has no `ctIds` in 25.09 and its key needs nullable `status`; `approvedSymbol` is not unique (1,613
   duplicates); `ontology.leaf` is wrong for 31,635 terms; 29.5% of `disease.id` values use prefixes
@@ -3838,7 +3866,8 @@ Existing tests that change on purpose: `tests/test_mcp_bridge.py` keeps its brid
 - **Witness and intended semantics diverge**: the witness implements the binding's intended semantics,
   which can disagree with upstream on purpose (that is the point). Where comparison is impossible
   (free text, remote engines) it reports `unknown`; the detector tests and golden snapshots catch
-  binding mistakes.
+  binding mistakes. A remote engine's free text with an `engine_param` is counted by the same engine
+  (CT.gov `query.cond`, PubMed `term`), so those calls do get a total to compare.
 - **Overlay and descriptor authoring cost**: 103 tools in phase 1, now with field maps, scope facets and
   item tables. Mitigated by grant-weighted review order, generic verbs, doc-example linting, and a
   safe fallback (generic guard). The phase-1 derived set (27 tools) remains the least certain estimate,
@@ -3868,7 +3897,8 @@ Existing tests that change on purpose: `tests/test_mcp_bridge.py` keeps its brid
 - **In-process readers stay unguarded in phase 1** (N8): Case 1 pandas reads and agent notebooks bypass
   the gateway until the phase-2 client; readiness reports it.
 - **Remote tools have no witness until phase 4**: their known miscounts are covered by defect detectors;
-  a new upstream miscount on a remote tool would pass until then.
+  a new upstream miscount on a remote tool would pass until then. (Phase 4: the remote witness counts every
+  call to a table whose layout declares `count`, free text with an `engine_param` included.)
 - **Upstream prompts** (e.g. "try both Ensembl ID and gene symbol") cannot be edited; resolution makes
   that advice harmless.
 

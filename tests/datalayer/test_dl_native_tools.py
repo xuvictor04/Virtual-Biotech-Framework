@@ -503,6 +503,25 @@ async def test_data_verbs_through_the_gateway_carry_the_calling_agent(ot, tmp_pa
     out = load_verbs()["find"](ot, plan.args_sent)
     res = await gw.finish(plan, RawResult(json.dumps(out), out, None, "ok"))
     assert res.obj["_vbt"]["total"] > len(res.obj["rows"]) == 3 and res.status == "partial", res.text
+    # the child's own header survives the gateway: its source and served_by, never "upstream"
+    assert res.header["served_by"] == out["_vbt"]["served_by"] != "upstream"
+    assert res.header["source"] == out["_vbt"]["source"] and res.header["total"] == out["_vbt"]["total"]
+    # a typed error of the child is that error, not an empty_unverified success around it
+    from vbt.datalayer.errors import GatewayError
+
+    unknown = await gw.prepare("data", "lookup", {"table": "open_targets.target", "key": {"id": "ENSG00000999999"}},
+                               SimpleNamespace(agent="a"))
+    env = load_verbs()["lookup"](ot, unknown.args_sent)
+    if env.get("status") == "tool_error":
+        with pytest.raises(GatewayError) as err:
+            await gw.finish(unknown, RawResult(json.dumps(env), env, None, "ok"))
+        assert err.value.kind.value == env["kind"]
+    bad = await gw.prepare("data", "find", {"table": "open_targets.known_drug", "where": {"nope": 1}}, None)
+    env = load_verbs()["find"](ot, bad.args_sent)
+    assert env["status"] == "tool_error"
+    with pytest.raises(GatewayError) as err:
+        await gw.finish(bad, RawResult(json.dumps(env), env, None, "ok"))
+    assert err.value.kind.value == env["kind"] == "invalid_argument"
     wrapped = await gw.prepare("data", "describe", {"request": {"source": "open_targets"}}, SimpleNamespace(agent="a"))
     assert wrapped.args_sent == {"request": {"source": "open_targets", "agent": "a"}}
     bare = await gw.prepare("data", "describe", {"source": "open_targets"}, None)

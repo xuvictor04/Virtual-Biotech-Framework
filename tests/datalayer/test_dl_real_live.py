@@ -189,7 +189,10 @@ def test_ctgov_count_request_asks_for_one_field(tmp_path: Path, replay: Callable
     out = s_ctgov_count(tmp_path)
     assert out["total"] == fixture("replay/ctgov_count.json")["exchanges"][0]["body"]["totalCount"]
     assert out["total_method"] == "scan" and out["reason"] == "remote count request"
-    (url, sent), = r.sent
+    # the witness also names the registry's data release (the version endpoint, read at most hourly), which
+    # an upstream-served call records as its source release
+    assert out["as_of"] == "2026-10-07T09:00:06"
+    (url, sent), = [(u, s) for u, s in r.sent if not u.endswith("/version")]
     assert sent["fields"] == "NCTId" and sent["countTotal"] == "true" and sent["filter.advanced"] == "AREA[Phase]PHASE2"
     shape = fixture("ctgov/count_page_size_0_without_fields.json")["body"]
     assert shape["studies_returned"] == 10 and shape["body_bytes"] > 100_000      # what pageSize=0 alone costs
@@ -201,7 +204,7 @@ def test_ctgov_count_under_the_evidence_ceiling(tmp_path: Path, replay: Callable
     which made every bounded count a tool_defect)."""
     r = replay("ctgov_count_ceiling")
     out = s_ctgov_count_ceiling(tmp_path)
-    (url, sent), = r.sent
+    (url, sent), = [(u, s) for u, s in r.sent if not u.endswith("/version")]
     assert "AREA[StudyFirstPostDate]RANGE[MIN,2017-12-31]" in sent["filter.advanced"]
     assert out["total"] == fixture("ctgov/count_germany_phase3_completed_ceiling_2017.json")["body"]["totalCount"]
     assert out["total"] < fixture("ctgov/count_germany_phase3_completed.json")["body"]["totalCount"]
@@ -232,6 +235,16 @@ def test_ctgov_unknown_nct(tmp_path: Path, replay: Callable[[str], Replay]) -> N
     assert out["rows"] == [] and out["_vbt"]["status"] == "empty"
     rec = fixture("ctgov/study_unknown_nct.json")
     assert rec["status"] == 404 and "NCT99999999 not found" in rec["text"]
+
+
+def test_live_lookup_takes_the_short_key_name(tmp_path: Path, replay: Callable[[str], Replay]) -> None:
+    """``nctId`` names protocolSection.identificationModule.nctId, as a local lookup's short names do: the
+    same request goes out (the replay fails on any other) and a key without it is incomplete_key."""
+    replay("ctgov_lookup_unknown")
+    out = _run(_ctx(tmp_path), "lookup", {"table": "clinicaltrials_gov.studies", "key": {"nctId": "NCT99999999"}})
+    assert out["rows"] == [] and out["_vbt"]["status"] == "empty"
+    bad = _run(_ctx(tmp_path), "lookup", {"table": "clinicaltrials_gov.studies", "key": {"briefTitle": "x"}})
+    assert "incomplete_key" in json.dumps(bad), bad
 
 
 async def test_country_filter_is_evaluated_on_upstream_rows(tmp_path: Path) -> None:

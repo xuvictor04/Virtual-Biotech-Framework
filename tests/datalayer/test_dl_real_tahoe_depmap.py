@@ -168,7 +168,8 @@ def test_tahoe_unknown_cell_line_is_a_missing_value():
     assert "NA" in de["cell_lines"] and de["na_cell_line_name"] == ["hTERT-HPNE"]
     assert not isinstance(REGISTRY.get("identifier", "depmap_cell_line").normalize("NA"), Normalized)
     assert desc["tables"]["de_permissive"]["columns"]["Cell_ID_DepMap"]["missing_values"] == ["NA"]
-    assert desc["id_types"]["depmap_cell_line"]["universe"] == "cell_line_metadata.Cell_ID_DepMap"
+    # the universe is the profiled lines: readiness R4b skips the column's declared missing values
+    assert desc["id_types"]["depmap_cell_line"]["universe"] == {"table": "de_permissive", "keys": ["Cell_ID_DepMap"]}
     assert "hTERT-HPNE" in fixture("tahoe", "metadata.json")["cell_line"]["facts"]["names_without_depmap_id"]
 
 
@@ -299,6 +300,9 @@ def test_depmap_excerpts_are_ready(tmp_path):
     out = checked(ctx, ["depmap.model", "depmap.gene_effect", "depmap.gene_dependency", "depmap.common_essentials"])
     assert any(c.name == "R8" and c.ok for c in out["depmap.model"].checks)
     assert not [c for c in out["depmap.model"].checks if c.name == "R4:undeclared"]
+    # matrix tables run their sentinels too (RPL3 of ACH-000001 is -2.13; ACH-999999 is absent)
+    r8 = {c.detail for c in out["depmap.gene_effect"].checks if c.name == "R8" and c.ok}
+    assert any("present sentinel" in d for d in r8) and any("absent sentinel" in d for d in r8), r8
 
 
 # --------------------------------------------------------------------------- ontologies
@@ -328,12 +332,13 @@ def test_ontology_excerpts_are_ready(tmp_path):
         assert any(c.name == "R8" and c.ok for c in out[ref].checks), ref
 
 
-@pytest.mark.xfail(strict=True, reason="contract request: the cell_ontology plugin rejects the 9 obsolete "
-                   "CP:NNNNNNN terms of cl-basic.obo (moved into CL), so R4b reports encoding_drift whenever its "
-                   "universe sample reaches them (the full file passes only because they come last)")
 def test_obsolete_cp_terms_of_cl_are_canonical(tmp_path):
+    """The 9 obsolete CP:NNNNNNN terms of cl-basic.obo (moved into CL) are terms of the file: the id type
+    declares the prefix, and readiness R4b checks every prefix of the universe however late it comes."""
     ctx = ontology_ctx(tmp_path, (FIX / "ontology" / "cl-basic.excerpt.obo").read_text())
-    checked(ctx, ["cell_ontology.term"])
+    out = checked(ctx, ["cell_ontology.term"])
+    r4b = [c for c in out["cell_ontology.term"].checks if c.name == "R4b"]
+    assert r4b and all(c.ok for c in r4b), r4b
 
 
 def test_ontology_recorded_facts_match_the_descriptors():
