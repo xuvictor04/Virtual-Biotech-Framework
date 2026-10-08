@@ -337,6 +337,7 @@ class ScanStats:
     counts: _items.ContainerCounts = field(default_factory=_items.ContainerCounts)
     used_sidecar: bool = False
     footer: bool = False                               # the total came from footers, nothing was scanned
+    grains_returned: dict[str, int] = field(default_factory=dict)   # rows(grains=...): distinct values returned
 
 
 @dataclass
@@ -1282,14 +1283,16 @@ class TableReader:
              carry: Sequence[str] = (), rename: Mapping[str, str] | None = None,
              params: Mapping[str, Any] | None = None, budget_bytes: int | None = None,
              stats: ScanStats | None = None, group_by: Sequence[str] = (),
-             distinct: Sequence[str] = ()) -> tuple[list[dict[str, Any]], list[list[Any]], ScanStats]:
+             distinct: Sequence[str] = (), grains: Mapping[str, Any] | None = None
+             ) -> tuple[list[dict[str, Any]], list[list[Any]], ScanStats]:
         """``(rows, canonical row keys, stats)``: matching rows as native dicts, ordered (``order``, else
         the table's ``rank``, then the canonical key), cut to ``limit`` (per ``limit_grain`` value: each
         grain's best row), with ``explode``/``carry``/``rename`` applied to the output.
 
         With ``group_by`` (default: the ``within`` columns of the order) rows are ranked within each group,
         groups follow each other in key order and ``limit`` applies per group. With ``distinct`` only the
-        first row of each combination of those columns is kept."""
+        first row of each combination of those columns is kept. With ``grains`` (name -> grain) the distinct values
+        of each grain among the returned matches go to ``stats.grains_returned``, counted as the totals are."""
         okeys = self.order_keys(order or [r.model_dump() for r in self.table.spec.rank])
         groups = [self.physical_path(g) for g in group_by] or \
             list(dict.fromkeys(self.physical_path(w) for rk, *_ in okeys for w in rk.within))
@@ -1354,6 +1357,13 @@ class TableReader:
             ordered = cut
         elif limit is not None:
             ordered = ordered[: int(limit)]
+        for name, g in (grains or {}).items():
+            # from the matches, not the output rows: renamed or projected rows may lack the grain's columns (a
+            # grouped GO search counted one "gene"), and an item row's ``id`` is the item's (the gene grain of
+            # PCSK9's 142 GO annotations counted 63 genes)
+            spec = self._grain(g)
+            stats.grains_returned[name] = len({self._grain_value(item[2].row, item[2].positions, spec)
+                                               for item in ordered})
         out_rows: list[dict[str, Any]] = []
         keys: list[list[Any]] = []
         if self.levels:

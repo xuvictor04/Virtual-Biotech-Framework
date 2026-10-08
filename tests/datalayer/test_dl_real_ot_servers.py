@@ -551,6 +551,41 @@ def test_stats_count_an_item_table_keyed_by_position(tmp_path):
     assert stats.rows == 2 and stats.row_bytes_p99.get("row")
 
 
+def test_returned_grains_are_counted_on_the_matches_not_the_output_rows(tmp_path):
+    """25.09 target_go (items of target.go[]) declares ``gene: [id]`` and ``term: ["go[].id"]``. Counted on the
+    output rows, whose ``id`` is the item's GO id, PCSK9's 142 annotations reported 63 genes; a projection without
+    the gene column reported one. The returned grains are counted on the matches, like the totals."""
+    from vbt.datalayer.ipc import parse_response
+    from vbt.datalayer.service.verbs.serve import serve
+
+    go = pa.struct([("id", pa.string()), ("aspect", pa.string()), ("evidence", pa.string())])
+    terms = [("GO:0001822", "P", "IEA"), ("GO:0001822", "P", "IMP"), ("GO:0005576", "C", "IDA"),
+             ("GO:0006629", "P", "TAS"), ("GO:0006629", "P", "IEA")]
+    write(tmp_path, "target", [
+        {"id": "ENSG00000169174", "go": [dict(zip(("id", "aspect", "evidence"), t)) for t in terms]},
+        {"id": "ENSG00000141510", "go": [{"id": "GO:0005576", "aspect": "C", "evidence": "IDA"}]}],
+        pa.schema([("id", pa.string()), ("go", pa.list_(go))]))
+    ctx = make_ctx(tmp_path, {
+        "target": {"kind": "entity", "path": "target", "grain": "gene", "key": {"columns": ["id"]},
+                   "columns": {"id": {"role": "identifier", "self": True},
+                               "go": {"role": "nested", "fields": {"id": {"role": "identifier"},
+                                                                  "aspect": {"role": "category"},
+                                                                  "evidence": {"role": "category"}}}}},
+        "target_go": {"kind": "fact", "items_of": {"table": "target", "path": "go[]"}, "grain": "annotation",
+                      "key": {"columns": [], "check": "sampled"},
+                      "grains": {"go_membership": ["/id", "go[].id"], "gene": ["/id"], "term": ["go[].id"]}}})
+    pred = {"eq": ["/id", "ENSG00000169174"]}
+    for columns in ([], ["go[].id", "go[].evidence"]):
+        out = parse_response("_serve", serve(ctx, {"table": "s.target_go", "verb": "find", "predicate": pred,
+                                                  "columns": columns}))
+        assert out.total == 5 and len(out.rows) == 5, out
+        assert out.grains["gene"] == {"returned": 1, "total": 1}, (columns, out.grains)
+        assert out.grains["term"] == {"returned": 3, "total": 3} and out.grains["go_membership"]["returned"] == 3
+    out = parse_response("_serve", serve(ctx, {"table": "s.target_go", "verb": "find", "predicate": pred, "limit": 2,
+                                              "order": [{"column": "go[].id", "direction": "asc"}]}))
+    assert out.grains["term"] == {"returned": 1, "total": 3} and out.grains["gene"]["returned"] == 1, out.grains
+
+
 # ---------------------------------------------------------------------------- R6 container counts on Arrow arrays
 
 
