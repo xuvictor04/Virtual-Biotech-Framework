@@ -71,3 +71,22 @@ tables:
                                happens_during, ends_during]}
       xref:         {role: identifier, xref: true, id_type_from: prefix, cardinality: many, path: "[]", resolvable: false}
       subset:       {role: category, vocab: data, path: "[]"}
+
+# ---------------------------------------------------------------------------------------------- acquisition
+# `vbt data acquire gene_ontology`: go-basic.obo from the GO release archive, pinned by its archive directory (the
+# 2026-08-05 archive holds data-version releases/2026-07-26, 32,227,785 bytes, the file read on 2026-10-08) and by
+# its sha256. The unversioned PURL (http://purl.obolibrary.org/obo/go/go-basic.obo) moves with every release.
+acquisition:
+  release: "2026-08-05"
+  homepage: https://geneontology.org/docs/download-ontology/
+  licence: "CC BY 4.0 (the file's terms:license header)"
+  transport:
+    plugin: http
+    options:
+      base: https://purl.obolibrary.org/obo/go/releases/{release}/
+      files: {go-basic.obo: {bytes: 32227785,
+                             sha256: b08d45b268b8c24ccb2513dbbbc7d4df9f6521c099b413f79eb31e06e0fa3bcc}}
+  dir: gene_ontology/{release}
+  env: {GO_DATA_PATH: "{home}"}
+  tables:
+    term: {files: [go-basic.obo], count: 1, bytes: 32227785}

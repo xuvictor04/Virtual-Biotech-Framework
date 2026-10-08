@@ -1824,3 +1824,73 @@ views:
       adverse_events:   {table: open_targets.openfda_significant_adverse_target_reactions, verb: find,
                          key_from_args: {targetId: target_id}}
       mouse_phenotypes: {table: open_targets.mouse_phenotype, verb: find, key_from_args: {targetFromSourceId: target_id}}
+
+# ---------------------------------------------------------------------------------------------- acquisition
+# `vbt data acquire open_targets[.<table>]` (docs/DATA_SETUP.md). The release's release_data_integrity
+# (22,557 lines, sha1 872decc7ef350306d0843ba6279019662b004a42, matching its .sha1; 3,508 Parquet files in
+# 38 tables) is the inventory and the checksum of every file: no directory index is walked. It is kept in
+# _release/ so the manifest can be rewritten offline. Counts and bytes per table are the 25.09 footer scan
+# (tests/datalayer/real/ot_25_09/_release.json, 2026-10-08): 3,508 files, 31,131,380,890 bytes in all.
+# The manifest is the upstream downloader's .download-manifest.json (release, base = the output/ URL, files
+# {bytes, sha256, url} plus the publisher's sha1): the R2 check and the upstream doctor read it. The upstream
+# doctor needs all 38 tables (src/config/datasets.py OPEN_TARGETS_DATASETS).
+acquisition:
+  release: "25.09"
+  homepage: https://platform.opentargets.org/downloads
+  licence: "CC0 1.0: the Open Targets Platform data are dedicated to the public domain; cite the latest Platform
+    publication (https://platform-docs.opentargets.org/licence)"
+  transport:
+    plugin: http
+    options:
+      base: https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/{release}/output/
+      listing: checksums
+      checksums: {url: "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/{release}/release_data_integrity",
+                  algo: sha1, prefix: ./output/,
+                  verify: "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/{release}/release_data_integrity.sha1"}
+  dir: open_targets/{release}
+  env: {OPEN_TARGETS_DATA_PATH: "{home}"}
+  index_cache: _release
+  verify: [size, checksum, parquet_framing]
+  manifest: .download-manifest.json
+  notes: "Range requests resume interrupted files. The whole release is 29.0 GiB; evidence (9.0 GB), colocalisation_ecaviar
+    (5.2 GB), colocalisation_coloc (3.9 GB), interval, variant, credible_set and literature (2.3-3.2 GB each) are the
+    large tables."
+  tables:
+    association_by_datasource_direct:             {files: ["association_by_datasource_direct/**/*.parquet"], count: 20, bytes: 31548642}
+    association_by_datasource_indirect:           {files: ["association_by_datasource_indirect/**/*.parquet"], count: 20, bytes: 103431546}
+    association_by_datatype_direct:               {files: ["association_by_datatype_direct/**/*.parquet"], count: 20, bytes: 32355246}
+    association_by_datatype_indirect:             {files: ["association_by_datatype_indirect/**/*.parquet"], count: 20, bytes: 107893382}
+    association_by_overall_indirect:              {files: ["association_by_overall_indirect/**/*.parquet"], count: 20, bytes: 92369063}
+    association_overall_direct:                   {files: ["association_overall_direct/**/*.parquet"], count: 20, bytes: 30780022}
+    biosample:                                    {files: ["biosample/**/*.parquet"], count: 1, bytes: 6447427}
+    colocalisation_coloc:                         {files: ["colocalisation_coloc/**/*.parquet"], count: 25, bytes: 3917110953}
+    colocalisation_ecaviar:                       {files: ["colocalisation_ecaviar/**/*.parquet"], count: 25, bytes: 5160478150}
+    credible_set:                                 {files: ["credible_set/**/*.parquet"], count: 25, bytes: 2588111695}
+    disease:                                      {files: ["disease/**/*.parquet"], count: 1, bytes: 5545555}
+    disease_hpo:                                  {files: ["disease_hpo/**/*.parquet"], count: 1, bytes: 1757137}
+    disease_phenotype:                            {files: ["disease_phenotype/**/*.parquet"], count: 1, bytes: 7089121}
+    drug_indication:                              {files: ["drug_indication/**/*.parquet"], count: 1, bytes: 2758480}
+    drug_mechanism_of_action:                     {files: ["drug_mechanism_of_action/**/*.parquet"], count: 1, bytes: 478223}
+    drug_molecule:                                {files: ["drug_molecule/**/*.parquet"], count: 1, bytes: 2275731}
+    drug_warning:                                 {files: ["drug_warning/**/*.parquet"], count: 1, bytes: 203238}
+    evidence:                                     {files: ["evidence/**/*.parquet"], count: 2294, bytes: 8987924701}
+    expression:                                   {files: ["expression/**/*.parquet"], count: 4, bytes: 39426999}
+    go:                                           {files: ["go/**/*.parquet"], count: 8, bytes: 976586}
+    interaction:                                  {files: ["interaction/**/*.parquet"], count: 8, bytes: 90202596}
+    interaction_evidence:                         {files: ["interaction_evidence/**/*.parquet"], count: 200, bytes: 296743279}
+    interval:                                     {files: ["interval/**/*.parquet"], count: 83, bytes: 3226652611}
+    known_drug:                                   {files: ["known_drug/**/*.parquet"], count: 2, bytes: 11030681}
+    l2g_prediction:                               {files: ["l2g_prediction/**/*.parquet"], count: 16, bytes: 314192617}
+    literature:                                   {files: ["literature/**/*.parquet"], count: 334, bytes: 2267570736}
+    literature_vector:                            {files: ["literature_vector/**/*.parquet"], count: 256, bytes: 35364234}
+    mouse_phenotype:                              {files: ["mouse_phenotype/**/*.parquet"], count: 1, bytes: 9848028}
+    openfda_significant_adverse_drug_reactions:   {files: ["openfda_significant_adverse_drug_reactions/**/*.parquet"], count: 20, bytes: 2520173}
+    openfda_significant_adverse_target_reactions: {files: ["openfda_significant_adverse_target_reactions/**/*.parquet"], count: 20, bytes: 735927}
+    pharmacogenomics:                             {files: ["pharmacogenomics/**/*.parquet"], count: 1, bytes: 5893338}
+    reactome:                                     {files: ["reactome/**/*.parquet"], count: 1, bytes: 197905}
+    so:                                           {files: ["so/**/*.parquet"], count: 1, bytes: 26339}
+    study:                                        {files: ["study/**/*.parquet"], count: 1, bytes: 93350458}
+    target:                                       {files: ["target/**/*.parquet"], count: 10, bytes: 75568567}
+    target_essentiality:                          {files: ["target_essentiality/**/*.parquet"], count: 10, bytes: 405282884}
+    target_prioritisation:                        {files: ["target_prioritisation/**/*.parquet"], count: 10, bytes: 1014771}
+    variant:                                      {files: ["variant/**/*.parquet"], count: 25, bytes: 3176223849}

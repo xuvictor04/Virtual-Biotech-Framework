@@ -11,7 +11,11 @@ a required attribute or method, or that declares an unknown capability is an err
 
 Every kind of :data:`~vbt.datalayer.plugins.KINDS` is discovered the same way, so the fifth kind
 (``envelope``, phase 4) needed no change here beyond :meth:`PluginRegistry.envelope`, which falls back
-to the builtin default decoder when a registry was built without the kind.
+to the builtin default decoder when a registry was built without the kind. The harness-side kinds
+(:data:`~vbt.datalayer.plugins.HARNESS_KINDS`: ``acquisition``) are discovered with
+``discover(settings, kinds=HARNESS_KINDS)`` (:func:`discover_harness`); their builtins live in the packages of
+:data:`~vbt.datalayer.plugins.HARNESS_KIND_PACKAGES` and their capabilities in
+:data:`~.base.HARNESS_CAPABILITIES`.
 """
 
 from __future__ import annotations
@@ -25,18 +29,20 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
-from . import KIND_PACKAGES, KINDS, entry_point_group
+from . import HARNESS_KIND_PACKAGES, HARNESS_KINDS, KIND_PACKAGES, KINDS, entry_point_group
 from .base import (
     API_VERSION,
     CAPABILITIES,
     CAPABILITY_METHODS,
+    HARNESS_CAPABILITIES,
     REQUIRED_ATTRS,
     REQUIRED_METHODS,
     PluginError,
     plugin_key,
 )
 
-__all__ = ["register", "registered", "PluginRegistry", "discover", "validate_plugin", "PluginError"]
+__all__ = ["register", "registered", "PluginRegistry", "discover", "discover_harness", "validate_plugin",
+           "PluginError"]
 
 _REGISTERED: list[type] = []
 _PKG = "vbt.datalayer.plugins"
@@ -93,7 +99,7 @@ def validate_plugin(plugin: Any, kinds: Mapping[str, type] | None = None) -> Non
         if not callable(getattr(plugin, method, None)):
             raise PluginError(f"{where}: {kind} plugin lacks method {method}()")
     caps = frozenset(getattr(plugin, "capabilities", frozenset()) or ())
-    allowed = CAPABILITIES.get(kind)
+    allowed = CAPABILITIES.get(kind, HARNESS_CAPABILITIES.get(kind))
     if allowed is not None:
         unknown = caps - allowed
         if unknown:
@@ -198,7 +204,7 @@ def _entry_points(group: str) -> list[Any]:
 
 def _import_builtins(kind: str) -> list[str]:
     """Import every module of the builtin package of ``kind``; returns the module names."""
-    pkg_name = f"{_PKG}.{KIND_PACKAGES.get(kind, kind + 's')}"
+    pkg_name = f"{_PKG}.{({**KIND_PACKAGES, **HARNESS_KIND_PACKAGES}).get(kind, kind + 's')}"
     try:
         pkg = importlib.import_module(pkg_name)
     except ModuleNotFoundError as exc:
@@ -270,6 +276,8 @@ def discover(settings: Any = None, *, kinds: Mapping[str, type] | None = None,
     def offer(obj: Any, origin: str) -> None:
         kind, name = getattr(obj, "kind", None), getattr(obj, "name", None)
         if kind not in reg.kinds:
+            if kind in KINDS or kind in HARNESS_KINDS:
+                return                                 # a plugin of the other registry (data child / harness)
             raise PluginError(f"{origin}: unknown plugin kind {kind!r}")
         if not name:
             raise PluginError(f"{origin}: plugin has no name")
@@ -316,3 +324,11 @@ def discover(settings: Any = None, *, kinds: Mapping[str, type] | None = None,
         origin, obj = bucket[0]
         reg.add(obj, origin=origin)
     return reg
+
+
+def discover_harness(settings: Any = None, *, entry_points: bool | None = None, extra: Iterable[Any] = (),
+                     entry_point_loader: Callable[[str], list[Any]] | None = None) -> PluginRegistry:
+    """The registry of the harness-side kinds (``acquisition``), discovered like :func:`discover`: builtins,
+    entry points in ``vbt.datalayer.acquisition``, ``data.plugins.paths``, ``disabled`` and ``override``."""
+    return discover(settings, kinds=HARNESS_KINDS, entry_points=entry_points, extra=extra,
+                    entry_point_loader=entry_point_loader)

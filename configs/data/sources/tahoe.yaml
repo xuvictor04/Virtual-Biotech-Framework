@@ -213,3 +213,45 @@ tables:
       mean_tscp_count:   {role: measure, statistic: numeric, missing: unknown}
       mean_mread_count:  {role: measure, statistic: numeric, missing: unknown}
       mean_pcnt_mito:    {role: measure, statistic: numeric, missing: unknown}
+
+# ---------------------------------------------------------------------------------------------- acquisition
+# `vbt data acquire tahoe_100m` downloads the DE shards and the four metadata tables of the pinned revision
+# (Hugging Face tree API; every file is stored with LFS, so each carries its sha256) and runs the unmodified
+# upstream tools/prepare_tahoe.py, which writes every table of this descriptor and preparation_manifest.json (the
+# manifest the R2 check reads). Read on 2026-10-08: 1,026 DE shards, 88,859,715,303 bytes (82.76 GiB, as upstream
+# docs/TAHOE_SETUP.md says); metadata 1,451,950 bytes. `vbt data acquire tahoe_100m.metadata` fetches only the four
+# metadata files (no table becomes ready without the preparation, which reads every shard).
+acquisition:
+  release: 2dc57900b7981cfcf5e211527169a0b006546a95       # the revision upstream docs/TAHOE_SETUP.md pins
+  homepage: https://huggingface.co/datasets/tahoebio/Tahoe-100M
+  licence: "CC0 1.0 (the dataset card's license, read 2026-10-08)"
+  transport:
+    plugin: huggingface
+    options: {repo: tahoebio/Tahoe-100M, repo_type: dataset, revision: "{release}", paths: [metadata]}
+  dir: tahoe/{release}
+  env: {TAHOE_DATA_PATH: "{home}/prepared"}
+  verify: [size, checksum, parquet_framing]
+  notes: "prepare_tahoe.py reads one 65,536-row batch at a time and refuses an existing output directory (it is
+    published only when complete); the size of the prepared files depends on the source (not measured on the whole
+    release). Budget the 82.76 GiB download plus the prepared output."
+  extra:
+    de_shards: {files: ["metadata/pseudobulk_differential_expression/*.parquet"], count: 1026, bytes: 88859715303}
+    metadata:  {files: [metadata/gene_metadata.parquet, metadata/drug_metadata.parquet,
+                        metadata/cell_line_metadata.parquet, metadata/sample_metadata.parquet], count: 4, bytes: 1451950}
+  prepare:
+    prepare_tahoe:
+      command: ["{python}", "-B", "{upstream}/tools/prepare_tahoe.py", "{downloads}", "{output}",
+                "--source-revision", "{release}"]
+      needs: [de_shards, metadata]
+      output: prepared
+      fresh: true
+      manifest: preparation_manifest.json
+      note: "R4 ran it unchanged on a 376,260-row sample in 0.74 s; the whole source holds 4,089,820,780 rows"
+  tables:
+    de_permissive:      {prepared_by: prepare_tahoe}
+    de_significant:     {prepared_by: prepare_tahoe}
+    de_high_quality:    {prepared_by: prepare_tahoe}
+    drug_metadata:      {prepared_by: prepare_tahoe}
+    cell_line_metadata: {prepared_by: prepare_tahoe}
+    gene_metadata:      {prepared_by: prepare_tahoe}
+    sample_metadata:    {prepared_by: prepare_tahoe}

@@ -61,9 +61,11 @@ def selected_plugins(kind: str, registry: Any = None) -> list[Any]:
     """Plugins of ``kind`` the suite parametrizes over: the registry's (discovered with the
     environment's settings when not given), restricted by ``VBT_CONFORMANCE_PLUGIN``."""
     if registry is None:
-        from ..registry import discover
+        from .. import HARNESS_KINDS
+        from ..registry import discover, discover_harness
         from ...settings import DataSettings
-        registry = discover(DataSettings.from_env())
+        settings = DataSettings.from_env()
+        registry = discover_harness(settings) if kind in HARNESS_KINDS else discover(settings)
     plugins = registry.all(kind)
     only = os.environ.get(PLUGIN_ENV)
     if only:

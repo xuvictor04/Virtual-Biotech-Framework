@@ -14,6 +14,12 @@ containers it returns, the partitions its partition predicate can include, the t
 universes, and the item tables it serves. One drifted field no longer takes down every tool on
 the table, and a partial partition blocks only calls that can include it. Resolver indexes are
 decided per accepted kind by the gateway (a kind without its index is dropped with a note).
+
+A reason whose status acquiring the files fixes (``missing``, ``partial``, ``stale``) on a table whose descriptor
+declares an ``acquisition`` entry also says how (:func:`acquisition_hint`): ``acquire`` holds the command
+(``vbt data acquire <source>.<table>``), the declared bytes and files, the prepare steps, the licence and login
+notes and, when the cache knows the ``data.acquisition`` policy (``ReadinessCache.acquisition``), what the policy
+decides (:func:`auto_decision`); the reason's ``hint`` says the same in words.
 """
 
 from __future__ import annotations
@@ -30,7 +36,8 @@ from ..plugins.base import LayoutSpec
 
 __all__ = ["READY_STATUSES", "TABLE_LEVEL_STATUSES", "CallReadiness", "ReadinessCache", "call_readiness",
            "section_tables", "layout_spec", "table_signature", "tables_read", "columns_read", "degraded_tools", "norm_path",
-           "parse_partition_label", "partitions_selected", "table_status"]
+           "parse_partition_label", "partitions_selected", "table_status", "ACQUIRE_STATUSES", "acquisition_hint",
+           "auto_decision"]
 
 READY_STATUSES = frozenset({"ready", "awaiting_producer", "unbound"})
 #: Statuses that make the whole table unservable whatever part a call reads.
@@ -45,6 +52,124 @@ _HINTS = {
     "unreachable": "the remote source did not answer",
     "plugin_unavailable": "a plugin the table needs is not installed",
 }
+
+
+#: Statuses that acquiring a table's files fixes (absent, incomplete, or of another release).
+ACQUIRE_STATUSES = frozenset({"missing", "partial", "stale"})
+
+
+def _fmt_bytes(n: float | None) -> str:
+    if n is None:
+        return "size unknown"
+    for unit, div in (("TB", 1e12), ("GB", 1e9), ("MB", 1e6), ("KB", 1e3)):
+        if n >= div:
+            return f"{n / div:.2f} {unit}"
+    return f"{int(n)} B"
+
+
+def _budget(value: Any) -> int:
+    """``budget_bytes`` as bytes (an int, or ``"5 GB"``, ``"500MiB"``)."""
+    if value is None or value == "" or isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value).strip().upper().replace(" ", "")
+    for unit, mult in (("TIB", 1 << 40), ("GIB", 1 << 30), ("MIB", 1 << 20), ("KIB", 1 << 10), ("TB", 10**12),
+                       ("GB", 10**9), ("MB", 10**6), ("KB", 10**3), ("B", 1)):
+        if text.endswith(unit):
+            try:
+                return int(float(text[: -len(unit)]) * mult)
+            except ValueError:
+                return 0
+    try:
+        return int(float(text))
+    except ValueError:
+        return 0
+
+
+def auto_decision(policy: Mapping[str, Any] | None, nbytes: int | None) -> tuple[str, str]:
+    """``(decision, sentence)`` of ``data.acquisition`` (``auto: off | ask | under_budget``, ``budget_bytes``) for an
+    acquisition of ``nbytes``: ``off``, ``ask`` (queued for an operator's approval), ``auto`` (the system acquires
+    it between turns) or ``over_budget``."""
+    auto = (policy or {}).get("auto", "off")
+    auto = {False: "off", True: "under_budget"}.get(auto, auto) if isinstance(auto, bool) else str(auto)
+    if auto == "ask":
+        return "ask", "data.acquisition.auto is ask: ask the operator to approve it (`vbt data acquire --pending`)"
+    if auto == "under_budget":
+        budget = _budget((policy or {}).get("budget_bytes", (policy or {}).get("budget")))
+        if nbytes is not None and nbytes <= budget:
+            return "auto", (f"data.acquisition.auto is under_budget ({_fmt_bytes(budget)}): the system acquires it "
+                            "between turns; retry the call in the next turn")
+        return "over_budget", (f"over the data.acquisition budget ({_fmt_bytes(budget)}): an operator must run it")
+    return "off", "an operator runs it (data.acquisition.auto is off)"
+
+
+def acquisition_hint(catalog: Any, ref: str, policy: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+    """How to acquire the files behind ``ref`` (an item table: its parent's), from its descriptor's
+    ``acquisition`` section; None when the source is read live or declares no acquisition for the table."""
+    try:
+        t = catalog.table(ref)
+    except Exception:  # noqa: BLE001
+        return None
+    desc = t.descriptor
+    acq = getattr(desc, "acquisition", None)
+    source, _, name = str(t.physical).partition(".")
+    if acq is None or acq.mode == "remote" or name not in acq.tables:
+        return None
+    groups: list[str] = []
+    steps: list[str] = []
+    entry = acq.tables[name]
+    if entry.files:
+        groups.append(name)
+    if entry.prepared_by:
+        steps.append(entry.prepared_by)
+        groups.extend(g for g in acq.prepare[entry.prepared_by].needs if g not in groups)
+    entries = [acq.tables.get(g) or acq.extra.get(g) for g in groups]
+    nbytes = sum(int(e.bytes) for e in entries if e is not None and e.bytes is not None) \
+        if all(e is not None and e.bytes is not None for e in entries) else None
+    files = sum(int(e.count) for e in entries if e is not None and e.count is not None) \
+        if all(e is not None and e.count is not None for e in entries) else None
+    release = str(acq.release or desc.release.expect or "current")
+    out: dict[str, Any] = {"command": f"vbt data acquire {source}.{name}", "source": source, "table": f"{source}.{name}",
+                           "release": release, "bytes": nbytes, "files": files, "prepare": steps,
+                           "mode": acq.mode}
+    if acq.licence:
+        out["licence"] = acq.licence
+    if acq.login:
+        out["login"] = acq.login
+    if acq.mode == "manual":
+        out["command"] = f"see the descriptor's acquisition.login ({source})"
+    if policy is not None:
+        out["policy"], out["decision"] = auto_decision(policy, nbytes)
+    return out
+
+
+def _acquire_text(h: Mapping[str, Any]) -> str:
+    size = _fmt_bytes(h.get("bytes")) + (f" in {h['files']} file(s)" if h.get("files") is not None else "")
+    text = f"acquire them with `{h['command']}` ({size}, release {h['release']}"
+    if h.get("prepare"):
+        text += f", then the prepare step {', '.join(h['prepare'])}"
+    text += ")"
+    if h.get("licence"):
+        text += f"; licence: {h['licence']}"
+    if h.get("login"):
+        text += f"; login: {h['login']}"
+    if h.get("decision"):
+        text += f"; {h['decision']}"
+    return text + "; then rerun `vbt ds check`"
+
+
+def _with_acquisition(reason: dict[str, Any], cache: Any, ref: str, status: str | None) -> dict[str, Any]:
+    if status not in ACQUIRE_STATUSES:
+        return reason
+    h = acquisition_hint(getattr(cache, "catalog", None), ref, getattr(cache, "acquisition", None))
+    if h is None:
+        return reason
+    reason["acquire"] = h
+    base = {"missing": "the table's files are absent", "partial": "the table's files are incomplete",
+            "stale": "the files are of another release"}[status]
+    reason["hint"] = f"{base}; {_acquire_text(h)}"
+    return reason
 
 
 def norm_path(path: str) -> str:
@@ -249,10 +374,14 @@ class ReadinessCache:
     """Per-table ``_check`` results with their signatures (see the module docstring)."""
 
     def __init__(self, cache_dir: str | Path | None, catalog: Any, registry: Any = None, *,
-                 refresh_interval_s: float = 1.0, clock: Any = time.monotonic) -> None:
+                 refresh_interval_s: float = 1.0, clock: Any = time.monotonic,
+                 acquisition: Mapping[str, Any] | None = None) -> None:
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.catalog = catalog
         self.registry = registry
+        #: the ``data.acquisition`` policy (``auto``, ``budget_bytes``); None when the caller does not know it, and
+        #: then a not_ready reason says how to acquire a table without saying what the policy decides
+        self.acquisition: Mapping[str, Any] | None = acquisition
         self.refresh_interval_s = float(refresh_interval_s)
         self.clock = clock
         self.tables: dict[str, TableCheckModel] = {}
@@ -451,15 +580,17 @@ def call_readiness(contract: Any, cache: ReadinessCache, *, bound_table: str | N
             continue
         status = m.status
         if item is not None and m.item_tables.get(item) not in (None, *READY_STATUSES):
-            out.reasons.append(_reason(ref, "item_table", f"item table {item} is {m.item_tables[item]}",
-                                       status=m.item_tables[item]))
+            out.reasons.append(_with_acquisition(
+                _reason(ref, "item_table", f"item table {item} is {m.item_tables[item]}", status=m.item_tables[item]),
+                cache, ref, m.item_tables[item]))
             continue
         failed = _failed_checks(m)
         table_level = [c for c in failed if c.column is None and c.partition is None]
         if status in TABLE_LEVEL_STATUSES or table_level:
             c = table_level[0] if table_level else None
-            out.reasons.append(_reason(phys, c.name if c else status, (c.detail if c else "") or f"table is {status}",
-                                       hint=(c.hint or None) if c else None, status=status))
+            out.reasons.append(_with_acquisition(
+                _reason(phys, c.name if c else status, (c.detail if c else "") or f"table is {status}",
+                        hint=(c.hint or None) if c else None, status=status), cache, phys, status))
             continue
         wanted = columns_read(contract, ref)
         if item is not None:
@@ -496,13 +627,14 @@ def call_readiness(contract: Any, cache: ReadinessCache, *, bound_table: str | N
         if blocking:
             lbl = blocking[0]
             detail = next((c.detail for c in failed if c.partition == lbl), "") or f"partition {lbl} is {bad_parts[lbl]}"
-            out.reasons.append(_reason(phys, next((c.name for c in failed if c.partition == lbl), bad_parts[lbl]),
-                                       detail, partition=lbl, status=bad_parts[lbl]))
+            out.reasons.append(_with_acquisition(
+                _reason(phys, next((c.name for c in failed if c.partition == lbl), bad_parts[lbl]), detail,
+                        partition=lbl, status=bad_parts[lbl]), cache, phys, bad_parts[lbl]))
             out.unavailable_partitions[phys] = blocking
             continue
         own = table_status(m)                          # findings scoped to parts this call skips do not count
         if own not in READY_STATUSES and not bad_cols and not bad_parts and own != "partial":
-            out.reasons.append(_reason(phys, own, f"table is {own}", status=own))
+            out.reasons.append(_with_acquisition(_reason(phys, own, f"table is {own}", status=own), cache, phys, own))
     sections = section_tables(contract)
     if sections:
         tails = {t.split(".")[-1] for t in sections}
