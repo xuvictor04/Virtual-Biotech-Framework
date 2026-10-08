@@ -1721,11 +1721,16 @@ def _composite_ref(run: CheckRun, path: str, ref: CompositeRef) -> None:
 
 
 def _stored_forms(run: CheckRun) -> None:
-    """Stored forms of an id_type in this table must normalise into its universe (names the unmatched values)."""
+    """Stored forms of an id_type in this table must normalise into its universe (names the unmatched values).
+    On a column declared ``integrity: partial`` an unmatched value is the dangling reference that declaration
+    expects, a warning as R9 reports it: the version-suffixed interaction endpoints of 25.09 are declared stored
+    forms for the 61 human genes among them, and the other species' versioned IDs on the same column
+    (ENSAMEG00000026011.1) made interaction_evidence not_ready when they were key violations."""
     t = run.table
     desc = t.descriptor
     reader = run.reader
     assert reader is not None
+    specs = dict(_walk_columns(reader.spec.columns))
     for name, it in desc.id_types.items():
         for ref in it.stored_forms:
             table, _, column = ref.partition(".")
@@ -1748,7 +1753,12 @@ def _stored_forms(run: CheckRun) -> None:
                 n = plugin.normalize_stored(str(v))
                 if not isinstance(n, Normalized) or (universe is not None and n.value not in universe):
                     bad.append(v)
-            if bad:
+            partial = getattr(specs.get(column), "integrity", "full") == "partial"
+            if bad and partial:
+                run.add("R9:stored_form", False, f"{qid}: {len(bad)} sampled stored value(s) in {column} outside the "
+                        f"universe (integrity: partial), e.g. {[str(b) for b in bad[:5]]}", level="warning",
+                        column=column)
+            elif bad:
                 run.add("R9:stored_form", False, f"{qid}: stored value(s) in {column} outside the universe: "
                         f"{[str(b) for b in bad[:10]]}", status="key_violation", column=column)
             else:

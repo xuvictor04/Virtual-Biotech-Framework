@@ -737,6 +737,44 @@ def test_versioned_endpoint_ids_are_read_under_their_stored_spelling(tmp_path):
     assert index.stored_value("ENSG00000141510", "s.interaction") is None      # stored as is
 
 
+def test_other_species_ids_beside_the_stored_forms_leave_the_table_ready(tmp_path):
+    """ACC-1, found on the real 25.09 interaction_evidence: declaring the version-suffixed endpoints as stored forms
+    made R9:stored_form a key violation for the other species' versioned IDs on the same columns
+    (ENSAMEG00000026011.1, ...), so the table was not_ready and get_interaction_evidence refused every call. The
+    columns are integrity: partial: the unmatched stored values are a warning, as their R9 dangling references are."""
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    from test_dl_service_reader import make_ctx, source
+    from vbt.datalayer.service.checks import check_table
+
+    root = tmp_path / "s"
+    edges = [{"targetA": "ENSG00000198972.3", "targetB": "ENSG00000141510"},
+             {"targetA": "ENSAMEG00000026011.1", "targetB": "ENSG00000141510"}]
+    for name, rows in {"target": [{"id": "ENSG00000198972"}, {"id": "ENSG00000141510"}], "interaction": edges}.items():
+        (root / name).mkdir(parents=True)
+        pq.write_table(pa.Table.from_pylist(rows), root / name / "part-0.parquet")
+
+    def ctx_for(integrity: str) -> Any:
+        tables = {"target": {"kind": "entity", "path": "target", "grain": "one gene", "key": {"columns": ["id"]},
+                             "columns": {"id": {"role": "identifier", "id_type": "ensembl_gene", "self": True}}},
+                  "interaction": {"kind": "edges", "path": "interaction", "grain": "one edge",
+                                  "key": {"columns": ["targetA", "targetB"]},
+                                  "columns": {"targetA": {"role": "endpoint", "side": "a", "id_type": "ensembl_gene",
+                                                          "ref": "target.id", "integrity": integrity},
+                                              "targetB": {"role": "endpoint", "side": "b", "id_type": "ensembl_gene",
+                                                          "ref": "target.id", "integrity": integrity}}}}
+        id_types = {"ensembl_gene": {"plugin": "ensembl_gene", "universe": "target.id",
+                                     "stored_forms": {"interaction.targetA": "as_stored",
+                                                      "interaction.targetB": "as_stored"}}}
+        (tmp_path / integrity).mkdir()
+        return make_ctx(tmp_path / integrity, source("s", root, tables, id_types=id_types))
+
+    model = check_table(ctx_for("partial"), "s.interaction")
+    hits = [c for c in model.checks if c.name == "R9:stored_form" and c.column == "targetA"]
+    assert model.status == "ready" and hits and hits[0].level == "warning" and "ENSAMEG00000026011.1" in hits[0].detail
+    assert check_table(ctx_for("full"), "s.interaction").status == "key_violation"
+
+
 def test_the_shipped_gene_type_declares_the_versioned_endpoints():
     from vbt.datalayer.descriptor.load import load_descriptors
 
