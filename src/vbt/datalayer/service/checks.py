@@ -44,7 +44,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ..descriptor.columns import CompositeRef, is_container
 from ..ipc import CheckItemModel, KeyCheckModel, TableCheckModel
@@ -762,17 +762,45 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
     prefix = list(spec_key.sample_prefix) or key[:-1]
     prefix_idx = [key.index(p) for p in prefix if p in key]
     rows_hint = total_rows or 0
+    if t.is_item_table and method == "sampled":
+        rows_hint = _item_count_hint(run.ctx, reader)
     fraction = 1.0 if method == "full" or rows_hint <= run.sample_rows else run.sample_rows / rows_hint
     buckets = 1 << 16
     keep_below = max(1, int(buckets * fraction))
+    row_filter = None
+    parent_parts = [k for k in flat if k not in reader.partitions]
+    if t.is_item_table and fraction < 1.0 and parent_parts:
+        # every item of a parent row shares the parent's key parts: whole parent rows are sampled, decided before
+        # their items are expanded. Deciding per item expanded and rendered every item: 5.7 M items of the 25.09
+        # target item tables took 12 minutes of a standard check (an item table had no row count, so its
+        # declared check: sampled always ran in full).
+        def row_filter(row: Mapping[str, Any]) -> bool:
+            return _hash(canonical([_items.path_value(row, k) for k in parent_parts])) % buckets < keep_below
+
+        prefix_idx = []
+    arrow_filter = None
+    if fraction < 1.0 and prefix_idx and not t.is_item_table and len(flat) == len(key):
+        # the prefix blocks are sampled on the Arrow arrays, before a row is converted: the content check of the
+        # 27.3 M rows of 25.09 interaction_evidence converted every column of every row to hash 0.7% of them
+        # (more than 15 minutes of the genetics and interaction session's first check)
+        arrow_filter = _arrow_prefix_sample(reader, [key[i] for i in prefix_idx], buckets, keep_below)
+        if arrow_filter is not None:
+            prefix_idx = []
+    presampled = row_filter is not None or arrow_filter is not None
     seen: set[str] = set()
     spill: _Spill | None = None
     dups = 0
     examples: list[str] = []
     scanned = 0
     types = reader.storage_types(key)
+    fast = None
+    if not content and not t.is_item_table and fraction >= 1.0 and len(flat) == len(key) and \
+            total_rows is not None and total_rows <= SPILL_KEYS * ARROW_KEY_ROWS_PER_SPILL_KEY:
+        fast = _arrow_key_duplicates(reader, key, types)
     try:
-        for m in reader.scan(None, columns=None if content else [], attribute_unknown=False):
+        for m in (reader.scan(None, columns=None if content else [], attribute_unknown=False, row_filter=row_filter,
+                              arrow_filter=arrow_filter)
+                  if fast is None else ()):
             scanned += 1
             for k, v in zip(key, m.key):
                 if v is None and k in nulls and (t.is_item_table or k not in flat):
@@ -782,7 +810,7 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
                 if _hash(canonical([m.key[i] for i in prefix_idx])) % buckets >= keep_below:
                     continue
             ck = content_hash(m.row) if content else canonical(list(m.key), types)
-            if fraction < 1.0 and not prefix_idx and _hash(ck) % buckets >= keep_below:
+            if fraction < 1.0 and not prefix_idx and not presampled and _hash(ck) % buckets >= keep_below:
                 continue
             if spill is not None:
                 spill.add(ck)
@@ -802,6 +830,8 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
             d, ex = spill.duplicates()
             dups += d
             examples.extend(ex[: 5 - len(examples)])
+        if fast is not None:
+            dups, examples, scanned = fast
     except (BudgetExceeded, TableUnavailable, FormatError) as exc:
         model.ok = None
         model.detail = f"key check not completed: {exc}"
@@ -821,7 +851,8 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
                 column=next(iter(null_bad)))
     else:
         run.add("R5", True, f"no nulls in non-nullable key parts{where} ({scanned} keys)")
-    sampled = f"sampled {fraction:.1%} of prefix blocks" if fraction < 1.0 else "every key"
+    sampled = (f"sampled {fraction:.1%} of {'parent rows' if row_filter is not None else 'prefix blocks'}"
+               if fraction < 1.0 else "every key")
     if dups and content:
         run.add("R5b", False, f"{dups} row(s) equal to another row ({sampled}; content hashes {', '.join(examples)})",
                 status="key_violation", hint="row_identity content_hash needs rows that are never equal; every "
@@ -838,8 +869,130 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
     return model
 
 
+def _arrow_prefix_sample(reader: TableReader, parts: Sequence[str], buckets: int, keep_below: int
+                         ) -> Callable[[Any], Any] | None:
+    """A scan ``arrow_filter`` keeping the rows whose key prefix ``parts`` hash below ``keep_below`` of ``buckets``:
+    rows with equal prefixes are kept or dropped together (the hash is of the values, so in every row group alike).
+    Each distinct prefix of a row group is hashed once. Only the parts stored as compared are hashed: top-level
+    columns that are neither partitions nor cleaned (25.09 interaction_evidence cleans targetA, a non-entity
+    endpoint). Rows equal on the key, or equal outright, are equal on any of its parts, so a sample of fewer parts
+    still holds every copy. None when no part qualifies, or for a reader that cannot say how its columns are stored:
+    the caller samples the scanned rows."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    physical = getattr(reader, "physical_path", None)
+    unclean = getattr(reader, "_unclean", None)
+    if physical is None or unclean is None:
+        return None
+    names = []
+    for p in parts:
+        phys = physical(p)
+        if not (p in reader.partitions or unclean(p) or "." in phys or "[" in phys):
+            names.append(phys)
+    if not names:
+        return None
+
+    def keep(tbl: Any) -> Any:
+        cols = []
+        for n in names:
+            col = tbl.column(n)
+            if not (pa.types.is_string(col.type) or pa.types.is_large_string(col.type)):
+                col = pc.cast(col, pa.large_string())
+            cols.append(col)
+        joined = pc.binary_join_element_wise(*cols, "\x1f", null_handling="replace", null_replacement="\x00")
+        wanted = [v for v in pc.unique(joined).to_pylist() if _hash(v) % buckets < keep_below]
+        return pc.is_in(joined, value_set=pa.array(wanted, joined.type))
+
+    return keep
+
+
+def _arrow_key_duplicates(reader: TableReader, key: Sequence[str], types: Sequence[str | None]
+                          ) -> tuple[int, list[str], int] | None:
+    """``(duplicates, up to five rendered duplicate keys, rows)`` of a key of flat columns, counted on Arrow arrays
+    with NULLS NOT DISTINCT: each part is dictionary-encoded over the whole table and the codes are combined into one
+    integer per row, whose repeats are the duplicate keys. Rendering every key in Python took 3.4 minutes of a
+    standard check of the 4.0 M-row 25.09 association_overall_direct table, and the indirect tables hold 13 M rows.
+    When the product of the parts' cardinalities passes 63 bits (the seven-part key of the 14.5 M-row interaction
+    table: about 5e21) the codes combined so far are encoded again, which bounds them by the row count.
+    None when a part is a partition or a cleaned column (in-band unknowns) or the parts do not read as aligned
+    arrays: the caller scans the rows instead."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if not key or any(k in reader.partitions or reader._unclean(k) for k in key):
+        return None
+    indices: list[Any] = []
+    dictionaries: list[Any] = []
+    try:
+        layout = None
+        for part in key:
+            chunks, where = [], []
+            for frag, rg, arr in reader.leaf_arrays(part):
+                where.append((frag.uri, rg, len(arr)))
+                chunks.append(arr.combine_chunks() if isinstance(arr, pa.ChunkedArray) else arr)
+            if layout is None:
+                layout = where
+            elif where != layout:
+                return None
+            if not chunks:
+                return 0, [], 0
+            enc = pc.dictionary_encode(pa.chunked_array(chunks).combine_chunks())
+            del chunks
+            dictionaries.append(enc.dictionary)
+            indices.append(enc.indices)                 # int32, null where the part is null
+        combined: Any = None
+        width = 1
+        for idx, d in zip(indices, dictionaries):
+            w = len(d) + 1
+            code = pc.add(pc.fill_null(idx.cast(pa.int64()), -1), 1)                  # 0 is null
+            if combined is None:
+                combined, width = code, w
+                continue
+            if width * w >= 2 ** 63:
+                again = pc.dictionary_encode(combined)
+                combined, width = again.indices.cast(pa.int64()), len(again.dictionary)
+                if width * w >= 2 ** 63:
+                    return None
+            combined = pc.add(pc.multiply(combined, w), code)
+            width *= w
+        rows = len(combined)
+        counts = pc.value_counts(combined)
+        repeated = counts.filter(pc.greater(counts.field("counts"), 1))
+        dups = int(pc.sum(pc.subtract(repeated.field("counts"), 1)).as_py() or 0)
+        examples: list[str] = []
+        for value, n in zip(repeated.field("values").slice(0, 5).to_pylist(),
+                            repeated.field("counts").slice(0, 5).to_pylist()):
+            row = pc.index(combined, value).as_py()
+            parts = [None if not idx[row].is_valid else d[idx[row].as_py()].as_py()
+                     for idx, d in zip(indices, dictionaries)]
+            examples.extend([canonical(parts, types)] * (n - 1))   # one per repeat, as a scan lists
+        examples = examples[:5]
+    except (ServiceError, FormatError, ValueError, TypeError, NotImplementedError, pa.ArrowException):
+        return None
+    return dups, examples, rows
+
+
+def _item_count_hint(ctx: ServiceContext, reader: TableReader) -> int:
+    """The items of an item table as its footers count them: the most values of a field directly in the innermost
+    list (a null or empty list adds one null value, so this errs high). 0 when the footers do not say."""
+    if not reader.levels:
+        return 0
+    inner = reader.levels[-1].text + "."
+    try:
+        cols, _rows, _size = aggregate_stats(ctx.reader(str(reader.table.physical)))
+    except (ServiceError, FormatError, TableUnavailable):
+        return 0
+    counts = [int(cs.num_values or 0) for path, cs in cols.items()
+              if path.startswith(inner) and "[" not in path[len(inner):]]
+    return max(counts, default=0)
+
+
 #: Distinct keys held in memory before the uniqueness pass spills to hash-partitioned files.
 SPILL_KEYS = 2_000_000
+#: A flat key is counted on Arrow codes (8 bytes per row and part) when the table has at most this many rows per
+#: spilled key; a larger one takes the bounded-memory pass (25.09 literature: 152 M rows).
+ARROW_KEY_ROWS_PER_SPILL_KEY = 8
 SPILL_PREFIX = "keycheck."
 
 
@@ -1060,17 +1213,19 @@ def _confirm_set(run: CheckRun, path: str, snap: ValueSnapshot | None, allowed: 
 def _container_counts(run: CheckRun, path: str, schema_path: str) -> None:
     reader = run.reader
     assert reader is not None
-    counts = _items.ContainerCounts()
     container = schema_path if schema_path.endswith("]") else schema_path + "[]"
     try:
         lvls = _items.levels(container)
         leaf = reader.leaf(container)
-        for frag, rgs in reader.plan(None, [leaf] if leaf else [], use_sidecars=False)[0]:
-            info = reader.footer(frag)
-            for rg in (rgs if rgs is not None else [None]):
-                for row in reader._read(frag, rg, [leaf] if leaf else [], info):
-                    for _ in _items.explode(row, lvls, counts):
-                        pass
+        counts = _arrow_container_counts(reader, lvls, leaf)
+        if counts is None:
+            counts = _items.ContainerCounts()
+            for frag, rgs in reader.plan(None, [leaf] if leaf else [], use_sidecars=False)[0]:
+                info = reader.footer(frag)
+                for rg in (rgs if rgs is not None else [None]):
+                    for row in reader._read(frag, rg, [leaf] if leaf else [], info):
+                        for _ in _items.explode(row, lvls, counts):
+                            pass
     except (ServiceError, FormatError, ValueError) as exc:
         run.add("R6:containers", False, f"{path}: null vs empty counts not read ({exc})", level="warning",
                 container=path)
@@ -1080,6 +1235,54 @@ def _container_counts(run: CheckRun, path: str, schema_path: str) -> None:
     run.add("R6:containers", True, f"{path}: {counts.null} null, {counts.empty} empty, {counts.nonempty} non-empty "
             f"list(s); {counts.null_items} null item(s)", container=path)
     run.containers.setdefault(path, "ready")
+
+
+def _arrow_container_counts(reader: TableReader, lvls: Sequence[Any], leaf: str | None) -> Any:
+    """``ContainerCounts`` of a list of structs counted on Arrow arrays: null, empty and non-empty lists at the
+    innermost level, its items and null items (``_items.explode``'s counts without building a Python row).
+    Converting every row of the 25.09 expression table (43,804 genes with nested tissues) to count its containers
+    was most of a three-minute standard check. None when the path or the items are not structs and lists, or the
+    table has no footers: cleaning can turn a coded scalar item into a null, so those are counted on rows."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if not leaf or not lvls or reader.partitions:
+        return None
+    counts = _items.ContainerCounts()
+    try:
+        for frag, rgs in reader.plan(None, [leaf], use_sidecars=False)[0]:
+            if reader.footer(frag) is None:
+                return None
+            for rg in (rgs if rgs is not None else [None]):
+                tbl = reader.fmt.read_leaves(frag, [leaf], [rg])
+                head = lvls[0].names[0]
+                if head not in tbl.column_names:
+                    return None
+                arr = tbl.column(head).combine_chunks()
+                counts.rows += len(arr)
+                for depth, lvl in enumerate(lvls):
+                    for name in (lvl.names[1:] if depth == 0 else lvl.names):
+                        index = arr.type.get_field_index(name) if pa.types.is_struct(arr.type) else -1
+                        if index < 0:
+                            return None
+                        arr = arr.flatten()[index]                            # the struct's nulls applied
+                    if not (pa.types.is_list(arr.type) or pa.types.is_large_list(arr.type)):
+                        return None
+                    values = arr.flatten()                                    # items of the valid lists
+                    if depth < len(lvls) - 1:
+                        arr = values.filter(values.is_valid())                # a null item has no lists below
+                        continue
+                    if not pa.types.is_struct(values.type):
+                        return None
+                    lengths = pc.list_value_length(arr)
+                    counts.null += arr.null_count
+                    counts.empty += int(pc.sum(pc.equal(lengths, 0)).as_py() or 0)
+                    counts.nonempty += int(pc.sum(pc.greater(lengths, 0)).as_py() or 0)
+                    counts.null_items += values.null_count
+                    counts.items += len(values) - values.null_count
+    except (pa.ArrowException, KeyError, IndexError, TypeError):
+        return None
+    return counts
 
 
 def _literal_constraint(run: CheckRun, c: Any) -> None:
@@ -1405,13 +1608,15 @@ def r9_refs(run: CheckRun) -> None:
             if max_values is not None and len(values) > max_values:
                 values = random.Random(0).sample(values, max_values)
             treader = run.ctx.reader(target[0])
-            found: set[str] = set()
-            for i in range(0, len(values), 1000):
-                chunk = values[i:i + 1000]
-                for m in treader.scan(In("/" + target[1], tuple(chunk)), columns=[target[1]],
-                                      attribute_unknown=False):
-                    for v in _items.path_values(m.row, target[1]):
-                        found.add(render_value(v))
+            found = _found_in_column(treader, target[1], values)
+            if found is None:
+                found = set()
+                for i in range(0, len(values), 1000):
+                    chunk = values[i:i + 1000]
+                    for m in treader.scan(In("/" + target[1], tuple(chunk)), columns=[target[1]],
+                                          attribute_unknown=False):
+                        for v in _items.path_values(m.row, target[1]):
+                            found.add(render_value(v))
         except (ServiceError, FormatError) as exc:
             run.add("R9", False, f"{path} -> {ref}: not checked ({exc})", level="warning", column=path)
             continue
@@ -1428,6 +1633,40 @@ def r9_refs(run: CheckRun) -> None:
                     f"{dangling[:5]}", status="key_violation", column=path,
                     hint="declare integrity: partial if dangling references are expected")
     _stored_forms(run)
+
+
+def _found_in_column(treader: TableReader, column: str, values: Sequence[Any]) -> set[str] | None:
+    """The rendered ``values`` that occur in the flat ``column`` of ``treader``: the column is read row group by
+    row group and matched with Arrow's ``is_in``. A ``scan`` with ``In`` tests every row it keeps against every
+    value of the chunk in Python: the deep R9 of the real target_prioritisation (78,726 targetIds -> target.id)
+    took 51 s that way, 39 M comparisons. None when the column is nested, an item table's, cleaned (in-band
+    unknowns are rewritten before matching), mixes value types or is not a string or integer column: the caller
+    scans instead."""
+    if treader.levels or any(ch in column for ch in ".[]") or treader._unclean(column):
+        return None
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if all(isinstance(v, str) for v in values):
+        wanted, as_type, ok = pa.array(values, type=pa.large_string()), pa.large_string(), pa.types.is_string
+    elif all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+        wanted, as_type, ok = pa.array(values, type=pa.int64()), pa.int64(), pa.types.is_integer
+    else:
+        return None
+    found: set[str] = set()
+    try:
+        for _frag, _rg, arr in treader.leaf_arrays(column):
+            if isinstance(arr, pa.ChunkedArray):
+                arr = arr.combine_chunks()
+            if pa.types.is_dictionary(arr.type):
+                arr = arr.dictionary_decode()
+            if not (ok(arr.type) or pa.types.is_large_string(arr.type) and as_type == pa.large_string()):
+                return None
+            hits = pc.filter(arr, pc.is_in(pc.cast(arr, as_type), value_set=wanted))
+            found.update(render_value(v) for v in pc.unique(hits).to_pylist() if v is not None)
+    except (ServiceError, FormatError, ValueError, TypeError, NotImplementedError, pa.ArrowException):
+        return None
+    return found
 
 
 def _composite_ref(run: CheckRun, path: str, ref: CompositeRef) -> None:

@@ -53,7 +53,6 @@ from typing import Any, Mapping, Sequence
 from ...descriptor.columns import is_container
 from ...ipc import VERB_SERVE, ServeRequest, ServeResponse
 from ...predicate import evaluate, from_json
-from ...roles import parse_path
 from .. import ServiceContext, ServiceError
 from .. import items as _items
 from ..reader import BudgetExceeded, ScanStats, TableReader, UnboundParameter
@@ -217,23 +216,48 @@ def _split(rows: list[dict[str, Any]], spec: Mapping[str, Any], per_list: int | 
     return out
 
 
+def _bare(path: str) -> str:
+    """A column path without list brackets or a leading ``/`` (``homologues[].targetGeneId`` -> ``homologues.targetGeneId``)."""
+    return str(path).lstrip("/").replace("[]", "")
+
+
+def _labels_the_row(col: Any, scopes: Sequence[tuple[str, Mapping[str, Any]]], keys: set[str]) -> bool:
+    """Is a label or synonym one of the row's own names? Its ``of`` must name a key column, resolved as §6.4 does:
+    a sibling first, then the fields of each enclosing level outward (``scopes``: ``(prefix, fields)`` from the
+    innermost), then a table column (``/col`` forces that). 25.09 target lists each gene's paralogues under
+    ``homologues[].targetGeneSymbol`` (``of: targetGeneId``): searching "TP53" matched TP63's paralogue label
+    exactly and ranked TP63 first. A label without ``of`` counts as the row's own."""
+    of = getattr(col, "of", None)
+    if not of:
+        return True
+    of = str(of)
+    target = of
+    if not of.startswith("/"):
+        head = of.split(".")[0]
+        target = next((f"{prefix}{of}" for prefix, fields in scopes if head in fields), of)
+    return _bare(target) in keys
+
+
 def search(reader: TableReader, text: str, predicate: Any, limit: int | None, params: Mapping[str, Any],
            budget: int | None) -> tuple[list[dict[str, Any]], list[list[Any]], int]:
     """Rows ranked by match class, then the table's rank, then the key; ``(rows, keys, total matches)``."""
     phys: list[tuple[str, str]] = [(k, "key") for k in reader.key if not k.endswith("#")]
+    keys = {_bare(k) for k in reader.key if not k.endswith("#")}
 
-    def walk(cols: Mapping[str, Any], prefix: str) -> None:
+    def walk(cols: Mapping[str, Any], prefix: str, outer: list[tuple[str, Mapping[str, Any]]]) -> None:
+        scopes = [(prefix, cols), *outer]
         for name, col in cols.items():
             dotted = f"{prefix}{name}"
             if getattr(col, "role", None) in ("label", "synonym"):
-                phys.extend(text_leaf(reader, dotted, col))
+                if _labels_the_row(col, scopes, keys):
+                    phys.extend(text_leaf(reader, dotted, col))
             elif is_container(col):
-                walk(col.fields, dotted + ".")
+                walk(col.fields, dotted + ".", scopes)
 
     if reader.levels:
-        walk(reader._level_fields()[-1], ".".join(n for lvl in reader.levels for n in lvl.names) + ".")
+        walk(reader._level_fields()[-1], ".".join(n for lvl in reader.levels for n in lvl.names) + ".", [])
     else:
-        walk(reader.spec.columns, "")
+        walk(reader.spec.columns, "", [])
     needle = _fold(text)
     word = re.compile(rf"(?<!\w){re.escape(needle)}(?!\w)")
     okeys = reader.order_keys([r.model_dump() for r in reader.table.spec.rank])
@@ -283,8 +307,10 @@ def search(reader: TableReader, text: str, predicate: Any, limit: int | None, pa
     return rows, keys, total
 
 
-def _grain_counts(reader: TableReader, pred: Any, params: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
+def _grain_counts(reader: TableReader, pred: Any, params: Mapping[str, Any], returned: Mapping[str, int]
                   ) -> dict[str, dict[str, int | None]]:
+    """``{grain: {returned, total}}``: ``returned`` counted on the returned matches (``rows(grains=...)``), the
+    total over every match, both as the grain's values (canonicalised, unordered pairs)."""
     grains = dict(reader.table.spec.grains)
     if not grains:
         return {}
@@ -292,14 +318,7 @@ def _grain_counts(reader: TableReader, pred: Any, params: Mapping[str, Any], row
         totals = reader.distinct_counts(pred, grains, params=params)
     except (BudgetExceeded, ServiceError):
         totals = {}
-    out: dict[str, dict[str, int | None]] = {}
-    for name, g in grains.items():
-        cols = g if isinstance(g, list) else list(g.columns) + list(g.unordered) + list(g.by)
-        names = [parse_path(c).segments[-1].name if not reader.levels else c for c in cols]
-        returned = {json.dumps([r.get(n, r.get(c)) for n, c in zip(names, cols)], default=str, sort_keys=True)
-                    for r in rows}
-        out[name] = {"returned": len(returned) if rows else 0, "total": totals.get(name)}
-    return out
+    return {name: {"returned": returned.get(name), "total": totals.get(name)} for name in grains}
 
 
 _AGGREGATES = ("count_distinct", "count", "first", "distinct")
@@ -471,7 +490,8 @@ def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
         rows, keys, stats = reader.rows(req.predicate, req.columns, order, limit, req.limit_grain,
                                         explode=req.explode, carry=req.carry, rename=req.rename, params=params,
                                         budget_bytes=req.budget_bytes, stats=stats, group_by=req.group_by,
-                                        distinct=req.distinct)
+                                        distinct=req.distinct,
+                                        grains=None if req.nest else dict(reader.table.spec.grains))
         sections: dict[str, Any] = {}
         total = stats.total
         truncated = total > len(rows)
@@ -499,7 +519,8 @@ def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
             from .views import serve_sections
 
             sections.update(serve_sections(ctx, req.sections, params))
-        grains = _grain_counts(reader, req.predicate, params, rows) if not req.nest else nest_grains
+        grains = _grain_counts(reader, req.predicate, params, stats.grains_returned) if not req.nest \
+            else nest_grains
         resp = ServeResponse(rows=out_rows, total=total, truncated=truncated, key_columns=list(reader.key),
                              grains=grains, excluded_unknown=dict(stats.excluded_unknown),
                              excluded_not_applicable=dict(stats.excluded_not_applicable), served_by="derived",

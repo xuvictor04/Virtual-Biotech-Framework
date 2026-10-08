@@ -11,9 +11,14 @@ TableStatsModel`, or its JSON form):
 
   pandas creates one Python object per nested item, so footer bytes alone understate the peak
   about 9x on a three-level fixture (VERIFIED: 11.6 MB of leaf bytes, +1,001 MB peak RSS against
-  a 107 MB bytes-only estimate). Seed overheads (``data.memory.object_overhead_bytes``): string
-  50 B per value, nested item 120 B per value and list level (``max_rep_level``), and one dict of
-  240 B per struct item.
+  a 107 MB bytes-only estimate). Overheads (``data.memory.object_overhead_bytes``): ``string`` per
+  string value, ``nested_item`` per value and list level (``max_rep_level``), one dict of
+  ``struct_item`` per struct item, and ``flat_value`` per value of a flat non-string leaf (its pandas
+  slot and the Arrow buffer it is converted from: dictionary-encoded numbers have almost no footer
+  bytes, so a bytes-only term missed them). ``configs/default.yaml`` holds factors fitted to the
+  peak RSS of the upstream loader's whole-table loads of the real Open Targets 25.09 tables (26
+  measured tables, 6 MB to 3.0 GB; median estimate/measured 1.0, 0.7 to 1.5 on the tables over
+  50 MB). The in-code defaults are the original seeds (no ``flat_value``).
 - **Data-child Arrow scan**: projected leaf bytes x a decode factor; this is what
   ``data.witness.max_scan_bytes`` is compared with.
 
@@ -197,8 +202,12 @@ class MemoryEstimator:
         return self.expansion.get(kind, self.expansion.get("flat", 1.5))
 
     def overhead(self, leaf: Leaf) -> int:
-        """Python object bytes per leaf value: a str object, plus one nested item per list level."""
-        per = self.object_overhead["string"] if leaf.is_string else 0
+        """Bytes per leaf value: a str object, or a flat value's ``flat_value``; plus one nested item per list
+        level."""
+        if leaf.is_string:
+            per = self.object_overhead["string"]
+        else:
+            per = self.object_overhead.get("flat_value", 0) if leaf.depth == 0 else 0
         return per + self.object_overhead["nested_item"] * leaf.depth
 
     @staticmethod
