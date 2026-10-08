@@ -1,0 +1,16 @@
+{
+ "url": "https://www.cbioportal.org/api/studies/no_such_study_xyz/clinical-data",
+ "params": {
+  "clinicalDataType": "PATIENT"
+ },
+ "status": 404,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:30:10 GMT",
+  "content-type": "application/json"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": null,
+ "body": {
+  "message": "Study not found: no_such_study_xyz"
+ }
+}

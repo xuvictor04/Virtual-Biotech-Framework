@@ -1,0 +1,16 @@
+{
+ "url": "https://www.cbioportal.org/api/molecular-profiles/acc_tcga_pan_can_atlas_2018_rna_seq_v2_mrna/molecular-data",
+ "params": {
+  "projection": "META",
+  "sampleListId": "acc_tcga_pan_can_atlas_2018_all",
+  "entrezGeneId": "80381"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:30:19 GMT",
+  "total-count": "78"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": null,
+ "body": null
+}

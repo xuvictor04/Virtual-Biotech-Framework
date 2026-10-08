@@ -1,0 +1,401 @@
+{
+ "url": "https://www.cbioportal.org/api/studies/acc_tcga_pan_can_atlas_2018/clinical-data",
+ "params": {
+  "clinicalDataType": "PATIENT"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:30:16 GMT",
+  "content-type": "application/json"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": "rows of the first 6 patients and 11 attributes; all_rows/all_patients/status_values describe the whole response",
+ "body": {
+  "rows": [
+   {
+    "patientId": "TCGA-OR-A5J1",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "AGE",
+    "value": "58"
+   },
+   {
+    "patientId": "TCGA-OR-A5J1",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "AJCC_PATHOLOGIC_TUMOR_STAGE",
+    "value": "STAGE II"
+   },
+   {
+    "patientId": "TCGA-OR-A5J1",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DFS_MONTHS",
+    "value": "24.78876944"
+   },
+   {
+    "patientId": "TCGA-OR-A5J1",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DFS_STATUS",
+    "value": "1:Recurred/Progressed"
+   },
+   {
+    "patientId": "TCGA-OR-A5J1",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DSS_MONTHS",
+    "value": "44.54745701"
+   },
+   {
+    "patientId": "TCGA-OR-A5J1",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DSS_STATUS",
+    "value": "1:DEAD WITH TUMOR"
+   },
+   {
+    "patientId": "TCGA-OR-A5J1",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "OS_MONTHS",
+    "value": "44.54745701"
+   },
+   {
+    "patientId": "TCGA-OR-A5J1",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "OS_STATUS",
+    "value": "1:DECEASED"
+   },
+   {
+    "patientId": "TCGA-OR-A5J1",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "PFS_MONTHS",
+    "value": "24.78876944"
+   },
+   {
+    "patientId": "TCGA-OR-A5J1",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "PFS_STATUS",
+    "value": "1:PROGRESSION"
+   },
+   {
+    "patientId": "TCGA-OR-A5J1",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "SEX",
+    "value": "Male"
+   },
+   {
+    "patientId": "TCGA-OR-A5J2",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "AGE",
+    "value": "44"
+   },
+   {
+    "patientId": "TCGA-OR-A5J2",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "AJCC_PATHOLOGIC_TUMOR_STAGE",
+    "value": "STAGE IV"
+   },
+   {
+    "patientId": "TCGA-OR-A5J2",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DSS_MONTHS",
+    "value": "55.13364237"
+   },
+   {
+    "patientId": "TCGA-OR-A5J2",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DSS_STATUS",
+    "value": "1:DEAD WITH TUMOR"
+   },
+   {
+    "patientId": "TCGA-OR-A5J2",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "OS_MONTHS",
+    "value": "55.13364237"
+   },
+   {
+    "patientId": "TCGA-OR-A5J2",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "OS_STATUS",
+    "value": "1:DECEASED"
+   },
+   {
+    "patientId": "TCGA-OR-A5J2",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "PFS_MONTHS",
+    "value": "9.50126574"
+   },
+   {
+    "patientId": "TCGA-OR-A5J2",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "PFS_STATUS",
+    "value": "1:PROGRESSION"
+   },
+   {
+    "patientId": "TCGA-OR-A5J2",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "SEX",
+    "value": "Female"
+   },
+   {
+    "patientId": "TCGA-OR-A5J3",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "AGE",
+    "value": "23"
+   },
+   {
+    "patientId": "TCGA-OR-A5J3",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "AJCC_PATHOLOGIC_TUMOR_STAGE",
+    "value": "STAGE III"
+   },
+   {
+    "patientId": "TCGA-OR-A5J3",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DFS_MONTHS",
+    "value": "1.742446658"
+   },
+   {
+    "patientId": "TCGA-OR-A5J3",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DFS_STATUS",
+    "value": "1:Recurred/Progressed"
+   },
+   {
+    "patientId": "TCGA-OR-A5J3",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DSS_MONTHS",
+    "value": "68.74445212"
+   },
+   {
+    "patientId": "TCGA-OR-A5J3",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DSS_STATUS",
+    "value": "0:ALIVE OR DEAD TUMOR FREE"
+   },
+   {
+    "patientId": "TCGA-OR-A5J3",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "OS_MONTHS",
+    "value": "68.74445212"
+   },
+   {
+    "patientId": "TCGA-OR-A5J3",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "OS_STATUS",
+    "value": "0:LIVING"
+   },
+   {
+    "patientId": "TCGA-OR-A5J3",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "PFS_MONTHS",
+    "value": "1.742446658"
+   },
+   {
+    "patientId": "TCGA-OR-A5J3",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "PFS_STATUS",
+    "value": "1:PROGRESSION"
+   },
+   {
+    "patientId": "TCGA-OR-A5J3",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "SEX",
+    "value": "Female"
+   },
+   {
+    "patientId": "TCGA-OR-A5J4",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "AGE",
+    "value": "23"
+   },
+   {
+    "patientId": "TCGA-OR-A5J4",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "AJCC_PATHOLOGIC_TUMOR_STAGE",
+    "value": "STAGE IV"
+   },
+   {
+    "patientId": "TCGA-OR-A5J4",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DSS_MONTHS",
+    "value": "13.90669691"
+   },
+   {
+    "patientId": "TCGA-OR-A5J4",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DSS_STATUS",
+    "value": "1:DEAD WITH TUMOR"
+   },
+   {
+    "patientId": "TCGA-OR-A5J4",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "OS_MONTHS",
+    "value": "13.90669691"
+   },
+   {
+    "patientId": "TCGA-OR-A5J4",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "OS_STATUS",
+    "value": "1:DECEASED"
+   },
+   {
+    "patientId": "TCGA-OR-A5J4",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "PFS_MONTHS",
+    "value": "4.142420357"
+   },
+   {
+    "patientId": "TCGA-OR-A5J4",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "PFS_STATUS",
+    "value": "1:PROGRESSION"
+   },
+   {
+    "patientId": "TCGA-OR-A5J4",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "SEX",
+    "value": "Female"
+   },
+   {
+    "patientId": "TCGA-OR-A5J5",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "AGE",
+    "value": "30"
+   },
+   {
+    "patientId": "TCGA-OR-A5J5",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "AJCC_PATHOLOGIC_TUMOR_STAGE",
+    "value": "STAGE III"
+   },
+   {
+    "patientId": "TCGA-OR-A5J5",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DSS_MONTHS",
+    "value": "11.9998685"
+   },
+   {
+    "patientId": "TCGA-OR-A5J5",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DSS_STATUS",
+    "value": "1:DEAD WITH TUMOR"
+   },
+   {
+    "patientId": "TCGA-OR-A5J5",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "OS_MONTHS",
+    "value": "11.9998685"
+   },
+   {
+    "patientId": "TCGA-OR-A5J5",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "OS_STATUS",
+    "value": "1:DECEASED"
+   },
+   {
+    "patientId": "TCGA-OR-A5J5",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "PFS_MONTHS",
+    "value": "1.643817602"
+   },
+   {
+    "patientId": "TCGA-OR-A5J5",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "PFS_STATUS",
+    "value": "1:PROGRESSION"
+   },
+   {
+    "patientId": "TCGA-OR-A5J5",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "SEX",
+    "value": "Male"
+   },
+   {
+    "patientId": "TCGA-OR-A5J6",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "AGE",
+    "value": "29"
+   },
+   {
+    "patientId": "TCGA-OR-A5J6",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "AJCC_PATHOLOGIC_TUMOR_STAGE",
+    "value": "STAGE II"
+   },
+   {
+    "patientId": "TCGA-OR-A5J6",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DFS_MONTHS",
+    "value": "88.86477956"
+   },
+   {
+    "patientId": "TCGA-OR-A5J6",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DFS_STATUS",
+    "value": "0:DiseaseFree"
+   },
+   {
+    "patientId": "TCGA-OR-A5J6",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DSS_MONTHS",
+    "value": "88.86477956"
+   },
+   {
+    "patientId": "TCGA-OR-A5J6",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "DSS_STATUS",
+    "value": "0:ALIVE OR DEAD TUMOR FREE"
+   },
+   {
+    "patientId": "TCGA-OR-A5J6",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "OS_MONTHS",
+    "value": "88.86477956"
+   },
+   {
+    "patientId": "TCGA-OR-A5J6",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "OS_STATUS",
+    "value": "0:LIVING"
+   },
+   {
+    "patientId": "TCGA-OR-A5J6",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "PFS_MONTHS",
+    "value": "88.86477956"
+   },
+   {
+    "patientId": "TCGA-OR-A5J6",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "PFS_STATUS",
+    "value": "0:CENSORED"
+   },
+   {
+    "patientId": "TCGA-OR-A5J6",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "clinicalAttributeId": "SEX",
+    "value": "Female"
+   }
+  ],
+  "all_rows": 2989,
+  "all_patients": 92,
+  "status_values": {
+   "DFS_STATUS": {
+    "1:Recurred/Progressed": 14,
+    "0:DiseaseFree": 39
+   },
+   "DSS_STATUS": {
+    "1:DEAD WITH TUMOR": 29,
+    "0:ALIVE OR DEAD TUMOR FREE": 60
+   },
+   "OS_STATUS": {
+    "1:DECEASED": 33,
+    "0:LIVING": 58
+   },
+   "PERSON_NEOPLASM_CANCER_STATUS": {
+    "With Tumor": 44,
+    "Tumor Free": 46
+   },
+   "PFS_STATUS": {
+    "1:PROGRESSION": 48,
+    "0:CENSORED": 43
+   }
+  }
+ }
+}

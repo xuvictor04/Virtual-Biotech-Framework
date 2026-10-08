@@ -1,0 +1,106 @@
+{
+ "url": "https://clinicaltrials.gov/api/v2/studies",
+ "params": {
+  "format": "json",
+  "countTotal": "true",
+  "filter.overallStatus": "SUSPENDED",
+  "pageSize": "2"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:29:53 GMT",
+  "content-type": "application/json"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": "each study keeps nctId, briefTitle, status dates, design and up to 3 location countries",
+ "body": {
+  "totalCount": 1776,
+  "studies": [
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT04436770",
+      "briefTitle": "Medical Recovery and Social Reintegration for Post-stroke Patients Using Virtual Reality"
+     },
+     "statusModule": {
+      "overallStatus": "SUSPENDED",
+      "startDateStruct": {
+       "date": "2019-07-18",
+       "type": "ACTUAL"
+      },
+      "studyFirstPostDateStruct": {
+       "date": "2020-06-18",
+       "type": "ACTUAL"
+      },
+      "lastUpdatePostDateStruct": {
+       "date": "2020-06-18",
+       "type": "ACTUAL"
+      },
+      "whyStopped": "Due to the COVID-19 pandemic"
+     },
+     "designModule": {
+      "studyType": "INTERVENTIONAL",
+      "phases": [
+       "NA"
+      ],
+      "enrollmentInfo": {
+       "count": 52,
+       "type": "ACTUAL"
+      }
+     },
+     "contactsLocationsModule": {
+      "locations": [
+       {
+        "country": "Romania"
+       }
+      ]
+     }
+    },
+    "hasResults": false
+   },
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT03500770",
+      "briefTitle": "Lyme Disease Patients With Memory Problems"
+     },
+     "statusModule": {
+      "overallStatus": "SUSPENDED",
+      "startDateStruct": {
+       "date": "2019-02-20",
+       "type": "ESTIMATED"
+      },
+      "studyFirstPostDateStruct": {
+       "date": "2018-04-18",
+       "type": "ACTUAL"
+      },
+      "lastUpdatePostDateStruct": {
+       "date": "2018-04-18",
+       "type": "ACTUAL"
+      },
+      "whyStopped": "lack of funding"
+     },
+     "designModule": {
+      "studyType": "INTERVENTIONAL",
+      "phases": [
+       "NA"
+      ],
+      "enrollmentInfo": {
+       "count": 15,
+       "type": "ESTIMATED"
+      }
+     },
+     "contactsLocationsModule": {
+      "locations": [
+       {
+        "country": "United States"
+       }
+      ]
+     }
+    },
+    "hasResults": false
+   }
+  ],
+  "nextPageToken": "ZVNj7o2Elu8o3lpwRM-l47L2mpOQJJxoZvSg0A"
+ }
+}

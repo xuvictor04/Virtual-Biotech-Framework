@@ -1,0 +1,39 @@
+{
+ "url": "https://census.cellxgene.cziscience.com/cellxgene-census/v1/release.json",
+ "params": {},
+ "status": 200,
+ "headers": {
+  "content-type": "application/json",
+  "date": "Thu, 08 Oct 2026 01:41:07 GMT"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": "aliases, the stable and latest entries (release_build, release_date, flags) and the list of releases",
+ "body": {
+  "stable": "2025-11-08",
+  "latest": "2025-11-17",
+  "2025-11-17": {
+   "release_build": "2025-11-17",
+   "release_date": null,
+   "flags": null
+  },
+  "2025-11-08": {
+   "release_build": "2025-11-08",
+   "release_date": null,
+   "flags": {
+    "lts": true
+   }
+  },
+  "_releases": [
+   "2023-05-15",
+   "2023-07-25",
+   "2023-12-15",
+   "2024-05-20",
+   "2024-07-01",
+   "2025-01-30",
+   "2025-11-04",
+   "2025-11-08",
+   "2025-11-10",
+   "2025-11-17"
+  ]
+ }
+}

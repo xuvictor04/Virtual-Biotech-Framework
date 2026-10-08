@@ -5,6 +5,15 @@ Options (``layout: {plugin: soma, options: {...}}``)::
     uri:            census_data/homo_sapiens/obs     the dataframe inside the Census (``ms/RNA/var`` for genes)
     census_version: stable                            what the upstream server opens; resolved, never assumed
     module:         cellxgene_census                  the Census client module (imported in the data child)
+    tiledb_config:  {soma.init_buffer_bytes: 134217728, py.init_buffer_bytes: 134217728}
+                                                      passed to ``open_soma`` (default: 128 MiB read buffers)
+
+Read buffers: ``cellxgene_census.open_soma`` reserves 1 GiB per column read by default. Under the data
+child's ``RLIMIT_DATA`` (which counts reserved, not resident, memory) that fails with ``std::bad_alloc``
+before any data arrives: on the real Census (2025-11-08) a one-column count failed under a 5000 MB limit
+at 260 MB resident. With 128 MiB buffers the same count of one dataset (7,750 cells) took 2.9 s, and
+counting a tissue (1.6 M cells) about 1.3 s. Counts stream the ``soma_joinid`` batches (never one
+table of every id).
 
 ``stable`` is an alias that moves. :func:`resolve_version` asks the client
 (``cellxgene_census.get_census_version_description``) which dated release it names, records it, and
@@ -23,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import inspect
 import json
 import re
 from datetime import datetime, timezone
@@ -30,15 +40,17 @@ from pathlib import Path
 from typing import Any, ClassVar, Mapping
 
 from ...predicate import Predicate, evaluate
+from ...predicate import columns as _predicate_columns
 from ..base import CheckItem, Fragment, LayoutSpec, Manifest, Page, PluginBase
 from ..formats.soma import SomaFormat
 from ..registry import register
 
 __all__ = ["SomaLayout", "Resolved", "resolve_version", "open_dataframe", "soma_uri", "census_module",
-           "VERSION_RECORD"]
+           "count_rows", "read_columns", "VERSION_RECORD", "DEFAULT_TILEDB_CONFIG"]
 
 DEFAULT_MODULE = "cellxgene_census"
 VERSION_RECORD = "census_versions.json"
+DEFAULT_TILEDB_CONFIG = {"soma.init_buffer_bytes": 128 * 1024 ** 2, "py.init_buffer_bytes": 128 * 1024 ** 2}
 _DATED = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _RESOLVED: dict[str, str] = {}                 # requested alias -> dated release, this process
 _AS_OF: dict[str, str] = {}
@@ -121,10 +133,22 @@ class _Opened:
             close()
 
 
-def _open(version: str, path: str, module: Any = None) -> _Opened:
+def _open(version: str, path: str, module: Any = None, tiledb_config: Mapping[str, Any] | None = None) -> _Opened:
     mod = module if module is not None else census_module()
-    census = mod.open_soma(census_version=version)
+    kwargs: dict[str, Any] = {"census_version": version}
+    config = dict(DEFAULT_TILEDB_CONFIG if tiledb_config is None else tiledb_config)
+    if config and _accepts(mod.open_soma, "tiledb_config"):
+        kwargs["tiledb_config"] = config
+    census = mod.open_soma(**kwargs)
     return _Opened(census, _walk(census, path))
+
+
+def _accepts(fn: Any, name: str) -> bool:
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return True
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 def open_dataframe(uri: str, module: Any = None) -> Any:
@@ -133,6 +157,15 @@ def open_dataframe(uri: str, module: Any = None) -> Any:
         raise ValueError(f"not a soma:// URI: {uri!r}")
     version, _, path = str(uri)[len("soma://"):].partition("/")
     return _open(version, path, module).frame
+
+
+def count_rows(result: Any) -> int:
+    """Rows of a SOMA read, batch by batch when the read iterates (``ReadIter`` of Arrow tables), else of
+    its ``concat()``."""
+    if hasattr(result, "__iter__") and not isinstance(result, (str, bytes)):
+        return int(sum(getattr(t, "num_rows", None) if getattr(t, "num_rows", None) is not None else len(t)
+                       for t in result))
+    return int(len(result.concat()))
 
 
 def _rows(frame: Any, value_filter: str | None, columns: list[str] | None) -> list[dict[str, Any]]:
@@ -147,6 +180,18 @@ def _rows(frame: Any, value_filter: str | None, columns: list[str] | None) -> li
     return list(table.to_pandas().to_dict("records"))
 
 
+def read_columns(frame: Any, value_filter: str | None, columns: list[str]) -> dict[str, list[Any]]:
+    """``{column: values}`` of a SOMA read (column by column: no per-row dict for millions of cells)."""
+    kwargs: dict[str, Any] = {"column_names": list(columns)}
+    if value_filter:
+        kwargs["value_filter"] = value_filter
+    table = frame.read(**kwargs).concat()
+    if hasattr(table, "column") and hasattr(table, "num_rows"):
+        return {c: table.column(c).to_pylist() for c in columns}
+    rows = table.to_pylist() if hasattr(table, "to_pylist") else table.to_pandas().to_dict("records")
+    return {c: [r.get(c) for r in rows] for c in columns}
+
+
 @register
 class SomaLayout(PluginBase):
     kind: ClassVar[str] = "layout"
@@ -158,6 +203,10 @@ class SomaLayout(PluginBase):
         self.fmt = SomaFormat()
         self.module: Any = None                   # a seam: the Census client (default: imported by name)
         self.record: str | None = None            # where resolved versions are kept (data.cache_dir)
+
+    def _config(self, spec: LayoutSpec) -> dict[str, Any] | None:
+        cfg = self._options(spec).get("tiledb_config")
+        return dict(cfg) if isinstance(cfg, Mapping) else None
 
     @staticmethod
     def _options(spec: LayoutSpec) -> dict[str, Any]:
@@ -222,7 +271,7 @@ class SomaLayout(PluginBase):
                 page_token: str | None, budget: Any) -> Page:
         value_filter, residual = self.fmt.compile(predicate)
         version, path, res = self._read_target(spec)
-        with _open(version, path, self._module(spec)) as frame:
+        with _open(version, path, self._module(spec), self._config(spec)) as frame:
             rows = _rows(frame, value_filter, list(projection or []) or None)
         if residual is not None:
             rows = [r for r in rows if evaluate(residual, r) is True]
@@ -237,12 +286,24 @@ class SomaLayout(PluginBase):
         if residual is not None:
             return None
         version, path, _res = self._read_target(spec)
-        with _open(version, path, self._module(spec)) as frame:
+        with _open(version, path, self._module(spec), self._config(spec)) as frame:
             kwargs: dict[str, Any] = {"column_names": ["soma_joinid"]}
             if value_filter:
                 kwargs["value_filter"] = value_filter
-            table = frame.read(**kwargs).concat()
-            return int(len(table))
+            return count_rows(frame.read(**kwargs))
+
+    def columns(self, spec: LayoutSpec, *, predicate: Predicate | None, columns: list[str]) -> dict[str, list[Any]]:
+        """``{column: values}`` of the rows matching ``predicate`` (one read; the residual is applied)."""
+        value_filter, residual = self.fmt.compile(predicate)
+        version, path, _res = self._read_target(spec)
+        need = list(dict.fromkeys(list(columns) + (sorted(_predicate_columns(residual)) if residual else [])))
+        with _open(version, path, self._module(spec), self._config(spec)) as frame:
+            got = read_columns(frame, value_filter, need)
+        if residual is None:
+            return {c: got[c] for c in columns}
+        n = len(next(iter(got.values()))) if got else 0
+        keep = [i for i in range(n) if evaluate(residual, {c: got[c][i] for c in need}) is True]
+        return {c: [got[c][i] for i in keep] for c in columns}
 
     def describe_read(self, spec: LayoutSpec, predicate: Predicate | None) -> Mapping[str, Any]:
         """What a read would send (the compiled filter and its residual), without opening the store."""

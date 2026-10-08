@@ -1,0 +1,36 @@
+{
+ "scenario": "ctgov_lookup_unknown",
+ "retrieved": "2026-10-08T02:45:08Z",
+ "seconds": 2.38,
+ "exchanges": [
+  {
+   "url": "https://clinicaltrials.gov/api/v2/studies",
+   "params": {
+    "format": "json",
+    "filter.ids": "NCT99999999",
+    "pageSize": "10"
+   },
+   "status": 200,
+   "headers": {
+    "date": "Thu, 08 Oct 2026 02:45:13 GMT",
+    "content-type": "application/json"
+   },
+   "body": {
+    "studies": []
+   }
+  },
+  {
+   "url": "https://clinicaltrials.gov/api/v2/version",
+   "params": {},
+   "status": 200,
+   "headers": {
+    "date": "Thu, 08 Oct 2026 02:45:14 GMT",
+    "content-type": "application/json"
+   },
+   "body": {
+    "apiVersion": "2.0.5",
+    "dataTimestamp": "2026-10-07T09:00:06"
+   }
+  }
+ ]
+}

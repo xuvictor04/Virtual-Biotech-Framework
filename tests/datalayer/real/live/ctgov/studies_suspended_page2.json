@@ -1,0 +1,98 @@
+{
+ "url": "https://clinicaltrials.gov/api/v2/studies",
+ "params": {
+  "format": "json",
+  "countTotal": "true",
+  "filter.overallStatus": "SUSPENDED",
+  "pageSize": "2",
+  "pageToken": "ZVNj7o2Elu8o3lpwRM-l47L2mpOQJJxoZvSg0A"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:29:55 GMT",
+  "content-type": "application/json"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": "each study keeps nctId, briefTitle, status dates, design and up to 3 location countries",
+ "body": {
+  "studies": [
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT00365573",
+      "briefTitle": "Doppler Ultrasonography Evaluation of Tibial Fracture Site Vascularity"
+     },
+     "statusModule": {
+      "overallStatus": "SUSPENDED",
+      "startDateStruct": {
+       "date": "2008-02"
+      },
+      "studyFirstPostDateStruct": {
+       "date": "2006-08-17",
+       "type": "ESTIMATED"
+      },
+      "lastUpdatePostDateStruct": {
+       "date": "2010-11-05",
+       "type": "ESTIMATED"
+      }
+     },
+     "designModule": {
+      "studyType": "OBSERVATIONAL",
+      "enrollmentInfo": {
+       "count": 30,
+       "type": "ESTIMATED"
+      }
+     },
+     "contactsLocationsModule": {
+      "locations": [
+       {
+        "country": "Israel"
+       }
+      ]
+     }
+    },
+    "hasResults": false
+   },
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT04199910",
+      "briefTitle": "4beta-hydroxycholesterol in Cirrhosis"
+     },
+     "statusModule": {
+      "overallStatus": "SUSPENDED",
+      "startDateStruct": {
+       "date": "2019-12-01",
+       "type": "ACTUAL"
+      },
+      "studyFirstPostDateStruct": {
+       "date": "2019-12-16",
+       "type": "ACTUAL"
+      },
+      "lastUpdatePostDateStruct": {
+       "date": "2026-05-05",
+       "type": "ACTUAL"
+      },
+      "whyStopped": "COVID pandemia and organisational changes hinder recruitment"
+     },
+     "designModule": {
+      "studyType": "OBSERVATIONAL",
+      "enrollmentInfo": {
+       "count": 120,
+       "type": "ESTIMATED"
+      }
+     },
+     "contactsLocationsModule": {
+      "locations": [
+       {
+        "country": "Finland"
+       }
+      ]
+     }
+    },
+    "hasResults": false
+   }
+  ],
+  "nextPageToken": "ZVNj7o2Elu8o3lpwRM-l47L2mpOQJJxmYfSj0A"
+ }
+}

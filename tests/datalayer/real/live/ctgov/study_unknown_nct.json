@@ -1,0 +1,12 @@
+{
+ "url": "https://clinicaltrials.gov/api/v2/studies/NCT99999999",
+ "params": {},
+ "status": 404,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:29:58 GMT",
+  "content-type": "text/plain; charset=UTF-8"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": null,
+ "text": "NCT number NCT99999999 not found"
+}

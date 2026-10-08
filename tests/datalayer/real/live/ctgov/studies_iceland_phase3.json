@@ -1,0 +1,163 @@
+{
+ "url": "https://clinicaltrials.gov/api/v2/studies",
+ "params": {
+  "format": "json",
+  "countTotal": "true",
+  "pageSize": "100",
+  "filter.overallStatus": "RECRUITING",
+  "filter.advanced": "AREA[Phase](PHASE3) AND AREA[StudyType]INTERVENTIONAL AND AREA[LocationCountry]\"Iceland\""
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:29:59 GMT",
+  "content-type": "application/json"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": "each study keeps nctId, briefTitle, status dates, design and up to 3 location countries",
+ "body": {
+  "totalCount": 3,
+  "studies": [
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT07517263",
+      "briefTitle": "An Open Label Extension (OLE) Study (Following Completion of CTQJ230A12301) to Evaluate Long-term Safety and Tolerability of Pelacarsen (TQJ230)"
+     },
+     "statusModule": {
+      "overallStatus": "RECRUITING",
+      "startDateStruct": {
+       "date": "2026-05-11",
+       "type": "ACTUAL"
+      },
+      "studyFirstPostDateStruct": {
+       "date": "2026-04-08",
+       "type": "ACTUAL"
+      },
+      "lastUpdatePostDateStruct": {
+       "date": "2026-09-04",
+       "type": "ACTUAL"
+      }
+     },
+     "designModule": {
+      "studyType": "INTERVENTIONAL",
+      "phases": [
+       "PHASE3"
+      ],
+      "enrollmentInfo": {
+       "count": 5700,
+       "type": "ESTIMATED"
+      }
+     },
+     "contactsLocationsModule": {
+      "locations": [
+       {
+        "country": "United States"
+       },
+       {
+        "country": "United States"
+       },
+       {
+        "country": "United States"
+       }
+      ]
+     }
+    },
+    "hasResults": false
+   },
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT04307576",
+      "briefTitle": "A Treatment Study Protocol for Participants 0-45 Years With Acute Lymphoblastic Leukaemia"
+     },
+     "statusModule": {
+      "overallStatus": "RECRUITING",
+      "startDateStruct": {
+       "date": "2020-07-13",
+       "type": "ACTUAL"
+      },
+      "studyFirstPostDateStruct": {
+       "date": "2020-03-13",
+       "type": "ACTUAL"
+      },
+      "lastUpdatePostDateStruct": {
+       "date": "2026-08-12",
+       "type": "ACTUAL"
+      }
+     },
+     "designModule": {
+      "studyType": "INTERVENTIONAL",
+      "phases": [
+       "PHASE3"
+      ],
+      "enrollmentInfo": {
+       "count": 6430,
+       "type": "ESTIMATED"
+      }
+     },
+     "contactsLocationsModule": {
+      "locations": [
+       {
+        "country": "Belgium"
+       },
+       {
+        "country": "Belgium"
+       },
+       {
+        "country": "Belgium"
+       }
+      ]
+     }
+    },
+    "hasResults": false
+   },
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT05679024",
+      "briefTitle": "Stroke Prophylaxis With Apixaban in Chronic Kidney Disease Stage 5 Patients With Atrial Fibrillation"
+     },
+     "statusModule": {
+      "overallStatus": "RECRUITING",
+      "startDateStruct": {
+       "date": "2023-02-17",
+       "type": "ACTUAL"
+      },
+      "studyFirstPostDateStruct": {
+       "date": "2023-01-10",
+       "type": "ACTUAL"
+      },
+      "lastUpdatePostDateStruct": {
+       "date": "2024-10-04",
+       "type": "ACTUAL"
+      }
+     },
+     "designModule": {
+      "studyType": "INTERVENTIONAL",
+      "phases": [
+       "PHASE3"
+      ],
+      "enrollmentInfo": {
+       "count": 1400,
+       "type": "ESTIMATED"
+      }
+     },
+     "contactsLocationsModule": {
+      "locations": [
+       {
+        "country": "Finland"
+       },
+       {
+        "country": "Finland"
+       },
+       {
+        "country": "Finland"
+       }
+      ]
+     }
+    },
+    "hasResults": false
+   }
+  ]
+ }
+}

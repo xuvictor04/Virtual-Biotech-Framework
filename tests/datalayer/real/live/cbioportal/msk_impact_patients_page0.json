@@ -1,0 +1,28 @@
+{
+ "url": "https://www.cbioportal.org/api/studies/msk_impact_2017/patients",
+ "params": {
+  "pageSize": "3",
+  "pageNumber": "0"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:30:11 GMT",
+  "content-type": "application/json"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": "uniquePatientKey removed",
+ "body": [
+  {
+   "patientId": "P-0000004",
+   "studyId": "msk_impact_2017"
+  },
+  {
+   "patientId": "P-0000015",
+   "studyId": "msk_impact_2017"
+  },
+  {
+   "patientId": "P-0000023",
+   "studyId": "msk_impact_2017"
+  }
+ ]
+}

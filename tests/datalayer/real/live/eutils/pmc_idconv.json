@@ -1,0 +1,25 @@
+{
+ "url": "https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/",
+ "params": {
+  "ids": "PMC6309485",
+  "format": "json",
+  "tool": "vbt-datalayer"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:30:33 GMT",
+  "content-type": "application/json"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": "records only",
+ "body": {
+  "records": [
+   {
+    "doi": "10.1111/pcmr.12724",
+    "pmcid": "PMC6309485",
+    "pmid": 30009548,
+    "requested-id": "PMC6309485"
+   }
+  ]
+ }
+}

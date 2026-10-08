@@ -1,0 +1,94 @@
+{
+ "url": "https://clinicaltrials.gov/api/v2/studies",
+ "params": {
+  "format": "json",
+  "countTotal": "true",
+  "pageSize": "0",
+  "fields": "NCTId",
+  "filter.overallStatus": "RECRUITING",
+  "filter.advanced": "AREA[Phase]PHASE2"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:29:50 GMT",
+  "content-type": "application/json"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": null,
+ "body": {
+  "totalCount": 10162,
+  "studies": [
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT06078813"
+     }
+    }
+   },
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT07500220"
+     }
+    }
+   },
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT06943820"
+     }
+    }
+   },
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT07102524"
+     }
+    }
+   },
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT06709859"
+     }
+    }
+   },
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT06710288"
+     }
+    }
+   },
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT01803542"
+     }
+    }
+   },
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT07259070"
+     }
+    }
+   },
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT06805305"
+     }
+    }
+   },
+   {
+    "protocolSection": {
+     "identificationModule": {
+      "nctId": "NCT06527222"
+     }
+    }
+   }
+  ],
+  "nextPageToken": "ZVNj7o2Elu8o3lpwRM-l47L2mpOQJJxtZfCh0A"
+ }
+}

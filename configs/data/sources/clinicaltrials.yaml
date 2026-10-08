@@ -47,7 +47,10 @@ tables:
         filters:
           protocolSection.statusModule.overallStatus: {param: filter.overallStatus, join: ","}
           protocolSection.identificationModule.nctId: {param: filter.ids, join: ","}
-        count: {params: {countTotal: "true", pageSize: "0"}, total_path: $.totalCount}
+        # pageSize=0 is ignored by the registry (it answers its default 10 records with the count: 142 KB of
+        # full records); with fields=NCTId the same answer is 790 bytes (verified 2026-10-08,
+        # tests/datalayer/real/live/ctgov)
+        count: {params: {countTotal: "true", pageSize: "0", fields: NCTId}, total_path: $.totalCount}
         release: {endpoint: version, path: $.dataTimestamp}
     format: rest_json
     grain: one registered clinical study (its current registry record)

@@ -1,0 +1,257 @@
+{
+ "tool": "clinicaltrials.search_clinical_trials",
+ "args": {
+  "status": [
+   "RECRUITING"
+  ],
+  "phase": [
+   "PHASE3"
+  ],
+  "study_type": "INTERVENTIONAL",
+  "country": "Iceland"
+ },
+ "retrieved": "2026-10-08T02:47:10Z",
+ "upstream": "third_party/TheVirtualBiotech src/mcp_servers/clinicaltrials_mcp/tools.py",
+ "trimmed": "each trial keeps nctId, briefTitle, overallStatus, phases, studyType, studyFirstPostDate, lastUpdatePostDate, startDate, completionDate, enrollmentCount, hasResults and one location per distinct country",
+ "result": {
+  "success": true,
+  "total_count": 3,
+  "trials_returned": 3,
+  "query_params": {
+   "filter.overallStatus": "RECRUITING",
+   "filter.advanced": "AREA[Phase](PHASE3) AND AREA[StudyType]INTERVENTIONAL AND AREA[LocationCountry]\"Iceland\"",
+   "countTotal": "true"
+  },
+  "pages_fetched": 1,
+  "trials": [
+   {
+    "nctId": "NCT07517263",
+    "briefTitle": "An Open Label Extension (OLE) Study (Following Completion of CTQJ230A12301) to Evaluate Long-term Safety and Tolerability of Pelacarsen (TQJ230)",
+    "overallStatus": "RECRUITING",
+    "phases": [
+     "PHASE3"
+    ],
+    "studyType": "INTERVENTIONAL",
+    "studyFirstPostDate": "2026-04-08",
+    "lastUpdatePostDate": "2026-09-04",
+    "startDate": "2026-05-11",
+    "completionDate": "2030-01-09",
+    "enrollmentCount": 5700,
+    "hasResults": false,
+    "locations": [
+     {
+      "country": "Argentina"
+     },
+     {
+      "country": "Australia"
+     },
+     {
+      "country": "Austria"
+     },
+     {
+      "country": "Belgium"
+     },
+     {
+      "country": "Brazil"
+     },
+     {
+      "country": "Bulgaria"
+     },
+     {
+      "country": "Canada"
+     },
+     {
+      "country": "China"
+     },
+     {
+      "country": "Colombia"
+     },
+     {
+      "country": "Czechia"
+     },
+     {
+      "country": "Denmark"
+     },
+     {
+      "country": "France"
+     },
+     {
+      "country": "Germany"
+     },
+     {
+      "country": "Greece"
+     },
+     {
+      "country": "Hong Kong"
+     },
+     {
+      "country": "Hungary"
+     },
+     {
+      "country": "Iceland"
+     },
+     {
+      "country": "India"
+     },
+     {
+      "country": "Israel"
+     },
+     {
+      "country": "Italy"
+     },
+     {
+      "country": "Japan"
+     },
+     {
+      "country": "Mexico"
+     },
+     {
+      "country": "Netherlands"
+     },
+     {
+      "country": "Norway"
+     },
+     {
+      "country": "Poland"
+     },
+     {
+      "country": "Portugal"
+     },
+     {
+      "country": "Puerto Rico"
+     },
+     {
+      "country": "Romania"
+     },
+     {
+      "country": "Russia"
+     },
+     {
+      "country": "Slovakia"
+     },
+     {
+      "country": "Slovenia"
+     },
+     {
+      "country": "South Africa"
+     },
+     {
+      "country": "South Korea"
+     },
+     {
+      "country": "Spain"
+     },
+     {
+      "country": "Sweden"
+     },
+     {
+      "country": "Switzerland"
+     },
+     {
+      "country": "Taiwan"
+     },
+     {
+      "country": "Turkey (T\u00fcrkiye)"
+     },
+     {
+      "country": "United Kingdom"
+     },
+     {
+      "country": "United States"
+     }
+    ]
+   },
+   {
+    "nctId": "NCT04307576",
+    "briefTitle": "A Treatment Study Protocol for Participants 0-45 Years With Acute Lymphoblastic Leukaemia",
+    "overallStatus": "RECRUITING",
+    "phases": [
+     "PHASE3"
+    ],
+    "studyType": "INTERVENTIONAL",
+    "studyFirstPostDate": "2020-03-13",
+    "lastUpdatePostDate": "2026-08-12",
+    "startDate": "2020-07-13",
+    "completionDate": "2033-06",
+    "enrollmentCount": 6430,
+    "hasResults": false,
+    "locations": [
+     {
+      "country": "Belgium"
+     },
+     {
+      "country": "Denmark"
+     },
+     {
+      "country": "Estonia"
+     },
+     {
+      "country": "Finland"
+     },
+     {
+      "country": "France"
+     },
+     {
+      "country": "Germany"
+     },
+     {
+      "country": "Iceland"
+     },
+     {
+      "country": "Ireland"
+     },
+     {
+      "country": "Lithuania"
+     },
+     {
+      "country": "Netherlands"
+     },
+     {
+      "country": "Norway"
+     },
+     {
+      "country": "Portugal"
+     },
+     {
+      "country": "Spain"
+     },
+     {
+      "country": "Sweden"
+     },
+     {
+      "country": "United Kingdom"
+     }
+    ]
+   },
+   {
+    "nctId": "NCT05679024",
+    "briefTitle": "Stroke Prophylaxis With Apixaban in Chronic Kidney Disease Stage 5 Patients With Atrial Fibrillation",
+    "overallStatus": "RECRUITING",
+    "phases": [
+     "PHASE3"
+    ],
+    "studyType": "INTERVENTIONAL",
+    "studyFirstPostDate": "2023-01-10",
+    "lastUpdatePostDate": "2024-10-04",
+    "startDate": "2023-02-17",
+    "completionDate": "2028-12-31",
+    "enrollmentCount": 1400,
+    "hasResults": false,
+    "locations": [
+     {
+      "country": "Finland"
+     },
+     {
+      "country": "Iceland"
+     },
+     {
+      "country": "Norway"
+     },
+     {
+      "country": "Sweden"
+     }
+    ]
+   }
+  ]
+ }
+}

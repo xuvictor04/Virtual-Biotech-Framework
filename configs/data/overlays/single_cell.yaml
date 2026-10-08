@@ -9,7 +9,18 @@
 # genes_not_found are recomputed from the written h5ad's var.feature_name (census_count.genes_from_h5ad):
 # upstream compares against positional var_names. Donor balancing stays upstream's, accepted only when the
 # filter fixes one dataset_id (requires_fixed): donors are unique only within (dataset_id, donor_id). The
-# derived donor-balanced sample (_census_count `sample`) is not served yet (docs/DATA_LAYER_STATUS.md, F20).
+# derived donor-balanced sample (_census_count `sample`: the (dataset_id, donor_id)-balanced soma_joinids and the
+# value_filter/max_cells that make upstream fetch exactly them) is computed by the data child; routing this
+# tool through it needs the gateway (docs/DATA_LAYER_STATUS.md, F20).
+#
+# Checked against the real Census (2025-11-08) through the unmodified server on 2026-10-08: an h5ad written
+# by cellxgene_census.get_anndata keeps soma_joinid as an obs column, feature_id as a var column and a
+# positional var index ('0', '1', ...) by construction, so the file checks ask for obs.soma_joinid only
+# (FileCheckSpec.key_columns are obs columns; var.feature_id is the descriptor's matrix key) and no longer
+# refuse the positional var index (genes are matched on var.feature_name/feature_id, never var_names).
+# obs_columns is passed as given: as a `projection` the gateway added the key of the bound table, which is
+# var when genes are named, so upstream was asked for an obs column feature_id (a real source_error); name
+# soma_joinid in obs_columns to keep the cell key (get_anndata without obs_columns returns every obs column).
 schema: vbt.overlay/1
 server: single_cell
 sources: [cellxgene_census]
@@ -27,14 +38,16 @@ tools:
   list_metadata_values:
     reads: {cellxgene_census.obs: {access: upstream, est_row_bytes: 64}}
     args:
-      column_name:  {role: projection}
+      # one column name, not a projection: as `projection` the gateway appended the key columns and upstream
+      # read a column named "cell_type, soma_joinid, is_primary_data" (a real source_error, 2026-10-08)
+      column_name:  {role: family_param}
       value_filter: {role: free_text, interpreted_as: engine, escape: soma,
                      engine_doc: "SOMA value_filter over obs columns (==, !=, in, and, or); parsed by the gateway"}
       limit:        {role: limit, min: 1, max: 100000}
     result:
       rows: $.value_counts
       row_key: [value]
-      exists_when: "$.count > 0"               # unused categorical levels come back with count 0
+      exists_when: "$.count != 0"              # unused categorical levels come back with count 0 (path tests know ==, !=, =~ only)
       drop_fields: {$.total_unique_values: "len() of the value counts after head(limit): capped at limit and includes unused categories"}
     serve: pass
 
@@ -80,7 +93,7 @@ tools:
       gene_symbols: {binds: cellxgene_census.var.feature_name, op: in, each: true, accepts: ["open_targets:hgnc_symbol"],
                      existence: upstream, send_as: label}
       ensembl_ids:  {binds: cellxgene_census.var.feature_id, op: in, each: true, accepts: [census_feature], existence: upstream}
-      obs_columns:  {role: projection}
+      obs_columns:  {role: family_param}           # passed as given (see the header: not a projection here)
       layer:        {role: selector, values: {raw: cellxgene_census.anndata_outputs, normalized: cellxgene_census.anndata_outputs}}
     count_first: {table: cellxgene_census.obs, filter_arg: value_filter, genes_arg: gene_symbols}
     result:
@@ -88,7 +101,7 @@ tools:
       rows: null
       files:
         - {path_from: $.output_path, must_exist: true, echo_checks: {n_obs: $.n_cells, n_vars: $.n_genes},
-           key_columns: [soma_joinid, feature_id], forbid_positional_index: true, write_once: true}
+           key_columns: [soma_joinid], write_once: true}
     serve: pass
 
   count_cells:
@@ -173,7 +186,7 @@ tools:
       summary_fields: {$.summary_stats: drop}    # over non-zero values of the truncated cells only
       files:
         - {path_from: $.output_path, must_exist: true, echo_checks: {n_obs: $.n_cells, n_vars: $.n_genes},
-           key_columns: [soma_joinid, feature_id], forbid_positional_index: true, write_once: true}
+           key_columns: [soma_joinid], write_once: true}
     serve: pass
     text:
       notes: ["without value_filter upstream keeps soma_joinid < max_cells: the first cells by join id, not a sample (disclosed in _vbt.scope)",
@@ -192,7 +205,7 @@ tools:
       gene_symbols: {binds: cellxgene_census.var.feature_name, op: in, each: true, accepts: ["open_targets:hgnc_symbol"],
                      existence: upstream, send_as: label}
       ensembl_ids:  {binds: cellxgene_census.var.feature_id, op: in, each: true, accepts: [census_feature], existence: upstream}
-      obs_columns:  {role: projection}
+      obs_columns:  {role: family_param}           # passed as given (see the header: not a projection here)
       layer:        {role: selector, values: {raw: cellxgene_census.anndata_outputs, normalized: cellxgene_census.anndata_outputs}}
     count_first: {table: cellxgene_census.obs, filter_arg: value_filter, genes_arg: gene_symbols,
                   max_cells_arg: max_cells}
@@ -206,7 +219,7 @@ tools:
         $.n_donors: "donor_id is unique only within dataset_id; donors of different datasets with one label merge"
         $.donor_summary: "keyed by donor_id alone, which merges donors of different datasets"
       files:
-        - {path_from: $.output_path, must_exist: true, key_columns: [soma_joinid, feature_id], forbid_positional_index: true,
+        - {path_from: $.output_path, must_exist: true, key_columns: [soma_joinid],
            write_once: true}
     serve: pass
     text:

@@ -1,0 +1,60 @@
+{
+ "url": "https://www.cbioportal.org/api/molecular-profiles/acc_tcga_pan_can_atlas_2018_rna_seq_v2_mrna/molecular-data",
+ "params": {
+  "projection": "SUMMARY",
+  "sampleListId": "acc_tcga_pan_can_atlas_2018_all",
+  "entrezGeneId": "80381"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:30:18 GMT",
+  "content-type": "application/json"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": "first 5 rows (uniqueSampleKey/uniquePatientKey removed); all_rows is the whole response",
+ "body": {
+  "rows": [
+   {
+    "molecularProfileId": "acc_tcga_pan_can_atlas_2018_rna_seq_v2_mrna",
+    "sampleId": "TCGA-OR-A5J1-01",
+    "patientId": "TCGA-OR-A5J1",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "entrezGeneId": 80381,
+    "value": 1722.86
+   },
+   {
+    "molecularProfileId": "acc_tcga_pan_can_atlas_2018_rna_seq_v2_mrna",
+    "sampleId": "TCGA-OR-A5J2-01",
+    "patientId": "TCGA-OR-A5J2",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "entrezGeneId": 80381,
+    "value": 6878.94
+   },
+   {
+    "molecularProfileId": "acc_tcga_pan_can_atlas_2018_rna_seq_v2_mrna",
+    "sampleId": "TCGA-OR-A5J3-01",
+    "patientId": "TCGA-OR-A5J3",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "entrezGeneId": 80381,
+    "value": 3761.81
+   },
+   {
+    "molecularProfileId": "acc_tcga_pan_can_atlas_2018_rna_seq_v2_mrna",
+    "sampleId": "TCGA-OR-A5J5-01",
+    "patientId": "TCGA-OR-A5J5",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "entrezGeneId": 80381,
+    "value": 2151.05
+   },
+   {
+    "molecularProfileId": "acc_tcga_pan_can_atlas_2018_rna_seq_v2_mrna",
+    "sampleId": "TCGA-OR-A5J6-01",
+    "patientId": "TCGA-OR-A5J6",
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "entrezGeneId": 80381,
+    "value": 850.021
+   }
+  ],
+  "all_rows": 78
+ }
+}

@@ -1,0 +1,15 @@
+{
+ "url": "https://clinicaltrials.gov/api/v2/version",
+ "params": {},
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:29:49 GMT",
+  "content-type": "application/json"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": null,
+ "body": {
+  "apiVersion": "2.0.5",
+  "dataTimestamp": "2026-10-07T09:00:06"
+ }
+}

@@ -1,0 +1,23 @@
+{
+ "url": "https://clinicaltrials.gov/api/v2/studies",
+ "params": {
+  "format": "json",
+  "countTotal": "true",
+  "pageSize": "0",
+  "filter.overallStatus": "RECRUITING",
+  "filter.advanced": "AREA[Phase]PHASE2"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:29:52 GMT",
+  "content-type": "application/json"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": "body replaced by its shape: totalCount, the number of studies returned and the body size",
+ "body": {
+  "totalCount": 10162,
+  "studies_returned": 10,
+  "nextPageToken": "ZVNj7o2Elu8o3lpwRM-l47L2mpOQJJxtZfCh0A",
+  "body_bytes": 142198
+ }
+}
