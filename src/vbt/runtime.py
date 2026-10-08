@@ -115,7 +115,7 @@ from .tools.base import (
     truncation_note,
 )
 from .tools.builtin import builtin_tools
-from .tools.mcp_bridge import MCPBridge, MCPServerConfig
+from .tools.mcp_bridge import DATA_SERVER, MCPBridge, MCPServerConfig
 from .tools.provenance import provenance_tools
 
 log = logging.getLogger(__name__)
@@ -629,10 +629,13 @@ class Runtime:
     def _build_gateway(self) -> Any:
         """The data gateway when ``data.enabled`` and the mode is not ``off``; None otherwise.
         A gateway that cannot be built is reported (warning + ``data_gateway_unavailable``
-        trace event) and the MCP servers start without it, except that a malformed descriptor or
-        overlay under ``when_service_down: strict`` refuses the servers the gateway would enforce
-        (``gateway_refused``). A missing or empty descriptors/overlays directory is warned about
-        (``data_catalog_missing``): every server would run on the generic guard."""
+        trace event) and the MCP servers start without it, except that a catalog fault under
+        ``when_service_down: strict`` refuses the servers the gateway would enforce
+        (``gateway_refused``). A descriptor or overlay file that does not load is quarantined on its own
+        (R8): the gateway is built from the rest, each file is traced (``data_catalog_quarantined``),
+        and only the servers and tools that depend on it are refused. A missing or empty
+        descriptors/overlays directory is warned about (``data_catalog_missing``): every server would run
+        on the generic guard."""
         self.gateway, self.gateway_error, self._data_settings = None, None, None
         self.gateway_refused = None
         try:
@@ -651,7 +654,12 @@ class Runtime:
                     self.run.trace("data_catalog_missing", setting=what, path=str(d), reason=reason)
         try:
             from . import datalayer
-            return datalayer.build_gateway(self.config, run=self.run_variables())
+            gateway = datalayer.build_gateway(self.config, run=self.run_variables())
+            for q in getattr(getattr(gateway, "catalog", None), "quarantined", None) or []:
+                log.warning("data catalog: %s %s quarantined: %s", q.kind, q.path, q.summary)
+                with contextlib.suppress(Exception):
+                    self.run.trace("data_catalog_quarantined", **q.to_json())
+            return gateway
         except Exception as exc:  # noqa: BLE001 - e.g. the gateway package is not installed yet
             reason = f"{type(exc).__name__}: {exc}"[:1000]
             self._gateway_unavailable(reason)
@@ -671,8 +679,16 @@ class Runtime:
         if gateway is not None and "gateway" not in _accepted_kwargs(MCPBridge, {"gateway": gateway}):
             self._gateway_unavailable("MCPBridge has no gateway seam in this checkout")
             gateway = None
+        enabled = [str(s.get("name")) for s in raw_specs if s.get("enabled", True) is not False]
+        refused = self._refused_servers(enabled, gateway)
+        starting = [n for n in enabled if n not in refused and (not servers or n in set(servers))]
+        if gateway is not None and refused and not starting:
+            # every server the gateway would guard is refused (their overlays are quarantined): there is
+            # nothing to guard, so neither the gateway nor its data child is started
+            self._gateway_unavailable(f"no server left to guard: {self.gateway_refused}")
+            gateway = None
         extra_names: set[str] = set()
-        guarded = any(s.get("enabled", True) is not False for s in raw_specs)
+        guarded = bool(starting) if refused else bool(enabled)
         if gateway is not None and guarded:          # the data child serves the gateway of real servers
             try:
                 configured = {s.get("name") for s in raw_specs}
@@ -682,8 +698,10 @@ class Runtime:
                         extra_names.add(str(s.get("name")))
             except Exception as exc:  # noqa: BLE001
                 log.warning("data gateway extra_servers failed: %s", exc)
+        # a refused server is not handed to the bridge at all: a direct call would otherwise start it lazily,
+        # and without a gateway it would then be served unguarded
         specs = [MCPServerConfig(**{k: v for k, v in s.items() if k in MCPServerConfig.__dataclass_fields__})
-                 for s in raw_specs]
+                 for s in raw_specs if str(s.get("name")) not in refused]
         seam: dict[str, Any] = {"on_tools_changed": self._on_tools_changed}
         if gateway is not None:
             seam["gateway"] = gateway
@@ -692,7 +710,6 @@ class Runtime:
         self.mcp = MCPBridge(specs, extra_env=self.tool_env(), log_dir=self.run.dir / "logs" / "mcp",
                              options=self.config.get("mcp") or {}, on_event=self._mcp_event, **seam)
         wanted = (set(servers) | extra_names) if servers else None
-        refused = self._refused_servers(specs) if gateway is None else {}
         if refused:
             wanted = (wanted or {s.name for s in specs}) - set(refused)
         tools = await self.mcp.start(wanted) if wanted != set() else []
@@ -705,18 +722,37 @@ class Runtime:
         self._system_cache.clear()  # the unavailable-server list may have changed
         return self.mcp.failures
 
-    def _refused_servers(self, specs: list[Any]) -> dict[str, str]:
-        """Servers not started because the data catalog is broken under ``when_service_down: strict``."""
-        if not getattr(self, "gateway_refused", None):
-            return {}
+    def _refused_servers(self, names: list[str], gateway: Any = None) -> dict[str, str]:
+        """Of the enabled servers ``names``, those not started under ``when_service_down: strict`` and an
+        enforcing gateway: every enforced server when the catalog could not be built at all
+        (``gateway_refused`` without a gateway), else only those whose own overlay is quarantined (R8; the
+        data child is never refused: its public tools are refused per call). Sets ``gateway_refused`` to
+        the reason when a quarantine refuses one."""
         try:
             settings = self.data_settings()
         except Exception:  # noqa: BLE001
             return {}
-        why = (f"not started: the data catalog could not be loaded ({self.gateway_refused}); fix the descriptor "
-               "or overlay (`vbt ds lint`), or set data.gateway.when_service_down: lenient")
-        return {s.name: why[:1200] for s in specs if getattr(s, "enabled", True)
-                and settings.gateway.mode == "enforce" and settings.gateway.enforces(s.name)}
+        if settings.gateway.mode != "enforce":
+            return {}
+        if gateway is None:
+            if not getattr(self, "gateway_refused", None):
+                return {}
+            why = (f"not started: the data catalog could not be loaded ({self.gateway_refused}); fix the "
+                   "descriptor or overlay (`vbt ds lint`), or set data.gateway.when_service_down: lenient")
+            return {name: why[:1200] for name in names if settings.gateway.enforces(name)}
+        if settings.gateway.when_service_down != "strict":
+            return {}
+        try:
+            quarantined = gateway.catalog.quarantined_servers()
+        except Exception:  # noqa: BLE001 - a catalog without quarantine support refuses nothing
+            return {}
+        reasons = {name: "; ".join(q.reason for q in quarantined[name]) for name in names
+                   if quarantined.get(name) and name != DATA_SERVER and settings.gateway.enforces(name)}
+        if reasons:
+            self.gateway_refused = "; ".join(f"{name}: {why}" for name, why in sorted(reasons.items()))[:1000]
+        return {name: (f"not started: the data catalog could not be loaded for this server ({why}); the file is "
+                       "quarantined: fix it (`vbt ds lint`), or set data.gateway.when_service_down: lenient")[:1200]
+                for name, why in reasons.items()}
 
     def _on_tools_changed(self, tools: list[Tool]) -> None:
         """Tools the bridge registered or updated after start (a restarted server, a late

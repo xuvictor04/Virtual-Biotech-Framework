@@ -9,7 +9,9 @@
 
 The exit marker is written by the reaper (:mod:`vbt.datalayer.launch.reaper`) to the server
 log; the bridge waits up to 500 ms for it after a transport error and passes the log tail to
-``gateway.on_crash``, which uses :func:`crash_decision`.
+``gateway.on_crash``, which uses :func:`crash_decision`. The reaper tees the child's stderr and
+names the cause of a memory exit itself (``cause``: ``watchdog``, ``cgroup_oom_kill``,
+``memory_error``, ``kernel_oom_kill``, ``peak_rss``; INV-1); the error's payload and message carry it.
 """
 
 from __future__ import annotations
@@ -21,18 +23,30 @@ from typing import Any, Literal
 from ..api import CrashDecision
 from ..errors import ErrorKind, GatewayError
 
-__all__ = ["MEMORY_SIGNATURES", "EXIT_MARKER", "OOM_EXIT_CODES", "OOM_SIGNALS", "classify_error_text",
-           "parse_exit_marker", "is_memory_exit", "crash_decision"]
+__all__ = ["MEMORY_SIGNATURES", "MEMORY_PATTERNS", "EXIT_MARKER", "OOM_EXIT_CODES", "OOM_SIGNALS",
+           "EXIT_DETAIL", "classify_error_text", "parse_exit_marker", "is_memory_exit", "crash_decision"]
 
 #: Error text that means an allocation failed (numpy/pandas, Arrow, C++, ENOMEM).
 MEMORY_SIGNATURES: tuple[str, ...] = (
     "MemoryError", "Unable to allocate", "ArrowMemoryError", "bad_alloc", "Cannot allocate memory",
 )
+#: The signatures as patterns, plus errno ENOMEM, Rust's and Arrow's allocation failures and "out of memory".
+#: The reaper (stdlib only) keeps an identical tuple to name a memory exit from the child's stderr.
+MEMORY_PATTERNS: tuple[str, ...] = (
+    r"MemoryError", r"Unable to allocate", r"bad_alloc", r"Cannot allocate memory", r"\bENOMEM\b",
+    r"(?i:\bmemory allocation\b.{0,40}\bfailed\b)", r"\b(?:m|re|c)alloc of size \d+ failed", r"(?i:\bout of memory\b)",
+)
 EXIT_MARKER = "VBT_CHILD_EXIT"
 OOM_EXIT_CODES = frozenset({137})          # 128 + SIGKILL, as shells and container runtimes report it
 OOM_SIGNALS = frozenset({9})               # SIGKILL: the kernel OOM killer or a memory watchdog
+#: Exit-marker fields an error payload carries.
+EXIT_DETAIL = ("pid", "code", "signal", "maxrss_kb", "reason", "cause", "memory_error")
+_CAUSES = {"watchdog": "was killed by the memory watchdog", "cgroup_oom_kill": "was killed at its cgroup's memory limit",
+           "kernel_oom_kill": "was killed by the kernel's OOM killer",
+           "memory_error": "ran out of memory (an allocation failed under its memory limit)",
+           "peak_rss": "ran out of memory (it ended at its memory limit)"}
 
-_SIGNATURE_RE = re.compile("|".join(re.escape(s) for s in MEMORY_SIGNATURES))
+_SIGNATURE_RE = re.compile("|".join(MEMORY_PATTERNS))
 _MARKER_RE = re.compile(rf"^{EXIT_MARKER} (\{{.*\}})\s*$", re.MULTILINE)
 
 
@@ -104,16 +118,21 @@ def crash_decision(reason: str, log_tail: str | None = None, *, server: str | No
     marker = parse_exit_marker(log_tail)
     killed = is_memory_exit(marker)
     if killed or classify_error_text(reason) or died_of_memory(marker, log_tail):
-        detail = {k: marker.get(k) for k in ("pid", "code", "signal", "maxrss_kb", "reason")} if marker else {}
+        detail = {k: marker.get(k) for k in EXIT_DETAIL if k in marker or k in EXIT_DETAIL[:5]} if marker else {}
         payload = {"server": server, "exit": detail} if detail else {"server": server}
-        how = (f"was killed (signal {marker.get('signal')})" if killed and marker and marker.get("signal")
-               else "ran out of memory")
+        cause = marker.get("cause") if marker else None
+        if cause in _CAUSES:
+            how = _CAUSES[cause]
+        elif killed and marker and marker.get("signal"):
+            how = f"was killed (signal {marker.get('signal')})"
+        else:
+            how = "ran out of memory"
         return CrashDecision(retry=False, oom=True, error=GatewayError(
             ErrorKind.oom, f"{where}: the server {how} while answering this call; it is not retried and "
             f"the server restarts on the next call", tool=name, payload=payload, subkind="oom_killed"))
     retry = attempt == 0
     payload = {"server": server}
     if marker:
-        payload["exit"] = {k: marker.get(k) for k in ("pid", "code", "signal", "maxrss_kb", "reason")}
+        payload["exit"] = {k: marker.get(k) for k in EXIT_DETAIL if k in marker or k in EXIT_DETAIL[:5]}
     return CrashDecision(retry=retry, oom=False, error=GatewayError(
         ErrorKind.server_crashed, f"{where}: the server connection failed ({reason})", tool=name, payload=payload))
