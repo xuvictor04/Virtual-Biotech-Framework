@@ -283,7 +283,7 @@ def test_literature_sidecar_and_interaction_evidence_identity(catalog) -> None:
     paths = {(tuple(a.columns), a.via, a.build) for a in ot.tables["literature"].access_paths}
     assert (("keywordId",), "sidecar_index", "on_demand") in paths
     ev = ot.tables["interaction_evidence"]
-    assert ev.key.row_identity == "content_hash" and ev.edge is not None
+    assert ev.key.row_identity == "none" and ev.edge is not None     # 24,280 exact copies in 25.09
     ref = ev.columns["intA"].ref
     interaction_key = set(ot.tables["interaction"].key.columns)
     assert ref.table == "interaction" and set(ref.on) == interaction_key

@@ -1040,3 +1040,25 @@ async def test_levels_split_and_phantom_rows(tmp_path):
         await call(gw, "clinicaltrials", "get_clinical_data", {"study_id": "study_x", "sample_ids": ["S-99"]},
                    lambda a: {"data": data[3:], "sample_count": 1})
     assert e.value.kind == ErrorKind.not_found and e.value.envelope()["items"] == ["S-99"]
+
+
+async def test_witness_types_come_from_the_session_check_not_a_stats_request(tmp_path):
+    """A first call waited for the session check and then for ``_stats`` of its table, only for the storage types
+    of the witness keys: the data child samples the table and every item table over it (14.5 s for the 25.09
+    target tables). The check read the footers already and hands the types over."""
+    ov = copy.deepcopy(DRUG_OVERLAY)
+    ov["tools"]["search_known_drugs"]["reads"]["open_targets.known_drug"]["access"] = "projection"   # no admission
+    types = {"drugId": "large_string", "targetId": "large_string", "phase": "int32", "status": "string"}
+    checked = TableCheckModel(status="ready", fingerprint="fp1:open_targets.known_drug", storage_types=types)
+    gw = world(tmp_path, overlay=ov, check={"open_targets.known_drug": checked})
+    await gw.wait_readiness()
+    _, res = await call(gw, "drug", "search_known_drugs", {"target_id": "PCSK9", "limit": 20}, sorted_first)
+    assert hdr(res)["total"] == 8 and gw.service.verbs("_witness")
+    assert not gw.service.verbs("_stats"), "the witness asked _stats for types the check had read"
+    assert res.provenance.result.key_storage_types == ["large_string", "large_string"]
+    # without types in the check (a readiness cache written before them) the witness still asks _stats
+    gw2 = world(tmp_path / "old", overlay=ov,
+                storage={"open_targets.known_drug": {"drugId": "string", "targetId": "string"}})
+    await gw2.wait_readiness()
+    _, res2 = await call(gw2, "drug", "search_known_drugs", {"target_id": "PCSK9", "limit": 20}, sorted_first)
+    assert gw2.service.verbs("_stats") and res2.provenance.result.key_storage_types == ["string", "string"]

@@ -954,6 +954,7 @@ def _status_dir(args: argparse.Namespace, config: dict[str, Any]) -> Path | None
 
 def memory_status(config: dict[str, Any], status_dir: Path | None) -> dict[str, Any]:
     """Servers' reaper status files, the host budget and the stored calibrations (``vbt ds status``)."""
+    from .memory import MemoryEstimator
     from .memory.calibrate import factors_summary, load_calibrations, load_feedback
     from .memory.host import host_budget_mb, host_total_mb
     from .memory.ledger import read_status
@@ -973,7 +974,9 @@ def memory_status(config: dict[str, Any], status_dir: Path | None) -> dict[str, 
                      "resident_mb": round(resident, 1), "limit_kind": settings.memory.limit_kind},
             "servers": servers, "status_dir": str(status_dir) if status_dir else None,
             "calibrations": {fp: {"table": c.get("table"), "rows_sampled": c.get("rows_sampled"),
-                                  "bytes_per_row": c.get("bytes_per_row"), "factors": c.get("factors"),
+                                  "bytes_per_row": c.get("bytes_per_row"),
+                                  "peak_bytes_per_row": MemoryEstimator.calibrated_bytes_per_row(c),
+                                  "factors": c.get("factors"),
                                   "at": c.get("at")} for fp, c in sorted(cals.items())},
             "factors": factors_summary(cals.values()),
             "feedback": {k: {"table": v.get("table"), "factor": v.get("factor"),
@@ -1006,7 +1009,8 @@ def cmd_status(args: argparse.Namespace, config: dict[str, Any]) -> int:
              f"({d.get('containment')}); hash seed {d.get('hash_seed')}")
     for fp, c in body["calibrations"].items():
         _out(f"calibration {c['table']} [{fp}]: {c['rows_sampled']} rows sampled, "
-             f"{(c['bytes_per_row'] or 0):,.0f} B/row, factors {c['factors']}")
+             f"{(c['bytes_per_row'] or 0):,.0f} pandas B/row, {(c['peak_bytes_per_row'] or 0):,.0f} with Arrow, "
+             f"factors {c['factors']}")
     if not body["calibrations"]:
         _out("calibrations: none (estimates use the seed factors; run `vbt ds calibrate --table S.T`)")
     for key, f in body["feedback"].items():
@@ -1037,7 +1041,8 @@ def cmd_calibrate(args: argparse.Namespace, config: dict[str, Any]) -> int:
             _out(json.dumps(cal, sort_keys=True, default=str))
             continue
         _out(f"{ref}: {cal.get('rows_sampled')} of {cal.get('rows')} rows sampled; "
-             f"{(cal.get('bytes_per_row') or 0):,.0f} pandas bytes per row; factors vs seed {cal.get('factors')}")
+             f"{(cal.get('bytes_per_row') or 0):,.0f} pandas bytes per row, "
+             f"{(cal.get('peak_bytes_per_row') or 0):,.0f} with the Arrow table; factors vs seed {cal.get('factors')}")
         _out(f"  written: {cal.get('path')}")
     return rc
 

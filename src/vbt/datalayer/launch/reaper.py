@@ -13,7 +13,11 @@ failures ``RLIMIT_AS`` causes) and execs the command, inheriting fd 0 (and 1 unl
 on); its fd 2 is a pipe to the reaper.
 
 The **parent** points its own fds 0 and 1 at ``/dev/null`` (so pipe EOF reaches the bridge as
-soon as the child dies), forwards SIGTERM, SIGINT and SIGHUP to the child's process group,
+soon as the child dies), forwards SIGTERM, SIGINT and SIGHUP to the child's process group, dies with
+its own launcher (when ``getppid()`` changes, the launcher is gone: the child's group gets SIGTERM, and
+SIGKILL :data:`ORPHAN_GRACE_S` later; the exit marker then says ``"orphaned": true``. A killed bridge
+left a ``vbt ds check`` data child, which reads no stdin, checking for minutes under a reaper
+re-parented to init),
 tees the child's stderr to its own (the server log) as it arrives, keeping only the last 64 KiB,
 polls ``/proc/<pid>/status`` every 250 ms, writes the status JSON ``{pid, rss_mb, peak_rss_mb,
 limit_mb, containment, server, hash_seed, flags_stripped, ts}`` atomically every second, and
@@ -89,6 +93,7 @@ HASH_SEED = "0"
 MB = 1024 * 1024
 
 WAIT_POLL_S = 0.05            # waitpid granularity (the exit marker follows a death within this)
+ORPHAN_GRACE_S = 5.0          # after the launcher dies: SIGTERM to the child's group, SIGKILL this much later
 RSS_POLL_S = 0.25             # /proc/<pid>/status
 STATUS_EVERY_S = 1.0          # status file rewrite
 MEMORY_LIMIT_FRACTION = 0.9   # an abnormal exit at this share of the limit is a memory exit
@@ -679,6 +684,17 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     return ns, command
 
 
+def _signal_group(pid: int, signum: int) -> None:
+    """``signum`` to the child's process group (to the child alone when the group is gone)."""
+    try:
+        os.killpg(pid, signum)
+    except OSError:
+        try:
+            os.kill(pid, signum)
+        except OSError:
+            pass
+
+
 def _set_pdeathsig(parent: int) -> None:
     """Have the kernel SIGKILL this (child) process when the reaper dies (Linux)."""
     try:
@@ -766,6 +782,7 @@ def main(argv: list[str] | None = None) -> int:
     oom_host_before = host_oom_kills()
     started_us = time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000 - KMSG_CLOCK_MARGIN_US
 
+    launcher = os.getppid()
     parent = os.getpid()
     pid = os.fork()
     if pid == 0:
@@ -804,13 +821,7 @@ def main(argv: list[str] | None = None) -> int:
         relay_thread.start()
 
     def forward(signum: int, _frame: Any) -> None:
-        try:
-            os.killpg(pid, signum)
-        except OSError:
-            try:
-                os.kill(pid, signum)
-            except OSError:
-                pass
+        _signal_group(pid, signum)
 
     for sig in FORWARDED:
         signal.signal(sig, forward)
@@ -832,6 +843,8 @@ def main(argv: list[str] | None = None) -> int:
     write_status(ns.status, status)
     peak = 0.0
     killed_by_watchdog = False
+    orphaned_at: float | None = None
+    orphan_killed = False
     oom_before = cgroup.oom_kills() if cgroup is not None else 0
     last_rss = last_write = time.monotonic()
     while True:
@@ -842,6 +855,13 @@ def main(argv: list[str] | None = None) -> int:
         if wpid == pid:
             break
         now = time.monotonic()
+        if orphaned_at is None:
+            if os.getppid() != launcher:                # re-parented: the launcher (the bridge) died
+                orphaned_at = now
+                _signal_group(pid, signal.SIGTERM)
+        elif not orphan_killed and now - orphaned_at >= ORPHAN_GRACE_S:
+            orphan_killed = True
+            _signal_group(pid, signal.SIGKILL)
         if now - last_rss >= RSS_POLL_S:
             last_rss = now
             rss, hwm = read_proc_status(pid)
@@ -854,13 +874,7 @@ def main(argv: list[str] | None = None) -> int:
                     killed_by_watchdog = True
                     peak = max(peak, group)
                     status["watchdog_rss_mb"] = round(group, 1)
-                    try:
-                        os.killpg(pid, signal.SIGKILL)
-                    except OSError:
-                        try:
-                            os.kill(pid, signal.SIGKILL)
-                        except OSError:
-                            pass
+                    _signal_group(pid, signal.SIGKILL)
         if now - last_write >= STATUS_EVERY_S:
             last_write = now
             status["ts"] = round(time.time(), 3)
@@ -885,7 +899,7 @@ def main(argv: list[str] | None = None) -> int:
     stderr_tail = tee.finish()
     cgroup_oom = cgroup is not None and cgroup.oom_kills() > oom_before
     kernel_oom = False
-    if signum == signal.SIGKILL and not killed_by_watchdog and not cgroup_oom:
+    if signum == signal.SIGKILL and not killed_by_watchdog and not cgroup_oom and not orphan_killed:
         logged = kernel_oom_killed(pid, started_us)
         if logged is None:                         # no kernel log: the host's OOM kill count moved meanwhile
             after = host_oom_kills()
@@ -893,7 +907,8 @@ def main(argv: list[str] | None = None) -> int:
         kernel_oom = logged
     cause, memory_line = exit_cause(
         abnormal=rc != 0, signum=signum, limit_mb=limit, peak_mb=peak, watchdog=killed_by_watchdog,
-        cgroup_oom=cgroup_oom, stderr_tail=stderr_tail, kernel_oom=kernel_oom, data_limited=data_limit > 0)
+        cgroup_oom=cgroup_oom, stderr_tail=stderr_tail, kernel_oom=kernel_oom, data_limited=data_limit > 0) \
+        if orphaned_at is None else (None, None)        # an orphan is stopped by the reaper, not by its memory
     reason = "memory_limit" if cause else ("signal" if signum is not None else "exit_code")
     marker: dict[str, Any] = {"pid": pid, "code": code, "signal": signum, "maxrss_kb": maxrss_kb, "reason": reason}
     if cause:
@@ -902,6 +917,8 @@ def main(argv: list[str] | None = None) -> int:
         marker["memory_error"] = memory_line
     if killed_by_watchdog:
         marker["watchdog"] = True
+    if orphaned_at is not None:
+        marker["orphaned"] = True
     if cgroup_oom:
         marker["cgroup_oom"] = True
     status.update({"rss_mb": None, "peak_rss_mb": round(peak, 1), "ts": round(time.time(), 3), "exit": marker})

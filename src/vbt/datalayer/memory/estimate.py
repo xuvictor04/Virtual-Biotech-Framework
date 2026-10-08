@@ -23,8 +23,8 @@ TableStatsModel`, or its JSON form):
   ``data.witness.max_scan_bytes`` is compared with.
 
 Phase 4 (F19) replaces the seeds per table in tiers (:mod:`.calibrate`): a **sample** calibration
-(``<cache>/<source>/<fingerprint>/calibration.json``, measured pandas bytes per row of one to three
-row groups) is used instead of the seed model for that fingerprint, and **measured** feedback from
+(``<cache>/<source>/<fingerprint>/calibration.json``, measured pandas plus Arrow bytes per row of one
+to three row groups) is used instead of the seed model for that fingerprint, and **measured** feedback from
 reaper status files (``memory_feedback.json``: peak RSS of real cold loads over their estimates)
 multiplies either. :meth:`MemoryEstimator.tier` says which tier an estimate came from.
 
@@ -255,16 +255,35 @@ class MemoryEstimator:
         structs = sum(self.struct_items(leaves, rows).values()) * self.object_overhead["struct_item"]
         return float(per_value + structs)
 
+    @staticmethod
+    def calibrated_bytes_per_row(cal: Mapping[str, Any]) -> float | None:
+        """Peak bytes per row of a sample calibration: pandas plus the co-resident Arrow table
+        (``peak_bytes_per_row``; summed from its per-column measurements when the record predates it),
+        else the pandas ``bytes_per_row``."""
+        peak = cal.get("peak_bytes_per_row")
+        if isinstance(peak, (int, float)) and peak > 0:
+            return float(peak)
+        columns = cal.get("columns")
+        rows = cal.get("rows")
+        if isinstance(columns, Mapping) and columns and isinstance(rows, (int, float)) and rows > 0:
+            total = sum(float(c.get("pandas_bytes") or 0) + float(c.get("arrow_bytes") or 0)
+                        for c in columns.values() if isinstance(c, Mapping))
+            if total > 0:
+                return total / float(rows)
+        value = cal.get("bytes_per_row")
+        return float(value) if isinstance(value, (int, float)) and value > 0 else None
+
     def peak_upstream(self, table_stats: Any, table: str | None = None) -> int:
         """Peak bytes of an upstream server loading the whole table into pandas: the sample calibration's
-        measured bytes per row when this fingerprint has one, else the seed model; times the measured
-        feedback factor when real loads were observed."""
+        measured bytes per row (pandas and the Arrow table it came from) when this fingerprint has one, else
+        the seed model; times the measured feedback factor when real loads were observed."""
         if table_stats is None:
             return 0
         cal = self.calibration_for(table_stats)
         rows = _get(table_stats, "rows")
-        if cal is not None and cal.get("bytes_per_row") and rows is not None:
-            base = float(cal["bytes_per_row"]) * int(rows)
+        per_row = self.calibrated_bytes_per_row(cal) if cal is not None else None
+        if per_row is not None and rows is not None:
+            base = per_row * int(rows)
         else:
             base = self.bytes_term(table_stats) + self.objects_term(table_stats)
         factor = self.feedback_factor(table_stats, table)

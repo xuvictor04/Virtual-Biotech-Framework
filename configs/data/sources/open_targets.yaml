@@ -346,7 +346,9 @@ tables:
     # composed key: (id, go[].id, go[].aspect, go[].evidence, go[].source, go[].geneProduct); REFUTED by 25.09,
     # see target.go
     key: {columns: [], check: sampled}
-    grains: {go_membership: [id, "go[].id"], gene: [id], term: ["go[].id"]}
+    # /id is the gene: inside the item a bare `id` is the GO item's own id (§6.4, item fields first), which made
+    # `gene` count GO terms (63 "genes" for PCSK9's 142 annotations on 25.09)
+    grains: {go_membership: [/id, "go[].id"], gene: [/id], term: ["go[].id"]}
     rank: [{column: "go[].id", direction: asc}]
     coverage: {statement: "Direct GO annotations, not propagated.", absence_means: unknown}
     sentinels: {present: [{key: {id: ENSG00000169174}, expect: {min_rows: 1}}]}
@@ -1552,9 +1554,9 @@ tables:
     # 25.09: 48,854,316 rows in 83 shards (3.23 GB), all from datasourceId E2G (pmid 38014075), score [0.6, 1.0].
     # REFUTED content identity: in 2 downloaded shards (1,365,017 rows) the grouping key repeats 19,496 times
     # and 67 rows are exact duplicates (584 repeat the 40-hex intervalId), so rows are not identified by their
-    # content either; kept verified: false.
+    # content either: row_identity none (copies occur and are counted as stored; R5b has no uniqueness to test).
     key: {columns: [chromosome, start, end, geneId, intervalType, datasourceId, biosampleName],
-          nullable: [biosampleName], row_identity: content_hash, check: sampled, verified: false}
+          nullable: [biosampleName], row_identity: none, check: sampled, verified: true}
     rank: [{column: score, direction: desc, nulls: last, within: [datasourceId]}]
     coverage: {statement: "Enhancer-to-gene and promoter intervals of OT 25.09; absence means no interval in these sources.",
                absence_means: unknown}
@@ -1690,10 +1692,11 @@ tables:
     # identifier is null for curated statements; key.columns are the grouping key of a record.
     # 25.09 (whole table: 27,286,700 rows; string 24,970,548, intact 2,048,630, reactome 217,568, signor 49,954):
     # interactionIdentifier is null in exactly the string rows; the grouping key repeats 11,779,651 times and
-    # REFUTED content identity: 24,280 rows are exact copies of another row (nested fields included), so
-    # neither the key nor the content identifies a record (kept verified: false).
+    # REFUTED content identity: 24,280 rows are exact copies of another row (nested fields included; 254 in the
+    # first 5 shards, 210 in R5b's 0.7% sample), so neither the key nor the content identifies a record:
+    # row_identity none (copies occur and are counted as stored). R5b's content check failed every session.
     key: {columns: [interactionIdentifier, intA, intB, targetA, targetB], nullable: [interactionIdentifier, targetA, targetB],
-          row_identity: content_hash, check: sampled, verified: false}
+          row_identity: none, check: sampled, verified: true}
     # 25.09: as in interaction, every gene pair is stored in both orientations in every source (string
     # 12,990,032, intact 1,094,900, reactome 49,310 and signor 35,070 ordered pairs, each with its reverse)
     edge: {a: targetA, b: targetB, directed: false, orientation: both, verified: true,

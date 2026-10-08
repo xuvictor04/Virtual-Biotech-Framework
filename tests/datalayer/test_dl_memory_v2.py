@@ -89,7 +89,8 @@ def _write(path: Path, table: pa.Table, rg: int) -> Fragment:
 
 
 def _measured_total(table: pa.Table) -> int:
-    return sum(v["pandas_bytes"] for v in measure_table(table).values())
+    """What the upstream loader holds at its peak: the DataFrame and the Arrow table it was converted from."""
+    return sum(v["pandas_bytes"] + v["arrow_bytes"] for v in measure_table(table).values())
 
 
 # --------------------------------------------------------------------------- calibration
@@ -131,11 +132,24 @@ def test_fitted_factors_reproduce_the_sample() -> None:
     measured = {"a": {"arrow_bytes": 400, "pandas_bytes": 400}, "s": {"arrow_bytes": 700, "pandas_bytes": 4000}}
     cal = fit(stats, measured, 50)
     assert cal["scale"] == 2.0 and cal["bytes_per_row"] == (800 + 8000) / 100
+    assert cal["peak_bytes_per_row"] == (800 + 8000 + 800 + 1400) / 100      # the Arrow table is co-resident
     assert cal["expansion"]["flat"] == 1.0 and cal["decode"]["flat"] == 1.0
     refit = MemoryEstimator(expansion=cal["expansion"], fragmentation=1.0, object_overhead_bytes=cal[
         "object_overhead_bytes"])
     assert abs(refit.peak_upstream(stats) - 8800) / 8800 < 0.05
     assert pick_samples(10, 3) == [0, 4, 9] and pick_samples(1, 3) == [0] and pick_samples(0) == []
+
+
+def test_an_older_calibration_counts_its_arrow_columns_too() -> None:
+    """Records written before ``peak_bytes_per_row`` hold the per-column Arrow bytes: the estimate adds them
+    (pandas alone was 0.53-0.89 of the measured peak of the large Open Targets 25.09 loads)."""
+    stats = {"rows": 100, "fingerprint": "fp1:old", "columns": {"a": {"uncompressed_bytes": 800}}}
+    old = {"fingerprint": "fp1:old", "rows": 100, "bytes_per_row": 50.0,
+           "columns": {"a": {"pandas_bytes": 5000, "arrow_bytes": 3000}}}
+    est = MemoryEstimator(fragmentation=1.0, calibrations={"fp1:old": old})
+    assert est.tier(stats) == "sample" and est.peak_upstream(stats) == 8000
+    assert MemoryEstimator.calibrated_bytes_per_row({"bytes_per_row": 50.0}) == 50.0
+    assert MemoryEstimator.calibrated_bytes_per_row({**old, "peak_bytes_per_row": 90.0}) == 90.0
 
 
 def test_deep_bytes_counts_nested_objects() -> None:
@@ -161,7 +175,7 @@ def test_calibrations_and_feedback_are_stored_and_loaded(tmp_path: Path) -> None
     est = MemoryEstimator.from_settings(settings, load_calibrations=True)
     stats = {"rows": 10, "fingerprint": "fp1:sha256:abc", "columns": {"a": {"uncompressed_bytes": 80}}}
     assert est.tier(stats) == "measured"
-    assert est.peak_upstream(stats) == math.ceil(80 * 10 * 2.5 * est.fragmentation)
+    assert est.peak_upstream(stats) == math.ceil((80 + 8) * 10 * 2.5 * est.fragmentation)   # pandas + Arrow
     assert feedback_from_status({"peak_rss_mb": 900.0}, 300.0) == 600.0
     assert feedback_from_status({"peak_rss_mb": 200.0}, 300.0) is None and feedback_from_status(None, 1) is None
 

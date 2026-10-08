@@ -448,9 +448,9 @@ def test_measured_values_match_the_verified_facts(ot, values) -> None:
             assert key.row_identity == "content_hash" and fact["content_duplicates"] == 0 and key.verified
         else:
             assert fact["duplicates"] == 0 and key.verified, table
-    # identities the release refutes (identical rows exist) stay unverified
+    # identities the release refutes (identical rows exist): the rows have none, copies are counted as stored
     for table, fact in values["refuted_keys"].items():
-        assert fact["content_duplicates"] > 0 and not tables[table].key.verified, table
+        assert fact["content_duplicates"] > 0 and tables[table].key.row_identity == "none", table
 
 
 def test_known_drift_is_still_drift(ot, values) -> None:

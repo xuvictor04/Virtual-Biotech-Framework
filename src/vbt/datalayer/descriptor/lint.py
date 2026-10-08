@@ -322,6 +322,7 @@ class _DescriptorLinter:
                 self.resolve(name, c, where=f"{where}.grains.{gname}", rule="reference")
             if isinstance(grain, GrainSpec) and grain.canonicalize:
                 self.lint_canonical_grain(grain.canonicalize, f"{where}.grains.{gname}", name)
+        self.lint_shadowed(name, spec)
         for i, c in enumerate(spec.constraints):
             self.resolve(name, c.column, where=f"{where}.constraints[{i}]", rule="reference_soft", level=lvl)
         if spec.coverage is not None:
@@ -437,6 +438,37 @@ class _DescriptorLinter:
             # An alternate key may be one nullable column (unique where present).
             if label == "key" and key.nullable and set(key.nullable) >= set(key.columns):
                 self.add("error", kw, "every key part is nullable", "key", table=name)
+
+    def lint_shadowed(self, name: str, spec: TableSpec) -> None:
+        """Item table: a bare name in a grain, the rank or the key that §6.4 resolves to an item's field while the
+        table also has a column of that name. 25.09 target_go declared ``gene: [id]`` for the gene, which resolved
+        to the GO item's ``id`` and counted GO terms (63 "genes" for PCSK9). ``/id`` names the column, the item path
+        (``go[].id``) the field."""
+        if spec.items_of is None:
+            return
+        sc = self.scope(name)
+        if sc is None:
+            return
+        top = sc.top_fields()
+        where = f"tables.{name}"
+        mentions: list[tuple[str, str]] = [(f"{where}.key", c) for c in spec.key.columns]
+        mentions += [(f"{where}.rank[{i}]", r.column) for i, r in enumerate(spec.rank)]
+        for gname, grain in spec.grains.items():
+            gcols = grain if isinstance(grain, list) else list(grain.columns) + list(grain.unordered) + list(grain.by)
+            mentions += [(f"{where}.grains.{gname}", c) for c in gcols]
+        for at, c in mentions:
+            if not isinstance(c, str) or c.startswith(("/", "^")) or "[" in c or "{" in c:
+                continue
+            head = c.split(".", 1)[0]
+            if head not in top:
+                continue
+            try:
+                r = sc.resolve(c, (), mode="column")
+            except ScopeError:
+                continue                                   # reported by the reference rule
+            if r.level > 0:
+                self.add("warning", at, f"{c!r} resolves to the item field {r.path!r}, not the column {head!r} "
+                         f"(write '/{c}' for the column, or the item path for the field)", "reference", c, name)
 
     def lint_items_of(self, name: str, spec: TableSpec) -> None:
         if spec.items_of is None:

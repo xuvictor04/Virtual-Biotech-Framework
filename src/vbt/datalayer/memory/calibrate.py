@@ -10,7 +10,9 @@ replaces them in two tiers, each stored next to the data it describes:
    Per top-level column the Arrow ``nbytes`` and the pandas size are measured (``memory_usage(deep=True)``
    for flat columns; object columns are walked recursively, because ``deep=True`` counts a list or a
    dict shallowly, which is exactly the nested-item cost that made footer bytes understate the peak
-   about 9x). The sample is scaled by ``rows / rows_sampled`` and the per-kind factors are fitted
+   about 9x). The upstream loader (``to_table().to_pandas()``) holds the Arrow table and the DataFrame
+   together, so the estimate's bytes per row are both (``peak_bytes_per_row``); ``bytes_per_row`` stays
+   the pandas part. The sample is scaled by ``rows / rows_sampled`` and the per-kind factors are fitted
    against the seed model: expansion and string overhead from flat and string columns, the nested
    item and struct item overheads from the residual of nested columns. The result is written to
    ``<cache>/<source>/<fingerprint>/calibration.json`` (:func:`calibration_path`) and the estimator
@@ -279,9 +281,11 @@ def fit(table_stats: Mapping[str, Any], measured: Mapping[str, Mapping[str, int]
 
     ``measured`` is :func:`measure_table`'s ``{column: {arrow_bytes, pandas_bytes}}`` of ``rows_sampled``
     rows; ``table_stats`` the whole table's footer statistics. Returns the calibration record:
-    ``bytes_per_row`` (pandas, all measured columns), per-column measured and seed bytes (scaled to the
-    table), the fitted ``expansion``, ``object_overhead_bytes`` and ``decode`` factors, and ``kinds``
-    (the column kind each factor came from)."""
+    ``bytes_per_row`` (pandas, all measured columns), ``peak_bytes_per_row`` (pandas plus the Arrow table
+    it is converted from: the upstream loader holds both at its peak, and pandas alone was 0.53-0.89 of the
+    measured peak of the Open Targets 25.09 loads over 50 MB, both together 0.98-1.47), per-column measured
+    and seed bytes (scaled to the table), the fitted ``expansion``, ``object_overhead_bytes`` and ``decode``
+    factors, and ``kinds`` (the column kind each factor came from)."""
     from .estimate import MemoryEstimator, leaves_of
 
     est = seed if seed is not None else MemoryEstimator()
@@ -346,8 +350,10 @@ def fit(table_stats: Mapping[str, Any], measured: Mapping[str, Mapping[str, int]
         if dr is not None:
             decode[kind] = round(dr, 4)
     total_pandas = sum(c["pandas_bytes"] for c in columns.values())
+    total_arrow = sum(c["arrow_bytes"] for c in columns.values())
     return {"method": "sample", "rows": rows_total, "rows_sampled": int(rows_sampled), "scale": round(scale, 6),
-            "bytes_per_row": total_pandas / float(max(1, rows_total)), "columns": columns,
+            "bytes_per_row": total_pandas / float(max(1, rows_total)),
+            "peak_bytes_per_row": (total_pandas + total_arrow) / float(max(1, rows_total)), "columns": columns,
             "expansion": expansion, "object_overhead_bytes": overhead, "decode": decode,
             "factors": {k: round(v["pandas"] / v["seed"], 4) for k, v in sums.items() if v["seed"] > 0}}
 

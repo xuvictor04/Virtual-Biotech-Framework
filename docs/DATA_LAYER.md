@@ -508,7 +508,8 @@ class KeySpec(BaseModel):
     nullable: list[str] = []                      # (rev 2) parts that may be null; NULLS NOT DISTINCT
     check: Literal["full", "sampled", "none"] = "sampled"
     sample_prefix: list[str] = []                 # sampled: prefix blocks (default: all columns but the last)
-    row_identity: Literal["key", "content_hash"] = "key"   # content_hash: key.columns are the grouping key only
+    row_identity: Literal["key", "content_hash", "none"] = "key"   # content_hash: key.columns are the grouping
+                                                  # key only; none: exact copies occur, counted as stored (no R5b)
     version: str | None = None                    # live records: column identifying the record version
     verified: bool = True                         # false: uniqueness disclosed only until R5b confirms it
 
@@ -3857,8 +3858,9 @@ Existing tests that change on purpose: `tests/test_mcp_bridge.py` keeps its brid
   - Also found: `so.id` is `SO:NNNNNNN`; `literature.pmid` holds Europe PMC ids (2,349,085 of 151,961,320
     rows are PPR, IND, PMC, CAIN, c or FNI ids), typed `europepmc_id`.
   Still `verified: false`, with the counts in the descriptor: the disease `ontology.leaf` flag, biosample
-  closures, chemical-probe coverage, and the content identity of interval and interaction_evidence (exact
-  duplicate rows exist). Several revision-1
+  closures and chemical-probe coverage. interval and interaction_evidence hold exact duplicate rows
+  (interaction_evidence 24,280 of 27,286,700): their rows have no identity (`row_identity: none`), so R5b
+  tests no uniqueness and counts are over the rows as stored. Several revision-1
   assumptions were refuted by the stress test on real extracts and are corrected here: `known_drug`
   has no `ctIds` in 25.09 and its key needs nullable `status`; `approvedSymbol` is not unique (1,613
   duplicates); `ontology.leaf` is wrong for 31,635 terms; 29.5% of `disease.id` values use prefixes

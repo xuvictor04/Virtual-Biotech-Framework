@@ -1413,9 +1413,20 @@ class DataGateway:
                           f"total={st.witness.total} ({st.witness.total_method})"))
 
     async def _storage_types(self, table: str | None, st: _CallState) -> None:
+        """The storage types of ``table``'s leaves (they type witness keys and values): from ``_stats`` when this
+        session already has them, else from the session check the call waited for (the footers it read; an item
+        table's are its physical table's), and only without either from a ``_stats`` request. That request
+        samples the table and every item table over it: 14.5 s for the 25.09 target tables on a first call."""
         if not table:
             return
+        checked = None
         if table not in self._stats:
+            m = self.readiness.get(self.readiness.physical(table)[0])
+            checked = m.storage_types if m is not None and m.storage_types else None
+        if checked is not None:
+            for col, typ in checked.items():
+                st.storage_types.setdefault(col, typ)
+        elif table not in self._stats:
             try:
                 resp = await self.service.stats([table])
                 self._stats[table] = resp.tables.get(table)

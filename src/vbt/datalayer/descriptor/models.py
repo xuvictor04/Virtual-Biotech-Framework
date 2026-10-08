@@ -201,7 +201,9 @@ class KeySpec(Strict):
     nullable: list[str] = []                           # parts that may be null (NULLS NOT DISTINCT)
     check: Literal["full", "sampled", "none"] = "sampled"
     sample_prefix: list[str] = []
-    row_identity: Literal["key", "content_hash"] = "key"
+    # key: the columns identify a row; content_hash: they group rows that no two are equal;
+    # none: no identity, exact copies of a row occur in the release and are counted as stored
+    row_identity: Literal["key", "content_hash", "none"] = "key"
     version: str | None = None                         # live records: the record-version column
     verified: bool = True
 

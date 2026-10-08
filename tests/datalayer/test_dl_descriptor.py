@@ -459,6 +459,22 @@ def test_rule_item_table_key_composition():
         assert "key" in rules(lint(mk(mutate))), mutate.__name__
 
 
+def test_rule_reference_item_field_shadowing_a_column():
+    """25.09 target_go declared ``gene: [id]``: inside the item ``id`` is the GO item's id, so the grain counted GO
+    terms. A bare name that resolves to an item field while the table has a column of that name is a warning."""
+    def shadowing(grain):
+        def mutate(d):
+            d["tables"]["genes"]["columns"]["go"]["fields"]["id"] = {"role": "identifier"}
+            d["tables"]["genes_go"]["grains"] = {"gene": grain, "term": ["go[].termId"]}
+        return mutate
+
+    found = [f for f in lint(mk(shadowing(["id"]))) if f.level == "warning"]
+    assert [f.rule for f in found] == ["reference"] and "'/id'" in found[0].message, found
+    assert "grains.gene" in found[0].where
+    assert not lint(mk(shadowing(["/id"])))
+    assert not lint(mk(shadowing(["go[].id"])))
+
+
 def test_rule_scope_key():
     def stray_scope(d):
         d["tables"]["facts"]["columns"]["batch"] = {"role": "category", "scope": {"kind": "batch"}}

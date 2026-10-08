@@ -234,6 +234,45 @@ def test_child_dies_with_a_killed_reaper(tmp_path):
 
 
 @linux_only
+@pytest.mark.parametrize("ignores_term", [False, True])
+def test_reaper_and_child_die_with_the_launcher(tmp_path, ignores_term):
+    """A killed bridge left its reaper re-parented to init and the data child of a `vbt ds check` (which reads no
+    stdin, so never sees EOF) checking for minutes. The reaper notices its launcher is gone: SIGTERM to the child's
+    group, SIGKILL after the grace period, and the exit marker says the reaper stopped an orphan."""
+    ready, status = tmp_path / "ready", tmp_path / "s.json"
+    child = (("import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if ignores_term else "") +
+             f"import os, time; open({str(ready)!r}, 'w').write(str(os.getpid())); time.sleep(120)")
+    launcher = ("import subprocess, sys, time\n"
+                f"p = subprocess.Popen([sys.executable, '-E', {str(REAPER)!r}, '--limit-mb', '0', '--status', "
+                f"{str(status)!r}, '--server', 'check', '--', sys.executable, '-c', {child!r}], "
+                "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+                "print(p.pid, flush=True)\n"
+                "time.sleep(120)\n")
+    proc = subprocess.Popen([sys.executable, "-c", launcher], stdout=subprocess.PIPE, text=True)
+    try:
+        reaper_pid = int(proc.stdout.readline())
+        child_pid = int(_wait_for(lambda: ready.exists() and ready.read_text()))
+        proc.kill()                                     # the bridge dies without closing anything
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+    def gone(pid):
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().split(")")[-1].split()[0]
+        except OSError:
+            return True
+        return state == "Z"
+
+    grace = reaper_mod.ORPHAN_GRACE_S
+    assert _wait_for(lambda: gone(child_pid) and gone(reaper_pid), timeout=grace + 15)
+    marker = _read_json(status)["exit"]
+    assert marker["orphaned"] is True and marker["reason"] == "signal" and "cause" not in marker
+    assert marker["signal"] == (signal.SIGKILL if ignores_term else signal.SIGTERM)
+
+
+@linux_only
 def test_killed_child_gives_signal_marker_and_rc(tmp_path):
     proc = subprocess.run([sys.executable, "-E", str(REAPER), "--limit-mb", "0", "--status", str(tmp_path / "s.json"),
                            "--server", "k", "--", sys.executable, "-c",

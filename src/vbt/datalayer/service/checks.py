@@ -221,6 +221,7 @@ class CheckRun:
     stats: dict[str, ColumnStats] = field(default_factory=dict)
     rows: int | None = None
     sample_rows: int = SAMPLE_ROWS
+    storage_types: dict[str, str | None] = field(default_factory=dict)   # an item table: its parent's
 
     def add(self, name: str, ok: bool, detail: str = "", *, status: str | None = None, level: str | None = None,
             hint: str = "", column: str | None = None, partition: str | None = None, container: str | None = None
@@ -258,10 +259,12 @@ class CheckRun:
                     pfs = self.reader.partition_fingerprints()
                 except (ServiceError, OSError):
                     pfs = {}
+        types = self.storage_types or {path: cs.storage_type for path, cs in self.stats.items()}
         return TableCheckModel(status=status, columns=self.columns, containers=self.containers,
                                partitions=self.partitions, item_tables=self.item_tables, checks=self.checks,
                                fingerprint=fp, partition_fingerprints=pfs, signature=sig,
-                               confirmed=_jsonable(self.confirmed), vocab=self.vocab, key_check=self.key_check)
+                               confirmed=_jsonable(self.confirmed), vocab=self.vocab, key_check=self.key_check,
+                               storage_types=types)
 
 
 def _jsonable(v: Any) -> Any:
@@ -729,13 +732,17 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
 
     With ``row_identity: content_hash`` the key is a grouping key that may repeat: R5b then tests that
     no two rows are equal (their content hashes), sampled on the same key-prefix blocks (equal rows
-    share every key part, so a sampled block holds every copy of its rows)."""
+    share every key part, so a sampled block holds every copy of its rows). With ``row_identity: none``
+    the release holds exact copies of rows (25.09 interaction_evidence: 24,280 of 27,286,700 rows), so
+    there is no uniqueness to test: R5b passes saying so, and the rows are scanned only for the null
+    counts of nested non-nullable parts (flat parts are read from the footers)."""
     reader = run.ctx.reader(ref or run.ref)
     t = reader.table
     key = list(reader.key)
     spec_key = t.spec.key
     nullable = set(t.nullable_key)
     content = spec_key.row_identity == "content_hash" and not t.is_item_table
+    copies = spec_key.row_identity == "none" and not t.is_item_table
     method = spec_key.check
     full_max = int(run.ctx.settings.readiness.key_check_full_max_rows)
     total_rows = run.rows if not t.is_item_table else None
@@ -794,7 +801,11 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
     scanned = 0
     types = reader.storage_types(key)
     fast = None
-    if not content and not t.is_item_table and fraction >= 1.0 and len(flat) == len(key) and \
+    if copies:
+        # nothing to deduplicate; scan only when a non-nullable nested part has no footer null count
+        fast = (0, [], 0) if all(k in flat for k in nulls) else None
+        arrow_filter = None
+    elif not content and not t.is_item_table and fraction >= 1.0 and len(flat) == len(key) and \
             total_rows is not None and total_rows <= SPILL_KEYS * ARROW_KEY_ROWS_PER_SPILL_KEY:
         fast = _arrow_key_duplicates(reader, key, types)
     try:
@@ -805,6 +816,8 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
             for k, v in zip(key, m.key):
                 if v is None and k in nulls and (t.is_item_table or k not in flat):
                     nulls[k] += 1
+            if copies:
+                continue
             if fraction < 1.0 and prefix_idx:
                 # the sample is decided on the prefix block before the full key is rendered
                 if _hash(canonical([m.key[i] for i in prefix_idx])) % buckets >= keep_below:
@@ -850,10 +863,14 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
                 ", ".join(f"{k}={v}" for k, v in null_bad.items()), status="key_violation",
                 column=next(iter(null_bad)))
     else:
-        run.add("R5", True, f"no nulls in non-nullable key parts{where} ({scanned} keys)")
+        basis = "footer null counts" if copies and not scanned else f"{scanned} keys"
+        run.add("R5", True, f"no nulls in non-nullable key parts{where} ({basis})")
     sampled = (f"sampled {fraction:.1%} of {'parent rows' if row_filter is not None else 'prefix blocks'}"
                if fraction < 1.0 else "every key")
-    if dups and content:
+    if copies:
+        run.add("R5b", True, "no uniqueness to test: rows have no identity (row_identity: none; exact copies "
+                "occur in the release and are counted as stored)")
+    elif dups and content:
         run.add("R5b", False, f"{dups} row(s) equal to another row ({sampled}; content hashes {', '.join(examples)})",
                 status="key_violation", hint="row_identity content_hash needs rows that are never equal; every "
                 "count over the rows would be wrong")
@@ -865,7 +882,8 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
     else:
         run.add("R5b", True, f"key unique{where} ({method}: {sampled})")
     model.ok = not dups and not null_bad
-    model.detail = f"{scanned} keys scanned; {sampled}"
+    model.detail = f"{scanned} keys scanned; {sampled}" if not copies else \
+        f"{scanned} keys scanned for nulls; rows have no identity (row_identity: none)"
     return model
 
 
@@ -2009,6 +2027,7 @@ def check_table(ctx: ServiceContext, ref: str, depth: str = "standard", *,
         run.checks.extend(parent.checks)
         run.statuses.append(parent.status)
         run.partitions.update(parent.partitions)
+        run.storage_types = dict(parent.storage_types)
         if depth == "shallow" or parent.status in ("missing", "plugin_unavailable"):
             return run.model()
         try:

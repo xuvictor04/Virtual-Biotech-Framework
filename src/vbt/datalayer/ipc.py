@@ -136,6 +136,9 @@ class TableCheckModel(IpcModel):
     confirmed: dict[str, Any] = {}                     # verified:false facts confirmed (True) or refuted (False)
     vocab: dict[str, str] = {}                         # column -> vocabulary snapshot id
     key_check: KeyCheckModel | None = None
+    #: §6.4 leaf path -> storage type, from the footers the check read (an item table: its physical table's). The
+    #: gateway types witness keys with them instead of asking ``_stats`` (14.5 s for the 25.09 target tables).
+    storage_types: dict[str, str | None] = {}
 
 
 class CheckResponse(IpcModel):

@@ -81,6 +81,63 @@ def test_content_identity_tests_equal_rows_not_the_grouping_key(tmp_path):
     assert bad.status == "key_violation" and "equal to another row" in failing(bad, "R5b")[0].detail
 
 
+def test_rows_without_identity_keep_their_copies_and_still_check_key_nulls(tmp_path, monkeypatch):
+    """25.09 interaction_evidence holds 24,280 exact copies of rows (interval 67 in two shards): content identity
+    is refuted, so R5b failed as key_violation in every session. ``row_identity: none`` declares that copies occur:
+    R5b has no uniqueness to test (and reads no row), and R5 still catches nulls in a non-nullable part."""
+    from vbt.datalayer.service.reader import TableReader
+
+    rows = [{"study": "S1", "variant": None, "drug": "D1"}, {"study": "S1", "variant": None, "drug": "D1"},
+            {"study": "S2", "variant": "rs1", "drug": "D2"}]
+
+    def table(tmp: Path, data: list[dict[str, Any]]) -> Any:
+        write(tmp, "ev", data)
+        t = {"kind": "fact", "path": "ev", "grain": "evidence record",
+             "key": {"columns": ["study", "variant"], "nullable": ["variant"], "row_identity": "none",
+                     "check": "sampled"},
+             "columns": {"study": {"role": "identifier"}, "variant": {"role": "identifier"},
+                         "drug": {"role": "identifier"}}}
+        return make_ctx(tmp, {"ev": t})
+
+    def no_scan(*a: Any, **k: Any) -> Any:
+        raise AssertionError("a table without row identity has no uniqueness to scan for")
+
+    monkeypatch.setattr(TableReader, "scan", no_scan)
+    for depth in ("standard", "deep"):
+        model = check_table(table(tmp_path / depth, rows), "s.ev", depth)
+        assert model.status == "ready", [c.detail for c in model.checks if not c.ok]
+        (r5b,) = checks(model, "R5b")
+        assert r5b.ok and "row_identity: none" in r5b.detail and model.key_check.duplicates == 0
+        assert "footer null counts" in checks(model, "R5")[0].detail
+    bad = check_table(table(tmp_path / "nulls", rows + [{"study": None, "variant": "rs2", "drug": "D3"}]), "s.ev")
+    assert bad.status == "key_violation" and "study=1" in failing(bad, "R5")[0].detail
+
+
+def test_the_check_reports_the_storage_types_stats_would(tmp_path):
+    """The gateway types witness keys from the session check (a first call on the 25.09 target tables otherwise
+    waited 14.5 s more for ``_stats``): the check's types are the footers' and agree with ``_stats``, for a table
+    and for an item table over it (its physical table's leaves)."""
+    from vbt.datalayer.service.verbs.stats import table_stats
+
+    item = pa.struct([("id", pa.string()), ("score", pa.float32())])
+    schema = pa.schema([("gene", pa.large_string()), ("n", pa.int32()), ("probes", pa.list_(item))])
+    write(tmp_path, "target", [{"gene": "g1", "n": 1, "probes": [{"id": "P1", "score": 0.5}]},
+                               {"gene": "g2", "n": 2, "probes": []}], schema)
+    tables = {"target": {"kind": "entity", "path": "target", "grain": "gene", "key": {"columns": ["gene"]},
+                         "columns": {"gene": {"role": "identifier", "self": True}, "n": {"role": "count"},
+                                     "probes": {"role": "nested", "item_key": ["id"],
+                                                "fields": {"id": {"role": "identifier"},
+                                                           "score": {"role": "measure"}}}}},
+              "target_probes": {"kind": "fact", "items_of": {"table": "target", "path": "probes[]"},
+                                "grain": "probe", "key": {"columns": [], "check": "sampled"}}}
+    ctx = make_ctx(tmp_path, tables)
+    for ref in ("s.target", "s.target_probes"):
+        model = check_table(ctx, ref)
+        stats = {c: cs.storage_type for c, cs in table_stats(ctx, ref).columns.items()}
+        assert model.storage_types == stats and {"gene", "n"} <= set(stats), (ref, model.storage_types, stats)
+    assert check_table(ctx, "s.target", "shallow").storage_types == {}       # no footers read
+
+
 # ---------------------------------------------------------------------------- R4b: universe samples
 
 
