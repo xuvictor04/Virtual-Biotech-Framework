@@ -876,14 +876,19 @@ def _arrow_prefix_sample(reader: TableReader, parts: Sequence[str], buckets: int
     Each distinct prefix of a row group is hashed once. Only the parts stored as compared are hashed: top-level
     columns that are neither partitions nor cleaned (25.09 interaction_evidence cleans targetA, a non-entity
     endpoint). Rows equal on the key, or equal outright, are equal on any of its parts, so a sample of fewer parts
-    still holds every copy. None when no part qualifies: the caller samples the scanned rows."""
+    still holds every copy. None when no part qualifies, or for a reader that cannot say how its columns are stored:
+    the caller samples the scanned rows."""
     import pyarrow as pa
     import pyarrow.compute as pc
 
+    physical = getattr(reader, "physical_path", None)
+    unclean = getattr(reader, "_unclean", None)
+    if physical is None or unclean is None:
+        return None
     names = []
     for p in parts:
-        phys = reader.physical_path(p)
-        if not (p in reader.partitions or reader._unclean(p) or "." in phys or "[" in phys):
+        phys = physical(p)
+        if not (p in reader.partitions or unclean(p) or "." in phys or "[" in phys):
             names.append(phys)
     if not names:
         return None

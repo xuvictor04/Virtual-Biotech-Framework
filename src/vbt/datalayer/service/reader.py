@@ -1364,9 +1364,12 @@ class TableReader:
             # from the matches, not the output rows: renamed or projected rows may lack the grain's columns (a
             # grouped GO search counted one "gene"), and an item row's ``id`` is the item's (the gene grain of
             # PCSK9's 142 GO annotations counted 63 genes)
-            spec = self._grain(g)
-            stats.grains_returned[name] = len({self._grain_value(item[2].row, item[2].positions, spec)
-                                               for item in ordered})
+            try:
+                spec = self._grain(g)
+                stats.grains_returned[name] = len({self._grain_value(item[2].row, item[2].positions, spec)
+                                                   for item in ordered})
+            except ServiceError:
+                continue                               # e.g. a canonicalize parent table that is absent: not counted
         out_rows: list[dict[str, Any]] = []
         keys: list[list[Any]] = []
         if self.levels:
