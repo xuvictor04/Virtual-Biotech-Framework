@@ -279,6 +279,67 @@ def test_flat_key_uniqueness_is_counted_on_arrow_arrays(tmp_path, monkeypatch):
     assert checks(fast, "R5")[0].detail == checks(slow, "R5")[0].detail
 
 
+# ---------------------------------------------------------------------------- search: only the row's own names
+
+
+def test_search_matches_a_rows_own_labels_not_those_of_the_entities_it_lists(tmp_path):
+    """25.09 target lists each gene's paralogues: TP63 has ``homologues[].targetGeneSymbol == "TP53"``. The derived
+    search_targets_by_name("TP53", limit=1) matched that label exactly and returned TP63 (it sorts before TP53 by
+    id). A label counts only when its ``of`` is the row's key."""
+    from vbt.datalayer.service.verbs.serve import search
+
+    hom = pa.struct([("targetGeneId", pa.string()), ("targetGeneSymbol", pa.string())])
+    syn = pa.struct([("label", pa.string())])
+    schema = pa.schema([("id", pa.string()), ("approvedSymbol", pa.string()), ("symbolSynonyms", pa.list_(syn)),
+                        ("homologues", pa.list_(hom))])
+    write(tmp_path, "target", [
+        {"id": "ENSG00000073282", "approvedSymbol": "TP63", "symbolSynonyms": [{"label": "TP53L"}],
+         "homologues": [{"targetGeneId": "ENSG00000141510", "targetGeneSymbol": "TP53"}]},
+        {"id": "ENSG00000141510", "approvedSymbol": "TP53", "symbolSynonyms": [{"label": "p53"}],
+         "homologues": [{"targetGeneId": "ENSG00000073282", "targetGeneSymbol": "TP63"}]}], schema)
+    ctx = make_ctx(tmp_path, {"target": {
+        "kind": "entity", "path": "target", "grain": "gene", "key": {"columns": ["id"]},
+        "columns": {"id": {"role": "identifier", "self": True},
+                    "approvedSymbol": {"role": "label", "of": "id"},
+                    "symbolSynonyms": {"role": "synonym", "of": "id", "synonym_kind": "alias", "path": "[].label"},
+                    "homologues": {"role": "nested", "item_key": ["targetGeneId"], "fields": {
+                        "targetGeneId": {"role": "identifier"},
+                        "targetGeneSymbol": {"role": "label", "of": "targetGeneId"}}}}}})
+    rows, _keys, total = search(ctx.reader("s.target"), "TP53", None, 1, {}, None)
+    assert rows[0]["id"] == "ENSG00000141510" and rows[0]["match"] == "exact", rows
+    assert total == 2                                   # TP63 still matches, by its own TP53L synonym (a prefix)
+    rows, _keys, _total = search(ctx.reader("s.target"), "TP53", None, None, {}, None)
+    assert [r["_match"]["column"] for r in rows] == ["approvedSymbol", "symbolSynonyms[].label"], rows
+
+
+# ---------------------------------------------------------------------------- _stats of a positional item table
+
+
+def test_stats_count_an_item_table_keyed_by_position(tmp_path):
+    """25.09 target hallmarks.cancerHallmarks[] has ``item_key: {identity: position}``: counting its item table read
+    the key part ``hallmarks.cancerHallmarks[]#`` as a column path and raised PathError, so the data child's
+    ``_stats`` failed for it and the gateway had no storage types for get_target_hallmarks."""
+    from vbt.datalayer.service.verbs.stats import table_stats
+
+    item = pa.struct([("label", pa.string()), ("impact", pa.string())])
+    write(tmp_path, "target", [{"id": "ENSG00000141510", "hallmarks": {"cancerHallmarks": [
+        {"label": "genome instability", "impact": "promotes"}, {"label": "genome instability", "impact": "promotes"}]}},
+        {"id": "ENSG00000169174", "hallmarks": None}],
+        pa.schema([("id", pa.string()), ("hallmarks", pa.struct([("cancerHallmarks", pa.list_(item))]))]))
+    ctx = make_ctx(tmp_path, {
+        "target": {"kind": "entity", "path": "target", "grain": "gene", "key": {"columns": ["id"]},
+                   "columns": {"id": {"role": "identifier", "self": True},
+                               "hallmarks": {"role": "nested", "fields": {
+                                   "cancerHallmarks": {"role": "nested", "item_key": {"identity": "position"},
+                                                       "fields": {"label": {"role": "category"},
+                                                                  "impact": {"role": "category"}}}}}}},
+        "target_cancer_hallmarks": {"kind": "fact", "items_of": {"table": "target", "path": "hallmarks.cancerHallmarks[]"},
+                                    "grain": "hallmark", "key": {"columns": [], "check": "sampled"}}})
+    assert ctx.reader("s.target_cancer_hallmarks").key[-1].endswith("[]#")
+    stats = table_stats(ctx, "s.target_cancer_hallmarks")
+    assert stats.rows == 2 and stats.row_bytes_p99.get("row")
+
+
 # ---------------------------------------------------------------------------- R6 container counts on Arrow arrays
 
 

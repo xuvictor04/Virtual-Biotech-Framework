@@ -495,7 +495,11 @@ class TableReader:
         return out
 
     def column_spec(self, path: str) -> Any:
-        """The ColumnSpec at a physical path (struct and container fields descended), or None."""
+        """The ColumnSpec at a physical path (struct and container fields descended), or None. A positional key part
+        (``hallmarks.cancerHallmarks[]#``, an item's position) has none: counting such an item table raised a
+        PathError, so ``_stats`` failed on the 25.09 target_cancer_hallmarks table."""
+        if path.endswith(POSITION_MARK):
+            return None
         cols: Mapping[str, Any] = dict(self.spec.columns)
         for name, p in self.spec.partitions.items():
             cols = {**cols, name: p.column} if name not in cols else cols

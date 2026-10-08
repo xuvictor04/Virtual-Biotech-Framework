@@ -217,16 +217,40 @@ def _split(rows: list[dict[str, Any]], spec: Mapping[str, Any], per_list: int | 
     return out
 
 
+def _bare(path: str) -> str:
+    """A column path without list brackets or a leading ``/`` (``homologues[].targetGeneId`` -> ``homologues.targetGeneId``)."""
+    return str(path).lstrip("/").replace("[]", "")
+
+
+def _labels_the_row(dotted: str, col: Any, keys: set[str]) -> bool:
+    """Is the label or synonym at ``dotted`` one of the row's own names? Its ``of`` (a sibling, or ``/col`` from the
+    row) must be a key column. 25.09 target lists each gene's paralogues under ``homologues[].targetGeneSymbol``
+    (``of: targetGeneId``): searching "TP53" matched TP63's paralogue label exactly and ranked TP63 first. A label
+    without ``of`` counts as the row's own."""
+    of = getattr(col, "of", None)
+    if not of:
+        return True
+    of = str(of)
+    if of.startswith("/"):
+        target = of
+    else:
+        parent = dotted.rpartition(".")[0]
+        target = f"{parent}.{of}" if parent else of
+    return _bare(target) in keys
+
+
 def search(reader: TableReader, text: str, predicate: Any, limit: int | None, params: Mapping[str, Any],
            budget: int | None) -> tuple[list[dict[str, Any]], list[list[Any]], int]:
     """Rows ranked by match class, then the table's rank, then the key; ``(rows, keys, total matches)``."""
     phys: list[tuple[str, str]] = [(k, "key") for k in reader.key if not k.endswith("#")]
+    keys = {_bare(k) for k in reader.key if not k.endswith("#")}
 
     def walk(cols: Mapping[str, Any], prefix: str) -> None:
         for name, col in cols.items():
             dotted = f"{prefix}{name}"
             if getattr(col, "role", None) in ("label", "synonym"):
-                phys.extend(text_leaf(reader, dotted, col))
+                if _labels_the_row(dotted, col, keys):
+                    phys.extend(text_leaf(reader, dotted, col))
             elif is_container(col):
                 walk(col.fields, dotted + ".")
 
