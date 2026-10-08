@@ -34,6 +34,7 @@ pq = pytest.importorskip("pyarrow.parquet")
 
 import yaml  # noqa: E402
 
+from dl_upstream import real_ot_dir  # noqa: E402
 from vbt.datalayer.service import ServiceContext  # noqa: E402
 from vbt.datalayer.service import checks as _checks  # noqa: E402
 from vbt.datalayer.service.checks import check_table  # noqa: E402
@@ -43,18 +44,13 @@ from vbt.datalayer.settings import DataSettings  # noqa: E402
 REPO = Path(__file__).resolve().parents[2]
 
 
-def real_ot_dir() -> Path | None:
-    """The OT 25.09 directory named by ``VBT_DL_REAL_DATA`` (itself, or ``<dir>/open_targets/25.09``)."""
-    root = os.environ.get("VBT_DL_REAL_DATA", "").strip()
-    if not root:
-        return None
-    for cand in (Path(root), Path(root) / "open_targets" / "25.09"):
-        if (cand / "target").is_dir():
-            return cand
-    return None
+def _real_ot_dir() -> Path | None:
+    """The OT 25.09 directory ``VBT_DL_REAL_DATA`` names (:func:`dl_upstream.real_ot_dir`), when it holds target."""
+    d = real_ot_dir()
+    return d if d is not None and (d / "target").is_dir() else None
 
 
-REAL = real_ot_dir()
+REAL = _real_ot_dir()
 needs_real = pytest.mark.skipif(REAL is None, reason="VBT_DL_REAL_DATA=<dir> with the Open Targets 25.09 tables needed")
 
 

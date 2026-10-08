@@ -973,9 +973,16 @@ def check_mcp_commands(config: dict[str, Any]) -> list[CheckResult]:
     """Each stdio server's interpreter is executable and its script exists."""
     from .tools.mcp_bridge import MCPBridge, MCPServerConfig, _ConfigError
 
+    from .datalayer.launch import LIMIT_KINDS
+
     out = []
     for s in _servers(config):
         cfg = MCPServerConfig(**{k: v for k, v in s.items() if k in MCPServerConfig.__dataclass_fields__})
+        if cfg.limit_kind is not None and cfg.limit_kind not in LIMIT_KINDS:
+            # a typo would otherwise launch the server under data.memory.limit_kind, not what was configured
+            out.append(CheckResult(f"MCP server {cfg.name}: limit_kind", False,
+                                   detail=f"limit_kind {cfg.limit_kind!r} is not one of {', '.join(LIMIT_KINDS)}",
+                                   hint="fix limit_kind in the MCP server file (configs/mcp_servers.yaml)", kind="mcp"))
         try:
             MCPBridge.check_command(cfg)
         except _ConfigError as exc:

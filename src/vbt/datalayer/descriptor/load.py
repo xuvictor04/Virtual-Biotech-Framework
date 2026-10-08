@@ -56,7 +56,9 @@ class Quarantined:
     ``kind`` is ``descriptor``, ``overlay`` or ``generic`` (an overlay file starting with ``_``);
     ``name`` the source or server it declares (None when that cannot be read; a reviewed overlay
     falls back to its file stem); ``error`` the loader's message. ``tables``/``id_types`` are the names
-    a descriptor declares when its YAML parses (None: unknown, so any unresolved reference may be its)."""
+    a descriptor declares when its YAML parses (None: unknown, so any unresolved reference may be its).
+    ``same_as`` are the ``server.tool`` names an overlay's bindings serve for other servers (from its YAML, or its
+    ``same_as:`` lines; None: unknown, so any tool without a binding of its own may be bound there)."""
 
     path: str
     kind: str
@@ -64,6 +66,7 @@ class Quarantined:
     error: str
     tables: tuple[str, ...] | None = None
     id_types: tuple[str, ...] | None = None
+    same_as: tuple[str, ...] | None = ()
 
     @property
     def file(self) -> str:
@@ -204,7 +207,34 @@ def _quarantined(path: Path, kind: str, exc: BaseException, name: str | None = N
         name = path.stem                               # reviewed overlays are named after their server
     if kind == "descriptor":
         return Quarantined(str(path), kind, name, error, _names(data, "tables"), _names(data, "id_types"))
-    return Quarantined(str(path), kind, name, error)
+    return Quarantined(str(path), kind, name, error, same_as=_same_as(path, data))
+
+
+_SAME_AS = re.compile(r"same_as:[ \t]*\[([^\]\n]*)\]")
+_TOOL_NAME = re.compile(r"^[A-Za-z_][\w-]*\.[A-Za-z_][\w-]*$")
+
+
+def _same_as(path: Path, data: dict[str, Any] | None) -> tuple[str, ...] | None:
+    """The other servers' tools an overlay binds with ``same_as`` (a tool whose reviewed binding sits in a file
+    that does not load depends on that file, R8). From the parsed YAML, else from its ``same_as: [...]`` lines;
+    None when the file mentions ``same_as`` in a form neither reads."""
+    if isinstance(data, dict):
+        out: list[str] = []
+        for b in (data.get("tools") or {}).values() if isinstance(data.get("tools"), dict) else ():
+            names = b.get("same_as") if isinstance(b, dict) else None
+            out.extend(str(n) for n in (names if isinstance(names, list) else [names] if names else []))
+        return tuple(sorted(set(out)))
+    try:
+        text = re.sub(r"#[^\n]*", "", path.read_text(encoding="utf-8", errors="replace"))   # comments never bind
+    except OSError:
+        return None
+    keys = len(re.findall(r"\bsame_as\s*:", text))
+    if not keys:
+        return ()
+    found = [n.strip().strip("'\"") for m in _SAME_AS.finditer(text) for n in m.group(1).split(",") if n.strip()]
+    if len(_SAME_AS.findall(text)) != keys or not all(_TOOL_NAME.match(n) for n in found):
+        return None
+    return tuple(sorted(set(found)))
 
 
 def _duplicates(kind: str, key: str, paths: dict[str, list[Path]], quarantine: list[Quarantined],

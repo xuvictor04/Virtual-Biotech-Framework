@@ -517,6 +517,11 @@ class Catalog:
                     break
         generic_spec = self._generic_spec(server)
         if binding is None:
+            # a tool another server's overlay binds with same_as depends on that file: when it does not load, the
+            # tool is quarantined, never served by the generic guard (target.get_pharmacogenomics in drug.yaml)
+            elsewhere = self._same_as_quarantine(server, tool)
+            if elsewhere:
+                return ToolContract(server, tool, None, quarantined=elsewhere)
             for g in self._generic:
                 if g.server in (server, "*") and tool in g.tools:
                     binding, owner = g.tools[tool], g
@@ -547,6 +552,13 @@ class Catalog:
                             missing=tuple(missing))
 
     # -- quarantine (R8) -----------------------------------------------------
+
+    def _same_as_quarantine(self, server: str, tool: str) -> tuple[Quarantined, ...]:
+        """Quarantined overlays of other servers that bind ``server.tool`` with ``same_as``; one whose ``same_as``
+        cannot be read may bind any tool of a reviewed server that has no binding of its own."""
+        name = f"{server}.{tool}"
+        return tuple(q for q in self.quarantined if q.kind == "overlay" and q.name != server
+                     and (name in (q.same_as or ()) or (q.same_as is None and server in self._overlays)))
 
     def _generic_quarantine(self, server: str) -> tuple[Quarantined, ...]:
         """Quarantined generic overlays that would apply to ``server`` (``*``, its name, or unknown)."""
@@ -616,16 +628,19 @@ class Catalog:
             return {}
         wanted = None if servers is None else set(servers)
         out: dict[str, tuple[Quarantined, ...]] = {}
-        for server in self.servers():
+        named = [(server, tool) for server in self.servers() for tool in self.tools(server)]
+        # tools whose binding sits in a quarantined overlay of another server (same_as)
+        named += [tuple(n.split(".", 1)) for q in self.quarantined if q.kind == "overlay" for n in q.same_as or ()
+                  if "." in n]
+        for server, tool in dict.fromkeys(named):
             if wanted is not None and server not in wanted:
                 continue
-            for tool in self.tools(server):
-                try:
-                    c = self.contract(server, tool)
-                except Exception:  # noqa: BLE001 - lint reports a broken binding
-                    continue
-                if c.quarantined:
-                    out[f"{server}.{tool}"] = c.quarantined
+            try:
+                c = self.contract(server, tool)
+            except Exception:  # noqa: BLE001 - lint reports a broken binding
+                continue
+            if c.quarantined:
+                out[f"{server}.{tool}"] = c.quarantined
         return out
 
     def _generic_spec(self, server: str) -> GenericSpec | None:

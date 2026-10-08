@@ -225,6 +225,7 @@ def cmd_lint(args: argparse.Namespace, config: dict[str, Any]) -> int:
         _err(f"error: {type(exc).__name__}: {exc}")
         return 1
     findings = catalog.lint(registry, strict=True if args.strict else None)
+    findings += _server_findings(config)
     errors = [f for f in findings if f.level == "error"]
     for f in findings:
         if f.level == "error" or not args.quiet:
@@ -233,6 +234,20 @@ def cmd_lint(args: argparse.Namespace, config: dict[str, Any]) -> int:
     _out(f"{len(catalog.sources)} sources, {n_tools} bound tools: {len(errors)} error(s), "
          f"{len(findings) - len(errors)} warning(s)")
     return 1 if errors else 0
+
+
+def _server_findings(config: dict[str, Any]) -> list[Any]:
+    """The data-layer fields of the MCP server file: a ``limit_kind`` that is not one of the containment kinds."""
+    from .descriptor.lint import Finding
+    from .launch import LIMIT_KINDS
+
+    out = []
+    for spec in (config.get("mcp_servers") or {}).get("servers") or []:
+        kind = spec.get("limit_kind") if isinstance(spec, Mapping) else None
+        if kind is not None and kind not in LIMIT_KINDS:
+            out.append(Finding("error", f"mcp_servers.{spec.get('name')}.limit_kind",
+                               f"limit_kind {kind!r} is not one of {', '.join(LIMIT_KINDS)}", rule="server"))
+    return out
 
 
 # ---------------------------------------------------------------------------- check
@@ -305,6 +320,10 @@ def cmd_check(args: argparse.Namespace, config: dict[str, Any]) -> int:
             _err(f"error: {exc}")
             return 2
         tables.extend(contract.tables)
+        if contract.quarantined and not tables:
+            # a tool that depends on a file that does not load is refused, whatever the data says (R8): no check
+            # of every table (a quarantined descriptor leaves the contract no tables) can make it ready
+            return _quarantined_tool(args, tool, contract)
     try:
         response = run_data_check(config, tables=sorted(set(tables)), depth=args.depth)
     except DataCheckUnavailable as exc:
@@ -318,8 +337,9 @@ def cmd_check(args: argparse.Namespace, config: dict[str, Any]) -> int:
     if tool is not None:
         contract = catalog.contract(*tool)
         r = call_readiness(contract, cache, bound_table=contract.bound_table)
-        tool_result = {"tool": f"mcp__{tool[0]}__{tool[1]}", "ready": r.ready, "reasons": r.reasons,
-                       "sections_unavailable": [x["name"] for x in r.soft],
+        reasons = _quarantine_reasons(contract) + list(r.reasons)
+        tool_result = {"tool": f"mcp__{tool[0]}__{tool[1]}", "ready": r.ready and not contract.quarantined,
+                       "reasons": reasons, "sections_unavailable": [x["name"] for x in r.soft],
                        "unchecked": r.unchecked, "unavailable_partitions": r.unavailable_partitions}
     if args.json:
         body = {"tables": response.get("tables") or {}, "table_errors": response.get("table_errors") or {},
@@ -370,6 +390,25 @@ def cmd_check(args: argparse.Namespace, config: dict[str, Any]) -> int:
             _out(f"  {ref}: unchecked")
         return 0 if tool_result["ready"] else 1
     return _check_rc(config, dr, shown)
+
+
+def _quarantine_reasons(contract: Any) -> list[dict[str, Any]]:
+    """Readiness reasons of a tool that depends on quarantined catalog files (R8): the gateway refuses it."""
+    return [{"name": q.file, "check": "quarantined", "detail": f"{q.kind} does not load: {q.summary}"}
+            for q in contract.quarantined]
+
+
+def _quarantined_tool(args: argparse.Namespace, tool: tuple[str, str], contract: Any) -> int:
+    result = {"tool": f"mcp__{tool[0]}__{tool[1]}", "ready": False, "reasons": _quarantine_reasons(contract),
+              "sections_unavailable": [], "unchecked": [], "unavailable_partitions": []}
+    if args.json:
+        _out(json.dumps({"tool": result, "quarantined": [q.to_json() for q in contract.quarantined]},
+                        sort_keys=True, default=str))
+        return 1
+    _out(f"{result['tool']}: not ready (quarantined)")
+    for x in result["reasons"]:
+        _out(f"  {x['name']}: {x['check']}: {x['detail']}")
+    return 1
 
 
 def _check_rc(config: dict[str, Any], dr: Any, shown: set[str]) -> int:
@@ -473,6 +512,11 @@ def explain_tool(catalog: Any, registry: Any, server: str, tool: str, *, descrip
     contract = catalog.contract(server, tool)
     b = contract.binding
     lines = [f"{server}.{tool}"]
+    for q in contract.quarantined:
+        # R8: the gateway refuses the tool (when_service_down: strict) while this file does not load
+        lines.append(f"  QUARANTINED: depends on the {q.kind} {q.file}, which does not load: {q.summary}")
+    if contract.quarantined and b is None:
+        return lines
     if contract.generic or b is None:
         lines.append("  no reviewed binding: the generic guard applies (not_found, empty_unverified)")
         return lines
@@ -1324,8 +1368,14 @@ def graduation_checklist(config: Mapping[str, Any], servers: Iterable[str] | Non
     for server in wanted:
         items: dict[str, dict[str, Any]] = {}
         ov = catalog.overlays.get(server)
-        items["overlay"] = {"ok": ov is not None, "detail": "configs/data/overlays/" + server + ".yaml"
-                            if ov is not None else "no overlay: the generic guard applies"}
+        own = [q for q in getattr(catalog, "quarantined", None) or [] if q.kind == "overlay" and q.name == server]
+        if own:
+            # the overlay exists but does not load: its tools are refused (strict) or run unguarded (lenient)
+            detail = f"{own[0].file} does not load (quarantined: {own[0].summary})"
+        else:
+            detail = ("configs/data/overlays/" + server + ".yaml" if ov is not None
+                      else "no overlay: the generic guard applies")
+        items["overlay"] = {"ok": ov is not None, "detail": detail}
         if ov is None:
             out[server] = {"graduated": False, "items": items}
             continue

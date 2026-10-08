@@ -497,13 +497,11 @@ def test_the_crash_decision_names_the_cause() -> None:
 
 def _real_ot_table(name: str) -> Path | None:
     """``<VBT_DL_REAL_DATA>/open_targets/25.09/<name>`` (or ``<VBT_DL_REAL_DATA>/<name>``) when present."""
-    root = os.environ.get("VBT_DL_REAL_DATA")
-    if not root:
-        return None
-    for cand in (Path(root) / "open_targets" / "25.09" / name, Path(root) / name):
-        if cand.is_dir() and any(cand.glob("*.parquet")):
-            return cand
-    return None
+    from dl_upstream import real_ot_dir
+
+    root = real_ot_dir()
+    cand = root / name if root is not None else None
+    return cand if cand is not None and cand.is_dir() and any(cand.glob("*.parquet")) else None
 
 
 READ_TABLE = ("import sys, pyarrow.parquet as pq\ndf = pq.read_table(sys.argv[1]).to_pandas()\n"

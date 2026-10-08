@@ -18,8 +18,9 @@ count and min/max), read with HTTP range requests through the harness's own
 * ``VBT_DL_NETWORK=1``: the live listing and the first and last shard footers of every table match
   the snapshots (``VBT_DL_NETWORK=full``: every shard; with ``VBT_UPDATE_REAL_SNAPSHOT=1`` the table
   snapshots are rewritten from the live footers).
-* ``VBT_DL_REAL_DATA=<dir>`` (a downloaded ``25.09`` output directory): the local copy of every table
-  present there has the recorded schema and rows, and the code facts hold on its values.
+* ``VBT_DL_REAL_DATA=<dir>`` (the shared real-data root holding ``open_targets/25.09``, or that ``25.09``
+  output directory itself): the local copy of every table present there has the recorded schema and rows, and the
+  code facts hold on its values.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ pytest.importorskip("pyarrow")
 import pyarrow as pa  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 
+from dl_upstream import real_ot_dir  # noqa: E402
 from vbt.datalayer.descriptor.columns import is_container  # noqa: E402
 from vbt.datalayer.descriptor.load import load_descriptors  # noqa: E402
 from vbt.datalayer.plugins.base import Fragment  # noqa: E402
@@ -53,7 +55,7 @@ SNAP = REPO / "tests" / "datalayer" / "real" / "ot_25_09"
 BASE = "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/"
 RETRIEVED = "2026-10-08"
 NETWORK = os.environ.get("VBT_DL_NETWORK", "").strip().lower()
-REAL = os.environ.get("VBT_DL_REAL_DATA", "").strip()
+REAL = real_ot_dir()
 UPDATE = os.environ.get("VBT_UPDATE_REAL_SNAPSHOT", "") == "1"
 _TEXT = 40                                             # recorded string bounds are cut to this length
 
@@ -702,7 +704,7 @@ def _rewrite_snapshots(tables: list[str]) -> None:
 
 @pytest.mark.skipif(not REAL, reason="checks on downloaded 25.09 files need VBT_DL_REAL_DATA=<dir>")
 def test_downloaded_tables_match_the_snapshots(snaps) -> None:
-    root = Path(REAL)
+    root = Path(REAL)                                  # <root>/open_targets/25.09, or the 25.09 directory named
     fmt = discover(entry_points=False).get("format", "parquet")
     checked, problems = [], []
     for name, snap in sorted(snaps.items()):

@@ -40,7 +40,7 @@ EXIT_MARKER = "VBT_CHILD_EXIT"
 OOM_EXIT_CODES = frozenset({137})          # 128 + SIGKILL, as shells and container runtimes report it
 OOM_SIGNALS = frozenset({9})               # SIGKILL: the kernel OOM killer or a memory watchdog
 #: Exit-marker fields an error payload carries.
-EXIT_DETAIL = ("pid", "code", "signal", "maxrss_kb", "reason", "cause", "memory_error")
+EXIT_DETAIL = ("pid", "code", "signal", "maxrss_kb", "reason", "cause", "memory_error", "possible_kernel_oom")
 _CAUSES = {"watchdog": "was killed by the memory watchdog", "cgroup_oom_kill": "was killed at its cgroup's memory limit",
            "kernel_oom_kill": "was killed by the kernel's OOM killer",
            "memory_error": "ran out of memory (an allocation failed under its memory limit)",

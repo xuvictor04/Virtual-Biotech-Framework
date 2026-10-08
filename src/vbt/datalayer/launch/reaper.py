@@ -10,7 +10,10 @@ The reaper forks. The **child** puts itself in its own process group, asks the k
 kill it when the reaper dies, sets ``RLIMIT_DATA`` to N MB when N > 0 (Linux >= 4.7 counts
 brk and private writable mappings, so pandas and Arrow heaps are bounded without the false
 failures ``RLIMIT_AS`` causes) and execs the command, inheriting fd 0 (and 1 unless the relay is
-on); its fd 2 is a pipe to the reaper.
+on); its fd 2 is a pipe to the reaper. When the reaper's own fds 1 and 2 are one pipe or file (a caller that
+merges the streams: the Bash tool runs commands with ``stderr=STDOUT``), the child's fds 1 and 2 are both that
+pipe to the reaper, which copies it in order to the merged stream: a separate stderr pipe would deliver stderr
+late and out of place, and its 64 KiB copies could land inside a stdout line.
 
 The **parent** points its own fds 0 and 1 at ``/dev/null`` (so pipe EOF reaches the bridge as
 soon as the child dies), forwards SIGTERM, SIGINT and SIGHUP to the child's process group, dies with
@@ -31,10 +34,11 @@ moved), ``memory_error`` (an abnormal exit whose last stderr line carries a memo
 uncaught ``MemoryError`` or ``std::bad_alloc`` under ``RLIMIT_DATA``, which fails the allocation
 instead of killing, or, under a data limit, a thread that could not be created, since thread stacks count
 against ``RLIMIT_DATA``; ``memory_error`` holds that line), ``kernel_oom_kill`` (a SIGKILL the kernel log
-``/dev/kmsg`` records as an OOM kill of the child, e.g. by an enclosing cgroup; without a readable log,
-a SIGKILL while the host's ``/proc/vmstat`` ``oom_kill`` count moved) or, only when none of these
+``/dev/kmsg`` records as an OOM kill of the child, e.g. by an enclosing cgroup) or, only when none of these
 applies, ``peak_rss`` (an abnormal exit at 90% of the limit). Any other exit is ``signal`` or
-``exit_code`` with no ``cause``.
+``exit_code`` with no ``cause``. Without a readable kernel log (``dmesg_restrict`` without ``CAP_SYSLOG``), a
+SIGKILL while the host's ``/proc/vmstat`` ``oom_kill`` count moved is not attributed to the child (an OOM kill
+anywhere on the host moves it): the marker says ``"possible_kernel_oom": true`` and the reason stays ``signal``.
 
 Containment (phase 4, F19; ``--containment``, default ``rlimit_data`` or ``$VBT_REAPER_CONTAINMENT``):
 
@@ -83,6 +87,7 @@ import resource
 import select
 import shutil
 import signal
+import stat
 import sys
 import threading
 import time
@@ -318,6 +323,17 @@ def exit_cause(*, abnormal: bool, signum: int | None, limit_mb: int, peak_mb: fl
     return None, None
 
 
+def kill_attribution(logged: bool | None, host_before: int | None, host_after: int | None) -> tuple[bool, bool]:
+    """``(kernel_oom, possible_kernel_oom)`` of a SIGKILL nobody in the reaper sent. ``logged``: the kernel log
+    names the child's OOM kill (None: no readable log). Without the log the host's ``oom_kill`` count moving says
+    only that some process was OOM-killed meanwhile (another agent's, in its own cgroup, moves it too): possible,
+    never the child's cause."""
+    if logged is not None:
+        return bool(logged), False
+    moved = host_before is not None and host_after is not None and host_after > host_before
+    return False, moved
+
+
 def watchdog_threshold_mb(limit_mb: int) -> float:
     """The group RSS at which the watchdog kills: ``limit - max(512 MB, 5%)``, at least half the limit."""
     margin = max(WATCHDOG_MARGIN_MB, WATCHDOG_MARGIN_FRACTION * limit_mb)
@@ -485,6 +501,18 @@ def _safe(name: str) -> str:
 
 
 # --------------------------------------------------------------------------- stderr tee
+
+
+def merged_output(out_fd: int = 1, err_fd: int = 2) -> bool:
+    """The caller merges stdout and stderr: both fds are one pipe or one regular file (``stderr=STDOUT``).
+    A terminal is left alone (the child keeps a tty stdout; a late stderr line there is cosmetic)."""
+    try:
+        a, b = os.fstat(out_fd), os.fstat(err_fd)
+    except OSError:
+        return False
+    if (a.st_dev, a.st_ino) != (b.st_dev, b.st_ino):
+        return False
+    return stat.S_ISFIFO(a.st_mode) or stat.S_ISREG(a.st_mode) or stat.S_ISSOCK(a.st_mode)
 
 
 class StderrTee:
@@ -777,7 +805,9 @@ def main(argv: list[str] | None = None) -> int:
     relay_r = relay_w = None
     if relay_cap > 0:
         relay_r, relay_w = os.pipe()
-    out_fd = os.dup(1) if relay_cap > 0 else None
+    # a caller that merges the streams gets them merged in the child: one pipe for fds 1 and 2, copied in order
+    merged = relay_cap <= 0 and merged_output()
+    out_fd = os.dup(1) if relay_cap > 0 or merged else None
     err_r, err_w = os.pipe()                       # the child's stderr, teed to ours (INV-1)
     oom_host_before = host_oom_kills()
     started_us = time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000 - KMSG_CLOCK_MARGIN_US
@@ -786,7 +816,8 @@ def main(argv: list[str] | None = None) -> int:
     parent = os.getpid()
     pid = os.fork()
     if pid == 0:
-        _exec_child(command, env, data_limit, parent, cgroup=cgroup, stdout_fd=relay_w, stderr_fd=err_w,
+        _exec_child(command, env, data_limit, parent, cgroup=cgroup, stdout_fd=err_w if merged else relay_w,
+                    stderr_fd=err_w,
                     close_fds=tuple(fd for fd in (relay_r, relay_w, out_fd, err_r, err_w) if fd is not None))
 
     # ---- parent (the reaper)
@@ -801,7 +832,7 @@ def main(argv: list[str] | None = None) -> int:
     os.dup2(devnull, 1)
     os.close(devnull)
     os.close(err_w)
-    tee = StderrTee(err_r).start()
+    tee = StderrTee(err_r, dst_fd=out_fd if merged and out_fd is not None else 2).start()
     relay_thread = None
     relay_counts: dict[str, int] = {}
     if relay_cap > 0 and relay_r is not None and relay_w is not None and out_fd is not None:
@@ -897,14 +928,17 @@ def main(argv: list[str] | None = None) -> int:
     maxrss_kb = int(getattr(usage, "ru_maxrss", 0) or 0)
     peak = max(peak, maxrss_kb / 1024.0)
     stderr_tail = tee.finish()
+    if merged and out_fd is not None:
+        try:
+            os.close(out_fd)
+        except OSError:
+            pass
     cgroup_oom = cgroup is not None and cgroup.oom_kills() > oom_before
-    kernel_oom = False
+    kernel_oom = possible_kernel_oom = False
     if signum == signal.SIGKILL and not killed_by_watchdog and not cgroup_oom and not orphan_killed:
         logged = kernel_oom_killed(pid, started_us)
-        if logged is None:                         # no kernel log: the host's OOM kill count moved meanwhile
-            after = host_oom_kills()
-            logged = oom_host_before is not None and after is not None and after > oom_host_before
-        kernel_oom = logged
+        kernel_oom, possible_kernel_oom = kill_attribution(logged, oom_host_before,
+                                                           host_oom_kills() if logged is None else None)
     cause, memory_line = exit_cause(
         abnormal=rc != 0, signum=signum, limit_mb=limit, peak_mb=peak, watchdog=killed_by_watchdog,
         cgroup_oom=cgroup_oom, stderr_tail=stderr_tail, kernel_oom=kernel_oom, data_limited=data_limit > 0) \
@@ -921,6 +955,8 @@ def main(argv: list[str] | None = None) -> int:
         marker["orphaned"] = True
     if cgroup_oom:
         marker["cgroup_oom"] = True
+    if possible_kernel_oom and not cause:
+        marker["possible_kernel_oom"] = True
     status.update({"rss_mb": None, "peak_rss_mb": round(peak, 1), "ts": round(time.time(), 3), "exit": marker})
     if relay_counts:
         status["relay"] = dict(relay_counts)

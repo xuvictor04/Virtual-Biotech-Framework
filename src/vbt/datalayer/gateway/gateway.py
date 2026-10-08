@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import dataclasses
 import hashlib
 import json
 import logging
@@ -343,6 +344,14 @@ class DataGateway:
 
     def launch_spec(self, cfg: Any) -> LaunchSpec | None:
         log_root = getattr(self.bridge, "log_root", None) if self.bridge is not None else None
+        from ..launch import LIMIT_KINDS
+
+        own = getattr(cfg, "limit_kind", None)
+        if own and own not in LIMIT_KINDS and dataclasses.is_dataclass(cfg):
+            # a typo never launches the server without containment: data.memory.limit_kind applies instead
+            log.warning("server %s: limit_kind %r is not one of %s; launching under data.memory.limit_kind %r",
+                        getattr(cfg, "name", cfg), own, LIMIT_KINDS, self.settings.memory.limit_kind)
+            cfg = dataclasses.replace(cfg, limit_kind=None)
         try:
             log_dir = log_root() if callable(log_root) else log_root
             spec = build_launch_spec(cfg, self.settings, log_dir)

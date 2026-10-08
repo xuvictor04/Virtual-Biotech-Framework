@@ -97,6 +97,28 @@ def upstream_pycache() -> set[str]:
 UPSTREAM_PYCACHE_AT_START = upstream_pycache()
 
 MODES = ("off", "enforce")
+def real_data_root() -> Path | None:
+    """The shared real-data root ``VBT_DL_REAL_DATA`` names (``data/real``: ``open_targets/25.09``,
+    ``tahoe/<revision>``, ...). The variable may also name the Open Targets 25.09 directory inside it; every
+    opt-in real-data module reads the same value through this and :func:`real_ot_dir` (RR-8)."""
+    raw = os.environ.get("VBT_DL_REAL_DATA", "").strip()
+    if not raw:
+        return None
+    p = Path(raw)
+    if p.name == "25.09" and p.parent.name == "open_targets":
+        return p.parent.parent
+    return p
+
+
+def real_ot_dir() -> Path | None:
+    """The Open Targets 25.09 output directory: ``<root>/open_targets/25.09``, or the value itself."""
+    raw = os.environ.get("VBT_DL_REAL_DATA", "").strip()
+    if not raw:
+        return None
+    nested = Path(raw) / "open_targets" / "25.09"
+    return nested if nested.is_dir() else Path(raw)
+
+
 HAVE_ARROW = all(importlib.util.find_spec(m) is not None for m in ("pyarrow", "pandas"))
 
 needs_arrow = pytest.mark.skipif(not HAVE_ARROW, reason="pyarrow and pandas are needed for the fixtures")
@@ -243,9 +265,24 @@ def data_overrides(*, gateway: bool, tmp_path: Path) -> dict[str, Any]:
     return {"data": {"enabled": True, "gateway": {"mode": "enforce"}, "cache_dir": str(tmp_path / "dl-cache")}}
 
 
+#: The live sources' base URLs in an offline run: a loopback port nothing listens on, so the data child's live
+#: tables (the cBioPortal sample count of a CT-2 case) fail at once instead of reaching the internet, or hanging
+#: on a proxy that never answers (RR-6). ``VBT_DL_NETWORK=1`` keeps the real bases.
+OFFLINE_BASES = {"VBT_CBIOPORTAL_BASE": "http://127.0.0.1:9/cbioportal/api",
+                 "VBT_CTGOV_BASE": "http://127.0.0.1:9/ctgov/api/v2",
+                 "VBT_EUTILS_BASE": "http://127.0.0.1:9/eutils"}
+
+
+def offline_bases() -> dict[str, str]:
+    """The live bases the data child gets: :data:`OFFLINE_BASES` offline, none (the real ones) under
+    ``VBT_DL_NETWORK=1``. The upstream servers keep their own stubs (``DataEnv.env``)."""
+    return {} if os.environ.get("VBT_DL_NETWORK") == "1" else dict(OFFLINE_BASES)
+
+
 def harness_config(*, gateway: bool, tmp_path: Path, env: DataEnv | Mapping[str, str] | None = None,
                 overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """The ``mock`` profile with the real MCP server list and the data section for ``gateway``."""
+    """The ``mock`` profile with the real MCP server list and the data section for ``gateway``. The data child
+    reads the live sources at :func:`offline_bases` (it gets the tool env, not the servers' ``env``)."""
     from vbt.config import load_config
 
     data_env = env.env() if isinstance(env, DataEnv) else dict(env or {})
@@ -253,8 +290,8 @@ def harness_config(*, gateway: bool, tmp_path: Path, env: DataEnv | Mapping[str,
         "paths": {"runs_dir": str(tmp_path / "runs")},
         "mcp_servers_file": "configs/mcp_servers.yaml",
         "vars": {"upstream": str(upstream_root())},
-        "tool_env": {k: data_env[k] for k in ("OPEN_TARGETS_DATA_PATH", "TAHOE_DATA_PATH", "VBT_ZENODO_DIR")
-                     if k in data_env},
+        "tool_env": {**{k: data_env[k] for k in ("OPEN_TARGETS_DATA_PATH", "TAHOE_DATA_PATH", "VBT_ZENODO_DIR")
+                        if k in data_env}, **offline_bases()},
     }
     base = _merge(base, data_overrides(gateway=gateway, tmp_path=tmp_path))
     return load_config(["mock"], overrides=_merge(base, overrides))

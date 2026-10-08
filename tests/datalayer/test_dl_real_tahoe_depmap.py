@@ -36,6 +36,7 @@ import pytest
 pa = pytest.importorskip("pyarrow")
 pq = pytest.importorskip("pyarrow.parquet")
 
+from dl_upstream import real_data_root  # noqa: E402
 from vbt.datalayer.catalog import build_catalog  # noqa: E402
 from vbt.datalayer.descriptor.load import load_yaml  # noqa: E402
 from vbt.datalayer.plugins.base import Normalized  # noqa: E402
@@ -51,7 +52,7 @@ OVERLAYS = REPO / "configs" / "data" / "overlays"
 FIX = Path(__file__).resolve().parent / "real"
 REGISTRY = discover(entry_points=False)
 REV = "2dc57900b7981cfcf5e211527169a0b006546a95"
-REAL = Path(os.environ["VBT_DL_REAL_DATA"]) if os.environ.get("VBT_DL_REAL_DATA") else None
+REAL = real_data_root()                                # data/real, also when VBT_DL_REAL_DATA names open_targets/25.09
 NETWORK = os.environ.get("VBT_DL_NETWORK") == "1"
 needs_real = pytest.mark.skipif(REAL is None, reason="set VBT_DL_REAL_DATA=<dir> to check the real files")
 needs_network = pytest.mark.skipif(not NETWORK, reason="set VBT_DL_NETWORK=1 to read the live sources")
