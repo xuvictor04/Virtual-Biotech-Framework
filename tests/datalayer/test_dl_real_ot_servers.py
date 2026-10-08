@@ -463,6 +463,44 @@ def test_a_predicate_on_a_column_that_only_says_what_null_means_is_pushed_to_arr
     assert pushed_converted < scanned_converted / 3, (pushed_converted, scanned_converted)
 
 
+def test_an_item_table_pushes_conjuncts_on_its_parent_row(tmp_path, monkeypatch):
+    """A witness for one gene's 25.09 expression items (item table of expression.tissues[], predicate on ``/id``)
+    converted every gene with all its tissues, 128 s, because no conjunct of an item table was pushed to Arrow.
+    Conjuncts on the parent row's own columns are pushed now; items, totals and unknowns are unchanged."""
+    from vbt.datalayer.service import reader as _reader
+
+    tissue = pa.struct([("efo_code", pa.string()), ("label", pa.string()), ("level", pa.int64())])
+    genes = [{"id": f"ENSG{g:011d}", "tissues": [{"efo_code": f"UBERON_{t:07d}", "label": f"t{t}",
+                                                  "level": None if (g + t) % 4 == 0 else t} for t in range(6)]}
+             for g in range(300)]
+    write(tmp_path, "expression", genes, pa.schema([("id", pa.string()), ("tissues", pa.list_(tissue))]))
+    ctx = make_ctx(tmp_path, {
+        "expression": {"kind": "entity", "path": "expression", "grain": "gene", "key": {"columns": ["id"]},
+                       "columns": {"id": {"role": "identifier", "self": True},
+                                   "tissues": {"role": "nested", "fields": {"efo_code": {"role": "identifier"},
+                                                                           "label": {"role": "label", "of": "efo_code"},
+                                                                           "level": {"role": "category"}}}}},
+        "expression_tissues": {"kind": "fact", "items_of": {"table": "expression", "path": "tissues[]"},
+                               "grain": "gene tissue", "key": {"columns": [], "check": "sampled"}}})
+    reader = ctx.reader("s.expression_tissues")
+    pred = {"and": [{"eq": ["/id", "ENSG00000000007"]}, {"gt": ["tissues[].level", 1]}]}
+
+    def run() -> tuple[list[Any], Any, int]:
+        sizes: list[int] = []
+        real = reader.fmt.to_native
+        monkeypatch.setattr(reader.fmt, "to_native", lambda tbl: (sizes.append(tbl.num_rows), real(tbl))[1])
+        st = _reader.ScanStats()
+        out = [(m.key, m.positions) for m in reader.scan(pred, columns=["tissues[].label"], stats=st)]
+        monkeypatch.setattr(reader.fmt, "to_native", real)
+        return out, (st.total, st.unknown_total), sum(sizes)
+
+    pushed, pushed_totals, pushed_rows = run()
+    monkeypatch.setattr(TableReader, "_pushable", lambda self, conj, paths: [])
+    scanned, scanned_totals, scanned_rows = run()
+    assert pushed == scanned and pushed_totals == scanned_totals and pushed_totals[0] == len(pushed) > 0
+    assert pushed_rows < 5 < scanned_rows, (pushed_rows, scanned_rows)
+
+
 # ---------------------------------------------------------------------------- resolver sidecars are reused
 
 

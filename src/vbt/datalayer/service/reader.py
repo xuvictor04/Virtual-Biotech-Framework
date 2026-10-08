@@ -935,7 +935,10 @@ class TableReader:
         tracked = _tracked(unknown_columns, conj_paths, self.physical_path) if attribute_unknown else None
         same = set(pass2) <= set(pass1)
         kind_of = self.kind_of
-        push = self._pushable(conj, conj_paths) if not self.levels else []
+        # an item table pushes the conjuncts on its parent row's own columns (``_pushable`` keeps none that cross a
+        # list): a parent row they are false on has no item that can match. None were pushed, and a witness for one
+        # gene's 25.09 expression items converted every gene with all its tissues (128 s)
+        push = self._pushable(conj, conj_paths)
         for frag, rgs in plan:
             info = self.footer(frag)
             for rg in (rgs if rgs is not None else [None]):
