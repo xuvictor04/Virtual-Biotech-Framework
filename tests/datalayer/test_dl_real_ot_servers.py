@@ -279,6 +279,112 @@ def test_flat_key_uniqueness_is_counted_on_arrow_arrays(tmp_path, monkeypatch):
     assert checks(fast, "R5")[0].detail == checks(slow, "R5")[0].detail
 
 
+def _evidence(tmp: Path, n: int) -> ServiceContext:
+    """interaction_evidence's shape: a content-identity table whose grouping key has a nullable identifier, every
+    record stored twice; the copies in another file and row groups of another size."""
+    rows = [{"interactionIdentifier": None if i % 3 else f"EBI-{i // 2}", "intA": f"P{i % 97:05d}",
+             "intB": f"Q{i % 89:05d}", "targetA": f"ENSG{i % 97:011d}", "targetB": f"ENSG{i % 89:011d}",
+             "hostOrganismTaxId": 9606 + i % 2, "evidenceScore": None if i % 4 else i / 7,
+             "participantDetectionMethodA": [{"miIdentifier": f"MI:{i % 5:04d}", "shortName": "x"}]}
+            for i in range(n)]
+    write(tmp, "evidence", rows, part="part-00000", row_group_size=97)
+    write(tmp, "evidence", rows[::-1], part="part-00001", row_group_size=61)
+    key = ["interactionIdentifier", "intA", "intB", "targetA", "targetB"]
+    return make_ctx(tmp, {"evidence": {
+        "kind": "edges", "path": "evidence", "grain": "evidence",
+        "key": {"columns": key, "nullable": ["interactionIdentifier"], "row_identity": "content_hash", "check": "sampled"},
+        "columns": {**{k: {"role": "identifier"} for k in key[:3]},
+                    # cleaned as in 25.09 (non-entity endpoints): the sample is drawn on the other parts
+                    **{k: {"role": "identifier", "missing_values": ["-"]} for k in key[3:]},
+                    "hostOrganismTaxId": {"role": "category"},
+                    "evidenceScore": {"role": "category"}, "participantDetectionMethodA": {"role": "category"}}}})
+
+
+def test_a_sampled_content_check_samples_prefix_blocks_before_converting_rows(tmp_path, monkeypatch):
+    """The content check of 25.09 interaction_evidence (27.3 M rows, 24,280 exact copies) converted every column of
+    every row to Python and then kept the 0.7% whose key prefix was sampled: more than 15 minutes of a session's
+    first check. The prefix blocks are sampled on the Arrow arrays now, alike in every file and row group, so the
+    copies of a sampled record are still found."""
+    converted: list[int] = []
+    real_take = TableReader._read_take
+
+    def counting_take(self, frag, rg, leaves, indices, **kw):
+        converted.append(len(indices))
+        return real_take(self, frag, rg, leaves, indices, **kw)
+
+    monkeypatch.setattr(TableReader, "_read_take", counting_take)
+    n = 3000
+    ctx = _evidence(tmp_path / "s", n)
+    assert ctx.reader("s.evidence")._unclean("targetA")
+    model = check_table(ctx, "s.evidence", "standard", sample_rows=300)
+    (r5b,) = checks(model, "R5b")
+    assert not r5b.ok and "equal to another row" in r5b.detail and "prefix blocks" in r5b.detail, r5b.detail
+    scanned = int(checks(model, "R5")[0].detail.rsplit("(", 1)[1].split()[0])
+    dups = model.key_check.duplicates
+    assert scanned == 2 * dups and 0 < scanned < 2 * n // 4, (scanned, dups)    # both copies of each sampled record
+    assert sum(converted) == scanned, "rows outside the sampled blocks were converted"
+    deep = check_table(_evidence(tmp_path / "d", n), "s.evidence", "deep")
+    assert deep.key_check.duplicates == n and "every key" in checks(deep, "R5b")[0].detail
+
+
+# ---------------------------------------------------------------------------- scans convert a row group in slices
+
+
+def _interaction(tmp: Path, n: int) -> ServiceContext:
+    """interaction's shape: each shard one row group (1.3 M rows in 25.09), a struct column beside the key."""
+    sp = pa.struct([("mnemonic", pa.string()), ("taxon_id", pa.int64())])
+    schema = pa.schema([("sourceDatabase", pa.string()), ("targetA", pa.string()), ("intA", pa.string()),
+                        ("targetB", pa.string()), ("intB", pa.string()), ("speciesB", sp), ("count", pa.int64()),
+                        ("scoring", pa.float64())])
+    rows = [{"sourceDatabase": ("intact", "string", "signor")[i % 3], "targetA": f"ENSG{i % 11:011d}",
+             "intA": f"P{i:05d}", "targetB": f"ENSG{i % 7:011d}", "intB": f"Q{i:05d}",
+             "speciesB": {"mnemonic": "human", "taxon_id": 9606}, "count": i, "scoring": None if i % 5 else i / 9}
+            for i in range(n)]
+    write(tmp, "interaction", rows, schema, part="part-00000")
+    write(tmp, "interaction", rows[: n // 3], schema, part="part-00001")
+    key = ["sourceDatabase", "targetA", "intA", "targetB", "intB"]
+    return make_ctx(tmp, {"interaction": {
+        "kind": "edges", "path": "interaction", "grain": "pair", "key": {"columns": key},
+        "columns": {**{k: {"role": "identifier"} for k in key}, "count": {"role": "category"},
+                    "scoring": {"role": "category"}, "speciesB.mnemonic": {"role": "category"}}}})
+
+
+def test_a_scan_converts_a_large_row_group_in_slices(tmp_path, monkeypatch):
+    """A 25.09 interaction shard is one row group of 1.3 M rows. The scan behind a witness or a serve converted the
+    key and filter columns of the whole group to Python at once, and the data child ran out of memory (MemoryError
+    in ``to_pylist`` on get_interactions and get_interaction_network). The group is converted SCAN_CHUNK_ROWS at a
+    time; the matches, their order and the totals are the same."""
+    from vbt.datalayer.predicate import Eq
+    from vbt.datalayer.service import reader as _reader
+
+    def run(chunk: int) -> tuple[list[Any], Any, list[int]]:
+        monkeypatch.setattr(_reader, "SCAN_CHUNK_ROWS", chunk)
+        reader = ictx.reader("s.interaction")
+        sizes: list[int] = []
+        real = reader.fmt.to_native
+
+        def to_native(tbl):
+            sizes.append(tbl.num_rows)
+            return real(tbl)
+
+        monkeypatch.setattr(reader.fmt, "to_native", to_native)
+        st = _reader.ScanStats()
+        out = [(m.key, m.row.get("count"), m.row.get("speciesB")) for m in
+               reader.scan(Eq("sourceDatabase", "string"), columns=None, stats=st)]
+        agg = reader.aggregate(Eq("targetA", "ENSG00000000003"), key=["intA"], key_set_max=10_000)
+        monkeypatch.setattr(reader.fmt, "to_native", real)
+        return out, (st.total, st.scanned_bytes, agg.stats.total, agg.key_set), sizes
+
+    ictx = _interaction(tmp_path, 500)
+    whole, whole_totals, whole_sizes = run(1_000_000)
+    sliced, sliced_totals, sliced_sizes = run(16)
+    assert max(whole_sizes) > 100 and max(sliced_sizes) <= 16, (max(whole_sizes), max(sliced_sizes))
+    expected = [i for i in range(500) if i % 3 == 1] + [i for i in range(500 // 3) if i % 3 == 1]
+    assert sliced == whole and sorted(c for _, c, _ in whole) == sorted(expected)
+    assert all(sp == {"mnemonic": "human", "taxon_id": 9606} for _, _, sp in whole)   # second-pass columns
+    assert sliced_totals == whole_totals and whole_totals[0] == len(expected) and whole_totals[2] > 0
+
+
 # ---------------------------------------------------------------------------- resolver sidecars are reused
 
 

@@ -44,7 +44,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ..descriptor.columns import CompositeRef, is_container
 from ..ipc import CheckItemModel, KeyCheckModel, TableCheckModel
@@ -778,6 +778,15 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
             return _hash(canonical([_items.path_value(row, k) for k in parent_parts])) % buckets < keep_below
 
         prefix_idx = []
+    arrow_filter = None
+    if fraction < 1.0 and prefix_idx and not t.is_item_table and len(flat) == len(key):
+        # the prefix blocks are sampled on the Arrow arrays, before a row is converted: the content check of the
+        # 27.3 M rows of 25.09 interaction_evidence converted every column of every row to hash 0.7% of them
+        # (more than 15 minutes of the genetics and interaction session's first check)
+        arrow_filter = _arrow_prefix_sample(reader, [key[i] for i in prefix_idx], buckets, keep_below)
+        if arrow_filter is not None:
+            prefix_idx = []
+    presampled = row_filter is not None or arrow_filter is not None
     seen: set[str] = set()
     spill: _Spill | None = None
     dups = 0
@@ -789,7 +798,8 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
             total_rows is not None and total_rows <= SPILL_KEYS * ARROW_KEY_ROWS_PER_SPILL_KEY:
         fast = _arrow_key_duplicates(reader, key, types)
     try:
-        for m in (reader.scan(None, columns=None if content else [], attribute_unknown=False, row_filter=row_filter)
+        for m in (reader.scan(None, columns=None if content else [], attribute_unknown=False, row_filter=row_filter,
+                              arrow_filter=arrow_filter)
                   if fast is None else ()):
             scanned += 1
             for k, v in zip(key, m.key):
@@ -800,7 +810,7 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
                 if _hash(canonical([m.key[i] for i in prefix_idx])) % buckets >= keep_below:
                     continue
             ck = content_hash(m.row) if content else canonical(list(m.key), types)
-            if fraction < 1.0 and not prefix_idx and row_filter is None and _hash(ck) % buckets >= keep_below:
+            if fraction < 1.0 and not prefix_idx and not presampled and _hash(ck) % buckets >= keep_below:
                 continue
             if spill is not None:
                 spill.add(ck)
@@ -857,6 +867,39 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
     model.ok = not dups and not null_bad
     model.detail = f"{scanned} keys scanned; {sampled}"
     return model
+
+
+def _arrow_prefix_sample(reader: TableReader, parts: Sequence[str], buckets: int, keep_below: int
+                         ) -> Callable[[Any], Any] | None:
+    """A scan ``arrow_filter`` keeping the rows whose key prefix ``parts`` hash below ``keep_below`` of ``buckets``:
+    rows with equal prefixes are kept or dropped together (the hash is of the values, so in every row group alike).
+    Each distinct prefix of a row group is hashed once. Only the parts stored as compared are hashed: top-level
+    columns that are neither partitions nor cleaned (25.09 interaction_evidence cleans targetA, a non-entity
+    endpoint). Rows equal on the key, or equal outright, are equal on any of its parts, so a sample of fewer parts
+    still holds every copy. None when no part qualifies: the caller samples the scanned rows."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    names = []
+    for p in parts:
+        phys = reader.physical_path(p)
+        if not (p in reader.partitions or reader._unclean(p) or "." in phys or "[" in phys):
+            names.append(phys)
+    if not names:
+        return None
+
+    def keep(tbl: Any) -> Any:
+        cols = []
+        for n in names:
+            col = tbl.column(n)
+            if not (pa.types.is_string(col.type) or pa.types.is_large_string(col.type)):
+                col = pc.cast(col, pa.large_string())
+            cols.append(col)
+        joined = pc.binary_join_element_wise(*cols, "\x1f", null_handling="replace", null_replacement="\x00")
+        wanted = [v for v in pc.unique(joined).to_pylist() if _hash(v) % buckets < keep_below]
+        return pc.is_in(joined, value_set=pa.array(wanted, joined.type))
+
+    return keep
 
 
 def _arrow_key_duplicates(reader: TableReader, key: Sequence[str], types: Sequence[str | None]

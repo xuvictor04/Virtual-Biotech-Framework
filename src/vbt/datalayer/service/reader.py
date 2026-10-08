@@ -771,22 +771,37 @@ class TableReader:
         return self._read_rows(frag, rg, leaves, info)[0]
 
     def _read_rows(self, frag: Fragment, rg: int | None, leaves: Sequence[str], info: FooterInfo | None,
-                   push: Sequence[tuple[Predicate, list[str]]] = ()) -> tuple[list[dict], list[int]]:
+                   push: Sequence[tuple[Predicate, list[str]]] = (),
+                   arrow_filter: Callable[[Any], Any] | None = None) -> tuple[list[dict], list[int]]:
         """``(native rows, their row indices in the row group)``. ``push`` conjuncts are applied in Arrow
         first, relaxed to keep rows where they are unknown (null or NaN): only rows on which a pushed
-        conjunct is false are dropped, and those can never match or count as unknown."""
+        conjunct is false are dropped, and those can never match or count as unknown. ``arrow_filter``
+        (a boolean mask of the Arrow table read) drops rows before they are converted."""
+        rows: list[dict] = []
+        index: list[int] = []
+        for r, i in self._row_chunks(frag, rg, leaves, info, push, arrow_filter, None):
+            rows.extend(r)
+            index.extend(i)
+        return rows, index
+
+    def _row_chunks(self, frag: Fragment, rg: int | None, leaves: Sequence[str], info: FooterInfo | None,
+                    push: Sequence[tuple[Predicate, list[str]]] = (),
+                    arrow_filter: Callable[[Any], Any] | None = None,
+                    chunk: int | None = None) -> Iterator[tuple[list[dict], list[int]]]:
+        """:meth:`_read_rows` converted ``chunk`` rows at a time (None: all at once). The row group is read into
+        Arrow whole; only its conversion to Python is sliced."""
         import pyarrow as pa
 
         if info is None:
             tops = sorted({leaf.split(".")[0] for leaf in leaves}) or None
             batches = list(self.fmt.scan([frag], columns=tops, predicate=None, partitions=self.partitions))
             if not batches:
-                return [], []
-            rows = self.fmt.to_native(pa.Table.from_batches(batches))
-            index = list(range(len(rows)))
+                return
+            tbl = pa.Table.from_batches(batches)
+            index = list(range(tbl.num_rows))
         elif not leaves:
-            rows = [{} for _ in range(info.row_groups[rg or 0].rows)]
-            index = list(range(len(rows)))
+            tbl = None
+            index = list(range(info.row_groups[rg or 0].rows))
         else:
             tbl = self.fmt.read_leaves(frag, list(leaves), [rg])
             expr = self._pushdown(tbl.schema, push) if push else None
@@ -796,13 +811,20 @@ class TableReader:
                 tbl = tbl.drop_columns([_ROW_INDEX])
             else:
                 index = list(range(tbl.num_rows))
-            rows = self.fmt.to_native(tbl)
+        if tbl is not None and arrow_filter is not None:
+            tbl, index = _masked(tbl, index, arrow_filter)
         part = dict(frag.partition or {})
-        for row in rows:
-            for k, v in part.items():
-                row[k] = v
-            self.clean(row)
-        return rows, index
+        step = chunk or max(len(index), 1)
+        for start in range(0, len(index), step):
+            if tbl is None:
+                rows: list[dict] = [{} for _ in range(min(step, len(index) - start))]
+            else:
+                rows = self.fmt.to_native(tbl.slice(start, step) if step < len(index) else tbl)
+            for row in rows:
+                for k, v in part.items():
+                    row[k] = v
+                self.clean(row)
+            yield rows, index[start:start + step]
 
     def _pushable(self, conj: Sequence[Predicate], conj_paths: Sequence[list[str]]
                   ) -> list[tuple[Predicate, list[str]]]:
@@ -874,10 +896,13 @@ class TableReader:
              params: Mapping[str, Any] | None = None, unknown_columns: Sequence[str] | None = None,
              budget_bytes: int | None = None, stats: ScanStats | None = None,
              attribute_unknown: bool = True,
-             row_filter: Callable[[Mapping[str, Any]], bool] | None = None) -> Iterator[Match]:
+             row_filter: Callable[[Mapping[str, Any]], bool] | None = None,
+             arrow_filter: Callable[[Any], Any] | None = None) -> Iterator[Match]:
         """Matches of ``predicate`` (rows, or items of an item table) with the key and ``columns``
         (physical paths; ``"*"`` for every column) materialised. Fills ``stats`` with the totals.
-        ``row_filter`` skips a stored row (with all its items) before anything else looks at it."""
+        ``row_filter`` skips a stored row (with all its items) before anything else looks at it;
+        ``arrow_filter`` (an Arrow table of the key and predicate leaves -> a boolean mask) skips it before it
+        is converted to Python at all."""
         pred, names = self._prepare(predicate, params)
         conj = conjuncts(pred) if pred is not None else []
         conj_paths = [predicate_paths(c) for c in conj]
@@ -909,47 +934,59 @@ class TableReader:
         for frag, rgs in plan:
             info = self.footer(frag)
             for rg in (rgs if rgs is not None else [None]):
-                rows, index = self._read_rows(frag, rg, pass1, info, push)
                 if info is not None:
                     stats.scanned_bytes += info.bytes(pass1, [rg or 0])
-                hits: list[tuple[int, tuple[int, ...]]] = []
-                for i, row in zip(index, rows):
-                    if row_filter is not None and not row_filter(row):
+                # one row group's second pass, read once however many of its slices hold matches
+                second: dict[str, Any] = {}
+                # converted SCAN_CHUNK_ROWS rows at a time: a 25.09 interaction shard is one row group of 1.3 M
+                # rows, and its key and filter columns converted whole ran the data child out of memory
+                for rows, index in self._row_chunks(frag, rg, pass1, info, push, arrow_filter, SCAN_CHUNK_ROWS):
+                    hits: list[tuple[int, tuple[int, ...]]] = []
+                    for i, row in zip(index, rows):
+                        if row_filter is not None and not row_filter(row):
+                            continue
+                        views = _items.explode(row, self.levels, stats.counts) if self.levels else [(row, ())]
+                        for view, pos in views:
+                            truths = [evaluate(c, view, None, kind_of=kind_of) for c in conj]
+                            overall = kleene_and(truths)
+                            if overall is True:
+                                hits.append((i, pos))
+                            elif overall is None:
+                                stats.unknown_total += 1
+                                if tracked is not None:
+                                    self._attribute(view, conj, conj_paths, truths, tracked, stats, names)
+                    if not hits:
                         continue
-                    views = _items.explode(row, self.levels, stats.counts) if self.levels else [(row, ())]
-                    for view, pos in views:
-                        truths = [evaluate(c, view, None, kind_of=kind_of) for c in conj]
-                        overall = kleene_and(truths)
-                        if overall is True:
-                            hits.append((i, pos))
-                        elif overall is None:
-                            stats.unknown_total += 1
-                            if tracked is not None:
-                                self._attribute(view, conj, conj_paths, truths, tracked, stats, names)
-                if not hits:
-                    continue
-                if same:
-                    full = dict(zip(index, rows))
-                else:
-                    wanted = sorted({i for i, _ in hits})
-                    if info is None:
-                        full = dict(enumerate(self._read(frag, rg, pass2, info)))
+                    if same:
+                        full = dict(zip(index, rows))
                     else:
-                        full_rows = self._read_take(frag, rg or 0, pass2, wanted)
-                        full = dict(zip(wanted, full_rows))
-                        stats.scanned_bytes += info.bytes([x for x in pass2 if x not in pass1], [rg or 0])
-                for i, pos in hits:
-                    row = full[i]
-                    view = _items.view_at(row, self.levels, pos) if self.levels else row
-                    if view is None:
-                        continue
-                    stats.total += 1
-                    yield Match(view, _items.key_values(view, self.key, pos, self.levels), pos, frag, rg or 0)
+                        wanted = sorted({i for i, _ in hits})
+                        if info is None:
+                            if "rows" not in second:
+                                second["rows"] = dict(enumerate(self._read(frag, rg, pass2, info)))
+                            full = second["rows"]
+                        else:
+                            if "table" not in second:
+                                extra = [x for x in pass2 if x not in pass1]
+                                second["table"] = self.fmt.read_leaves(frag, list(pass2), [rg or 0]) if pass2 \
+                                    else None
+                                stats.scanned_bytes += info.bytes(extra, [rg or 0])
+                            full_rows = self._read_take(frag, rg or 0, pass2, wanted, table=second["table"])
+                            full = dict(zip(wanted, full_rows))
+                    for i, pos in hits:
+                        row = full[i]
+                        view = _items.view_at(row, self.levels, pos) if self.levels else row
+                        if view is None:
+                            continue
+                        stats.total += 1
+                        yield Match(view, _items.key_values(view, self.key, pos, self.levels), pos, frag, rg or 0)
 
-    def _read_take(self, frag: Fragment, rg: int, leaves: Sequence[str], indices: Sequence[int]) -> list[dict]:
+    def _read_take(self, frag: Fragment, rg: int, leaves: Sequence[str], indices: Sequence[int],
+                   table: Any = None) -> list[dict]:
+        """Rows ``indices`` of a row group (``table``: its ``leaves`` already read) converted to Python."""
         import pyarrow as pa
 
-        tbl = self.fmt.read_leaves(frag, list(leaves), [rg]) if leaves else None
+        tbl = table if table is not None else self.fmt.read_leaves(frag, list(leaves), [rg]) if leaves else None
         if tbl is None:
             return [dict(frag.partition or {}) for _ in indices]
         rows = self.fmt.to_native(tbl.take(pa.array(list(indices), pa.int64())))
@@ -1509,6 +1546,15 @@ class TableReader:
 SAMPLE_WHOLE_GROUP_ROWS = 2048
 SAMPLE_WHOLE_GROUP_BYTES = 16 * 1024 * 1024
 SAMPLE_CHUNK_ROWS = 256
+#: Rows of a row group a scan converts to Python at a time.
+SCAN_CHUNK_ROWS = 65_536
+
+
+def _masked(tbl: Any, index: list[int], arrow_filter: Callable[[Any], Any]) -> tuple[Any, list[int]]:
+    """``tbl`` and its row ``index`` without the rows ``arrow_filter``'s mask does not keep (null: not kept)."""
+    mask = arrow_filter(tbl)
+    keep = mask.to_pylist()
+    return tbl.filter(mask), [i for i, k in zip(index, keep) if k]
 
 
 def _value_counts(arr: Any) -> list[tuple[Any, int]]:

@@ -222,20 +222,20 @@ def _bare(path: str) -> str:
     return str(path).lstrip("/").replace("[]", "")
 
 
-def _labels_the_row(dotted: str, col: Any, keys: set[str]) -> bool:
-    """Is the label or synonym at ``dotted`` one of the row's own names? Its ``of`` (a sibling, or ``/col`` from the
-    row) must be a key column. 25.09 target lists each gene's paralogues under ``homologues[].targetGeneSymbol``
-    (``of: targetGeneId``): searching "TP53" matched TP63's paralogue label exactly and ranked TP63 first. A label
-    without ``of`` counts as the row's own."""
+def _labels_the_row(col: Any, scopes: Sequence[tuple[str, Mapping[str, Any]]], keys: set[str]) -> bool:
+    """Is a label or synonym one of the row's own names? Its ``of`` must name a key column, resolved as §6.4 does:
+    a sibling first, then the fields of each enclosing level outward (``scopes``: ``(prefix, fields)`` from the
+    innermost), then a table column (``/col`` forces that). 25.09 target lists each gene's paralogues under
+    ``homologues[].targetGeneSymbol`` (``of: targetGeneId``): searching "TP53" matched TP63's paralogue label
+    exactly and ranked TP63 first. A label without ``of`` counts as the row's own."""
     of = getattr(col, "of", None)
     if not of:
         return True
     of = str(of)
-    if of.startswith("/"):
-        target = of
-    else:
-        parent = dotted.rpartition(".")[0]
-        target = f"{parent}.{of}" if parent else of
+    target = of
+    if not of.startswith("/"):
+        head = of.split(".")[0]
+        target = next((f"{prefix}{of}" for prefix, fields in scopes if head in fields), of)
     return _bare(target) in keys
 
 
@@ -245,19 +245,20 @@ def search(reader: TableReader, text: str, predicate: Any, limit: int | None, pa
     phys: list[tuple[str, str]] = [(k, "key") for k in reader.key if not k.endswith("#")]
     keys = {_bare(k) for k in reader.key if not k.endswith("#")}
 
-    def walk(cols: Mapping[str, Any], prefix: str) -> None:
+    def walk(cols: Mapping[str, Any], prefix: str, outer: list[tuple[str, Mapping[str, Any]]]) -> None:
+        scopes = [(prefix, cols), *outer]
         for name, col in cols.items():
             dotted = f"{prefix}{name}"
             if getattr(col, "role", None) in ("label", "synonym"):
-                if _labels_the_row(dotted, col, keys):
+                if _labels_the_row(col, scopes, keys):
                     phys.extend(text_leaf(reader, dotted, col))
             elif is_container(col):
-                walk(col.fields, dotted + ".")
+                walk(col.fields, dotted + ".", scopes)
 
     if reader.levels:
-        walk(reader._level_fields()[-1], ".".join(n for lvl in reader.levels for n in lvl.names) + ".")
+        walk(reader._level_fields()[-1], ".".join(n for lvl in reader.levels for n in lvl.names) + ".", [])
     else:
-        walk(reader.spec.columns, "")
+        walk(reader.spec.columns, "", [])
     needle = _fold(text)
     word = re.compile(rf"(?<!\w){re.escape(needle)}(?!\w)")
     okeys = reader.order_keys([r.model_dump() for r in reader.table.spec.rank])
