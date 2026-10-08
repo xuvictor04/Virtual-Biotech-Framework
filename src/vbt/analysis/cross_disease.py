@@ -26,7 +26,7 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 
-from ._utils import bh_fdr, has_module, require
+from ._utils import bh_fdr, require
 
 __all__ = ["pseudobulk_log2cp10k", "pair_with_normals", "disease_qc", "disease_vs_normal_lmm", "census_query_plan",
            "weighted_lmm_reml", "prepare_cross_disease", "cross_disease_tests",
@@ -108,11 +108,11 @@ def pseudobulk_log2cp10k(counts_gene, total_counts, obs: pd.DataFrame, donor_col
     for j, g in enumerate(genes):
         c = C[:, j]
         cp10k = np.divide(c * 1e4, t, out=np.zeros_like(c), where=t > 0)
-        l = np.log2(1 + cp10k)
+        log_cp10k = np.log2(1 + cp10k)
         g_sum = np.bincount(codes, weights=c, minlength=n_groups)
         part = meta.copy()
         part["gene"] = g
-        mean_l = np.bincount(codes, weights=l, minlength=n_groups) / np.maximum(n_cells, 1)
+        mean_l = np.bincount(codes, weights=log_cp10k, minlength=n_groups) / np.maximum(n_cells, 1)
         pb = np.log2(1 + 1e4 * g_sum / np.where(t_sum > 0, t_sum, np.nan))
         if len(genes) == 1:
             part[f"mean_log2_{g}_cp10k"] = mean_l

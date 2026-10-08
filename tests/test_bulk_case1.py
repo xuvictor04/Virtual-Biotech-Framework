@@ -4,7 +4,7 @@ import json
 
 import pandas as pd
 
-from vbt.bulk import BulkRunner, load_results
+from vbt.bulk import BulkRunner
 from vbt.case_studies.trial_outcomes import annotate as ann
 from vbt.case_studies.trial_outcomes.phase1 import phase1_progression
 from vbt.case_studies.trial_outcomes.schema import TrialAnnotation
@@ -89,7 +89,7 @@ from vbt.agents import AgentDefinition  # noqa: E402
 from vbt.bulk import BulkItem  # noqa: E402
 from vbt.providers.base import ProviderError, StopReason  # noqa: E402
 from vbt.providers.mock import fail, turn  # noqa: E402
-from conftest import open_scripted_session
+from conftest import open_scripted_session  # noqa: E402
 
 
 class _Out(BaseModel):

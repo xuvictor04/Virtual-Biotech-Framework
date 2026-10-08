@@ -6,7 +6,6 @@ tests/test_openai_compat.py) where the real OpenAI-compatible adapter is needed.
 """
 
 import argparse
-import asyncio
 import json
 import threading
 from http.server import ThreadingHTTPServer
@@ -24,14 +23,12 @@ from vbt.providers.base import (
     Message,
     ModelSettings,
     ProviderCapabilities,
-    StopReason,
-    TextBlock,
     ThinkingBlock,
     ToolCall,
     ToolResult,
     Usage,
 )
-from vbt.providers.mock import ScriptedProvider, call, reply, turn
+from vbt.providers.mock import ScriptedProvider, call, reply
 from vbt.runtime import (
     EMPTY_REPLY_MSG,
     FORCE_TOOL_MSG,
@@ -41,7 +38,7 @@ from vbt.runtime import (
 from vbt.tools.base import Tool, schema
 
 from conftest import open_scripted_session
-from test_openai_compat import Fake, Handler, _clear_env, chunk, tc_delta, text_turn, usage
+from test_openai_compat import Fake, Handler, _clear_env, text_turn
 
 MODEL = "qwen3.8-27b"
 

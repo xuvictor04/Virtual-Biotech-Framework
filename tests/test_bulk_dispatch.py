@@ -74,7 +74,7 @@ async def test_pilot_then_confirm(config, tmp_path):
     assert st["state"] == "completed"
     assert st["summary"]["completed"] == 4 and st["summary"]["skipped_existing"] == 2
     assert len(session.rt.provider.calls) == 6  # pilot items reused, not rerun
-    lines = [json.loads(l) for l in open(started["results_path"])]
+    lines = [json.loads(line) for line in open(started["results_path"])]
     assert {r["id"] for r in lines if r["ok"]} == {f"NCT{k:08d}" for k in range(1, 12, 2)}
     assert started["results_path"].endswith(f"work/clinical-trialist/results/bulk/{started['job_id']}.jsonl")
     assert json.loads(open(started["summary_path"]).read())["state"] == "completed"

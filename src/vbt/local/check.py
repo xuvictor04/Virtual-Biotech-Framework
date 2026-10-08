@@ -1158,7 +1158,10 @@ def options_from_config(config: Mapping[str, Any] | None, args: argparse.Namespa
     prov = config.get("provider") or {}
     local = prov.get("name") in LOCAL_PROVIDERS
     popts = {k: v for k, v in (prov.get("options") or {}).items() if v is not None} if local else {}
-    get = (lambda k, d=None: getattr(args, k, d) if args is not None else d)
+
+    def get(k: str, d: Any = None) -> Any:
+        return getattr(args, k, d) if args is not None else d
+
     base_urls = popts.get("base_urls")
     if isinstance(base_urls, str):
         base_urls = [u for u in base_urls.replace(",", " ").split() if u]

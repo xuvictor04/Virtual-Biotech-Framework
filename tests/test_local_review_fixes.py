@@ -27,7 +27,12 @@ from vbt.providers.retry import RetryPolicy, complete_with_retry
 
 from conftest import open_scripted_session
 from test_local_integration import Recording, _agent, _echo_tool, _items, _local_config, _Out, _recs, _tok_usage
-from test_openai_compat import MODEL, Q, TOOLS, chunk, fake, make, settings, tc_delta, text_turn  # noqa: F401
+import test_openai_compat
+from test_openai_compat import MODEL, Q, TOOLS, chunk, settings, tc_delta, text_turn
+
+# the fake vLLM server fixtures of test_openai_compat, bound here so pytest collects them for this module
+fake = test_openai_compat.fake
+make = test_openai_compat.make
 
 ROOT_DOCS = __import__("pathlib").Path(__file__).resolve().parents[1]
 

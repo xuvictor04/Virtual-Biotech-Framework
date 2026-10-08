@@ -66,7 +66,7 @@ from pydantic import BaseModel, ValidationError
 
 from . import budget as _budget
 from .agents import AgentDefinition
-from .budget import BudgetExceeded, CostScope, format_tokens
+from .budget import BudgetExceeded, CostScope
 from .providers.base import ContextOverflowError, Message, ProviderError, RetryableProviderError
 from .runtime import Runtime
 from .tools.base import Tool, ToolContext, ToolFailure, inline_refs
@@ -622,7 +622,7 @@ def _cli(args, config) -> int:
     mod, _, name = args.schema.partition(":")
     model = getattr(importlib.import_module(mod), name)
     items = [BulkItem(str(r["id"]), r["prompt"], r) for r in
-             (json.loads(l) for l in Path(args.input).read_text().splitlines() if l.strip())]
+             (json.loads(line) for line in Path(args.input).read_text().splitlines() if line.strip())]
 
     async def main() -> int:
         session = await open_session(config, start_mcp=not args.no_mcp)

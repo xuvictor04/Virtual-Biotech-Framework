@@ -489,7 +489,7 @@ def test_case1_validate_cli_joins_registry_status_for_tdc(tmp_path, capsys):
         warnings.simplefilter("error")
         assert _case1(args, {"vars": {"upstream": str(tmp_path)}}) == 0
     out = capsys.readouterr().out
-    row = next(l for l in out.splitlines() if l.strip().startswith("primary_endpoint_result")).split()
-    header = next(l for l in out.splitlines() if "n_excluded_stopped" in l).split()
+    row = next(line for line in out.splitlines() if line.strip().startswith("primary_endpoint_result")).split()
+    header = next(line for line in out.splitlines() if "n_excluded_stopped" in line).split()
     rec = dict(zip(header, row))
     assert rec["n_excluded_stopped"] == "2" and rec["n_applicable"] == "2"

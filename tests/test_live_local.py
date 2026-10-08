@@ -47,7 +47,6 @@ from vbt.providers.base import (
     StopReason,
     TextBlock,
     ThinkingBlock,
-    ToolCall,
     ToolResult,
     ToolSpec,
 )

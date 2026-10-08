@@ -133,7 +133,7 @@ def _case1(args, config: dict[str, Any]) -> int:
         mapping = pd.read_parquet(ann.mapping_path(config))
         ids = list(args.ids or [])
         if args.ids_file:
-            ids += [l.strip() for l in Path(args.ids_file).read_text().splitlines() if l.strip()]
+            ids += [line.strip() for line in Path(args.ids_file).read_text().splitlines() if line.strip()]
         phases = tuple(float(p) for p in args.phases.split(","))
         trials = ann.select_trials(mapping, phases=phases, sample=args.sample, seed=args.seed, ids=ids or None)
         print(f"{len(trials)} trials selected")
