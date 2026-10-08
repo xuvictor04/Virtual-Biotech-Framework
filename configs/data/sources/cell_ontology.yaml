@@ -3,8 +3,15 @@
 # Case studies 2 and 3 harmonise CELLxGENE cell types along the CL `is_a` hierarchy
 # (src/vbt/analysis/ontology.py). The file is ${VBT_CL_OBO} (cl-basic.obo from the OBO Foundry for
 # real data); without it the test fixture tests/fixtures/mini_cl.obo is read, so the source is
-# always checkable. Hierarchy expansion uses `is_a` only (cl-basic `part_of` edges point into
-# UBERON, another ontology). Obsolete terms stay in the table and resolve through `replaced_by`.
+# always checkable. Hierarchy expansion uses `is_a` only. Obsolete terms stay in the table and resolve
+# through `replaced_by`.
+#
+# Checked on the real cl-basic.obo (http://purl.obolibrary.org/obo/cl/cl-basic.obo, data-version
+# cl/releases/2026-06-08, read 2026-10-08; vbt ds check --depth deep): 3,540 terms (205 obsolete, 9 of them
+# CP:NNNNNNN IDs moved into CL with `replaced_by`), `is_a` acyclic. Its `relationship` lines name the
+# predicate by CURIE (RO:0002202 develops from: 396, BFO:0000050 part of: 3) and every target is a CL term:
+# cl-basic has no UBERON edges (the full cl.obo has). One term (CL:4023064) asserts the same RELATED
+# synonym twice with different PMIDs, so a synonym item has no key (the projection keeps text and scope).
 schema: vbt.datasource/1
 source: cell_ontology
 title: Cell Ontology (CL)
@@ -38,7 +45,7 @@ tables:
       def:          {role: text}
       synonyms:
         role: nested
-        item_key: [text, scope]
+        item_key: {identity: position}       # 'CGE interneuron' RELATED twice on CL:4023064 (VERIFIED)
         fields:
           text:  {role: synonym, of: /id, synonym_kind_from: scope}
           scope: {role: category, vocab: [exact, related, broad, narrow]}
@@ -52,8 +59,10 @@ tables:
         role: nested
         item_key: [type, target]
         fields:
-          type:   {role: category, vocab: data}
-          target: {role: hierarchy, relation: parent, of: /id, closure: direct, predicate: [part_of, develops_from],
-                   integrity: partial}                       # UBERON targets are outside the CL universe
+          type:   {role: category, vocab: data,
+                   values: {"RO:0002202": "develops from", "BFO:0000050": "part of"}}   # cl-basic's CURIE predicates
+          target: {role: hierarchy, relation: parent, of: /id, closure: direct,
+                   predicate: [part_of, develops_from, "BFO:0000050", "RO:0002202"],
+                   integrity: partial}                       # cl.obo's UBERON targets are outside the CL universe
       xref:         {role: identifier, xref: true, id_type_from: prefix, cardinality: many, path: "[]", resolvable: false}
       subset:       {role: category, vocab: data, path: "[]"}

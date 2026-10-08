@@ -1,0 +1,58 @@
+{
+ "release": "24Q4",
+ "figshare_article": 27993248,
+ "title": "DepMap 24Q4 Public",
+ "published": "2024-12-10T16:07:56Z",
+ "doi": "10.25452/figshare.plus.27993248.v1",
+ "retrieved": "2026-10-08",
+ "files": [
+  {
+   "name": "Model.csv",
+   "id": 51065297,
+   "url": "https://ndownloader.figshare.com/files/51065297",
+   "bytes": 645696,
+   "md5": "675210d17675f3517b0ce39a3c274f16"
+  },
+  {
+   "name": "CRISPRGeneEffect.csv",
+   "id": 51064667,
+   "url": "https://ndownloader.figshare.com/files/51064667",
+   "bytes": 428678699,
+   "md5": "6edf7ade09b9b34199210b559d4745d3"
+  },
+  {
+   "name": "CRISPRGeneDependency.csv",
+   "id": 51064631,
+   "url": "https://ndownloader.figshare.com/files/51064631",
+   "bytes": 421115594,
+   "md5": "0d3bdadf0c59264e39f7fbadf232ccdb"
+  },
+  {
+   "name": "CRISPRInferredCommonEssentials.csv",
+   "id": 51064916,
+   "url": "https://ndownloader.figshare.com/files/51064916",
+   "bytes": 20795,
+   "md5": "545edef0d377f252db6e5e675201bd77"
+  },
+  {
+   "name": "AchillesCommonEssentialControls.csv",
+   "id": 51063560,
+   "url": "https://ndownloader.figshare.com/files/51063560",
+   "bytes": 17015,
+   "md5": "9cc07e7ebc282984d8107341dfde8f26"
+  },
+  {
+   "name": "README.txt",
+   "id": 51065795,
+   "url": "https://ndownloader.figshare.com/files/51065795",
+   "bytes": 43103,
+   "md5": "54628c15a10b9ff6536db245cfed5231"
+  }
+ ],
+ "portal": {
+  "url": "https://depmap.org/portal/api/download/files",
+  "status": 200,
+  "answer": "an HTML bot-verification page (Cloudflare Turnstile), not the file listing",
+  "newest_figshare_release": "DepMap 24Q4 Public (figshare search, 2026-10-08)"
+ }
+}

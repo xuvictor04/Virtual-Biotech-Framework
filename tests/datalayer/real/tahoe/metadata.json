@@ -1,0 +1,984 @@
+{
+ "_source": {
+  "dataset": "tahoebio/Tahoe-100M",
+  "revision": "2dc57900b7981cfcf5e211527169a0b006546a95",
+  "retrieved": "2026-10-08",
+  "url": "https://huggingface.co/datasets/tahoebio/Tahoe-100M/resolve/2dc57900b7981cfcf5e211527169a0b006546a95/metadata/{name}_metadata.parquet",
+  "how": "the four metadata tables downloaded whole (sha256 = the Hugging Face LFS oid); rows below are excerpts"
+ },
+ "gene": {
+  "file": "metadata/gene_metadata.parquet",
+  "bytes": 1326799,
+  "sha256": "d6104d1ca570d94832be0d27ffe8b7e4e54cfd366c9080239219f9c406eb751c",
+  "rows": 62710,
+  "schema": [
+   [
+    "gene_symbol",
+    "string"
+   ],
+   [
+    "ensembl_id",
+    "string"
+   ],
+   [
+    "token_id",
+    "int64"
+   ]
+  ],
+  "facts": {
+   "gene_symbol_unique": true,
+   "ensembl_id_unique": true,
+   "symbols_that_are_ensembl_ids": 20930
+  },
+  "excerpt": [
+   {
+    "gene_symbol": "HECW1",
+    "ensembl_id": "ENSG00000002746",
+    "token_id": 30
+   },
+   {
+    "gene_symbol": "TFPI",
+    "ensembl_id": "ENSG00000003436",
+    "token_id": 43
+   },
+   {
+    "gene_symbol": "FKBP4",
+    "ensembl_id": "ENSG00000004478",
+    "token_id": 54
+   },
+   {
+    "gene_symbol": "PSMC4",
+    "ensembl_id": "ENSG00000013275",
+    "token_id": 328
+   },
+   {
+    "gene_symbol": "GPRC5A",
+    "ensembl_id": "ENSG00000013588",
+    "token_id": 344
+   },
+   {
+    "gene_symbol": "TMSB10",
+    "ensembl_id": "ENSG00000034510",
+    "token_id": 513
+   },
+   {
+    "gene_symbol": "HSPA5",
+    "ensembl_id": "ENSG00000044574",
+    "token_id": 609
+   },
+   {
+    "gene_symbol": "NGFR",
+    "ensembl_id": "ENSG00000064300",
+    "token_id": 882
+   },
+   {
+    "gene_symbol": "ACTB",
+    "ensembl_id": "ENSG00000075624",
+    "token_id": 1318
+   },
+   {
+    "gene_symbol": "XPO1",
+    "ensembl_id": "ENSG00000082898",
+    "token_id": 1582
+   },
+   {
+    "gene_symbol": "COL1A1",
+    "ensembl_id": "ENSG00000108821",
+    "token_id": 3593
+   },
+   {
+    "gene_symbol": "RPS12",
+    "ensembl_id": "ENSG00000112306",
+    "token_id": 4046
+   },
+   {
+    "gene_symbol": "KYNU",
+    "ensembl_id": "ENSG00000115919",
+    "token_id": 4501
+   },
+   {
+    "gene_symbol": "EGR1",
+    "ensembl_id": "ENSG00000120738",
+    "token_id": 5093
+   },
+   {
+    "gene_symbol": "MT2A",
+    "ensembl_id": "ENSG00000125148",
+    "token_id": 5613
+   },
+   {
+    "gene_symbol": "HNRNPA1",
+    "ensembl_id": "ENSG00000135486",
+    "token_id": 7093
+   },
+   {
+    "gene_symbol": "IGFBP4",
+    "ensembl_id": "ENSG00000141753",
+    "token_id": 8165
+   },
+   {
+    "gene_symbol": "IGFBP3",
+    "ensembl_id": "ENSG00000146674",
+    "token_id": 8865
+   },
+   {
+    "gene_symbol": "COL6A3",
+    "ensembl_id": "ENSG00000163359",
+    "token_id": 10976
+   },
+   {
+    "gene_symbol": "NPM1",
+    "ensembl_id": "ENSG00000181163",
+    "token_id": 14988
+   },
+   {
+    "gene_symbol": "MT-CYB",
+    "ensembl_id": "ENSG00000198727",
+    "token_id": 17812
+   },
+   {
+    "gene_symbol": "MT-RNR2",
+    "ensembl_id": "ENSG00000210082",
+    "token_id": 21401
+   },
+   {
+    "gene_symbol": "MT-RNR1",
+    "ensembl_id": "ENSG00000211459",
+    "token_id": 21437
+   },
+   {
+    "gene_symbol": "NEAT1",
+    "ensembl_id": "ENSG00000245532",
+    "token_id": 37295
+   }
+  ]
+ },
+ "drug": {
+  "file": "metadata/drug_metadata.parquet",
+  "bytes": 40475,
+  "sha256": "7a04c7a6611e74c92253163b994ff0a47191928ee7511f1c2ca508cee0e79f28",
+  "rows": 379,
+  "schema": [
+   [
+    "drug",
+    "string"
+   ],
+   [
+    "targets",
+    "string"
+   ],
+   [
+    "moa-broad",
+    "string"
+   ],
+   [
+    "moa-fine",
+    "string"
+   ],
+   [
+    "human-approved",
+    "string"
+   ],
+   [
+    "clinical-trials",
+    "string"
+   ],
+   [
+    "gpt-notes-approval",
+    "string"
+   ],
+   [
+    "canonical_smiles",
+    "string"
+   ],
+   [
+    "pubchem_cid",
+    "double"
+   ]
+  ],
+  "drugs": [
+   "(R)-Verapamil (hydrochloride)",
+   "(S)-Crizotinib",
+   "18β-Glycyrrhetinic acid",
+   "4EGI-1",
+   "5-Azacytidine",
+   "5-Fluorouracil",
+   "8-Hydroxyquinoline",
+   "9-ING-41",
+   "APTO-253",
+   "AT7519",
+   "AZD-7648",
+   "AZD-8055",
+   "AZD1390",
+   "AZD2858",
+   "Abemaciclib",
+   "Abiraterone acetate",
+   "Acetazolamide",
+   "Acetohexamide",
+   "Adagrasib",
+   "Adenine",
+   "Adenosine",
+   "Afatinib",
+   "Aliskiren",
+   "Allantoin",
+   "Allopurinol",
+   "Almonertinib (hydrochloride)",
+   "Almonertinib (mesylate)",
+   "Alpelisib",
+   "Altretamine",
+   "Amsacrine",
+   "Anastrozole",
+   "Anethole trithione",
+   "Apalutamide",
+   "Aprepitant",
+   "Arbutin",
+   "Artemether",
+   "Artesunate",
+   "Asciminib",
+   "Aspirin",
+   "Ataluren",
+   "Atazanavir (sulfate)",
+   "Auranofin",
+   "Azithromycin (hydrate)",
+   "BAY1125976",
+   "BI-3406",
+   "BI-78D3",
+   "Baicalin",
+   "Balsalazide (sodium hydrate)",
+   "Belinostat",
+   "Belumosudil",
+   "Belumosudil (mesylate)",
+   "Belzutifan",
+   "Bendamustine",
+   "Benproperine (phosphate)",
+   "Bentamapimod",
+   "Benztropine (mesylate)",
+   "Berbamine",
+   "Berbamine (dihydrochloride)",
+   "Berberine (chloride hydrate)",
+   "Bergenin",
+   "Bestatin",
+   "Bestatin (hydrochloride)",
+   "Betamethasone dipropionate",
+   "Bexarotene",
+   "Bicalutamide",
+   "Bimatoprost",
+   "Bimiralisib",
+   "Binimetinib",
+   "Bisoprolol (hemifumarate)",
+   "Bortezomib",
+   "Bosentan (hydrate)",
+   "Brimonidine",
+   "Brivudine",
+   "Budesonide",
+   "Busulfan",
+   "CP21R7",
+   "Cabozantinib (S-malate)",
+   "Canagliflozin",
+   "Canagliflozin (hemihydrate)",
+   "Capivasertib",
+   "Capmatinib",
+   "Captopril",
+   "Carbamazepine",
+   "Carbidopa (monohydrate)",
+   "Celecoxib",
+   "Cepharanthine",
+   "Chlorhexidine (diacetate)",
+   "Ciclopirox",
+   "Cilostazol",
+   "Cinacalcet",
+   "Citalopram (hydrobromide)",
+   "Clobetasol propionate",
+   "Clofarabine",
+   "Clonidine (hydrochloride)",
+   "Clopidogrel",
+   "Clotrimazole",
+   "Cloxacillin (sodium)",
+   "Cobimetinib",
+   "Crizotinib (hydrochloride)",
+   "Cyclosporin A",
+   "Cysteamine (hydrochloride)",
+   "Cytarabine",
+   "Cytarabine (hydrochloride)",
+   "DT-061",
+   "DTP3",
+   "Dabrafenib",
+   "Daidzin",
+   "Dapagliflozin",
+   "Dapagliflozin ((2S)-1,2-propanediol, hydrate)",
+   "Daptomycin",
+   "Darinaparsin",
+   "Darolutamide",
+   "Decitabine",
+   "Delamanid",
+   "Demeclocycline",
+   "Dexamethasone",
+   "Dexmedetomidine",
+   "Diammonium Glycyrrhizinate",
+   "Digitoxin",
+   "Dihydroartemisinin",
+   "Dimethyl fumarate",
+   "Dinaciclib",
+   "Diphenhydramine",
+   "Docetaxel",
+   "Docetaxel (Trihydrate)",
+   "Dorzolamide (hydrochloride)",
+   "Doxorubicin (hydrochloride)",
+   "Doxycycline (monohydrate)",
+   "Drospirenone",
+   "ERK5-IN-2",
+   "ETC-206",
+   "EX229",
+   "Econazole",
+   "Edoxaban (tosylate monohydrate)",
+   "Elagolix sodium",
+   "Elimusertib hydrochloride",
+   "Encorafenib",
+   "Entecavir (monohydrate)",
+   "Entrectinib",
+   "Epirubicin (hydrochloride)",
+   "Eplerenone",
+   "Erdafitinib",
+   "Erlotinib",
+   "Erythromycin",
+   "Esmolol (hydrochloride)",
+   "Estrone sulfate (potassium)",
+   "Everolimus",
+   "Fedratinib (hydrochloride hydrate)",
+   "Fenofibrate",
+   "Ferulic acid",
+   "Filgotinib",
+   "Finasteride",
+   "Fingolimod (hydrochloride)",
+   "Flumatinib (mesylate)",
+   "Flutamide",
+   "Fluvoxamine",
+   "Fluvoxamine (maleate)",
+   "Folic acid",
+   "Fostamatinib (disodium hexahydrate)",
+   "Fulvestrant",
+   "Fumaric acid",
+   "Furosemide",
+   "Fusidic acid",
+   "Futibatinib",
+   "GSK1059615",
+   "Gallic acid",
+   "Gallic acid (hydrate)",
+   "Gefitinib",
+   "Gemcitabine",
+   "Gemfibrozil",
+   "Glasdegib",
+   "Glycyrrhizic acid",
+   "Goserelin (acetate)",
+   "HI-TOPK-032",
+   "Harringtonine",
+   "Hesperidin",
+   "Hexylresorcinol",
+   "Homoharringtonine",
+   "Hydroxyfasudil",
+   "Hydroxyurea",
+   "IQ 1",
+   "Idarubicin (hydrochloride)",
+   "Idoxuridine",
+   "Imiquimod (hydrochloride)",
+   "Imiquimod (maleate)",
+   "Indacaterol (maleate)",
+   "Infigratinib",
+   "Ipatasertib",
+   "Irinotecan",
+   "Irinotecan (hydrochloride)",
+   "Isocorydine",
+   "Ivabradine (hydrochloride)",
+   "Ivermectin",
+   "Ixazomib",
+   "Ixazomib citrate",
+   "L-Eflornithine (monohydrochloride)",
+   "L-Thyroxine (sodium salt pentahydrate)",
+   "LB-100",
+   "LJI308",
+   "LY-2584702 (tosylate salt)",
+   "LY2090314",
+   "Lactate (calcium)",
+   "Lapatinib ditosylate",
+   "Larotrectinib",
+   "Larotrectinib sulfate",
+   "Lenalidomide (hemihydrate)",
+   "Levobupivacaine (hydrochloride)",
+   "Lidocaine (hydrochloride)",
+   "Ligustrazine",
+   "Lipoic acid",
+   "Lonafarnib",
+   "Loperamide (hydrochloride)",
+   "Lopinavir",
+   "Lucanthone",
+   "Lumateperone (tosylate)",
+   "MK-3903",
+   "MK-8353",
+   "ML264",
+   "Macitentan",
+   "Malotilate",
+   "Mebendazole",
+   "Medroxyprogesterone acetate",
+   "Megestrol",
+   "Meloxicam",
+   "Menadione",
+   "Methotrexate",
+   "Methyl aminolevulinate (hydrochloride)",
+   "Methylprednisolone succinate",
+   "Methylthiouracil",
+   "Mifepristone",
+   "Minodronic acid",
+   "Mitoxantrone (dihydrochloride)",
+   "Monocrotaline",
+   "Mozavaptan",
+   "NG25",
+   "NVP-BHG712",
+   "Nafamostat (mesylate)",
+   "Naproxen",
+   "Neratinib",
+   "Neratinib (maleate)",
+   "Nevirapine",
+   "Niclosamide (olamine)",
+   "Nimesulide",
+   "Norepinephrine (hydrochloride)",
+   "OTS514",
+   "Olanzapine",
+   "Oleic acid",
+   "Omeprazole",
+   "Omeprazole (sodium)",
+   "Orlistat",
+   "Ornidazole",
+   "Osimertinib (mesylate)",
+   "Ouabain (Octahydrate)",
+   "Oxaliplatin",
+   "Oxaprozin",
+   "PF-06260933",
+   "PH-797804",
+   "Paclitaxel",
+   "Palmatine (chloride)",
+   "Panobinostat",
+   "Pasireotide (acetate)",
+   "Pemetrexed",
+   "Pemigatinib",
+   "Penfluridol",
+   "Pentagastrin",
+   "Pentamidine (isethionate)",
+   "Pentoxifylline",
+   "Peretinoin",
+   "Perindopril (erbumine)",
+   "Pexidartinib (hydrochloride)",
+   "Phenylephrine (hydrochloride)",
+   "Phenytoin (sodium)",
+   "Pimitespib",
+   "Pimozide",
+   "Pioglitazone",
+   "Piroxicam",
+   "Pitavastatin (Calcium)",
+   "Plicamycin",
+   "Ponatinib",
+   "Posaconazole",
+   "Pralsetinib",
+   "Pravastatin (sodium)",
+   "Procainamide (hydrochloride)",
+   "Proglumide",
+   "Pyridoxine",
+   "Pyridoxine (hydrochloride)",
+   "Quinestrol",
+   "Quinidine (15% dihydroquinidine)",
+   "RMC-6236",
+   "Radotinib",
+   "Ralimetinib dimesylate",
+   "Raltitrexed",
+   "Ranolazine",
+   "Rapamycin",
+   "Regorafenib",
+   "Relugolix",
+   "Resveratrol",
+   "Retinoic acid",
+   "Ribociclib",
+   "Rifaximin",
+   "Riluzole hydrochloride",
+   "Rimonabant",
+   "Rimonabant (Hydrochloride)",
+   "Ritonavir",
+   "Ropivacaine (hydrochloride monohydrate)",
+   "Rosiglitazone",
+   "Roxadustat",
+   "Rucaparib (phosphate)",
+   "Rutin (trihydrate)",
+   "S-Adenosyl-L-methionine (disulfate tosylate)",
+   "SBI-0640756",
+   "Sacubitril/Valsartan",
+   "Salicylic acid",
+   "Sapanisertib",
+   "Saquinavir",
+   "Selinexor",
+   "Sildenafil",
+   "Silodosin",
+   "Simotinib",
+   "Sinomenine",
+   "Sivelestat (sodium tetrahydrate)",
+   "Sodium Salicylate",
+   "Sonidegib",
+   "Sulfatinib",
+   "Sulfisoxazole",
+   "Sunitinib",
+   "TAK-733",
+   "TAK-901",
+   "Tadalafil",
+   "Talc",
+   "Tazarotene",
+   "Temsirolimus",
+   "Temuterkib",
+   "Terfenadine",
+   "Tetracycline (hydrochloride)",
+   "Thymol",
+   "Thymopentin",
+   "Tirabrutinib",
+   "Tirabrutinib (hydrochloride)",
+   "Tofacitinib",
+   "Tofacitinib (citrate)",
+   "Tolcapone",
+   "Tolmetin",
+   "Tomivosertib",
+   "Topotecan (hydrochloride)",
+   "Torkinib",
+   "Trametinib",
+   "Trametinib (DMSO_TF solvate)",
+   "Tranilast",
+   "Triamcinolone",
+   "Triclosan",
+   "Trifluridine",
+   "Trimetrexate",
+   "Tubulin inhibitor 6",
+   "Tucatinib",
+   "Tucidinostat",
+   "ULK-101",
+   "Uridine",
+   "Valdecoxib",
+   "Vandetanib",
+   "Vemurafenib",
+   "Verapamil",
+   "Verteporfin",
+   "Vilanterol",
+   "Vinblastine (sulfate)",
+   "Vismodegib",
+   "Vitamin K4",
+   "Volasertib",
+   "Voriconazole",
+   "Vortioxetine",
+   "XRK3F2",
+   "Zileuton",
+   "c-Kit-IN-1",
+   "crizotinib",
+   "olaparib",
+   "palbociclib",
+   "venetoclax",
+   "vincristine",
+   "γ-Oryzanol"
+  ],
+  "facts": {
+   "targets_null": 115,
+   "targets_with_comma_space": 122,
+   "targets_with_pipe": 0
+  },
+  "excerpt": [
+   {
+    "drug": "Bortezomib",
+    "targets": "PSMB5",
+    "moa-broad": "inhibitor/antagonist",
+    "moa-fine": "Proteasome inhibitor",
+    "human-approved": "yes",
+    "clinical-trials": "yes",
+    "gpt-notes-approval": "Approved for multiple myeloma and mantle cell lymphoma.",
+    "canonical_smiles": "B(C(CC(C)C)NC(=O)C(CC1=CC=CC=C1)NC(=O)C2=NC=CN=C2)(O)O",
+    "pubchem_cid": 387447.0
+   },
+   {
+    "drug": "4EGI-1",
+    "targets": "EIF4E",
+    "moa-broad": "inhibitor/antagonist",
+    "moa-fine": "Protein synthesis inhibitor",
+    "human-approved": "no",
+    "clinical-trials": "no",
+    "gpt-notes-approval": "No clinical trials found for 4EGI-1 on clinicaltrials.gov.",
+    "canonical_smiles": "C1=CC=C(C(=C1)CC(=NNC2=NC(=CS2)C3=CC(=C(C=C3)Cl)Cl)C(=O)O)[N+](=O)[O-]",
+    "pubchem_cid": 5717952.0
+   },
+   {
+    "drug": "Selinexor",
+    "targets": "XPO1",
+    "moa-broad": "inhibitor/antagonist",
+    "moa-fine": "unclear",
+    "human-approved": "yes",
+    "clinical-trials": "yes",
+    "gpt-notes-approval": "Approved for certain cancer treatments.",
+    "canonical_smiles": "C1=CN=C(C=N1)NNC(=O)C=CN2C=NC(=N2)C3=CC(=CC(=C3)C(F)(F)F)C(F)(F)F",
+    "pubchem_cid": 71481097.0
+   },
+   {
+    "drug": "Erdafitinib",
+    "targets": "FGFR1, FGFR2, FGFR3, FGFR4",
+    "moa-broad": "inhibitor/antagonist",
+    "moa-fine": "Other TK inhibitor",
+    "human-approved": "yes",
+    "clinical-trials": "yes",
+    "gpt-notes-approval": "Approved for bladder cancer treatment.",
+    "canonical_smiles": "CC(C)NCCN(C1=CC2=NC(=CN=C2C=C1)C3=CN(N=C3)C)C4=CC(=CC(=C4)OC)OC",
+    "pubchem_cid": 67462786.0
+   },
+   {
+    "drug": "APTO-253",
+    "targets": "MYC, KLF4",
+    "moa-broad": "unclear",
+    "moa-fine": "unclear",
+    "human-approved": "no",
+    "clinical-trials": "yes",
+    "gpt-notes-approval": "Investigated for cancer, but development discontinued.",
+    "canonical_smiles": "CC1=C(C2=C(N1)C=CC(=C2)F)C3=NC4=C5C=CC=NC5=C6C(=C4N3)C=CC=N6",
+    "pubchem_cid": 11960271.0
+   },
+   {
+    "drug": "9-ING-41",
+    "targets": "GSK3B",
+    "moa-broad": "inhibitor/antagonist",
+    "moa-fine": "GSK3 inhibitor",
+    "human-approved": "no",
+    "clinical-trials": "yes",
+    "gpt-notes-approval": "Investigational drug, not approved for human use yet.",
+    "canonical_smiles": "CN1C=C(C2=CC3=C(C=C21)OCO3)C4=C(C(=O)NC4=O)C5=COC6=C5C=C(C=C6)F",
+    "pubchem_cid": 44582816.0
+   }
+  ]
+ },
+ "cell_line": {
+  "file": "metadata/cell_line_metadata.parquet",
+  "bytes": 19040,
+  "sha256": "67641f5bdd3fb077978ff1fec4d0d617490674bcd42850515ae3997194c29d4d",
+  "rows": 1000,
+  "schema": [
+   [
+    "cell_name",
+    "string"
+   ],
+   [
+    "Cell_ID_DepMap",
+    "string"
+   ],
+   [
+    "Cell_ID_Cellosaur",
+    "string"
+   ],
+   [
+    "Organ",
+    "string"
+   ],
+   [
+    "Driver_Gene_Symbol",
+    "string"
+   ],
+   [
+    "Driver_VarZyg",
+    "string"
+   ],
+   [
+    "Driver_VarType",
+    "string"
+   ],
+   [
+    "Driver_ProtEffect_or_CdnaEffect",
+    "string"
+   ],
+   [
+    "Driver_Mech_InferDM",
+    "string"
+   ],
+   [
+    "Driver_GeneType_DM",
+    "string"
+   ]
+  ],
+  "facts": {
+   "cell_names": 102,
+   "depmap_ids": 99,
+   "null_depmap_rows": 5,
+   "null_effect_rows": 25,
+   "names_without_depmap_id": [
+    "Hs 936.T(C1)",
+    "LS 174T",
+    "hTERT-HPNE"
+   ]
+  },
+  "excerpt": [
+   {
+    "cell_name": "A549",
+    "Cell_ID_DepMap": "ACH-000681",
+    "Cell_ID_Cellosaur": "CVCL_0023",
+    "Organ": "Lung",
+    "Driver_Gene_Symbol": "CDKN2A",
+    "Driver_VarZyg": "Hom",
+    "Driver_VarType": "Deletion",
+    "Driver_ProtEffect_or_CdnaEffect": "DEL",
+    "Driver_Mech_InferDM": "LoF",
+    "Driver_GeneType_DM": "Suppressor"
+   },
+   {
+    "cell_name": "A549",
+    "Cell_ID_DepMap": "ACH-000681",
+    "Cell_ID_Cellosaur": "CVCL_0023",
+    "Organ": "Lung",
+    "Driver_Gene_Symbol": "CDKN2B",
+    "Driver_VarZyg": "Hom",
+    "Driver_VarType": "Deletion",
+    "Driver_ProtEffect_or_CdnaEffect": "DEL",
+    "Driver_Mech_InferDM": "LoF",
+    "Driver_GeneType_DM": "Suppressor"
+   },
+   {
+    "cell_name": "A549",
+    "Cell_ID_DepMap": "ACH-000681",
+    "Cell_ID_Cellosaur": "CVCL_0023",
+    "Organ": "Lung",
+    "Driver_Gene_Symbol": "KRAS",
+    "Driver_VarZyg": "Hom",
+    "Driver_VarType": "Missense",
+    "Driver_ProtEffect_or_CdnaEffect": "p.G12S",
+    "Driver_Mech_InferDM": "GoF",
+    "Driver_GeneType_DM": "Oncogene"
+   },
+   {
+    "cell_name": "A549",
+    "Cell_ID_DepMap": "ACH-000681",
+    "Cell_ID_Cellosaur": "CVCL_0023",
+    "Organ": "Lung",
+    "Driver_Gene_Symbol": "SMARCA4",
+    "Driver_VarZyg": "Hom",
+    "Driver_VarType": "Frameshift",
+    "Driver_ProtEffect_or_CdnaEffect": "p.Q729fs",
+    "Driver_Mech_InferDM": "LoF",
+    "Driver_GeneType_DM": "Suppressor"
+   },
+   {
+    "cell_name": "A549",
+    "Cell_ID_DepMap": "ACH-000681",
+    "Cell_ID_Cellosaur": "CVCL_0023",
+    "Organ": "Lung",
+    "Driver_Gene_Symbol": "STK11",
+    "Driver_VarZyg": "Hom",
+    "Driver_VarType": "Stopgain",
+    "Driver_ProtEffect_or_CdnaEffect": "p.Q37*",
+    "Driver_Mech_InferDM": "LoF",
+    "Driver_GeneType_DM": "Suppressor"
+   },
+   {
+    "cell_name": "A549",
+    "Cell_ID_DepMap": "ACH-000681",
+    "Cell_ID_Cellosaur": "CVCL_0023",
+    "Organ": "Lung",
+    "Driver_Gene_Symbol": "ZFHX3",
+    "Driver_VarZyg": "Het",
+    "Driver_VarType": "Missense",
+    "Driver_ProtEffect_or_CdnaEffect": "p.L1473F",
+    "Driver_Mech_InferDM": null,
+    "Driver_GeneType_DM": "Suppressor"
+   },
+   {
+    "cell_name": "hTERT-HPNE",
+    "Cell_ID_DepMap": null,
+    "Cell_ID_Cellosaur": "CVCL_C466",
+    "Organ": "Pancreas",
+    "Driver_Gene_Symbol": "TERT",
+    "Driver_VarZyg": null,
+    "Driver_VarType": "Transgene",
+    "Driver_ProtEffect_or_CdnaEffect": null,
+    "Driver_Mech_InferDM": null,
+    "Driver_GeneType_DM": "Oncogene"
+   }
+  ]
+ },
+ "sample": {
+  "file": "metadata/sample_metadata.parquet",
+  "bytes": 65636,
+  "sha256": "33167f0ce28cff8357c503cda67d1c7fea200bff6918ee1de3c4f3549175b9d3",
+  "rows": 1344,
+  "schema": [
+   [
+    "sample",
+    "string"
+   ],
+   [
+    "plate",
+    "string"
+   ],
+   [
+    "mean_gene_count",
+    "double"
+   ],
+   [
+    "mean_tscp_count",
+    "double"
+   ],
+   [
+    "mean_mread_count",
+    "double"
+   ],
+   [
+    "mean_pcnt_mito",
+    "float"
+   ],
+   [
+    "drug",
+    "string"
+   ],
+   [
+    "drugname_drugconc",
+    "string"
+   ]
+  ],
+  "facts": {
+   "plates": [
+    "plate1",
+    "plate10",
+    "plate11",
+    "plate12",
+    "plate13",
+    "plate14",
+    "plate2",
+    "plate3",
+    "plate4",
+    "plate5",
+    "plate6",
+    "plate7",
+    "plate8",
+    "plate9"
+   ],
+   "drugs_not_in_drug_metadata": [
+    "DMSO_TF",
+    "Erdafitinib ",
+    "Selinexor "
+   ]
+  },
+  "excerpt": [
+   {
+    "sample": "smp_1496",
+    "plate": "plate1",
+    "mean_gene_count": 1404.4541568965005,
+    "mean_tscp_count": 2226.2827906562584,
+    "mean_mread_count": 2690.6859695467633,
+    "mean_pcnt_mito": 0.0717228576540947,
+    "drug": "Erdafitinib ",
+    "drugname_drugconc": "[('Erdafitinib ', 0.05, 'uM')]"
+   },
+   {
+    "sample": "smp_1555",
+    "plate": "plate1",
+    "mean_gene_count": 1552.2273975265448,
+    "mean_tscp_count": 2628.962849576014,
+    "mean_mread_count": 3170.3032533955343,
+    "mean_pcnt_mito": 0.06551863998174667,
+    "drug": "Bortezomib",
+    "drugname_drugconc": "[('Bortezomib', 0.05, 'uM')]"
+   },
+   {
+    "sample": "smp_1589",
+    "plate": "plate1",
+    "mean_gene_count": 1460.6377204256255,
+    "mean_tscp_count": 2401.468361758542,
+    "mean_mread_count": 2892.7615871802886,
+    "mean_pcnt_mito": 0.08280359953641891,
+    "drug": "DMSO_TF",
+    "drugname_drugconc": "[('DMSO_TF', 0.0, 'uM')]"
+   },
+   {
+    "sample": "smp_1592",
+    "plate": "plate2",
+    "mean_gene_count": 1691.448717948718,
+    "mean_tscp_count": 2895.3547008547007,
+    "mean_mread_count": 3458.290598290598,
+    "mean_pcnt_mito": 0.042421746999025345,
+    "drug": "Erdafitinib ",
+    "drugname_drugconc": "[('Erdafitinib ', 0.5, 'uM')]"
+   },
+   {
+    "sample": "smp_1651",
+    "plate": "plate2",
+    "mean_gene_count": 1272.7731262234008,
+    "mean_tscp_count": 2015.5066111005872,
+    "mean_mread_count": 2400.8650249415923,
+    "mean_pcnt_mito": 0.049666885286569595,
+    "drug": "Bortezomib",
+    "drugname_drugconc": "[('Bortezomib', 0.5, 'uM')]"
+   },
+   {
+    "sample": "smp_1685",
+    "plate": "plate2",
+    "mean_gene_count": 1708.8493596969013,
+    "mean_tscp_count": 3010.22097547141,
+    "mean_mread_count": 3586.8818948026733,
+    "mean_pcnt_mito": 0.0834893062710762,
+    "drug": "DMSO_TF",
+    "drugname_drugconc": "[('DMSO_TF', 0.0, 'uM')]"
+   },
+   {
+    "sample": "smp_1688",
+    "plate": "plate3",
+    "mean_gene_count": 1216.9804239523298,
+    "mean_tscp_count": 1856.637354693758,
+    "mean_mread_count": 2209.2691608869786,
+    "mean_pcnt_mito": 0.051626838743686676,
+    "drug": "Erdafitinib ",
+    "drugname_drugconc": "[('Erdafitinib ', 5.0, 'uM')]"
+   },
+   {
+    "sample": "smp_1747",
+    "plate": "plate3",
+    "mean_gene_count": 960.7962230445323,
+    "mean_tscp_count": 1492.3570243715708,
+    "mean_mread_count": 1771.6945897664923,
+    "mean_pcnt_mito": 0.05580950528383255,
+    "drug": "Bortezomib",
+    "drugname_drugconc": "[('Bortezomib', 5.0, 'uM')]"
+   },
+   {
+    "sample": "smp_1781",
+    "plate": "plate3",
+    "mean_gene_count": 994.6502476105077,
+    "mean_tscp_count": 1441.1269029326052,
+    "mean_mread_count": 1706.8250219079255,
+    "mean_pcnt_mito": 0.06657156348228455,
+    "drug": "DMSO_TF",
+    "drugname_drugconc": "[('DMSO_TF', 0.0, 'uM')]"
+   },
+   {
+    "sample": "smp_1869",
+    "plate": "plate4",
+    "mean_gene_count": 1493.2797387437465,
+    "mean_tscp_count": 2467.831952936817,
+    "mean_mread_count": 2884.7636649990736,
+    "mean_pcnt_mito": 0.058554548770189285,
+    "drug": "Selinexor ",
+    "drugname_drugconc": "[('Selinexor ', 0.05, 'uM')]"
+   },
+   {
+    "sample": "smp_1877",
+    "plate": "plate4",
+    "mean_gene_count": 1176.679228393116,
+    "mean_tscp_count": 1832.9141902540503,
+    "mean_mread_count": 2140.2566853684675,
+    "mean_pcnt_mito": 0.07566875219345093,
+    "drug": "DMSO_TF",
+    "drugname_drugconc": "[('DMSO_TF', 0.0, 'uM')]"
+   },
+   {
+    "sample": "smp_1965",
+    "plate": "plate5",
+    "mean_gene_count": 1276.1780556041265,
+    "mean_tscp_count": 1991.718744535758,
+    "mean_mread_count": 2335.849274348662,
+    "mean_pcnt_mito": 0.04842757433652878,
+    "drug": "Selinexor ",
+    "drugname_drugconc": "[('Selinexor ', 0.5, 'uM')]"
+   }
+  ]
+ }
+}

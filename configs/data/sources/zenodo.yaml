@@ -8,6 +8,9 @@
 # SCHEMA-DEPENDENT on the extract): readiness warns when one is missing, and strict readiness
 # reports any further physical column as schema_drift. The four GEO cohort files of the OSMR case
 # study are one matrix table with a fragment key and per-fragment overrides (§6.7).
+#
+# Checked on the local extract of the archive (vbt ds check --depth deep on all six tables, plus full-table
+# reads, 2026-10-08): the verified:false facts are resolved below; (VERIFIED) marks counts from those reads.
 schema: vbt.datasource/1
 source: zenodo_vbt
 title: The Virtual Biotech case-study archive (Zenodo 22259123)
@@ -37,6 +40,7 @@ tables:
     constraints:
       - {column: ontology.leaf, op: equals_expr, expr: "len(children) == 0", verified: false, on_refute: drop_field,
          origin: "false for all 39,530 terms while 31,635 have no children (Zenodo 22259123)"}
+        # REFUTED on the archive (VERIFIED): leaf is false for every term, so readiness drops the field
     columns:
       id:               {role: identifier, id_type: "open_targets:ot_disease", self: true}
       name:             {role: label, of: id, unique: false}
@@ -45,7 +49,7 @@ tables:
       parents:          {role: hierarchy, relation: parent, of: id, closure: direct, inverse_of: children}
       children:         {role: hierarchy, relation: child, of: id, closure: direct, inverse_of: parents}
       ontology:         {role: nested, fields: {isTherapeuticArea: {role: flag, missing: unknown},
-                                                leaf: {role: flag, missing: unknown, verified: false},
+                                                leaf: {role: flag, missing: unknown, verified: false},   # refuted: see constraints
                                                 name: {role: payload, optional: true},
                                                 sources: {role: payload, optional: true}}}
       code:             {role: reference, ref_kinds: [url], optional: true}
@@ -57,10 +61,11 @@ tables:
                                   hasRelatedSynonym: {role: synonym, of: /id, synonym_kind: related, path: "[]"},
                                   hasNarrowSynonym: {role: synonym, of: /id, synonym_kind: narrow, path: "[]"},
                                   hasBroadSynonym: {role: synonym, of: /id, synonym_kind: broad, path: "[]"}}}
+      # VERIFIED on all 39,530 terms: each list is the transitive closure of parents (children), never the term itself
       ancestors:        {role: hierarchy, relation: ancestor, of: id, closure: transitive, closure_of: parents,
-                         reflexive: false, verified: false, optional: true}
+                         reflexive: false, optional: true}
       descendants:      {role: hierarchy, relation: descendant, of: id, closure: transitive, closure_of: children,
-                         reflexive: false, verified: false, optional: true}
+                         reflexive: false, optional: true}
       directLocationIds:   {role: payload, optional: true}
       indirectLocationIds: {role: payload, optional: true}
 
@@ -90,8 +95,8 @@ tables:
       isApproved:     {role: flag, missing: unknown, optional: true}
       yearOfFirstApproval: {role: time, precision: year, missing: unknown, optional: true}
       maximumClinicalTrialPhase: {role: measure, statistic: clinical_phase, scale: [0, 4], missing_values: [-1],
-                                  encoding: {0.5: early_phase_1, 4: approved}, missing: unknown, verified: false,
-                                  optional: true}
+                                  encoding: {0.5: early_phase_1, 4: approved}, missing: unknown, optional: true}
+                                  # VERIFIED on 18,119 molecules: -1 (304), 0.5 (17), 1-4, null (6,842); 4 iff isApproved
       crossReferences: {role: nested, item_key: [source], optional: true, fields: {
                           source: {role: category, vocab: data},
                           ids: {role: identifier, xref: true, path: "[]", cardinality: many, resolvable: false}}}
@@ -206,11 +211,19 @@ tables:
                                             description: "clinical response (R) or not (NR) as the authors coded it"},
                         response_mucosal_healing: {role: category, vocab: [R, NR], optional: true, present_in: [GSE73661]},
                         response_clinical_w30: {role: category, vocab: [R, NR], optional: true, present_in: [GSE23597]},
-                        age: {role: measure, statistic: numeric, unit: years, missing: unknown, optional: true},
-                        sex: {role: category, vocab: data, optional: true}}}
+                        response_remission: {role: category, vocab: [R, NR], optional: true},   # all NaN in the four files
+                        mayo_score: {role: measure, statistic: numeric, missing: unknown, optional: true,
+                                     present_in: [GSE73661]},   # 0-3 in GSE73661, all NaN elsewhere
+                        cohort: {role: category, vocab: data, optional: true},     # the GSE accession (the fragment key)
+                        platform: {role: category, vocab: data, optional: true},   # GPL570 x3, GPL6244 (GSE73661)
+                        age: {role: measure, statistic: numeric, unit: years, missing: unknown, optional: true},   # all NaN
+                        sex: {role: category, vocab: data, optional: true}}}      # all NaN in the four files
         var: {name: gene, from: index, index_name: gene_symbol, key: {columns: [gene_symbol]},
               columns: {gene_symbol: {role: identifier, id_type: cohort_symbol, self: true, authority: release_snapshot}}}
       values:
         X: {role: measure, statistic: log2_intensity, fallback: numeric, missing: unknown,
-            comparable_within: [cohort], verified: false}   # confirmed by the sample_values readiness check
-      sections: {uns.cohort_info: {role: payload}, obsm.X_pca: {role: vector, dim: 50}}
+            comparable_within: [cohort]}
+            # VERIFIED: float32, no NaN or negative value; per file min-max (median) 0.26-16.79 (7.60) GSE12251,
+            # 0.00-15.64 (5.49) GSE16879, 0.14-16.79 (7.57) GSE23597, 2.37-14.28 (6.99) GSE73661
+      sections: {uns.cohort_info: {role: payload},
+                 obsm.X_pca: {role: vector, dim: 50, optional: true}}   # no obsm in any of the four files

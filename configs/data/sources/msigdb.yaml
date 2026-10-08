@@ -7,6 +7,12 @@
 # `insufficient_resolution`, never a silently shorter list. The enrichment universe is the protein-
 # coding genes of Open Targets, the family is every Hallmark set within the size bounds (zero-overlap
 # sets included), and the correction is BH over that family.
+#
+# Checked on the real file (https://data.broadinstitute.org/gsea-msigdb/msigdb/release/2024.1.Hs/
+# h.all.v2024.1.Hs.symbols.gmt, freely downloadable, no login; read 2026-10-08; vbt ds check --depth deep):
+# 50 sets of 32-200 members, 4,384 distinct symbols, 4,377 of them (99.84%) Open Targets 25.09 approved
+# symbols; the least resolved set is at 99.1%. Releases 2025.1.Hs and 2026.1.Hs exist (the same 50 sets,
+# four with changed members); point `path` and `release` at one of them to upgrade.
 schema: vbt.datasource/1
 source: msigdb
 title: MSigDB Hallmark gene sets (GMT)

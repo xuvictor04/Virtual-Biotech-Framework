@@ -8,6 +8,12 @@
 # terms stay in the table (`is_obsolete`), with `replaced_by` (one replacement resolves) and
 # `consider` (several candidates are ambiguous). Release skew between OT's GOA snapshot and the OBO
 # file is reported by readiness (dangling term IDs), not reconciled.
+#
+# Checked on the real go-basic.obo (http://purl.obolibrary.org/obo/go/go-basic.obo, data-version
+# releases/2026-07-26, read 2026-10-08; vbt ds check --depth deep): 48,340 terms, 10,248 obsolete; `is_a` and
+# `relationship` acyclic; relationship types part_of (6,270), regulates (2,820), negatively_regulates and
+# positively_regulates (2,475 each), every target a GO term. All 48,165 terms of Open Targets 25.09 `go` are in
+# this file (none dangling), and 10,238 of them are obsolete here.
 schema: vbt.datasource/1
 source: gene_ontology
 title: Gene Ontology (go-basic.obo)

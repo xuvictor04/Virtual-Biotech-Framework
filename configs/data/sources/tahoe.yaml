@@ -1,6 +1,12 @@
 # Tahoe-100M pseudobulk differential expression as prepared by tools/prepare_tahoe.py
 # (docs/DATA_LAYER.md §6.6, §13; phase 2, strict: true).
 #
+# Checked on the real source (Hugging Face tahoebio/Tahoe-100M, revision 2dc57900b7981cfcf5e211527169a0b006546a95,
+# read 2026-10-08): the footers of all 1,026 metadata/pseudobulk_differential_expression shards (one schema,
+# 4,089,820,780 rows in 4,090,662 row groups of 1,000 rows), the four metadata tables, 13 complete contrasts read
+# with range requests, and tools/prepare_tahoe.py run unchanged on six of them (vbt ds check --depth deep).
+# Every contrast stores all 62,710 genes of gene_metadata; facts marked (VERIFIED) are from those reads.
+#
 # One row of de_permissive is one gene's DESeq2 contrast for one drug at one concentration in one
 # cell line on one plate. concentration is stored as float32, so literals are compiled in the
 # storage type and rendered 0.05, never 0.05000000074505806 (C20). Every table the preparation
@@ -25,11 +31,16 @@ concepts:
 
 id_types:
   tahoe_drug:       {plugin: tahoe_drug, universe: drug_metadata.drug, resolve_via: [drug_metadata.drug],
-                     stored_forms: {de_permissive.drug: as_stored, sample_metadata.drug: as_stored}}
-                     # 'Erdafitinib ' (DE) vs 'Erdafitinib' (metadata): the index keeps both forms (VERIFIED)
-  depmap_cell_line: {plugin: depmap_cell_line, universe: {table: de_permissive, keys: [Cell_ID_DepMap]},
+                     stored_forms: {de_permissive.drug: as_stored, de_significant.drug: as_stored,
+                                    de_high_quality.drug: as_stored}}
+                     # 'Erdafitinib ' and 'Selinexor ' (DE, sample_metadata) vs 'Erdafitinib' and 'Selinexor'
+                     # (drug_metadata): the index keeps both forms; the 379 DE drugs strip to the 379 metadata drugs (VERIFIED)
+  depmap_cell_line: {plugin: depmap_cell_line, universe: cell_line_metadata.Cell_ID_DepMap,
                      resolve_via: [cell_line_metadata.cell_name]}
-                     # qualified name tahoe_100m:depmap_cell_line: never confused with Open Targets' universe
+                     # qualified name tahoe_100m:depmap_cell_line: never confused with Open Targets' universe.
+                     # The 99 DepMap IDs of cell_line_metadata (102 lines, 3 without an ID); the DE profiles 50
+                     # lines: 49 of them plus hTERT-HPNE, stored as the string 'NA' (VERIFIED). The universe is
+                     # the metadata column because readiness R4b samples the DE column with 'NA' in it.
   cellosaurus:      {plugin: cellosaurus, resolvable: false}
   tahoe_gene:       {plugin: tahoe_gene_name, universe: gene_metadata.gene_symbol,
                      crosswalks: [{name: tahoe_ensembl, table: gene_metadata, from: ensembl_id, to: gene_symbol, cardinality: one}],
@@ -40,14 +51,17 @@ tables:
     kind: fact
     path: tahoe_permissive_padj010.parquet
     layout: single_file
-    size_class: huge                                        # EST 1e8-3e8 rows, ~62,600 row groups
+    size_class: huge                                        # EST ~1.4e8 rows (3.5% of 4.09e9 source rows in 13 sampled
+                                                            # contrasts); at most 62,586 row groups (one per 65,536-row batch)
     grain: one gene's DESeq2 contrast for one drug at one concentration in one cell line on one plate (replicate wells pooled)
     key: {columns: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate, gene_name],
           check: sampled, sample_prefix: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate]}
     grains: {gene: [gene_name], drug: [drug], cell_line: [Cell_ID_DepMap], drug_dose: [drug, concentration, concentration_unit],
              contrast: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate]}
     access_paths:
-      - {columns: [drug], via: row_group_stats}             # 3,924 of 3,987 row groups hold one drug (VERIFIED)
+      - {columns: [drug], via: row_group_stats}             # source shards: 4,028,625 of 4,090,662 row groups hold
+                                                            # one drug; the prepared row groups span ~2 contrasts, and a
+                                                            # one-drug scan reads ~1,555 of 62,586 (2.5%, footer estimate)
       - {columns: [gene_name], via: sidecar_index, build: readiness}   # no row group holds one gene
     conditions: {columns: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate], from: self}
     constraints:
@@ -55,7 +69,7 @@ tables:
       - {column: padj, op: ">=", value: 0, origin: "tools/prepare_tahoe.py:71"}
       - {column: log2FoldChange, op: is_finite, origin: "tools/prepare_tahoe.py:70"}
     coverage:
-      statement: "Only contrasts with finite padj < 0.10 are stored; 76% of source rows have padj NA and were dropped."
+      statement: "Only contrasts with finite padj < 0.10 are stored; 79.6% of source rows (3,257,147,608 of 4,089,820,780) have padj NA and were dropped."
       absence_means: censored
       censor: {column: padj, op: ">=", value: 0.10, plus: [padj_na, not_profiled]}
     rank: [{column: padj, direction: asc, nulls: last, within: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate]},
@@ -65,13 +79,15 @@ tables:
     columns: &de_columns
       drug:               {role: identifier, id_type: tahoe_drug, ref: drug_metadata.drug, form: as_stored}
       concentration:      {role: scope, scope: {kind: condition, pooling: forbid}, unit_from: concentration_unit,
-                           vocab: data, statistic: numeric}     # float32 storage: literals cast, rendered 0.05
+                           vocab: data, statistic: numeric}     # float32 storage (0.05000000074505806, 0.5, 5.0 uM;
+                                                                # three per drug): literals cast, rendered 0.05 (VERIFIED)
       concentration_unit: {role: scope, scope: {kind: condition, pooling: forbid}, vocab: data}
-      Cell_ID_DepMap:     {role: identifier, id_type: depmap_cell_line, scope: {kind: condition, pooling: forbid}}
+      Cell_ID_DepMap:     {role: identifier, id_type: depmap_cell_line, scope: {kind: condition, pooling: forbid},
+                           missing_values: ["NA"]}             # hTERT-HPNE has no DepMap ID (VERIFIED)
       Cell_ID_Cellosaur:  {role: identifier, id_type: cellosaurus, resolvable: false}
       Cell_Name_Vevo:     {role: label, of: Cell_ID_DepMap}
       plate:              {role: scope, scope: {kind: replicate, pooling: list}, vocab: data,
-                           aliases_from: {table: sample_metadata, column: plate, strip_prefix: plate}}   # '1' here, 'plate1' there
+                           aliases_from: {table: sample_metadata, column: plate, strip_prefix: plate}}   # '1'..'14' here, 'plate1'..'plate14' there (VERIFIED)
       gene_name:          {role: identifier, id_type: tahoe_gene, ref: gene_metadata.gene_symbol, integrity: partial}
       baseMean:           {role: measure, statistic: numeric, missing: unknown}
       log2FoldChange:     {role: measure, statistic: numeric, direction: signed, missing: unknown}
@@ -80,8 +96,9 @@ tables:
       pvalue:             {role: measure, statistic: numeric, scale: [0, 1], missing: unknown}
       padj:               {role: measure, statistic: numeric, scale: [0, 1], missing: unknown,
                            family: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate],
-                           comparable_within: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate],
-                           verified: false, verified_by: upstream_doc}
+                           comparable_within: [drug, concentration, concentration_unit, Cell_ID_DepMap, plate]}
+                           # VERIFIED: in 13 real contrasts padj is BH over the contrast's rows with a padj
+                           # (DESeq2 independent filtering leaves the rest NA), within 7.4e-8
       n_cells_trt:        {role: count, counts: "treated cells of this line in the pooled wells"}
       n_cells_ctrl:       {role: count, counts: "DMSO control cells of this line on the plate"}
 
@@ -136,7 +153,7 @@ tables:
     coverage: {statement: "The 379 Tahoe-100M drugs (existence only).", absence_means: absent, applies_to: entity}
     columns:
       drug:               {role: identifier, id_type: tahoe_drug, self: true}
-      targets:            {role: category, vocab: data, list_delimiter: "|"}
+      targets:            {role: category, vocab: data, list_delimiter: ", "}   # 'PSMB1, PSMB2, PSMB5'; 115 null (VERIFIED)
       moa-broad:          {role: category, vocab: data}
       moa-fine:           {role: category, vocab: data}
       human-approved:     {role: category, vocab: data}
@@ -171,7 +188,7 @@ tables:
     layout: single_file
     grain: one gene symbol of the Tahoe-100M gene vocabulary with its Ensembl ID
     key: {columns: [ensembl_id], check: full}
-    alternate_keys: [{columns: [gene_symbol], check: full, verified: false}]
+    alternate_keys: [{columns: [gene_symbol], check: full}]   # 62,710 distinct symbols, 20,930 of them bare Ensembl IDs (VERIFIED)
     columns:
       gene_symbol: {role: identifier, id_type: tahoe_gene, self: true}
       ensembl_id:  {role: identifier, id_type: "open_targets:ensembl_gene", maps_to: "open_targets:ensembl_gene"}
@@ -186,8 +203,10 @@ tables:
     columns:
       sample:            {role: identifier, resolvable: false, self: true}
       plate:             {role: category, vocab: data}
-      drug:              {role: identifier, id_type: tahoe_drug, form: as_stored}
-      drugname_drugconc: {role: payload}
+      drug:              {role: identifier, id_type: tahoe_drug, form: as_stored, ref: drug_metadata.drug,
+                          integrity: partial}   # 'DMSO_TF' (the vehicle control, 28 samples), 'Erdafitinib ' and
+                                                # 'Selinexor ' are not drug_metadata spellings (VERIFIED)
+      drugname_drugconc: {role: payload}        # "[('Erdafitinib ', 0.05, 'uM')]"
       mean_gene_count:   {role: measure, statistic: numeric, missing: unknown}
       mean_tscp_count:   {role: measure, statistic: numeric, missing: unknown}
       mean_mread_count:  {role: measure, statistic: numeric, missing: unknown}

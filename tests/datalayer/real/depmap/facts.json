@@ -1,0 +1,179 @@
+{
+ "_source": {
+  "release": "24Q4",
+  "retrieved": "2026-10-08",
+  "how": "full files read with pandas (scratch script); counts only"
+ },
+ "model": {
+  "rows": 2105,
+  "columns": [
+   "ModelID",
+   "PatientID",
+   "CellLineName",
+   "StrippedCellLineName",
+   "DepmapModelType",
+   "OncotreeLineage",
+   "OncotreePrimaryDisease",
+   "OncotreeSubtype",
+   "OncotreeCode",
+   "PatientSubtypeFeatures",
+   "RRID",
+   "Age",
+   "AgeCategory",
+   "Sex",
+   "PatientRace",
+   "PrimaryOrMetastasis",
+   "SampleCollectionSite",
+   "SourceType",
+   "SourceDetail",
+   "CatalogNumber",
+   "ModelType",
+   "TissueOrigin",
+   "ModelDerivationMaterial",
+   "ModelTreatment",
+   "PatientTreatmentStatus",
+   "PatientTreatmentType",
+   "PatientTreatmentDetails",
+   "Stage",
+   "StagingSystem",
+   "PatientTumorGrade",
+   "PatientTreatmentResponse",
+   "GrowthPattern",
+   "OnboardedMedia",
+   "FormulationID",
+   "SerumFreeMedia",
+   "PlateCoating",
+   "EngineeredModel",
+   "EngineeredModelDetails",
+   "CulturedResistanceDrug",
+   "PublicComments",
+   "CCLEName",
+   "HCMIID",
+   "ModelAvailableInDbgap",
+   "ModelSubtypeFeatures",
+   "WTSIMasterCellID",
+   "SangerModelID",
+   "COSMICID"
+  ],
+  "ModelID_unique": true,
+  "SerumFreeMedia": {
+   "False": 1611,
+   "": 450,
+   "True": 44
+  },
+  "PlateCoating": {
+   "None": 2104,
+   "Ultra Low Attachment (ULA)": 1
+  },
+  "Sex": {
+   "Male": 1118,
+   "Female": 846,
+   "Unknown": 118,
+   "": 23
+  },
+  "AgeCategory": {
+   "Adult": 1454,
+   "Unknown": 370,
+   "Pediatric": 273,
+   "Fetus": 8
+  },
+  "GrowthPattern": {
+   "Adherent": 1387,
+   "Suspension": 430,
+   "Unknown": 155,
+   "Mixed": 108,
+   "Dome": 24,
+   "Spheroid": 1
+  },
+  "PrimaryOrMetastasis": {
+   "Primary": 1121,
+   "Metastatic": 620,
+   "": 344,
+   "Unknown": 19,
+   "Recurrent": 1
+  },
+  "ModelType": {
+   "Cell Line": 2081,
+   "Organoid": 24
+  },
+  "Age_non_numeric": [],
+  "ACH-000001": [
+   {
+    "CellLineName": "NIH:OVCAR-3",
+    "OncotreeLineage": "Ovary/Fallopian Tube"
+   }
+  ]
+ },
+ "CRISPRGeneEffect.csv": {
+  "read_secs": 4.6,
+  "first_header_cell": "",
+  "index_name": null,
+  "models": 1178,
+  "genes": 17916,
+  "header_unparsed": [],
+  "header_unparsed_n": 0,
+  "entrez_unique": true,
+  "entrez_dupes": 0,
+  "symbol_dupes": 0,
+  "model_ids_unique": true,
+  "model_ids_not_in_Model_csv": [],
+  "model_ids_not_in_Model_csv_n": 0,
+  "cells": 21105048,
+  "nan_cells": 180307,
+  "rows_all_nan": 0,
+  "cols_all_nan": 0,
+  "min": -5.480285861266852,
+  "max": 4.855268930191277,
+  "empty_string_cells_in_first_lines": null,
+  "sentinel_ACH-000001_RPL3": {
+   "column": "RPL3 (6122)",
+   "value": -2.1307604198343166
+  },
+  "ACH-999999_present": false,
+  "le_-0.5_cells": 2056171
+ },
+ "CRISPRGeneDependency.csv": {
+  "read_secs": 4.2,
+  "first_header_cell": "",
+  "index_name": null,
+  "models": 1178,
+  "genes": 17916,
+  "header_unparsed": [],
+  "header_unparsed_n": 0,
+  "entrez_unique": true,
+  "entrez_dupes": 0,
+  "symbol_dupes": 0,
+  "model_ids_unique": true,
+  "model_ids_not_in_Model_csv": [],
+  "model_ids_not_in_Model_csv_n": 0,
+  "cells": 21105048,
+  "nan_cells": 180307,
+  "rows_all_nan": 0,
+  "cols_all_nan": 0,
+  "min": 0.0,
+  "max": 1.0,
+  "empty_string_cells_in_first_lines": null,
+  "sentinel_ACH-000001_RPL3": {
+   "column": "RPL3 (6122)",
+   "value": 1.0
+  },
+  "ACH-999999_present": false,
+  "gt_0.5_cells": 2221314,
+  "outside_0_1": 0
+ },
+ "CRISPRInferredCommonEssentials.csv": {
+  "columns": [
+   "Essentials"
+  ],
+  "rows": 1523,
+  "unique": true,
+  "unparsed": [],
+  "not_in_gene_effect_header": 0
+ },
+ "effect_vs_dependency_genes": {
+  "same": true,
+  "only_effect": 0,
+  "only_dependency": 0
+ },
+ "peak_rss_mb": 1010.6
+}
