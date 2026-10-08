@@ -598,7 +598,10 @@ class TableReader:
                     continue
             of = getattr(col, "of", None) if getattr(col, "placeholder_when", None) == "equals_key" else None
             if codes or holders or conds or of:
-                tree.append((name, col, None, tuple(codes), tuple(holders), tuple(conds), of))
+                # the codes rendered once here: rendering them again for every value was half the time of the 25.09
+                # expression check (34.6 M render_value calls for its nested rna/protein codes)
+                rendered = frozenset(render_value(c) for c in (*codes, *holders))
+                tree.append((name, col, None, rendered, (), tuple(conds), of))
         return tree
 
     def clean(self, obj: dict[str, Any]) -> dict[str, Any]:
@@ -1637,11 +1640,11 @@ def _clean_dict(d: dict[str, Any], tree: Sequence[Any]) -> None:
             continue
         if value is None:
             continue
-        bad = set()
-        for code in (*codes, *holders):
-            bad.add(render_value(code))
+        bad = codes                                    # rendered by _clean_tree
+        if holders:
+            bad = bad | {render_value(h) for h in holders}
         if of is not None and d.get(of) is not None:
-            bad.add(render_value(d.get(of)))
+            bad = bad | {render_value(d.get(of))}
         if bad:
             if isinstance(value, list):
                 d[name] = [None if x is not None and render_value(x) in bad else x for x in value]

@@ -784,8 +784,13 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
     examples: list[str] = []
     scanned = 0
     types = reader.storage_types(key)
+    fast = None
+    if not content and not t.is_item_table and fraction >= 1.0 and len(flat) == len(key) and \
+            total_rows is not None and total_rows <= SPILL_KEYS * ARROW_KEY_ROWS_PER_SPILL_KEY:
+        fast = _arrow_key_duplicates(reader, key, types)
     try:
-        for m in reader.scan(None, columns=None if content else [], attribute_unknown=False, row_filter=row_filter):
+        for m in (reader.scan(None, columns=None if content else [], attribute_unknown=False, row_filter=row_filter)
+                  if fast is None else ()):
             scanned += 1
             for k, v in zip(key, m.key):
                 if v is None and k in nulls and (t.is_item_table or k not in flat):
@@ -815,6 +820,8 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
             d, ex = spill.duplicates()
             dups += d
             examples.extend(ex[: 5 - len(examples)])
+        if fast is not None:
+            dups, examples, scanned = fast
     except (BudgetExceeded, TableUnavailable, FormatError) as exc:
         model.ok = None
         model.detail = f"key check not completed: {exc}"
@@ -852,6 +859,64 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
     return model
 
 
+def _arrow_key_duplicates(reader: TableReader, key: Sequence[str], types: Sequence[str | None]
+                          ) -> tuple[int, list[str], int] | None:
+    """``(duplicates, up to five rendered duplicate keys, rows)`` of a key of flat columns, counted on Arrow arrays
+    with NULLS NOT DISTINCT: each part is dictionary-encoded over the whole table and the codes are combined into one
+    integer per row, whose repeats are the duplicate keys. Rendering every key in Python took 3.4 minutes of a
+    standard check of the 4.0 M-row 25.09 association_overall_direct table, and the indirect tables hold 13 M rows.
+    None when a part is a partition or a cleaned column (in-band unknowns), the parts do not read as aligned
+    arrays, or the combined codes would not fit 63 bits: the caller scans the rows instead."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if not key or any(k in reader.partitions or reader._unclean(k) for k in key):
+        return None
+    codes: list[Any] = []
+    dictionaries: list[Any] = []
+    try:
+        layout = None
+        for part in key:
+            chunks, where = [], []
+            for frag, rg, arr in reader.leaf_arrays(part):
+                where.append((frag.uri, rg, len(arr)))
+                chunks.append(arr.combine_chunks() if isinstance(arr, pa.ChunkedArray) else arr)
+            if layout is None:
+                layout = where
+            elif where != layout:
+                return None
+            if not chunks:
+                return 0, [], 0
+            enc = pc.dictionary_encode(pa.chunked_array(chunks).combine_chunks())
+            del chunks
+            dictionaries.append(enc.dictionary)
+            codes.append(pc.add(pc.fill_null(enc.indices.cast(pa.int64()), -1), 1))     # 0 is null
+        width = 1
+        for d in dictionaries:
+            width *= len(d) + 1
+        if width >= 2 ** 63:
+            return None
+        combined = codes[0]
+        for c, d in zip(codes[1:], dictionaries[1:]):
+            combined = pc.add(pc.multiply(combined, len(d) + 1), c)
+        rows = len(combined)
+        counts = pc.value_counts(combined)
+        repeated = counts.filter(pc.greater(counts.field("counts"), 1))
+        dups = int(pc.sum(pc.subtract(repeated.field("counts"), 1)).as_py() or 0)
+        examples: list[str] = []
+        for code, n in zip(repeated.field("values").slice(0, 5).to_pylist(),
+                           repeated.field("counts").slice(0, 5).to_pylist()):
+            parts = []
+            for d in reversed(dictionaries):
+                code, i = divmod(code, len(d) + 1)
+                parts.append(None if i == 0 else d[i - 1].as_py())
+            examples.extend([canonical(list(reversed(parts)), types)] * (n - 1))   # one per repeat, as a scan lists
+        examples = examples[:5]
+    except (ServiceError, FormatError, ValueError, TypeError, NotImplementedError, pa.ArrowException):
+        return None
+    return dups, examples, rows
+
+
 def _item_count_hint(ctx: ServiceContext, reader: TableReader) -> int:
     """The items of an item table as its footers count them: the most values of a field directly in the innermost
     list (a null or empty list adds one null value, so this errs high). 0 when the footers do not say."""
@@ -869,6 +934,9 @@ def _item_count_hint(ctx: ServiceContext, reader: TableReader) -> int:
 
 #: Distinct keys held in memory before the uniqueness pass spills to hash-partitioned files.
 SPILL_KEYS = 2_000_000
+#: A flat key is counted on Arrow codes (8 bytes per row and part) when the table has at most this many rows per
+#: spilled key; a larger one takes the bounded-memory pass (25.09 literature: 152 M rows).
+ARROW_KEY_ROWS_PER_SPILL_KEY = 8
 SPILL_PREFIX = "keycheck."
 
 
@@ -1089,17 +1157,19 @@ def _confirm_set(run: CheckRun, path: str, snap: ValueSnapshot | None, allowed: 
 def _container_counts(run: CheckRun, path: str, schema_path: str) -> None:
     reader = run.reader
     assert reader is not None
-    counts = _items.ContainerCounts()
     container = schema_path if schema_path.endswith("]") else schema_path + "[]"
     try:
         lvls = _items.levels(container)
         leaf = reader.leaf(container)
-        for frag, rgs in reader.plan(None, [leaf] if leaf else [], use_sidecars=False)[0]:
-            info = reader.footer(frag)
-            for rg in (rgs if rgs is not None else [None]):
-                for row in reader._read(frag, rg, [leaf] if leaf else [], info):
-                    for _ in _items.explode(row, lvls, counts):
-                        pass
+        counts = _arrow_container_counts(reader, lvls, leaf)
+        if counts is None:
+            counts = _items.ContainerCounts()
+            for frag, rgs in reader.plan(None, [leaf] if leaf else [], use_sidecars=False)[0]:
+                info = reader.footer(frag)
+                for rg in (rgs if rgs is not None else [None]):
+                    for row in reader._read(frag, rg, [leaf] if leaf else [], info):
+                        for _ in _items.explode(row, lvls, counts):
+                            pass
     except (ServiceError, FormatError, ValueError) as exc:
         run.add("R6:containers", False, f"{path}: null vs empty counts not read ({exc})", level="warning",
                 container=path)
@@ -1109,6 +1179,54 @@ def _container_counts(run: CheckRun, path: str, schema_path: str) -> None:
     run.add("R6:containers", True, f"{path}: {counts.null} null, {counts.empty} empty, {counts.nonempty} non-empty "
             f"list(s); {counts.null_items} null item(s)", container=path)
     run.containers.setdefault(path, "ready")
+
+
+def _arrow_container_counts(reader: TableReader, lvls: Sequence[Any], leaf: str | None) -> Any:
+    """``ContainerCounts`` of a list of structs counted on Arrow arrays: null, empty and non-empty lists at the
+    innermost level, its items and null items (``_items.explode``'s counts without building a Python row).
+    Converting every row of the 25.09 expression table (43,804 genes with nested tissues) to count its containers
+    was most of a three-minute standard check. None when the path or the items are not structs and lists, or the
+    table has no footers: cleaning can turn a coded scalar item into a null, so those are counted on rows."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if not leaf or not lvls or reader.partitions:
+        return None
+    counts = _items.ContainerCounts()
+    try:
+        for frag, rgs in reader.plan(None, [leaf], use_sidecars=False)[0]:
+            if reader.footer(frag) is None:
+                return None
+            for rg in (rgs if rgs is not None else [None]):
+                tbl = reader.fmt.read_leaves(frag, [leaf], [rg])
+                head = lvls[0].names[0]
+                if head not in tbl.column_names:
+                    return None
+                arr = tbl.column(head).combine_chunks()
+                counts.rows += len(arr)
+                for depth, lvl in enumerate(lvls):
+                    for name in (lvl.names[1:] if depth == 0 else lvl.names):
+                        index = arr.type.get_field_index(name) if pa.types.is_struct(arr.type) else -1
+                        if index < 0:
+                            return None
+                        arr = arr.flatten()[index]                            # the struct's nulls applied
+                    if not (pa.types.is_list(arr.type) or pa.types.is_large_list(arr.type)):
+                        return None
+                    values = arr.flatten()                                    # items of the valid lists
+                    if depth < len(lvls) - 1:
+                        arr = values.filter(values.is_valid())                # a null item has no lists below
+                        continue
+                    if not pa.types.is_struct(values.type):
+                        return None
+                    lengths = pc.list_value_length(arr)
+                    counts.null += arr.null_count
+                    counts.empty += int(pc.sum(pc.equal(lengths, 0)).as_py() or 0)
+                    counts.nonempty += int(pc.sum(pc.greater(lengths, 0)).as_py() or 0)
+                    counts.null_items += values.null_count
+                    counts.items += len(values) - values.null_count
+    except (pa.ArrowException, KeyError, IndexError, TypeError):
+        return None
+    return counts
 
 
 def _literal_constraint(run: CheckRun, c: Any) -> None:

@@ -238,6 +238,94 @@ def test_a_sampled_item_key_check_samples_parent_rows(tmp_path):
     assert any("target_go" in c.detail and "every key" in c.detail for c in checks(full, "R5b"))
 
 
+# ---------------------------------------------------------------------------- R5 of flat keys on Arrow arrays
+
+
+def _assoc(tmp: Path, rows: list[dict[str, Any]]) -> ServiceContext:
+    write(tmp, "assoc", rows[: len(rows) // 2], part="part-00000", row_group_size=7)
+    write(tmp, "assoc", rows[len(rows) // 2:], part="part-00001", row_group_size=5)
+    return make_ctx(tmp, {"assoc": {"kind": "fact", "path": "assoc", "grain": "pair",
+                                    "key": {"columns": ["diseaseId", "targetId", "datasourceId"],
+                                            "nullable": ["datasourceId"], "check": "full"},
+                                    "columns": {"diseaseId": {"role": "identifier"}, "targetId": {"role": "identifier"},
+                                                "datasourceId": {"role": "category"}, "score": {"role": "category"}}}})
+
+
+def test_flat_key_uniqueness_is_counted_on_arrow_arrays(tmp_path, monkeypatch):
+    """The full key check rendered every row's key in Python: 3.4 minutes for the 4.0 M rows of 25.09
+    association_overall_direct, and the indirect tables hold 13 M. Flat keys are counted on dictionary codes now,
+    with the same duplicates (nulls not distinct, across files and row groups) as the row scan."""
+    rows = [{"diseaseId": f"EFO_{i % 9:07d}", "targetId": f"ENSG{i % 13:011d}", "datasourceId": None if i % 5 else "eva",
+             "score": i} for i in range(60)]
+    rows += [dict(rows[3]), dict(rows[40]), dict(rows[40])]        # three duplicates, one with a null part
+    scans: list[Any] = []
+    real_scan = TableReader.scan
+
+    def counting_scan(self, predicate=None, **kw):
+        if self.ref == "s.assoc" and kw.get("columns") == []:
+            scans.append(1)
+        return real_scan(self, predicate, **kw)
+
+    monkeypatch.setattr(TableReader, "scan", counting_scan)
+    fast = check_table(_assoc(tmp_path / "fast", rows), "s.assoc", "standard")
+    assert not scans, "the key was rendered row by row"
+    monkeypatch.setattr(_checks, "_arrow_key_duplicates", lambda *a, **k: None)
+    slow = check_table(_assoc(tmp_path / "slow", rows), "s.assoc", "standard")
+    assert scans
+    for model in (fast, slow):
+        assert model.key_check.duplicates == 3 and model.status == "key_violation", model.key_check
+    assert sorted(checks(fast, "R5b")[0].detail.split(": ", 1)[1].split(", ")) == \
+        sorted(checks(slow, "R5b")[0].detail.split(": ", 1)[1].split(", "))
+    assert checks(fast, "R5")[0].detail == checks(slow, "R5")[0].detail
+
+
+# ---------------------------------------------------------------------------- R6 container counts on Arrow arrays
+
+
+def test_container_counts_are_read_from_arrow_arrays(tmp_path, monkeypatch):
+    """R6:containers converted every row to count null, empty and non-empty lists: 150 s of the standard check of the
+    25.09 expression table (43,804 genes, 4,940,421 tissues). The counts now come from the list arrays and equal the
+    row-based ones, for a list of structs under a struct, with null and empty lists and null items, two levels deep."""
+    from vbt.datalayer.service import items as _items
+
+    cell = pa.struct([("name", pa.string()), ("level", pa.int32())])
+    tissue = pa.struct([("efo_code", pa.string()), ("protein", pa.struct([("cell_type", pa.list_(cell))]))])
+    rows = [{"id": "g1", "tissues": [{"efo_code": "UBERON_1", "protein": {"cell_type": [{"name": "a", "level": 1}]}},
+                                     None,
+                                     {"efo_code": "UBERON_2", "protein": {"cell_type": []}},
+                                     {"efo_code": "UBERON_3", "protein": None}]},
+            {"id": "g2", "tissues": []},
+            {"id": "g3", "tissues": None},
+            {"id": "g4", "tissues": [{"efo_code": "UBERON_4", "protein": {"cell_type": [None, {"name": "b", "level": 2}]}}]}]
+    write(tmp_path, "expr", rows, pa.schema([("id", pa.string()), ("tissues", pa.list_(tissue))]))
+    ctx = make_ctx(tmp_path, {"expr": {"kind": "entity", "path": "expr", "grain": "gene", "key": {"columns": ["id"]},
+                                       "columns": {"id": {"role": "identifier", "self": True},
+                                                   "tissues": {"role": "nested", "item_key": ["efo_code"], "fields": {
+                                                       "efo_code": {"role": "identifier"},
+                                                       "protein": {"role": "nested", "fields": {
+                                                           "cell_type": {"role": "nested", "item_key": ["name", "level"],
+                                                                         "fields": {"name": {"role": "category"},
+                                                                                    "level": {"role": "category"}}}}}}}}}})
+    reader = ctx.reader("s.expr")
+    keys = ("rows", "null", "empty", "nonempty", "items", "null_items")
+    for container in ("tissues[]", "tissues[].protein.cell_type[]"):
+        lvls = _items.levels(container)
+        leaf = reader.leaf(container)
+        fast = _checks._arrow_container_counts(reader, lvls, leaf)
+        slow = _items.ContainerCounts()
+        for frag, rgs in reader.plan(None, [leaf], use_sidecars=False)[0]:
+            for rg in (rgs if rgs is not None else [None]):
+                for row in reader._read(frag, rg, [leaf], reader.footer(frag)):
+                    for _ in _items.explode(row, lvls, slow):
+                        pass
+        assert fast is not None, container
+        assert {k: getattr(fast, k) for k in keys} == {k: getattr(slow, k) for k in keys}, container
+    tissues = _checks._arrow_container_counts(reader, _items.levels("tissues[]"), reader.leaf("tissues[]"))
+    assert (tissues.null, tissues.empty, tissues.nonempty, tissues.items, tissues.null_items) == (1, 1, 2, 4, 1)
+    monkeypatch.setattr(reader.fmt, "to_native", lambda *_a, **_k: pytest.fail("rows were converted"))
+    _checks._arrow_container_counts(reader, _items.levels("tissues[]"), reader.leaf("tissues[]"))
+
+
 # ---------------------------------------------------------------------------- memory estimates and calibration
 
 
