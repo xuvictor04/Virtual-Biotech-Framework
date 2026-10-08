@@ -138,8 +138,21 @@ def make_server(ctx: ServiceContext | None = None) -> Any:
     return mcp
 
 
+def _sweep(ctx: ServiceContext) -> None:
+    """Remove key-check spill files of data children killed mid-check (their pid is gone)."""
+    try:
+        from vbt.datalayer.service.checks import sweep_spills
+
+        sweep_spills(ctx.settings.cache_dir)
+    except Exception:  # noqa: BLE001 - housekeeping never stops the child
+        pass
+
+
 def _check(args: argparse.Namespace) -> int:
     ctx = build_context()
+    # a one-shot check sweeps too: `vbt ds check --depth deep` runs killed at a memory cap or a timeout left their
+    # spill directories behind (4.2 GB from the 25.09 l2g_prediction and target_essentiality item-key checks)
+    _sweep(ctx)
     verb = load_verbs()[VERB_CHECK]
     resp = verb(ctx, {"tables": list(args.table or []), "depth": args.depth})
     if args.json:
@@ -209,12 +222,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--build-index needs --id-type or --access-paths")
         return _build_index(args)
     ctx = build_context()
-    try:  # key-check spill files of data children killed mid-check (their pid is gone)
-        from vbt.datalayer.service.checks import sweep_spills
-
-        sweep_spills(ctx.settings.cache_dir)
-    except Exception:  # noqa: BLE001 - housekeeping never stops the child from serving
-        pass
+    _sweep(ctx)
     make_server(ctx).run()
     return 0
 

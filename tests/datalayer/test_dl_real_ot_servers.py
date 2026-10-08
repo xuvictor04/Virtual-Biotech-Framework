@@ -501,6 +501,29 @@ def test_an_item_table_pushes_conjuncts_on_its_parent_row(tmp_path, monkeypatch)
     assert pushed_rows < 5 < scanned_rows, (pushed_rows, scanned_rows)
 
 
+def test_a_one_shot_check_sweeps_the_spills_of_killed_checks(tmp_path, monkeypatch, capsys):
+    """`vbt ds check --depth deep` of 25.09 l2g_prediction and target_essentiality was killed at its timeout and left
+    4.2 GB of key-check spill files: only a serving data child swept them, never the one-shot check."""
+    import argparse
+
+    from vbt.datalayer.service import server
+    from vbt.datalayer.service.checks import SPILL_PREFIX, _pid_alive
+
+    write(tmp_path, "t", [{"id": "a"}, {"id": "b"}])
+    ctx = make_ctx(tmp_path, {"t": {"kind": "entity", "path": "t", "grain": "row", "key": {"columns": ["id"]},
+                                    "columns": {"id": {"role": "identifier"}}}})
+    dead = next(p for p in range(4_000_000, 4_100_000) if not _pid_alive(p))
+    stale = Path(ctx.settings.cache_dir) / f"{SPILL_PREFIX}{dead}.x1"
+    stale.mkdir(parents=True)
+    (stale / "00").write_text("key\n")
+    live = Path(ctx.settings.cache_dir) / f"{SPILL_PREFIX}{os.getpid()}.x2"
+    live.mkdir()
+    monkeypatch.setattr(server, "build_context", lambda: ctx)
+    assert server._check(argparse.Namespace(table=["s.t"], depth="shallow", json=True)) == 0
+    assert not stale.exists() and live.exists()
+    assert '"s.t"' in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------------- resolver sidecars are reused
 
 
