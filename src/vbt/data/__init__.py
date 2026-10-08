@@ -1,4 +1,4 @@
-"""Data acquisition helpers (the paper's Zenodo case-study archive)."""
+"""Data acquisition helpers: the paper's Zenodo case-study archive and Open Targets release tables."""
 
 from .zenodo import PRESETS, HTTPRangeFile, ZenodoArchive, zenodo_root
 
