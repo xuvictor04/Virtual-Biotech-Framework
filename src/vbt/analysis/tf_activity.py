@@ -24,7 +24,7 @@ from typing import Iterable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from ._utils import bh_fdr, fit_mixedlm, has_module, require, zscore
+from ._utils import bh_fdr, fit_mixedlm, require, zscore
 from .variance_decomposition import GP130_RECEPTORS, bootstrap_lmg, lmg_shares, r_packages_available
 
 __all__ = ["load_collectri", "remove_targets_from_regulon", "score_tf_activity",

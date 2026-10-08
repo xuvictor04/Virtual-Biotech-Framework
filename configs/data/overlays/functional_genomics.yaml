@@ -178,8 +178,8 @@ tools:
          where: "functional_genomics_mcp/tools.py:875-911", effect: silent_wrong}
       - {id: TAHOE-002, what: "cell line metadata reads a 'Driver mutations' column that does not exist and takes the first of 1-57 driver rows",
          where: "functional_genomics_mcp/tools.py:816-828", effect: silent_wrong}
-      - {id: TAHOE-003, what: "drug metadata is matched on the exact stored string: 'Erdafitinib ' in the DE file has no metadata row",
-         where: "functional_genomics_mcp/tools.py:791-795", effect: false_empty}
+      - {id: TAHOE-003, what: "drug metadata is matched on the exact stored string: 'Erdafitinib ' and 'Selinexor ' in the DE file have no metadata row",
+         where: "functional_genomics_mcp/tools.py:791-795", effect: false_empty}   # both trailing spaces on Tahoe-100M 2dc57900 (VERIFIED)
 
   find_drugs_affecting_gene:
     reads: {tahoe_100m.de_permissive: {access: bounded_scan}, tahoe_100m.drug_metadata: {access: full_table}}

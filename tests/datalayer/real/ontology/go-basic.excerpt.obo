@@ -1,0 +1,144 @@
+format-version: 1.2
+data-version: releases/2026-07-26
+
+[Term]
+id: GO:0000005
+name: obsolete ribosomal chaperone activity
+namespace: molecular_function
+def: "OBSOLETE. Assists in the correct assembly of ribosomes or ribosomal subunits in vivo, but is not a component of the assembled ribosome when performing its normal biological function." [GOC:jl, PMID:12150913]
+comment: This term was made obsolete because it refers to a class of gene products and a biological process rather than a molecular function.
+synonym: "ribosomal chaperone activity" EXACT []
+is_obsolete: true
+consider: GO:0042254
+consider: GO:0044183
+consider: GO:0140309
+
+[Term]
+id: GO:0006915
+name: apoptotic process
+namespace: biological_process
+alt_id: GO:0006917
+alt_id: GO:0008632
+def: "A programmed cell death process which begins when a cell receives an internal (e.g. DNA damage) or external signal (e.g. an extracellular death ligand), and proceeds through a series of biochemical events (signaling pathway phase) which trigger an execution phase. The execution phase is the last step of an apoptotic process, and is typically characterized by rounding-up of the cell, retraction of pseudopodes, reduction of cellular volume (pyknosis), chromatin condensation, nuclear fragmentation (karyorrhexis), plasma membrane blebbing and fragmentation of the cell into apoptotic bodies. When the execution phase is completed, the cell has died." [GOC:cjm, GOC:curators, GOC:dhl, GOC:ecd, GOC:mtg_apoptosis, GOC:tb, ISBN:0198506732, PMID:18846107, PMID:21494263]
+synonym: "activation of apoptosis" NARROW []
+synonym: "apoptosis" NARROW []
+synonym: "apoptosis activator activity" RELATED []
+synonym: "apoptosis signaling" NARROW []
+synonym: "apoptotic cell death" EXACT [GOC:sl]
+synonym: "apoptotic program" NARROW [GOC:add]
+synonym: "apoptotic programmed cell death" EXACT []
+synonym: "caspase-dependent programmed cell death" RELATED []
+synonym: "cell suicide" BROAD []
+synonym: "cellular suicide" BROAD []
+synonym: "commitment to apoptosis" RELATED []
+synonym: "induction of apoptosis" RELATED []
+synonym: "induction of apoptosis by p53" RELATED []
+synonym: "programmed cell death by apoptosis" EXACT []
+synonym: "signaling (initiator) caspase activity" RELATED []
+synonym: "type I programmed cell death" NARROW []
+xref: Reactome:R-HSA-109581 "Apoptosis"
+xref: Wikipedia:Apoptosis
+is_a: GO:0012501 ! programmed cell death
+
+[Term]
+id: GO:0008150
+name: biological_process
+namespace: biological_process
+alt_id: GO:0000004
+alt_id: GO:0007582
+alt_id: GO:0044699
+def: "A biological process is the execution of a genetically-encoded biological module or program. It consists of all the steps required to achieve the specific biological objective of the module. A biological process is accomplished by a particular set of molecular functions carried out by specific gene products (or macromolecular complexes), often in a highly regulated manner and in a particular temporal sequence." [GOC:pdt]
+comment: Note that, in addition to forming the root of the biological process ontology, this term is recommended for the annotation of gene products whose biological process is unknown. When this term is used for annotation, it indicates that no information was available about the biological process of the gene product annotated as of the date the annotation was made; the evidence code 'no data' (ND), is used to indicate this.
+subset: goslim_candida
+subset: goslim_chembl
+subset: goslim_metagenomics
+subset: goslim_pir
+subset: goslim_plant
+subset: goslim_pombe
+subset: goslim_yeast
+synonym: "biological process" EXACT []
+synonym: "physiological process" EXACT []
+synonym: "single organism process" RELATED []
+synonym: "single-organism process" RELATED []
+xref: Wikipedia:Biological_process
+
+[Term]
+id: GO:0009987
+name: cellular process
+namespace: biological_process
+alt_id: GO:0008151
+alt_id: GO:0044763
+alt_id: GO:0050875
+def: "Any process that is carried out at the cellular level, but not necessarily restricted to a single cell. For example, cell communication occurs among more than one cell, but occurs at the cellular level." [GOC:curators, GOC:isa_complete]
+comment: This term should not be used for direct annotation. It should be possible to make a more specific annotation to one of the children of this term.
+subset: gocheck_do_not_annotate
+subset: goslim_plant
+synonym: "cell growth and/or maintenance" NARROW []
+synonym: "cell physiology" EXACT []
+synonym: "cellular physiological process" EXACT []
+synonym: "single-organism cellular process" RELATED []
+is_a: GO:0008150 ! biological_process
+
+[Term]
+id: GO:0042981
+name: regulation of apoptotic process
+namespace: biological_process
+def: "Any process that modulates the occurrence or rate of cell death by apoptotic process." [GOC:jl, GOC:mtg_apoptosis]
+comment: This term should only be used when it is not possible to determine which phase or subtype of the apoptotic process is regulated by a gene product. Whenever detailed information is available, the more granular children terms should be used.
+synonym: "apoptosis regulator activity" RELATED []
+synonym: "regulation of apoptosis" NARROW []
+xref: Reactome:R-HSA-169911 "Regulation of Apoptosis"
+xref: Reactome:R-HSA-5633008 "TP53 Regulates Transcription of Cell Death Genes"
+is_a: GO:0043067 ! regulation of programmed cell death
+relationship: regulates GO:0006915 ! apoptotic process
+
+[Term]
+id: GO:0043066
+name: negative regulation of apoptotic process
+namespace: biological_process
+alt_id: GO:0006916
+def: "Any process that stops, prevents, or reduces the frequency, rate or extent of cell death by apoptotic process." [GOC:jl, GOC:mtg_apoptosis]
+comment: This term should only be used when it is not possible to determine which phase or subtype of the apoptotic process is negatively regulated by a gene product. Whenever detailed information is available, the more granular children terms should be used.
+synonym: "anti-apoptosis" EXACT []
+synonym: "apoptosis inhibitor activity" RELATED []
+synonym: "down regulation of apoptosis" EXACT []
+synonym: "down-regulation of apoptosis" EXACT []
+synonym: "downregulation of apoptosis" EXACT []
+synonym: "inhibition of apoptosis" NARROW []
+synonym: "negative regulation of apoptosis" NARROW []
+synonym: "pro-survival" RELATED []
+xref: Reactome:R-HSA-193639 "p75NTR signals via NF-kB"
+xref: Reactome:R-HSA-211728 "Regulation of PAK-2p34 activity by PS-GAP/RHG10"
+xref: Reactome:R-HSA-211733 "Regulation of activated PAK-2p34 by proteasome mediated degradation"
+is_a: GO:0042981 ! regulation of apoptotic process
+is_a: GO:0043069 ! negative regulation of programmed cell death
+relationship: negatively_regulates GO:0006915 ! apoptotic process
+
+[Typedef]
+id: negatively_regulates
+name: negatively regulates
+namespace: external
+xref: RO:0002212
+is_a: regulates ! regulates
+
+[Typedef]
+id: part_of
+name: part of
+namespace: external
+xref: BFO:0000050
+is_transitive: true
+
+[Typedef]
+id: positively_regulates
+name: positively regulates
+namespace: external
+xref: RO:0002213
+holds_over_chain: negatively_regulates negatively_regulates
+is_a: regulates ! regulates
+
+[Typedef]
+id: regulates
+name: regulates
+namespace: external
+xref: RO:0002211
+is_transitive: true

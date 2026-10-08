@@ -8,6 +8,14 @@
 # empty cell = not measured, never 0. Symbols in headers are the release's snapshot, not current
 # labels. Put the release files under ${DEPMAP_DATA_PATH} (figshare "DepMap Public 24Q4"); record
 # their sizes and md5 in an inline manifest with `vbt ds fingerprint --write` to catch truncation.
+#
+# Checked on the real 24Q4 files (figshare article 27993248, ndownloader.figshare.com/files/<id>, md5 as
+# published, read 2026-10-08; vbt ds check --depth deep): CRISPRGeneEffect.csv and CRISPRGeneDependency.csv are
+# 1,178 models x 17,916 genes with a blank first header cell, every gene header parses as 'SYMBOL (ENTREZ)'
+# with unique Entrez IDs and symbols, and the 180,307 unmeasured cells (same in both) are empty strings; every
+# row's model is in Model.csv (2,105 models, 47 columns). Facts marked (VERIFIED) are from those files.
+# DepMap releases after 24Q4 are not on figshare, and the portal's download API answers scripts with a
+# bot-verification page, so 24Q4 is the newest release a script can fetch.
 schema: vbt.datasource/1
 source: depmap
 title: DepMap Public CRISPR (Chronos) gene effect and model annotations
@@ -37,7 +45,7 @@ tables:
       absence_means: unknown
       universe: {table: gene_effect, keys: ["@row.ModelID", "@col.entrez_id"], mode: tuple}
     sentinels:
-      present: [{key: {ModelID: ACH-000001, entrez_id: "6122"}, expect: {gene_effect: {lt: -0.5}}}]   # RPL3
+      present: [{key: {ModelID: ACH-000001, entrez_id: "6122"}, expect: {gene_effect: {lt: -0.5}}}]   # RPL3: -2.13 (VERIFIED)
       absent:  [{key: {ModelID: ACH-999999}}]
     matrix:
       storage: text
@@ -109,20 +117,22 @@ tables:
       PatientMolecularSubtype: {role: category, vocab: data, optional: true}
       RRID:                 {role: identifier, id_type: "tahoe_100m:cellosaurus", resolvable: false}
       Age:                  {role: measure, statistic: numeric, unit: years, missing: unknown}
-      AgeCategory:          {role: category, vocab: data}
+      AgeCategory:          {role: category, vocab: data, placeholders: [Unknown]}   # Adult, Pediatric, Fetus; 370 Unknown
       Sex:                  {role: category, vocab: data, placeholders: [Unknown]}
       PatientRace:          {role: category, vocab: data, placeholders: [unknown]}
-      PrimaryOrMetastasis:  {role: category, vocab: data}
+      PrimaryOrMetastasis:  {role: category, vocab: data, placeholders: [Unknown]}
       SampleCollectionSite: {role: category, vocab: data}
       SourceType:           {role: category, vocab: data}
       SourceDetail:         {role: payload}
       CatalogNumber:        {role: payload}
       ModelType:            {role: category, vocab: data}
-      GrowthPattern:        {role: category, vocab: data}
+      GrowthPattern:        {role: category, vocab: data, placeholders: [Unknown]}
       OnboardedMedia:       {role: payload}
       FormulationID:        {role: payload}
-      SerumFreeMedia:       {role: flag, missing: unknown, encoding: {"True": true, "False": false}, verified: false}
-      PlateCoating:         {role: category, vocab: data}
+      SerumFreeMedia:       {role: flag, missing: unknown, encoding: {"True": true, "False": false}}
+                            # 24Q4: 1,611 False, 44 True, 450 empty (VERIFIED; readiness R6 confirmed the encoding)
+      PlateCoating:         {role: category, vocab: data,
+                             values: {"None": "no coating (a value, not a missing one: 2,104 of 2,105 models)"}}
       EngineeredModel:      {role: category, vocab: data}
       EngineeredModelDetails: {role: text}
       CulturedResistanceDrug: {role: category, vocab: data}
@@ -134,6 +144,18 @@ tables:
       SangerModelID:        {role: identifier, resolvable: false}
       COSMICID:             {role: identifier, resolvable: false}
       LegacySubSubtype:     {role: category, vocab: data, optional: true}
+      # columns of the 24Q4 Model.csv (VERIFIED), optional because the column set changes between releases
+      PatientSubtypeFeatures: {role: text, optional: true}                        # 'BCR-ABL1 (e13-a2)'
+      TissueOrigin:         {role: category, vocab: data, optional: true}         # empty for every 24Q4 model
+      ModelDerivationMaterial: {role: category, vocab: data, optional: true}      # PDX, Fresh tissue
+      ModelTreatment:       {role: category, vocab: data, optional: true}         # EBV, SV40, hTERT, ...
+      PatientTreatmentStatus: {role: category, vocab: data, placeholders: [Unknown], optional: true}
+      PatientTreatmentType: {role: text, optional: true}
+      PatientTreatmentDetails: {role: text, optional: true}
+      Stage:                {role: category, vocab: data, optional: true}         # '4', '2B', 'E', ...
+      StagingSystem:        {role: category, vocab: data, optional: true}
+      PatientTumorGrade:    {role: category, vocab: data, optional: true}
+      PatientTreatmentResponse: {role: category, vocab: data, optional: true}
 
   common_essentials:
     kind: sets
@@ -141,7 +163,7 @@ tables:
     # one set per file: the set name is a constant taken from the file name (InferredCommonEssentials)
     fragment_key: {name: essential_set, from: filename_regex, pattern: "^CRISPR(\\w+)\\.csv$"}
     grain: one gene DepMap 24Q4 infers to be a common essential across its CRISPR screens
-    key: {columns: [Essentials], check: full}
+    key: {columns: [Essentials], check: full}   # 1,523 genes; each parses and is a gene_effect column (VERIFIED)
     coverage: {statement: "Genes inferred common-essential by DepMap 24Q4 Chronos; absence means not inferred essential (the gene may be unscreened).",
                absence_means: unknown}
     columns:

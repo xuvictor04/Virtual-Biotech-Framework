@@ -1,0 +1,105 @@
+{
+ "retrieved": "2026-10-08",
+ "go": {
+  "url": "http://purl.obolibrary.org/obo/go/go-basic.obo",
+  "resolved": "https://current.geneontology.org/ontology/go-basic.obo",
+  "bytes": 32227785,
+  "sha256": "b08d45b268b8c24ccb2513dbbbc7d4df9f6521c099b413f79eb31e06e0fa3bcc",
+  "data_version": "releases/2026-07-26",
+  "license": "CC BY 4.0 (Gene Ontology Consortium)",
+  "terms": 48340,
+  "obsolete": 10248,
+  "relationship_types": {
+   "part_of": 6270,
+   "regulates": 2820,
+   "negatively_regulates": 2475,
+   "positively_regulates": 2475
+  }
+ },
+ "cl": {
+  "url": "http://purl.obolibrary.org/obo/cl/cl-basic.obo",
+  "resolved": "a GitHub release asset of obophenotype/cell-ontology",
+  "bytes": 3347518,
+  "sha256": "73996c6349283e7a8cbd8183367a1cb810d0077e9c291ae0c72bd31e869f8c1c",
+  "data_version": "cl/releases/2026-06-08/cl-basic.owl",
+  "license": "CC BY 4.0 (Cell Ontology)",
+  "terms": 3540,
+  "obsolete": 205,
+  "relationship_types": {
+   "RO:0002202": 396,
+   "BFO:0000050": 3
+  },
+  "id_prefixes": {
+   "CL": 3531,
+   "CP": 9
+  },
+  "relationship_target_prefixes": {
+   "CL": 399
+  },
+  "terms_with_a_repeated_synonym": {
+   "CL:4023064": [
+    "CGE interneuron",
+    "RELATED"
+   ]
+  }
+ },
+ "msigdb": {
+  "url": "https://data.broadinstitute.org/gsea-msigdb/msigdb/release/2024.1.Hs/h.all.v2024.1.Hs.symbols.gmt",
+  "login": false,
+  "bytes": 48690,
+  "sha256": "ee2463540042078bfa3f67828e1e223bb354446d9fbb4d22845866835ba5c772",
+  "license": "CC BY 4.0 (MSigDB Hallmark)",
+  "newer_releases": [
+   "2025.1.Hs",
+   "2026.1.Hs"
+  ],
+  "hallmark_2024": {
+   "sets": 50,
+   "size_min": 32,
+   "size_max": 200,
+   "members_total": 7322,
+   "distinct_members": 4384,
+   "dup_members_within_set": 0,
+   "url_prefix": [
+    "https://www.gsea-msigdb.org/gsea/msigdb/human/geneset"
+   ]
+  },
+  "hallmark_2024_vs_2026": {
+   "same_sets": true,
+   "sets_with_changed_members": [
+    "HALLMARK_BILE_ACID_METABOLISM",
+    "HALLMARK_G2M_CHECKPOINT",
+    "HALLMARK_MITOTIC_SPINDLE",
+    "HALLMARK_UV_RESPONSE_DN"
+   ]
+  },
+  "hallmark_vs_ot_target": {
+   "ot_targets": 78726,
+   "ot_protein_coding": 20130,
+   "members": 4384,
+   "resolved_by_approved_symbol": 4377,
+   "fraction": 0.9984,
+   "protein_coding": 4372,
+   "unresolved_examples": [
+    "CENPJ",
+    "CIR1",
+    "GPR182",
+    "ILVBL",
+    "NDUFA4",
+    "PRPF4B",
+    "SLC22A18"
+   ]
+  },
+  "hallmark_min_set_resolved_fraction": 0.9911,
+  "hallmark_sets_below_0.95": [],
+  "ot_go_vs_go_basic": {
+   "ot_go_terms": 48165,
+   "obo_terms": 48340,
+   "obo_obsolete": 10248,
+   "ot_not_in_obo": 0,
+   "ot_not_in_obo_but_alt_id": 0,
+   "ot_obsolete_in_obo": 10238,
+   "examples_missing": []
+  }
+ }
+}

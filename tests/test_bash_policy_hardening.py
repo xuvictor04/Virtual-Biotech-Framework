@@ -3,9 +3,6 @@ bash-no-path-sandbox, bash-blocklist-missing-classes). All offline."""
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import pytest
 
 from vbt.tools.builtin import _OutputSink, bwrap_argv
