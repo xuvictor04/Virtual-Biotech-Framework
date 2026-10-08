@@ -32,7 +32,7 @@ from ...descriptor.columns import UniverseSpec, is_container
 from ...ipc import VERB_BUILD_INDEX, BuildIndexRequest, BuildIndexResponse
 from ...plugins.base import Normalized
 from ...predicate import from_json
-from ...resolve.index import Entry
+from ...resolve.index import Entry, IndexFormatError, IndexMissing, read_sidecar
 from .. import ServiceContext, ServiceError
 from .. import items as _items
 from ..checks import _schema_path
@@ -385,7 +385,21 @@ def _dedupe(rows: Iterable[Entry]) -> list[Entry]:
 def build_resolver_index(ctx: ServiceContext, source: str, id_type: str, *, force: bool = False
                          ) -> BuildIndexResponse:
     bare = id_type.partition(":")[2] or id_type
-    src, _spec = ctx.catalog.id_type(f"{source}:{bare}")
+    src, spec = ctx.catalog.id_type(f"{source}:{bare}")
+    if not force and spec.index != "remote":
+        # the sidecar is keyed by its universe table's fingerprint: one already built for this data is reused. Each
+        # new session's first call rebuilt it (30 s for the 25.09 ensembl_gene index, 465,164 rows)
+        unis = _universes(src, spec)
+        if unis:
+            fp = ctx.reader(unis[0]["table"]).fingerprint()
+            path = ctx.index_store.path(src, fp, bare)
+            try:
+                # streamed (header and columns checked, nothing kept): the gateway loads it, not the data child
+                rows = sum(1 for _ in read_sidecar(path))
+            except (IndexMissing, IndexFormatError, OSError, EOFError):
+                rows = None
+            if rows is not None:
+                return BuildIndexResponse(path=str(path), rows=rows, fingerprint=fp)
     rows, fp = resolver_rows(ctx, src, bare)
     path = ctx.index_store.write_sidecar(src, fp, bare, rows)
     return BuildIndexResponse(path=str(path), rows=len(rows), fingerprint=fp)

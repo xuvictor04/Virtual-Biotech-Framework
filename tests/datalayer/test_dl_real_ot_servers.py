@@ -279,6 +279,33 @@ def test_flat_key_uniqueness_is_counted_on_arrow_arrays(tmp_path, monkeypatch):
     assert checks(fast, "R5")[0].detail == checks(slow, "R5")[0].detail
 
 
+# ---------------------------------------------------------------------------- resolver sidecars are reused
+
+
+def test_a_built_resolver_index_is_reused_for_the_same_data(tmp_path, monkeypatch):
+    """Each new session's first call asked the data child to build the resolver index again, and it did: 30 s for
+    the 25.09 ensembl_gene index (465,164 rows) although the same file was on disk. An index already built for the
+    universe table's fingerprint is returned as it is; ``force`` rebuilds it."""
+    from vbt.datalayer.service.verbs import index_build
+
+    write(tmp_path, "target", [{"id": f"ENSG{i:011d}", "approvedSymbol": f"G{i}"} for i in range(50)])
+    ctx = make_ctx(tmp_path, {"target": {"kind": "entity", "path": "target", "grain": "gene", "key": {"columns": ["id"]},
+                                         "columns": {"id": {"role": "identifier", "id_type": "gene", "self": True},
+                                                     "approvedSymbol": {"role": "label", "of": "id"}}}},
+                   id_types={"gene": {"plugin": "ensembl_gene", "universe": "target.id"}})
+    first = index_build.build_resolver_index(ctx, "s", "gene")
+    assert first.rows > 0 and Path(first.path).is_file()
+    monkeypatch.setattr(index_build, "resolver_rows", lambda *a, **k: pytest.fail("the index was built again"))
+    again = index_build.build_resolver_index(ctx, "s", "gene")
+    assert (again.path, again.rows, again.fingerprint) == (first.path, first.rows, first.fingerprint)
+    with pytest.raises(pytest.fail.Exception):
+        index_build.build_resolver_index(ctx, "s", "gene", force=True)
+    monkeypatch.undo()
+    Path(first.path).write_bytes(b"not a sidecar")  # an unreadable file is rebuilt, not returned
+    rebuilt = index_build.build_resolver_index(ctx, "s", "gene")
+    assert (rebuilt.rows, rebuilt.fingerprint) == (first.rows, first.fingerprint)
+
+
 # ---------------------------------------------------------------------------- search: only the row's own names
 
 
@@ -499,3 +526,140 @@ def _real_ctx(cache: Path) -> ServiceContext:
                                       project_root=REPO)
     variables = {"project_root": str(REPO), "env.OPEN_TARGETS_DATA_PATH": str(REAL)}
     return ServiceContext(settings, catalog=build_catalog(settings, registry, variables=variables), registry=registry)
+
+
+@needs_real
+def test_real_standard_checks_of_the_target_server_tables_are_ready_in_minutes(tmp_path):
+    """The session check of the target server's tables (standard depth) is what its first call waits for: 612 s on
+    25.09 before the Arrow key, container and reference checks, 178 s after (table by table in separate processes).
+    In one context here: every table ready, expression under 90 s, target under 120 s."""
+    ctx = _real_ctx(tmp_path / "cache")
+    for ref, limit in (("open_targets.expression", 90), ("open_targets.target", 120),
+                       ("open_targets.association_overall_direct", 60)):
+        t0 = time.monotonic()
+        model = check_table(ctx, ref, "standard")
+        seconds = time.monotonic() - t0
+        assert model.status == "ready", [c.detail for c in model.checks if not c.ok and c.level == "error"]
+        assert seconds < limit, (ref, seconds)
+
+
+# ---------------------------------------------------------------------------- real data: the six tests, both modes
+
+PCSK9 = "ENSG00000169174"
+TP53 = "ENSG00000141510"
+
+
+def _oracle_known_drug_top(k: int) -> tuple[list[list[Any]], int]:
+    """Independent pyarrow answer: PCSK9's known_drug rows by phase desc (nulls last), ties by the key ascending."""
+    import math
+
+    import pyarrow.compute as pc
+    import pyarrow.dataset as ds
+
+    assert REAL is not None
+    rows = ds.dataset(str(REAL / "known_drug"), format="parquet").to_table(
+        columns=["drugId", "targetId", "diseaseId", "phase", "status"], filter=pc.field("targetId") == PCSK9).to_pylist()
+
+    def order(r: dict[str, Any]) -> tuple[Any, ...]:
+        p = r["phase"]
+        unknown = p is None or (isinstance(p, float) and math.isnan(p))
+        return (unknown, 0 if unknown else -p, *((v is None, "" if v is None else str(v))
+                                                for v in (r["drugId"], r["targetId"], r["diseaseId"], r["status"])))
+    ranked = sorted(rows, key=order)
+    return [[r["drugId"], r["diseaseId"], r["phase"], r["status"]] for r in ranked[:k]], len(rows)
+
+
+def _oracle_pgx(drug: str, target: str | None = None) -> int:
+    import pyarrow.dataset as ds
+
+    assert REAL is not None
+    rows = ds.dataset(str(REAL / "pharmacogenomics"), format="parquet").to_table(
+        columns=["targetFromSourceId", "drugs"]).to_pylist()
+    return sum(1 for r in rows if (target is None or r["targetFromSourceId"] == target)
+               and any((d or {}).get("drugId") == drug for d in r["drugs"] or []))
+
+
+def _live(mode: str, servers: tuple[str, ...], tmp_path: Path) -> Any:
+    from dl_upstream import DataEnv, LiveBridge, upstream_missing
+
+    if upstream_missing():
+        pytest.skip(upstream_missing())
+    overrides = {"data": {"memory": {"default_server_mb": 5000, "limit_kind": "rlimit_data", "host_budget_mb": "off"},
+                          "service": {"mem_limit_mb": 3000, "timeout_s": 1800}}}
+    bridge = LiveBridge(servers, env=DataEnv(ot_root=REAL, output_dir=tmp_path / "out"), gateway=mode == "enforce",
+                        tmp_path=tmp_path / mode, overrides=overrides)
+    if bridge.gateway is not None:
+        bridge.run(bridge.gateway.wait_readiness(1500), timeout=1600)    # the session check, before the first call
+    return bridge
+
+
+def _keys(r: Any) -> list[Any]:
+    prov = r.provenance.to_dict() if hasattr(r.provenance, "to_dict") else (r.provenance or {})
+    return (prov.get("result") or {}).get("row_keys") or []
+
+
+@needs_real
+@pytest.mark.correctness
+def test_real_six_tests_through_the_unmodified_servers_with_the_gateway(tmp_path):
+    """CT-1..CT-6 on the real 25.09 tables, gateway enforcing: identifiers of the wrong form are resolved or
+    rejected, the unknown ENSG is not_found, the derived name search ranks the exact symbol first, the known-drug
+    top-k equals the pyarrow answer with the honest total, wrong argument values are refused, the unconfirmable
+    safety filter is unsupported, and pharmacogenomics is not a false empty."""
+    bridge = _live("enforce", ("target", "drug"), tmp_path)
+    try:
+        for tid, rule in (("PCSK9", "label_exact:approvedSymbol"), ("ENSG00000169174.12", "normalized:strip_version"),
+                          ("ensg00000169174", "normalized:upper"), ("NARC1", "synonym:alias")):
+            r = bridge.call("target", "get_target_info", {"target_id": tid})
+            assert not r.is_error and _keys(r) == [[PCSK9]] and rule in str(r.header.get("resolved")), r.text[:400]
+        r = bridge.call("target", "get_target_info", {"target_id": "ENSG00000999999"})
+        assert r.is_error and r.kind == "not_found" and r.payload.get("citable") is False and r.payload.get("tried")
+        r = bridge.call("target", "search_targets_by_name", {"query": "TP53", "limit": 1})
+        first = r.rows("results")[0]
+        assert first["id"] == TP53 and first["match"] == "exact", first
+        top, total = _oracle_known_drug_top(5)
+        r = bridge.call("drug", "search_known_drugs", {"target_id": "PCSK9", "limit": 5})
+        got = [[d["drugId"], d["diseaseId"], d["phase"], d["status"]] for d in r.rows("drugs")]
+        assert got == top and r.header.get("total") == total, (got, r.header)
+        for limit in (0, -1):
+            r = bridge.call("drug", "search_known_drugs", {"target_id": PCSK9, "limit": limit})
+            assert r.is_error and r.kind == "invalid_argument", r.text[:300]
+        r = bridge.call("target", "prioritize_targets", {"sort_by": "nonexistent"})
+        assert r.is_error and r.kind == "invalid_argument", r.text[:300]
+        r = bridge.call("target", "prioritize_targets", {"no_safety_events": True})
+        assert r.is_error and r.kind == "unsupported_filter", r.text[:300]
+        r = bridge.call("drug", "get_pharmacogenomics", {"drug_id": "CHEMBL3"})
+        assert r.header.get("total") == _oracle_pgx("CHEMBL3") and r.rows("pgx_relationships"), r.header
+        r = bridge.call("drug", "get_pharmacogenomics", {"target_id": "ENSG00000112038", "drug_id": "CHEMBL3"})
+        assert r.header.get("total") == _oracle_pgx("CHEMBL3", "ENSG00000112038")
+        assert all(any(d.get("drugId") == "CHEMBL3" for d in row["drugs"]) for row in r.rows("pgx_relationships"))
+        r = bridge.call("target", "get_mouse_phenotype", {"target_id": PCSK9})
+        assert r.header.get("total") == 18 and len(r.rows("phenotypes")) == 18, r.header
+        r = bridge.call("target", "get_target_safety_profile", {"target_id": TP53})
+        assert r.header.get("status") == "empty" and r.header.get("coverage") == "unknown" and "message" not in r.obj
+    finally:
+        bridge.close()
+
+
+@needs_real
+@pytest.mark.correctness
+def test_real_wrong_answers_without_the_gateway(tmp_path):
+    """The same calls on the unmodified servers with no gateway: today's real wrong answers, pinned so an upstream
+    fix shows up here."""
+    bridge = _live("off", ("target", "drug"), tmp_path)
+    try:
+        r = bridge.call("target", "get_target_info", {"target_id": "PCSK9"})
+        assert not r.is_error and r.obj.get("error") == "Target PCSK9 not found"
+        r = bridge.call("target", "search_targets_by_name", {"query": "TP53", "limit": 1})
+        assert r.rows("results")[0]["id"] == "ENSG00000120471"            # TP53AIP1, first in file order
+        r = bridge.call("drug", "search_known_drugs", {"target_id": PCSK9, "limit": 5})
+        assert max(d["phase"] for d in r.rows("drugs")) == 3.0            # 23 phase-4 rows exist
+        r = bridge.call("drug", "search_known_drugs", {"target_id": PCSK9, "limit": -1})
+        assert not r.is_error and r.obj.get("count") == _oracle_known_drug_top(0)[1] - 1
+        r = bridge.call("drug", "get_pharmacogenomics", {"drug_id": "CHEMBL3"})
+        assert not r.is_error and r.obj.get("count") == 0                 # 508 rows hold CHEMBL3
+        r = bridge.call("target", "get_mouse_phenotype", {"target_id": PCSK9})
+        assert not r.is_error and r.obj.get("count") == 0                 # 18 rows for PCSK9
+        r = bridge.call("target", "prioritize_targets", {"no_safety_events": True, "limit": 20})
+        assert any(t.get("hasSafetyEvent") == -1 for t in r.rows("targets"))   # an event recorded counts as none
+    finally:
+        bridge.close()
