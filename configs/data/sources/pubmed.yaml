@@ -47,6 +47,11 @@ tables:
           pubdate: {range: {lo: mindate, hi: maxdate, lo_default: "1800/01/01", hi_default: "3000/12/31",
                             format: "%Y/%m/%d", extra: {datetype: pdat}}}
         count: {params: {rettype: count}, total_path: $.esearchresult.count}
+        # the PubMed build an upstream-served call read (einfo; provenance source.versions, reused for 10 minutes;
+        # 2026-10-08: dbbuild Build-2026.10.08.12.28, lastupdate 2026/10/08 12:28). No `path`: the witness and
+        # a native find make no extra request, and results keep the call time as their as_of
+        release: {endpoint: einfo.fcgi, params: {db: pubmed, retmode: json, tool: vbt-datalayer},
+                  versions: {dbbuild: "$.einforesult.dbinfo[0].dbbuild", lastupdate: "$.einforesult.dbinfo[0].lastupdate"}}
     format: rest_json
     grain: one PubMed citation record
     key: {columns: [pmid], check: none}

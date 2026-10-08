@@ -1,0 +1,47 @@
+{
+ "scenario": "release_pubmed",
+ "retrieved": "2026-10-08T20:41:03Z",
+ "seconds": 0.28,
+ "source": "recorded by S1 (scratchpad record_round3.py) through the shipped descriptors",
+ "exchanges": [
+  {
+   "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/einfo.fcgi",
+   "params": {
+    "db": "pubmed",
+    "retmode": "json",
+    "tool": "vbt-datalayer"
+   },
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:41:07 GMT",
+    "Content-Type": "application/json; charset=UTF-8"
+   },
+   "body": {
+    "header": {
+     "type": "einfo",
+     "version": "0.3"
+    },
+    "einforesult": {
+     "dbinfo": [
+      {
+       "dbname": "pubmed",
+       "dbbuild": "Build-2026.10.08.12.28",
+       "count": "41257673",
+       "lastupdate": "2026/10/08 12:28"
+      }
+     ]
+    }
+   },
+   "bytes": 15005,
+   "trimmed": "dbinfo cut to dbname, dbbuild, count and lastupdate (fieldlist and linklist dropped)"
+  }
+ ],
+ "result": {
+  "release": {
+   "versions": {
+    "dbbuild": "Build-2026.10.08.12.28",
+    "lastupdate": "2026/10/08 12:28"
+   }
+  }
+ }
+}

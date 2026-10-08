@@ -36,8 +36,9 @@ Implements ``live`` (:meth:`SomaLayout.request`: one read, the whole match; SOMA
 ``count`` (:meth:`SomaLayout.count`: the count-first admission of Census pulls and the remote witness;
 the predicate is compiled to a ``value_filter`` by the ``soma`` format, and a residual makes the count
 unknown). :meth:`SomaLayout.release` is the dated release the alias names (reused for ``max_age_s``), which
-the remote witness and ``_live_find`` report as their ``as_of``. ``probe``, ``signature`` and ``fingerprint``
-never open the store.
+the remote witness and ``_live_find`` report as their ``as_of``. :meth:`SomaLayout.frame` reads a few obs
+columns as a pandas frame exactly as the upstream server reads obs (Census categories in enumeration order),
+for the derived donor-balanced sample. ``probe``, ``signature`` and ``fingerprint`` never open the store.
 """
 
 from __future__ import annotations
@@ -343,6 +344,27 @@ class SomaLayout(PluginBase):
         n = len(next(iter(got.values()))) if got else 0
         keep = [i for i in range(n) if evaluate(residual, {c: got[c][i] for c in need}) is True]
         return {c: [got[c][i] for i in keep] for c in columns}
+
+    def frame(self, spec: LayoutSpec, *, predicate: Predicate | None, columns: list[str]) -> Any:
+        """The rows matching ``predicate`` as a pandas frame read the way the upstream server reads obs
+        (``read(value_filter, column_names).concat().to_pandas()``: categorical columns keep the Census
+        enumeration order, unused categories removed), so a sample drawn from it with upstream's generator
+        draws the cells upstream would. A residual is applied to the frame. Counts' buffers (one call)."""
+        value_filter, residual = self.fmt.compile(predicate)
+        version, path, _res = self._read_target(spec)
+        need = list(dict.fromkeys(list(columns) + (sorted(_predicate_columns(residual)) if residual else [])))
+        kwargs: dict[str, Any] = {"column_names": need}
+        if value_filter:
+            kwargs["value_filter"] = value_filter
+        with _open(version, path, self._module(spec), self._config(spec)) as frame:
+            df = frame.read(**kwargs).concat().to_pandas()
+        if residual is not None:
+            keep = [evaluate(residual, r) is True for r in df[need].to_dict("records")]
+            df = df[keep].reset_index(drop=True)
+        for col in df.columns:
+            if hasattr(df[col], "cat"):
+                df[col] = df[col].cat.remove_unused_categories()
+        return df[list(columns)]
 
     def describe_read(self, spec: LayoutSpec, predicate: Predicate | None) -> Mapping[str, Any]:
         """What a read would send (the compiled filter and its residual), without opening the store."""

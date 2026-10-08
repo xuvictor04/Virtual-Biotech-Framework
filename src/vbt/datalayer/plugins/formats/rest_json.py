@@ -170,7 +170,9 @@ class RestJsonFormat(PluginBase):
             name = remote.get(p.column) or remote.get(base)
             if not name:
                 return False
-            essie.append(f"{name}{essie_quote(p.text)}")       # the engine's word and synonym match on that field
+            # an exact text is a phrase, always quoted as upstream quotes it (AREA[EligibilityCriteria]"MGMT");
+            # a word search keeps a plain token unquoted (the engine's word and synonym match on that field)
+            essie.append(f"{name}{self.quote(p.text) if p.mode == 'exact' else essie_quote(p.text)}")
             return True
         if isinstance(p, Or):
             # one column equal to (or a list holding) any of several values: the same request as In

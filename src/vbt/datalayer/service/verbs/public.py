@@ -792,6 +792,15 @@ def _default_filters(table: Any, pred: Predicate | None, where: Any, notes: list
     return None if not parts else (parts[0] if len(parts) == 1 else And(tuple(parts)))
 
 
+def _last_field(path: str) -> str:
+    """``studyFirstPostDateStruct`` of ``protocolSection.statusModule.studyFirstPostDateStruct.date``: the last named
+    field of a date path (a trailing ``date`` names the struct that holds it)."""
+    parts = [p for p in str(path).replace("[]", "").split(".") if p]
+    if len(parts) > 1 and parts[-1] == "date":
+        return parts[-2]
+    return parts[-1] if parts else str(path)
+
+
 def _live_find(ctx: ServiceContext, table: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
     from ...predicate import to_json
     from .. import layout_spec
@@ -822,7 +831,11 @@ def _live_find(ctx: ServiceContext, table: Any, payload: Mapping[str, Any]) -> d
     got = live_find(ctx, {"table": ref, "predicate": to_json(pred) if pred is not None else None,
                           "columns": columns, "limit": limit})
     rows = list(got.get("rows") or [])
-    if got.get("truncated"):
+    if got.get("cut_after_read"):
+        # the whole match was read (one unpaged request: the Census) and cut to limit here
+        notes.append(f"every matching row was read ({got.get('total')}); the first {len(rows)} in the source's order "
+                     "are returned (limit), not a page prefix")
+    elif got.get("truncated"):
         notes.append(f"{got.get('pages')} page(s) read within the source's budget: the rows are a prefix, not all")
     if got.get("source_updated"):
         notes.append("records changed at the source since an earlier call: " + ", ".join(
@@ -836,6 +849,14 @@ def _live_find(ctx: ServiceContext, table: Any, payload: Mapping[str, Any]) -> d
                if leakage.get("sent") else "checked on the records named")
         notes.append(f"evidence ceiling {leakage['ceiling']} applied: {how}; {n_out} row(s) withheld as dated "
                      "after it")
+        if len(leakage.get("bounded_on") or []) > 1:
+            # two totals for one filter under one ceiling: this find counts what it may return, an upstream count
+            # tool counts every record available by the ceiling (the registry's own first-posted bound)
+            avail, changed = leakage["bounded_on"][0], leakage["bounded_on"][1]
+            notes.append(f"the total counts records available ({_last_field(avail)}) and last changed "
+                         f"({_last_field(changed)}) by {leakage['ceiling']}, the rows this find can return; an "
+                         f"upstream count under the same ceiling bounds only {_last_field(avail)} and also counts the "
+                         "records changed after it (which are withheld from rows), so its total is larger")
         if leakage.get("redacted"):
             notes.append(f"{leakage['redacted']} row(s) redacted (fields changed after the ceiling nulled)")
     # keys the filter named that the source did not return (and that no ceiling withheld): unknown to the source

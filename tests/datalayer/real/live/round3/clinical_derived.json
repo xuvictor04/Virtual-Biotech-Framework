@@ -1,0 +1,1257 @@
+{
+ "scenario": "clinical_derived",
+ "retrieved": "2026-10-08T20:41:03Z",
+ "seconds": 2.92,
+ "source": "recorded by S1 (scratchpad record_round3.py) through the shipped descriptors",
+ "clinical_attribute_count": 57,
+ "study_import_date": "2026-06-05 15:19:54",
+ "exchanges": [
+  {
+   "url": "https://www.cbioportal.org/api/info",
+   "params": {},
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:41:04 GMT",
+    "Content-Type": "application/json"
+   },
+   "body": {
+    "portalVersion": "v7.1.2",
+    "dbVersion": "3.0.0",
+    "genesetVersion": "msigdb_v2025.1.Hs",
+    "geneTableVersion": "hgnc_v7_2025.10.7",
+    "gitBranch": "bbba61b2a45b3719187a310dcadaae75b9bef067",
+    "gitCommitId": "bbba61b2a45b3719187a310dcadaae75b9bef067",
+    "gitCommitIdDescribe": "bbba61b-dirty",
+    "gitCommitIdDescribeShort": "bbba61b-dirty",
+    "gitCommitMessageFull": "Frontend v7.1.2\n\nPoints the backend at frontend `v7.1.2`.\n\n- `<version>`: `v7.1.2-SNAPSHOT` -> `v7.1.2`\n- `<frontend.version>`: `v7.1.1` -> `v7.1.2`\n\nCommitted by cbioportal-release-manager.",
+    "gitCommitMessageShort": "Frontend v7.1.2",
+    "gitCommitMessageUserEmail": "cbioportal-release-manager@users.noreply.github.com",
+    "gitCommitMessageUserName": "cbioportal-release-manager",
+    "gitDirty": true
+   },
+   "bytes": 734
+  },
+  {
+   "url": "https://www.cbioportal.org/api/studies/acc_tcga_pan_can_atlas_2018",
+   "params": {
+    "projection": "DETAILED"
+   },
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:41:05 GMT",
+    "Content-Type": "application/json"
+   },
+   "body": {
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "cancerTypeId": "acc",
+    "name": "Adrenocortical Carcinoma (TCGA, PanCancer Atlas)",
+    "description": "Adrenocortical Carcinoma TCGA PanCancer data. The original data is <a href=\"https://gdc.cancer.gov/about-data/publications/pancanatlas\">here</a>. The publications are <a href=\"https://www.cell.com/pb-assets/consortium/pancanceratlas/pancani3/index.html\">here</a>.",
+    "publicStudy": true,
+    "pmid": "29625048,29596782,29622463,29617662,29625055,29625050,29617662,32214244,29625049,29850653,36334560",
+    "citation": "TCGA, Cell 2018",
+    "groups": "PUBLIC;PANCAN",
+    "status": 0,
+    "importDate": "2026-06-05 15:19:54",
+    "allSampleCount": 92,
+    "sequencedSampleCount": 91,
+    "cnaSampleCount": 89,
+    "mrnaRnaSeqSampleCount": 0,
+    "mrnaRnaSeqV2SampleCount": 78,
+    "mrnaMicroarraySampleCount": 0,
+    "miRnaSampleCount": 0,
+    "methylationHm27SampleCount": 0,
+    "rppaSampleCount": 45,
+    "massSpectrometrySampleCount": 0,
+    "completeSampleCount": 76,
+    "referenceGenome": "hg19",
+    "treatmentCount": 16,
+    "structuralVariantCount": 55,
+    "cancerType": {
+     "id": "acc",
+     "name": "Adrenocortical Carcinoma",
+     "dedicatedColor": "Purple",
+     "shortName": "ACC",
+     "parent": "adrenal_gland"
+    },
+    "readPermission": true,
+    "resourceCounts": [
+     {
+      "resourceId": "IDC_SLIM",
+      "displayName": "Slide Microscopy",
+      "description": "Slide Microscopy",
+      "resourceType": "PATIENT",
+      "priority": "1",
+      "openByDefault": true,
+      "cancerStudyIdentifier": "acc_tcga_pan_can_atlas_2018",
+      "sampleCount": 91,
+      "patientCount": 91
+     }
+    ]
+   },
+   "bytes": 1397
+  },
+  {
+   "url": "https://www.cbioportal.org/api/studies/acc_tcga_pan_can_atlas_2018/samples",
+   "params": {
+    "pageSize": "500"
+   },
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:41:05 GMT",
+    "Content-Type": "application/json"
+   },
+   "body": [
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "sampleType": "Primary Solid Tumor",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "sampleType": "Primary Solid Tumor",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018"
+    }
+   ],
+   "bytes": 26497,
+   "trimmed": "92 samples cut to the requested ones present in the study; uniqueSampleKey/uniquePatientKey dropped"
+  },
+  {
+   "url": "https://www.cbioportal.org/api/studies/acc_tcga_pan_can_atlas_2018/clinical-data",
+   "params": {
+    "clinicalDataType": "SAMPLE"
+   },
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:41:06 GMT",
+    "Content-Type": "application/json"
+   },
+   "body": [
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "ANEUPLOIDY_SCORE",
+     "value": "2"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "CANCER_TYPE",
+     "value": "Adrenocortical Carcinoma"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "CANCER_TYPE_DETAILED",
+     "value": "Adrenocortical Carcinoma"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "FRACTION_GENOME_ALTERED",
+     "value": "0.0585"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "MSI_SCORE_MANTIS",
+     "value": "0.275"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "MSI_SENSOR_SCORE",
+     "value": "0"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "MUTATION_COUNT",
+     "value": "23"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "ONCOTREE_CODE",
+     "value": "ACC"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "SAMPLE_TYPE",
+     "value": "Primary"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "SOMATIC_STATUS",
+     "value": "Matched"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "TBL_SCORE",
+     "value": "421"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "TISSUE_PROSPECTIVE_COLLECTION_INDICATOR",
+     "value": "No"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "TISSUE_RETROSPECTIVE_COLLECTION_INDICATOR",
+     "value": "Yes"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "TISSUE_SOURCE_SITE",
+     "value": "University of Michigan"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "TISSUE_SOURCE_SITE_CODE",
+     "value": "OR"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "TMB_NONSYNONYMOUS",
+     "value": "0.8"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "TUMOR_TISSUE_SITE",
+     "value": "Adrenal Gland"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "TUMOR_TYPE",
+     "value": "Adrenocortical Carcinoma, Usual Type"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "ANEUPLOIDY_SCORE",
+     "value": "10"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "CANCER_TYPE",
+     "value": "Adrenocortical Carcinoma"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "CANCER_TYPE_DETAILED",
+     "value": "Adrenocortical Carcinoma"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "FRACTION_GENOME_ALTERED",
+     "value": "0.4033"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "MSI_SCORE_MANTIS",
+     "value": "0.3236"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "MSI_SENSOR_SCORE",
+     "value": "1.57"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "MUTATION_COUNT",
+     "value": "29"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "ONCOTREE_CODE",
+     "value": "ACC"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "SAMPLE_TYPE",
+     "value": "Primary"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "SOMATIC_STATUS",
+     "value": "Matched"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "TBL_SCORE",
+     "value": "68"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "TISSUE_PROSPECTIVE_COLLECTION_INDICATOR",
+     "value": "No"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "TISSUE_RETROSPECTIVE_COLLECTION_INDICATOR",
+     "value": "Yes"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "TISSUE_SOURCE_SITE",
+     "value": "University of Michigan"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "TISSUE_SOURCE_SITE_CODE",
+     "value": "OR"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "TMB_NONSYNONYMOUS",
+     "value": "0.966666667"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "TUMOR_TISSUE_SITE",
+     "value": "Adrenal Gland"
+    },
+    {
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "TUMOR_TYPE",
+     "value": "Adrenocortical Carcinoma, Usual Type"
+    }
+   ],
+   "bytes": 520684,
+   "trimmed": "1643 sample attribute rows cut to the requested samples; uniqueSampleKey/uniquePatientKey dropped"
+  },
+  {
+   "url": "https://www.cbioportal.org/api/studies/acc_tcga_pan_can_atlas_2018/clinical-data",
+   "params": {
+    "clinicalDataType": "PATIENT"
+   },
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:41:06 GMT",
+    "Content-Type": "application/json"
+   },
+   "body": [
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "AGE",
+     "value": "58"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "AJCC_PATHOLOGIC_TUMOR_STAGE",
+     "value": "STAGE II"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "CANCER_TYPE_ACRONYM",
+     "value": "ACC"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "DAYS_TO_BIRTH",
+     "value": "-21496"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "DAYS_TO_INITIAL_PATHOLOGIC_DIAGNOSIS",
+     "value": "0"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "DFS_MONTHS",
+     "value": "24.78876944"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "DFS_STATUS",
+     "value": "1:Recurred/Progressed"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "DSS_MONTHS",
+     "value": "44.54745701"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "DSS_STATUS",
+     "value": "1:DEAD WITH TUMOR"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "FORM_COMPLETION_DATE",
+     "value": "4/2/14"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "GENETIC_ANCESTRY_LABEL",
+     "value": "EUR"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "HISTORY_NEOADJUVANT_TRTYN",
+     "value": "No"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "ICD_10",
+     "value": "C74.0"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "ICD_O_3_HISTOLOGY",
+     "value": "8370/1"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "ICD_O_3_SITE",
+     "value": "C74.0"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "INFORMED_CONSENT_VERIFIED",
+     "value": "Yes"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "IN_PANCANPATHWAYS_FREEZE",
+     "value": "Yes"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "NEW_TUMOR_EVENT_AFTER_INITIAL_TREATMENT",
+     "value": "Yes"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "OS_MONTHS",
+     "value": "44.54745701"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "OS_STATUS",
+     "value": "1:DECEASED"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "OTHER_PATIENT_ID",
+     "value": "B3164F7B-C826-4E08-9EE6-8FF96D29B913"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "PATH_N_STAGE",
+     "value": "N0"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "PATH_T_STAGE",
+     "value": "T2"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "PERSON_NEOPLASM_CANCER_STATUS",
+     "value": "With Tumor"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "PFS_MONTHS",
+     "value": "24.78876944"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "PFS_STATUS",
+     "value": "1:PROGRESSION"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "PRIOR_DX",
+     "value": "No"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "RACE",
+     "value": "White"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "RADIATION_THERAPY",
+     "value": "No"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "SAMPLE_COUNT",
+     "value": "1"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "SEX",
+     "value": "Male"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoxOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "SUBTYPE",
+     "value": "ACC"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "AGE",
+     "value": "44"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "AJCC_PATHOLOGIC_TUMOR_STAGE",
+     "value": "STAGE IV"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "CANCER_TYPE_ACRONYM",
+     "value": "ACC"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "DAYS_TO_BIRTH",
+     "value": "-16090"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "DAYS_TO_INITIAL_PATHOLOGIC_DIAGNOSIS",
+     "value": "0"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "DSS_MONTHS",
+     "value": "55.13364237"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "DSS_STATUS",
+     "value": "1:DEAD WITH TUMOR"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "ETHNICITY",
+     "value": "Hispanic Or Latino"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "FORM_COMPLETION_DATE",
+     "value": "12/3/13"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "GENETIC_ANCESTRY_LABEL",
+     "value": "EUR"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "HISTORY_NEOADJUVANT_TRTYN",
+     "value": "No"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "ICD_10",
+     "value": "C74.0"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "ICD_O_3_HISTOLOGY",
+     "value": "8370/3"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "ICD_O_3_SITE",
+     "value": "C74.0"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "INFORMED_CONSENT_VERIFIED",
+     "value": "Yes"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "IN_PANCANPATHWAYS_FREEZE",
+     "value": "Yes"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "NEW_TUMOR_EVENT_AFTER_INITIAL_TREATMENT",
+     "value": "Yes"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "OS_MONTHS",
+     "value": "55.13364237"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "OS_STATUS",
+     "value": "1:DECEASED"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "OTHER_PATIENT_ID",
+     "value": "8E7C2E31-D085-4B75-A970-162526DD07A0"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "PATH_N_STAGE",
+     "value": "N0"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "PATH_T_STAGE",
+     "value": "T3"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "PERSON_NEOPLASM_CANCER_STATUS",
+     "value": "With Tumor"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "PFS_MONTHS",
+     "value": "9.50126574"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "PFS_STATUS",
+     "value": "1:PROGRESSION"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "PRIMARY_LYMPH_NODE_PRESENTATION_ASSESSMENT",
+     "value": "Yes"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "PRIOR_DX",
+     "value": "No"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "RACE",
+     "value": "White"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "RADIATION_THERAPY",
+     "value": "No"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "SAMPLE_COUNT",
+     "value": "1"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "SEX",
+     "value": "Female"
+    },
+    {
+     "uniquePatientKey": "VENHQS1PUi1BNUoyOmFjY190Y2dhX3Bhbl9jYW5fYXRsYXNfMjAxOA",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "clinicalAttributeId": "SUBTYPE",
+     "value": "ACC"
+    }
+   ],
+   "bytes": 609668,
+   "trimmed": "2989 patient attribute rows cut to the requested samples' patients"
+  },
+  {
+   "url": "https://www.cbioportal.org/api/studies/acc_tcga_pan_can_atlas_2018/clinical-attributes",
+   "params": {},
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:41:06 GMT",
+    "Content-Type": "application/json"
+   },
+   "body": [
+    {
+     "clinicalAttributeId": "AGE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "NUMBER"
+    },
+    {
+     "clinicalAttributeId": "AJCC_PATHOLOGIC_TUMOR_STAGE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "AJCC_STAGING_EDITION",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "ANEUPLOIDY_SCORE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "NUMBER"
+    },
+    {
+     "clinicalAttributeId": "CANCER_TYPE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "CANCER_TYPE_ACRONYM",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "CANCER_TYPE_DETAILED",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "DAYS_LAST_FOLLOWUP",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "NUMBER"
+    },
+    {
+     "clinicalAttributeId": "DAYS_TO_BIRTH",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "NUMBER"
+    },
+    {
+     "clinicalAttributeId": "DAYS_TO_INITIAL_PATHOLOGIC_DIAGNOSIS",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "NUMBER"
+    },
+    {
+     "clinicalAttributeId": "DFS_MONTHS",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "NUMBER"
+    },
+    {
+     "clinicalAttributeId": "DFS_STATUS",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "DSS_MONTHS",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "NUMBER"
+    },
+    {
+     "clinicalAttributeId": "DSS_STATUS",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "ETHNICITY",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "FORM_COMPLETION_DATE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "FRACTION_GENOME_ALTERED",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "NUMBER"
+    },
+    {
+     "clinicalAttributeId": "GENETIC_ANCESTRY_LABEL",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "GRADE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "HISTORY_NEOADJUVANT_TRTYN",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "ICD_10",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "ICD_O_3_HISTOLOGY",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "ICD_O_3_SITE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "INFORMED_CONSENT_VERIFIED",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "IN_PANCANPATHWAYS_FREEZE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "MSI_SCORE_MANTIS",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "NUMBER"
+    },
+    {
+     "clinicalAttributeId": "MSI_SENSOR_SCORE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "NUMBER"
+    },
+    {
+     "clinicalAttributeId": "MUTATION_COUNT",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "NUMBER"
+    },
+    {
+     "clinicalAttributeId": "NEW_TUMOR_EVENT_AFTER_INITIAL_TREATMENT",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "ONCOTREE_CODE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "OS_MONTHS",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "NUMBER"
+    },
+    {
+     "clinicalAttributeId": "OS_STATUS",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "OTHER_PATIENT_ID",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "PATH_M_STAGE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "PATH_N_STAGE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "PATH_T_STAGE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "PERSON_NEOPLASM_CANCER_STATUS",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "PFS_MONTHS",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "NUMBER"
+    },
+    {
+     "clinicalAttributeId": "PFS_STATUS",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "PRIMARY_LYMPH_NODE_PRESENTATION_ASSESSMENT",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "PRIOR_DX",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "RACE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "RADIATION_THERAPY",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "SAMPLE_COUNT",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "SAMPLE_TYPE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "SEX",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "SOMATIC_STATUS",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "SUBTYPE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "TBL_SCORE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "NUMBER"
+    },
+    {
+     "clinicalAttributeId": "TISSUE_PROSPECTIVE_COLLECTION_INDICATOR",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "TISSUE_RETROSPECTIVE_COLLECTION_INDICATOR",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "TISSUE_SOURCE_SITE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "TISSUE_SOURCE_SITE_CODE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "TMB_NONSYNONYMOUS",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "NUMBER"
+    },
+    {
+     "clinicalAttributeId": "TUMOR_TISSUE_SITE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "TUMOR_TYPE",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": false,
+     "datatype": "STRING"
+    },
+    {
+     "clinicalAttributeId": "WEIGHT",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "patientAttribute": true,
+     "datatype": "NUMBER"
+    }
+   ],
+   "bytes": 16771,
+   "trimmed": "each attribute keeps clinicalAttributeId, studyId, patientAttribute, datatype"
+  }
+ ],
+ "result": {
+  "header": {
+   "v": 1,
+   "status": "ok",
+   "source": "cbioportal@2026-06-05 15:19:54",
+   "tables": [
+    "sample",
+    "clinical_attribute"
+   ],
+   "key": [
+    "sampleId"
+   ],
+   "returned": 2,
+   "total": 2,
+   "total_method": "data_child",
+   "truncated": false,
+   "grains": {
+    "patient": {
+     "returned": 2,
+     "total": 2
+    }
+   },
+   "resolution_summary": {
+    "sample_ids": {
+     "requested": 2,
+     "resolved": 2,
+     "unresolved": [],
+     "ambiguous": [],
+     "outside_universe": [],
+     "duplicates": []
+    }
+   },
+   "coverage": "unknown",
+   "served_by": "derived",
+   "sections": {
+    "clinical_attributes": {
+     "status": "ok",
+     "table": "cbioportal.clinical_attribute",
+     "total": 57,
+     "truncated": false
+    }
+   },
+   "notes": [
+    "study_id: existence of 'acc_tcga_pan_can_atlas_2018' could not be decided; an empty result is not citable",
+    "study_id: existence of acc_tcga_pan_can_atlas_2018 in cbioportal:cbio_study could not be decided remotely",
+    "sample_ids: existence of some values could not be decided"
+   ],
+   "cite": "cite rows by key",
+   "prov": "dp_c453a0ab51b6"
+  }
+ }
+}

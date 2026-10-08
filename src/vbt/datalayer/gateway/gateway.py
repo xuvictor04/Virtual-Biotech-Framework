@@ -25,6 +25,26 @@ A tool that depends on a quarantined catalog file (R8: an overlay or descriptor 
 ``ToolContract.quarantined``) is refused ``quarantined`` (subkind ``catalog_file``, naming the file and
 its error) under ``when_service_down: strict``; ``lenient`` runs it unguarded. Every other tool is
 served as usual.
+
+Live and remote sources (round 3):
+
+* ``count_first.sample`` (``{grain, stratify, seed, columns_arg, total_path, max_read}``, read from the binding
+  when its model carries it) serves a Census pull as the derived sample: the data child draws upstream's
+  cell-type-stratified, donor-balanced sample with donors keyed by the descriptor grain (``(dataset_id,
+  donor_id)``), the unmodified server is asked for exactly those cells (``soma_joinid in [...]``,
+  ``max_cells`` = the sample's size), the columns argument is completed with the keys, the payload's total is
+  the counted one, ``derived_sample`` describes the draw, and the written file must hold the sample
+  (``sample_cells``). Without a sample the call is refused unless the filter fixes the donor key's qualifier.
+* ``derived.compose`` joins sub-reads (each on its own table's key) into the derived rows, sections over live
+  tables are read here, and keys the call names that a live table's derived rows lack are ``not_found``
+  (get_clinical_data served from cBioPortal's live tables). A derived handler's typed error arrives as
+  ``ServeResponse.error`` or ``sections["_error"]`` (MCPBridge reads a top-level ``error`` key as a failure).
+* every enforced call of a live source records what the source reported (``_live_release``): the data release,
+  the API and software versions (``source.versions``) and the per-record releases (record versions).
+* under the evidence ceiling an upstream count (first posting bounded) also gets the count with the last update
+  bounded (``_vbt.ceiling_totals``): the rows a find may return under ``rows: withhold``.
+* a SOMA filter's key column (``soma_joinid``) is never resolved against a vocabulary, and "No cells found" with
+  a count-first count of 0 is an empty answer.
 """
 
 from __future__ import annotations
@@ -71,7 +91,7 @@ from ..ipc import (
 from ..launch import build_launch_spec
 from ..memory import AdmissionController, MemoryEstimator, ResidencyLedger, TableRead, crash_decision, read_status
 from ..memory.host import host_budget_mb
-from ..predicate import And, Eq, IsNull, Not, Predicate, TextMatch, map_columns, to_json
+from ..predicate import And, Cmp, Eq, In, IsNull, Not, Predicate, TextMatch, map_columns, to_json
 from ..record import (
     DataProvenance,
     OrderInfo,
@@ -197,6 +217,7 @@ class _CallState:
     soft_sections: dict[str, str] = field(default_factory=dict)
     section_meta: dict[str, dict[str, Any]] = field(default_factory=dict)   # derived sections' own status
     count_first: dict[str, Any] | None = None                                # the count-first admission
+    sample: dict[str, Any] | None = None                                     # the derived sample upstream fetched
     storage_types: dict[str, str | None] = field(default_factory=dict)
     attempts: int = 0
     t_ms: dict[str, float] = field(default_factory=dict)
@@ -206,6 +227,9 @@ class _CallState:
     native_header: dict[str, Any] | None = None                     # a native data tool: the child's own _vbt
     soma_predicate: Predicate | None = None
     census_release: str | None = None                               # the dated release a SOMA alias names
+    live_release: dict[str, dict[str, Any]] = field(default_factory=dict)   # source -> {resolved, versions, per}
+    remote_parts: list[Any] = field(default_factory=list)          # the conjuncts the remote witness counted
+    ceiling_totals: dict[str, Any] | None = None                    # an upstream count's totals under the ceiling
     resolved_columns: dict[str, str] = field(default_factory=dict)   # identifier argument -> bound column
     force_partial: bool = False
     in_universe: bool | None = None
@@ -774,12 +798,15 @@ class DataGateway:
         # 8. leakage
         st.leakage = prepare_leakage(contract, plan.args_sent, self._ceiling, tool=name)
         st.notes.extend(st.leakage.notes)
+        await self._ceiling_totals(plan, st, contract, selected)
         # 9. admission (upstream only; observe mode reserves nothing and never recycles a server)
         if plan.route == "upstream" and st.mode == "enforce":
             if b.count_first is not None:
                 await self._count_first(plan, st, contract)
             await self._census_release(plan, st, contract)
             await self._admit(plan, st, contract)
+        if st.mode == "enforce" and not st.lenient and plan.route != "none" and plan.server != DATA_SERVER:
+            await self._live_release(plan, st, contract)
         # 10. limit inflation
         if plan.route == "upstream":
             self._inflate(plan, st, contract, inflatable)
@@ -796,15 +823,26 @@ class DataGateway:
         limit_mb = 0.0
         with contextlib.suppress(Exception):
             limit_mb = float(self.admission.limit_mb(plan.server) or 0)
+        facet = _sample_facet(cf)
+        sample_req = self._sample_request(plan, contract, cf, facet) if facet is not None else None
         req = CensusCountRequest(table=cf.table, value_filter=args.get(cf.filter_arg) if cf.filter_arg else None,
                                  n_genes=n_genes, max_cells=max_cells if isinstance(max_cells, int) else None,
-                                 cap_bytes=int(limit_mb * 1024 * 1024) if limit_mb > 0 else None)
+                                 cap_bytes=int(limit_mb * 1024 * 1024) if limit_mb > 0 else None, sample=sample_req)
         try:
             resp = await self.service.call(VERB_CENSUS_COUNT, req)
         except ServiceError as exc:
+            if sample_req is not None:
+                self._sample_unavailable(plan, st, contract, sample_req, f"the count failed ({exc.message[:200]})")
             st.notes.append(f"count-first admission unavailable ({exc.message[:200]}); the memory admission applies")
             return
-        info = resp.model_dump(exclude_none=True)
+        # the sample answers the request's own facet (an extra of the response): kept out of the recorded count
+        echoed = set(resp.model_extra or ()) & set(CensusCountRequest.model_fields)
+        info = resp.model_dump(exclude_none=True, exclude=echoed)
+        sample = None
+        if sample_req is not None:
+            with contextlib.suppress(AttributeError):
+                sample = resp.sample
+            sample = sample if isinstance(sample, Mapping) else None
         st.count_first = info
         if resp.release:
             st.notes.append(f"{cf.table} release: {resp.release.get('resolved') or resp.release}")
@@ -819,6 +857,164 @@ class DataGateway:
             st.notes.append(f"count-first admission could not count: {resp.reason}")
         else:
             st.notes.append(f"count-first: the filter selects {resp.n_cells} cells")
+        if sample_req is not None:
+            self._apply_sample(plan, st, contract, cf, facet or {}, sample_req, resp.n_cells, sample)
+
+    # ---------------------------------------------------------------- the derived sample (count_first.sample)
+
+    def _sample_request(self, plan: CallPlan, contract: ToolContract, cf: Any, facet: Mapping[str, Any]
+                        ) -> dict[str, Any] | None:
+        """The ``sample`` of the count-first request: ``max_cells`` (the argument, else the tool's schema
+        default), upstream's seed, the stratum and the donor key (the descriptor grain ``facet.grain``)."""
+        want = plan.args_sent.get(cf.max_cells_arg) if cf.max_cells_arg else None
+        if not isinstance(want, int) or isinstance(want, bool):
+            prop = ((self._schemas.get((plan.server, plan.tool)) or {}).get("properties") or {}).get(
+                cf.max_cells_arg or "") or {}
+            want = prop.get("default") if isinstance(prop, Mapping) else None
+            want = want if isinstance(want, int) and not isinstance(want, bool) else facet.get("max_cells_default")
+        if not isinstance(want, int) or want <= 0:
+            return None
+        t = contract.tables.get(cf.table)
+        key = list(facet.get("key") or grain_columns(t, str(facet.get("grain") or "donor")) or [])
+        if len(key) != 2:
+            return None
+        out = {"max_cells": int(want), "seed": int(facet.get("seed", 42)), "key": key}
+        if facet.get("stratify"):
+            out["stratify"] = str(facet["stratify"])
+        if facet.get("max_read"):
+            out["max_read"] = int(facet["max_read"])
+        return out
+
+    def _sample_unavailable(self, plan: CallPlan, st: _CallState, contract: ToolContract, req: Mapping[str, Any],
+                            why: str) -> None:
+        """No derived sample: upstream balances donors by ``donor_id`` alone, which is right only within one
+        ``dataset_id`` (the qualifier of the donor key). Served upstream when the filter fixes it, else refused."""
+        qualifier = str(req["key"][0])
+        if st.soma_predicate is not None and soma_filter.fixes_single(st.soma_predicate, qualifier):
+            st.notes.append(f"no derived sample ({why}); the filter fixes one {qualifier}, so upstream's own "
+                            "donor balancing is served")
+            return
+        raise GatewayError(ErrorKind.unsupported_combination,
+                           f"no derived sample ({why}); without one, donors of different {qualifier} values that share "
+                           f"a {req['key'][1]} label would be balanced as one donor: fix one {qualifier} in the filter "
+                           "or narrow it", tool=st.name, argument=contract.binding.count_first.filter_arg,
+                           payload=unsupported_combination_payload(
+                               [contract.binding.count_first.filter_arg or ""], why,
+                               alternative=f"{plan.server}.get_anndata"))
+
+    def _apply_sample(self, plan: CallPlan, st: _CallState, contract: ToolContract, cf: Any, facet: Mapping[str, Any],
+                      req: Mapping[str, Any], n_cells: int | None, sample: Mapping[str, Any] | None) -> None:
+        """Serve the pull as the derived sample: upstream is asked for exactly the sampled cells (a ``soma_joinid in
+        [...]`` filter and ``max_cells`` = its size: upstream keeps every cell a filter selects when they are at most
+        ``max_cells``). A filter selecting at most ``max_cells`` cells is passed as it is (every cell is fetched, no
+        donor is balanced). The columns argument is completed with the cell key, the donor key and the stratum so
+        the written file shows which cells it holds."""
+        if n_cells is None:
+            self._sample_unavailable(plan, st, contract, req, "the cells could not be counted")
+            return
+        self._complete_columns(plan, st, contract, cf, facet, req)
+        max_cells = int(req["max_cells"])
+        if n_cells <= max_cells:
+            st.notes.append(f"the filter selects {n_cells} cells, at most max_cells={max_cells}: every cell is "
+                            "fetched (nothing is sampled)")
+            return
+        ids = list((sample or {}).get("soma_joinids") or [])
+        if not ids or not (sample or {}).get("value_filter"):
+            self._sample_unavailable(plan, st, contract, req, str((sample or {}).get("reason") or "no sample returned"))
+            return
+        plan.args_sent[cf.filter_arg] = str(sample["value_filter"])  # type: ignore[index]
+        if cf.max_cells_arg:
+            plan.args_sent[cf.max_cells_arg] = int(sample.get("max_cells") or len(ids))  # type: ignore[union-attr]
+        keep = ("n_sampled", "n_total", "n_donors", "n_donors_sampled", "n_datasets", "n_strata", "donor_key",
+                "stratified_by", "seed", "method", "per_dataset", "per_donor", "per_stratum")
+        t = contract.tables.get(cf.table)
+        id_column = next((_last(k) for k in (t.key if t is not None else []) if not k.endswith("#")), None)
+        st.sample = {"ids": ids, "n_total": int(n_cells), "max_cells": max_cells, "facet": dict(facet),
+                     "id_column": id_column,
+                     "summary": {k: sample[k] for k in keep if k in sample}}  # type: ignore[index]
+        st.transforms.append(f"derived sample {len(ids)} of {n_cells} cells")
+        how = f"stratified by {sample.get('stratified_by')}, " if sample.get("stratified_by") else ""  # type: ignore
+        st.notes.append(f"served as the derived sample: {len(ids)} of the {n_cells} cells the filter selects, {how}"
+                        f"balanced over ({', '.join(req['key'])}) donors (seed {sample.get('seed')}); upstream was "
+                        f"asked for exactly these cells ({cf.filter_arg} = soma_joinid in [...], "
+                        f"{cf.max_cells_arg} = {len(ids)})")
+
+    def _complete_columns(self, plan: CallPlan, st: _CallState, contract: ToolContract, cf: Any,
+                          facet: Mapping[str, Any], req: Mapping[str, Any]) -> None:
+        """``facet.columns_arg`` names the obs columns to write: the cell key, the donor key and the stratum are
+        added to the caller's list (when none is given, the table's declared columns are asked for)."""
+        arg = facet.get("columns_arg")
+        t = contract.tables.get(cf.table)
+        if not arg or t is None:
+            return
+        need = [*[k for k in t.key if not k.endswith("#")], *req["key"], *([req["stratify"]] if req.get("stratify")
+                                                                          else [])]
+        given = plan.args_sent.get(arg)
+        if isinstance(given, list):
+            added = [c for c in dict.fromkeys(need) if c not in given]
+            if added:
+                plan.args_sent[arg] = [*given, *added]
+                st.notes.append(f"{arg}: {', '.join(added)} added (the file must show its cells and their donors)")
+        elif given is None:
+            plan.args_sent[arg] = list(dict.fromkeys([*need, *t.columns]))
+            st.notes.append(f"{arg}: the declared obs columns are asked for (the file must show its cells and donors)")
+
+    async def _sampled_result(self, plan: CallPlan, st: _CallState, contract: ToolContract, obj: Any) -> None:
+        """A pull served as the derived sample: the payload's total (``facet.total_path``) is the counted total of
+        the caller's filter, not the sample's size upstream counted; ``derived_sample`` describes the draw; and the
+        written file must hold exactly the sampled cells (``sample_cells`` check, else ``tool_defect``; the data
+        child reads the file's cell keys, as it reads its genes for ``recompute_genes``)."""
+        sm = st.sample
+        if not sm or not isinstance(obj, dict):
+            return
+        tp = sm["facet"].get("total_path")
+        if tp:
+            before = jp_first(obj, tp)
+            jp_set(obj, tp, sm["n_total"])
+            st.notes.append(f"{_last(tp)} is the {sm['n_total']} cells the filter selects (upstream counted the "
+                            f"{before} cells of the sample)")
+        obj["derived_sample"] = json_value(sm["summary"])
+        b = contract.binding
+        spec = b.result.files[0] if b.result.files else None
+        raw = jp_first(obj, spec.path_from) if spec is not None else None
+        if not raw:
+            return
+        path = Path(str(raw))
+        if not path.is_absolute() and self.run.get("mcp_output_dir"):
+            path = Path(str(self.run["mcp_output_dir"])) / path
+        got = await self._file_cells(contract, path, sm.get("id_column"))
+        if got is None:
+            st.checks.append(("sample_cells", None, f"the cells of {path.name} could not be read"))
+            return
+        want = set(int(i) for i in sm["ids"])
+        missing, extra = len(want - got), len(got - want)
+        ok = not missing and not extra
+        st.checks.append(("sample_cells", ok, f"file holds {len(got)} cells; {missing} sampled cell(s) missing, "
+                                              f"{extra} unsampled"))
+        if not ok:
+            raise GatewayError(ErrorKind.tool_defect, f"the written file does not hold the sampled cells ({missing} "
+                               f"missing, {extra} not sampled)", tool=st.name,
+                               payload=tool_defect_payload("sample_cells", {"total": sm["n_total"]}, None,
+                                                           [d.id for d in b.defects]))
+
+    async def _file_cells(self, contract: ToolContract, path: Path, column: Any) -> set[int] | None:
+        """The cell keys (``column``) a written file holds, read by the data child; None when it cannot."""
+        cf = contract.binding.count_first
+        if cf is None or not column:
+            return None
+        try:
+            resp = await self.service.call(VERB_CENSUS_COUNT, CensusCountRequest(
+                table=cf.table, sample={"file": str(path), "column": str(column)}))
+        except ServiceError:
+            return None
+        cells = None
+        with contextlib.suppress(AttributeError):
+            cells = resp.file_cells
+        if not isinstance(cells, list):
+            return None
+        with contextlib.suppress(TypeError, ValueError):
+            return {int(v) for v in cells}
+        return None
 
     def _soma_tables(self, contract: ToolContract) -> list[str]:
         """The tables the tool reads whose layout resolves a moving release alias (SOMA: ``stable``)."""
@@ -856,6 +1052,43 @@ class DataGateway:
                                 f"{rel['drift'].get('now')} during this session")
         else:
             st.notes.append(f"{tables[0]} release unknown: {rel.get('reason') or resp.reason or 'not resolved'}")
+
+    def _release_tables(self, contract: ToolContract) -> list[str]:
+        """One table per live source the tool reads whose descriptor names a release (``layout.options.release``:
+        data release and software versions; ``release.per``: per-record releases): CT.gov, cBioPortal, PubMed."""
+        out: dict[str, str] = {}
+        for ref, t in contract.tables.items():
+            src = t.descriptor.source
+            try:
+                layout = self.registry.find("layout", t.layout) if self.registry is not None else None
+            except Exception:  # noqa: BLE001
+                layout = None
+            if src in out or not callable(getattr(layout, "release_info", None)):
+                continue
+            lay = getattr(t.physical_spec, "layout", None)
+            opts = lay.get("options") if isinstance(lay, Mapping) else getattr(lay, "options", None)
+            per = getattr(t.descriptor.release, "per", None)
+            if isinstance(opts, Mapping) and opts.get("release") or per:
+                out[src] = ref
+        return list(out.values())
+
+    async def _live_release(self, plan: CallPlan, st: _CallState, contract: ToolContract) -> None:
+        """An upstream- or derived-served call of a live source records what the source says about the data it read
+        (CR7): the data release (CT.gov ``dataTimestamp``; one cBioPortal study's ``importDate``), the API and software
+        versions (CT.gov ``apiVersion``, cBioPortal ``portalVersion``/``dbVersion``, the PubMed build) and the
+        per-record releases of the records the call names (cBioPortal studies). Provenance only: a failed request
+        leaves them unrecorded, never the call."""
+        for ref in self._release_tables(contract):
+            pred = st.predicate if st.predicate is not None and ref == (plan.bound_table or contract.bound_table) \
+                else None
+            try:
+                resp = await self.service.call(VERB_CENSUS_COUNT, CensusCountRequest(
+                    table=ref, predicate=to_json(pred) if pred is not None else None, release_only=True))
+            except ServiceError:
+                continue
+            rel = dict(resp.release or {})
+            if rel:
+                st.live_release[str(ref).split(".")[0]] = rel
 
     async def _recompute_genes(self, plan: CallPlan, st: _CallState, contract: ToolContract, obj: Any) -> None:
         """``count_first.recompute_genes``: genes_found/genes_not_found of the written file, from its
@@ -1076,7 +1309,10 @@ class DataGateway:
             try:
                 pred = soma_filter.parse(text) if is_present(text) else None
                 if pred is not None:
-                    cols = soma_filter.filter_columns(pred)
+                    # a key column (soma_joinid) has one value per cell: its "vocabulary" is the whole table (217 M
+                    # values on the real Census), so its values are never listed or checked
+                    keys = {_last(k) for t in contract.tables.values() for k in t.key if not k.endswith("#")}
+                    cols = [c for c in soma_filter.filter_columns(pred) if c not in keys]
                     if st.mode != "enforce":
                         # observe mode never asks the watched server for a vocabulary in the call path
                         vocab = {c: self._soma_vocab.get(c) for c in cols}
@@ -1412,7 +1648,7 @@ class DataGateway:
         for name, a in contract.args.items():
             if not is_present(plan.args_raw.get(name)):
                 continue
-            if remote and (a.engine_param or name in parsed):
+            if remote and (a.engine_param or name in parsed or _engine_column(a)):
                 continue
             # text matched over several columns (binds_any) is the source's matching, not one column's
             if a.role == "free_text" and (a.interpreted_as in ("engine", "regex") or not a.binds):
@@ -1420,6 +1656,23 @@ class DataGateway:
             if a.role == "unbound":
                 return f"{name} is not bound to a column"
         return None
+
+    @staticmethod
+    def _engine_matches(plan: CallPlan, contract: ToolContract, table: str | None) -> list[Predicate]:
+        """Engine text bound to one of the table's columns (``eligibility_text`` binds ``eligibilityCriteria``), as the
+        remote witness sends it: one phrase per value, matched by the source's engine on that column's field
+        (``AREA[EligibilityCriteria]"MGMT"``, as upstream quotes it). None of it is re-checked on the rows."""
+        out: list[Predicate] = []
+        for name, a in contract.args.items():
+            value = plan.args_sent.get(name)
+            col = _engine_column(a)
+            if not col or not is_present(value) or not table or not col.startswith(table + "."):
+                continue
+            column = col[len(table) + 1:]
+            for v in (value if isinstance(value, list) else [value]):
+                if isinstance(v, str) and v.strip():
+                    out.append(TextMatch(column, v.strip(), "exact"))
+        return out
 
     @staticmethod
     def _soma_parsed(contract: ToolContract, st: _CallState) -> list[str]:
@@ -1464,11 +1717,13 @@ class DataGateway:
             parts = [] if st.predicate is None else list(st.predicate.preds if isinstance(st.predicate, And)
                                                           else (st.predicate,))
             parts.extend(TextMatch(f"@{param}", text) for param, text in st.engine_text.items())
+            parts.extend(self._engine_matches(plan, contract, table))
             if self._soma_parsed(contract, st):
                 # the SOMA filter as the gateway parsed and sent it (is_primary_data == True included)
                 sp = st.soma_predicate
                 parts.extend(sp.preds if isinstance(sp, And) else (sp,))
             pred = None if not parts else (parts[0] if len(parts) == 1 else And(tuple(parts)))
+            st.remote_parts = list(parts)
             req = WitnessRequest(table=table, predicate=to_json(pred) if pred is not None else None,
                                  key=[], params=self._params(plan, st))
             try:
@@ -1527,6 +1782,38 @@ class DataGateway:
             st.witness_reason = st.witness.reason or "the witness could not count this call"
         st.checks.append(("witness_count", True if st.witness.total is not None else None,
                           f"total={st.witness.total} ({st.witness.total_method})"))
+
+    async def _ceiling_totals(self, plan: CallPlan, st: _CallState, contract: ToolContract, selected: str | None
+                              ) -> None:
+        """Under the evidence ceiling an upstream count bounds the availability date only (the overlay's
+        ``leakage_filter``: CT.gov ``StudyFirstPostDate``), while rows changed after the ceiling are withheld and a
+        native find counts only the records also changed by it (``rows: withhold``). The two totals of one filter
+        differ (a real RECRUITING count: 2,323 first posted by 2017-12-31, 87 also last updated by then); one more
+        remote count, with the change date bounded too, puts both in this call's header."""
+        lk = st.leakage
+        w = st.witness
+        table = selected or contract.bound_table
+        spec = lk.specs.get(table) if lk is not None and table else None
+        if lk is None or not lk.active or not lk.injected or spec is None or not spec.changed_at or \
+                spec.rows != "withhold" or w is None or w.total is None or not self._remote_countable(contract, table):
+            return
+        changed = str(spec.changed_at)
+        parts = [*st.remote_parts, Cmp(changed, "<=", lk.ceiling.isoformat())]      # type: ignore[union-attr]
+        req = WitnessRequest(table=table, predicate=to_json(And(tuple(parts)) if len(parts) > 1 else parts[0]),
+                             key=[], params=self._params(plan, st))
+        try:
+            both = await self.service.witness(req)
+        except ServiceError:
+            return
+        if both.total is None:
+            return
+        st.ceiling_totals = {"available": int(w.total), "available_and_unchanged": int(both.total),
+                             "ceiling": lk.ceiling.isoformat()}                     # type: ignore[union-attr]
+        avail = _last(str(spec.available_at).rsplit(".date", 1)[0])
+        st.notes.append(f"under the evidence ceiling {lk.ceiling} the total counts records available "
+                        f"({avail}) by then ({w.total}); {both.total} of them were also last changed "
+                        f"({_last(changed.rsplit('.date', 1)[0])}) by then: the rows a find returns under this "
+                        "ceiling (the others are withheld from rows)")
 
     async def _storage_types(self, table: str | None, st: _CallState) -> None:
         """The storage types of ``table``'s leaves (they type witness keys and values): from ``_stats`` when this
@@ -1845,6 +2132,18 @@ class DataGateway:
                        registry=self.registry)
         if cls.outcome == "oom":
             raise cls.error  # type: ignore[misc]
+        counted = (st.count_first or {}).get("n_cells") if isinstance(st.count_first, Mapping) else None
+        if cls.outcome == "not_found" and cls.explicit_not_found and isinstance(counted, int) and \
+                "cell" in str(cls.reason).lower():
+            # "No cells found for filter: ..." names the filter, not an identifier argument: the count-first count
+            # of that filter (same release) decides. 0 cells is an empty answer; more is a contradiction
+            if counted > 0:
+                return await self._contradiction(plan, st, contract, "W1", 0, f"{cls.reason}, but the count-first "
+                                                 f"count found {counted} cells")
+            st.notes.append(f"{cls.reason}: the count-first count found 0 cells for the filter in this release")
+            return self._result(plan, st, obj=cls.obj if cls.is_json else {}, rows=[], counters=counters,
+                                served_by=served_by, total=0, total_method="count_first", status="empty",
+                                text_rows=True)
         if cls.outcome in ("not_found", "source_error"):
             raise cls.error  # type: ignore[misc]
         if cls.outcome == "contradiction":
@@ -1926,6 +2225,7 @@ class DataGateway:
                                 raw: RawResult, counters: Counters) -> DataResult:
         b = contract.binding
         await self._recompute_genes(plan, st, contract, obj)
+        await self._sampled_result(plan, st, contract, obj)
         mapper = self._mapper(contract)
         paths = b.result.row_paths
         record = b.result.kind == "record"
@@ -1990,8 +2290,9 @@ class DataGateway:
                 st.short_page = detail
             else:
                 return await self._contradiction(plan, st, contract, check, len(rows_now), detail)
-        # T7-T14 and placement
-        return self._finish_rows(plan, st, contract, obj, rows_now, counters, served_by="upstream",
+        # T7-T14 and placement (a pull of the derived sample is served derived: the gateway chose its cells)
+        return self._finish_rows(plan, st, contract, obj, rows_now, counters,
+                                 served_by="derived" if st.sample else "upstream",
                                  groups=processed, mapper=mapper, record=record, witness=w, returned_raw=returned_raw)
 
     def _phantom_arg(self, contract: ToolContract) -> str | None:
@@ -2364,12 +2665,15 @@ class DataGateway:
         if lname and contract.args[lname].limit_grain:
             limit_grain = contract.args[lname].limit_grain
         sections: dict[str, dict[str, Any]] = {}
+        live_sections: dict[str, dict[str, Any]] = {}
         for sname, sec in d.sections.items():
             key = {col: (self._stored(st.results[arg], sec.table) if arg in st.results else
                          st.values.get(arg, plan.args_sent.get(arg, plan.gateway_args.get(arg))))
                    for col, arg in sec.key_from_args.items()}
-            sections[sname] = {"path": sec.path, "table": sec.table, "verb": sec.verb, "single": sec.single,
-                               "key": json_value(key), "value": sec.value}
+            spec = {"path": sec.path, "table": sec.table, "verb": sec.verb, "single": sec.single,
+                    "key": json_value(key), "value": sec.value}
+            # a live table's section is one more read of that table (the data child serves no sections on it)
+            (live_sections if self._live_table(sec.table) else sections)[sname] = spec
         anchor = None
         anchors = [{"name": arg, "column": column, "value": json_value(value)}
                    for arg, (column, value) in st.anchors.items()]     # every anchor (a pair for a similarity)
@@ -2401,8 +2705,9 @@ class DataGateway:
                            params=self._params(plan, st),
                            budget_bytes=self.settings.witness.repair_max_bytes)
         resp = await self.service.serve(req)
-        if resp.error:                                 # the handler refused the request: its own kind, not an outage
-            raise GatewayError.from_envelope(resp.error).with_tool(st.name)
+        if _serve_error(resp):                         # the handler refused the request: its own kind, not an outage
+            raise GatewayError.from_envelope(self._as_argument(contract, d.table, _serve_error(resp))).with_tool(
+                st.name)
         if str(resp.reason or "").startswith("too_large"):
             # over the scan budget the child answers no rows and no total: a refusal, never an empty answer
             why = str(resp.reason).partition(":")[2].strip() or str(resp.reason)
@@ -2411,6 +2716,14 @@ class DataGateway:
                                    self.settings.witness.repair_max_bytes / 1e6, 1),
                                    hint="narrow the query (a more specific filter, a smaller limit), or read the "
                                         "rows with mcp__data__find", alternative="mcp__data__find"))
+        if isinstance(resp.rows, list) and verb == "find" and self._live_table(d.table) and not (
+                d.aggregate or d.split or d.nest or d.group_by or d.explode):
+            # rows of a live table as the source holds them: a key the call names and the rows lack is unknown there
+            self._requested_missing(plan, st, contract, d, pred, resp)   # before the other reads: refused early
+        if d.compose and isinstance(resp.rows, list):
+            await self._compose(plan, st, contract, d, pred, resp)
+        if live_sections:
+            await self._live_sections(st, live_sections, resp)
         first = resp.rows[0] if isinstance(resp.rows, list) and resp.rows else None
         match = first.get("_match") if isinstance(first, Mapping) else None
         if st.search_text and isinstance(match, Mapping) and match.get("class") != "exact":
@@ -2452,6 +2765,134 @@ class DataGateway:
         st.serve_negated = int((resp.sections.get("_excluded") or {}).get("negated") or 0)
         st.transforms.append(f"served {d.verb} on {d.table}")
         return obj, rows, resp
+
+    @staticmethod
+    def _as_argument(contract: ToolContract, table: str, env: Mapping[str, Any]) -> dict[str, Any]:
+        """A derived read's error names a column of its table (``studyId``); the caller passed an argument
+        (``study_id``): the envelope names the argument that binds that column."""
+        out = dict(env)
+        col = out.get("argument")
+        arg = next((n for n in contract.args for tb, c in contract.arg_columns(n) if tb == table and c == col),
+                   None) if col else None
+        if arg is not None:
+            out["argument"] = arg
+        return out
+
+    def _live_table(self, ref: str | None) -> bool:
+        """The table's layout reads a live source page by page (``live`` without ``scan``: CT.gov, cBioPortal)."""
+        if not ref or self.registry is None:
+            return False
+        try:
+            t = self.catalog.table(ref)
+            layout = self.registry.find("layout", t.layout)
+        except Exception:  # noqa: BLE001
+            return False
+        caps = set(getattr(layout, "capabilities", ()) or ())
+        return "live" in caps and "scan" not in caps
+
+    async def _compose(self, plan: CallPlan, st: _CallState, contract: ToolContract, d: Any, pred: Predicate | None,
+                       resp: ServeResponse) -> None:
+        """``derived.compose``: each sub-derivation reads its own table with the conjuncts of the call that name its
+        columns (and the key values of the rows read so far), and its rows are merged into the main rows on the sub
+        table's key (a later sub-read wins a name both carry, as upstream's ``data.update``). get_clinical_data: the
+        study's samples, then their sample-level attributes on ``(studyId, sampleId)``, then their patients'
+        attributes on ``(studyId, patientId)``."""
+        rows = [r for r in resp.rows if isinstance(r, dict)]    # type: ignore[union-attr]
+        for sub in d.compose:
+            try:
+                t = self.catalog.table(sub.table)
+            except Exception as exc:  # noqa: BLE001
+                raise GatewayError(ErrorKind.tool_defect, f"compose: {sub.table} is not in the catalog ({exc})",
+                                   tool=st.name) from None
+            key = [k for k in t.key if not k.endswith("#")]
+            names = set(key) | set(t.columns) | set(getattr(t.spec.pivot, "index", None) or [])
+            parts = [p for p in (list(pred.preds) if isinstance(pred, And) else [pred] if pred is not None else [])
+                     if set(_columns_of(p)) <= names]
+            fixed = {c for p in parts for c in _columns_of(p)}
+            for k in key:
+                values = sorted({str(r.get(k)) for r in rows if r.get(k) not in (None, "")})
+                if k not in fixed and values:
+                    parts.append(In(k, tuple(values)))
+            sub_pred = None if not parts else (parts[0] if len(parts) == 1 else And(tuple(parts)))
+            req = ServeRequest(table=sub.table, verb="find", predicate=to_json(sub_pred) if sub_pred else None,
+                               columns=list(sub.columns), budget_bytes=self.settings.witness.repair_max_bytes)
+            got = await self.service.serve(req)
+            if _serve_error(got):
+                raise GatewayError.from_envelope(_serve_error(got)).with_tool(st.name)
+            if got.truncated or str(got.reason or "").startswith("too_large"):
+                st.force_partial = True
+                st.notes.append(f"{sub.table}: not every row was read within the source's budget; some rows lack its "
+                                "fields")
+            by_key = {tuple(str(r.get(k)) for k in key): r for r in got.rows if isinstance(r, Mapping)}
+            for r in rows:
+                hit = by_key.get(tuple(str(r.get(k)) for k in key))
+                if hit is not None:
+                    r.update({c: v for c, v in hit.items() if c not in key})
+            st.transforms.append(f"composed {sub.table} on ({', '.join(key)})")
+
+    async def _live_sections(self, st: _CallState, live: Mapping[str, Mapping[str, Any]], resp: ServeResponse) -> None:
+        """Sections over live tables, each read on its own (a ``value`` keeps that field of each row: get_clinical_data's
+        ``clinical_attributes`` is the list of the study's attribute ids, as upstream lists them)."""
+        meta = resp.sections.setdefault("_section_meta", {})
+        for name, sec in live.items():
+            parts = [Eq(str(c), v) for c, v in dict(sec.get("key") or {}).items()]
+            pred = None if not parts else (parts[0] if len(parts) == 1 else And(tuple(parts)))
+            try:
+                got = await self.service.serve(ServeRequest(table=str(sec["table"]), verb="find",
+                                                            predicate=to_json(pred) if pred else None))
+            except ServiceError as exc:
+                resp.sections[name] = {"_vbt_unavailable": f"{sec['table']} not read: {exc.message[:200]}"}
+                meta[name] = {"status": "not_ready", "table": sec["table"]}
+                continue
+            err = _serve_error(got)
+            if err:
+                resp.sections[name] = {"_vbt_unavailable": str(err.get("message") or err)[:300]}
+                meta[name] = {"status": "not_ready", "table": sec["table"]}
+                continue
+            rows = [r for r in got.rows if isinstance(r, Mapping)]
+            field = sec.get("value")
+            resp.sections[name] = [r.get(field) for r in rows] if field else rows
+            meta[name] = {"status": "ok" if rows else "empty", "table": sec["table"], "total": got.total,
+                          "truncated": bool(got.truncated)}
+
+    def _requested_missing(self, plan: CallPlan, st: _CallState, contract: ToolContract, d: Any,
+                           pred: Predicate | None, resp: ServeResponse) -> None:
+        """Keys the call names (every key column of the derived table fixed by ``eq``/``in``) that the derived rows
+        do not hold: unknown to the source. Refused ``not_found`` naming them (``on_unknown_items``), as upstream's
+        phantom rows are, unless the read was cut by the source's budget (then they are only unread)."""
+        try:
+            t = self.catalog.table(d.table)
+        except Exception:  # noqa: BLE001
+            return
+        key = [k for k in t.key if not k.endswith("#")]
+        asked: dict[str, list[Any]] = {}
+        for p in (list(pred.preds) if isinstance(pred, And) else [pred] if pred is not None else []):
+            col = getattr(p, "column", None)
+            if col in key and isinstance(p, Eq):
+                asked[col] = [p.value]
+            elif col in key and isinstance(p, In):
+                asked[col] = list(getattr(p, "values", ()))
+        if set(asked) != set(key) or resp.truncated:
+            return
+        combos: list[tuple[Any, ...]] = [()]
+        for k in key:
+            combos = [(*c, v) for c in combos for v in asked[k]]
+        seen = {tuple(str(r.get(k)) for k in key) for r in resp.rows if isinstance(r, Mapping)}  # type: ignore[union-attr]
+        missing = [c for c in combos if tuple(str(v) for v in c) not in seen]
+        if not missing:
+            return
+        varying = [i for i, k in enumerate(key) if len(asked[k]) > 1] or [len(key) - 1]
+        items = [c[varying[0]] for c in missing]
+        arg = next((n for n in contract.args for tb, col in contract.arg_columns(n)
+                    if tb == d.table and col == key[varying[0]]), None)
+        if contract.binding.result.on_unknown_items == "not_found":
+            payload = not_found_payload(arg or "", items, None, [], ["derived: no such record at the source"], [],
+                                        None, d.table)
+            payload["items"] = items
+            raise GatewayError(ErrorKind.not_found, f"{len(items)} requested item(s) do not exist: "
+                               f"{', '.join(map(str, items[:5]))}", tool=st.name, payload=payload)
+        st.notes.append(f"{len(items)} requested item(s) not at the source")
+        st.not_found_items = items
 
     # ---------------------------------------------------------------- shared tail
 
@@ -2911,6 +3352,8 @@ class DataGateway:
                 header.notes = list(dict.fromkeys([*map(str, nh["notes"]), *header.notes]))
             if isinstance(nh.get("leakage"), Mapping):
                 header.extra["leakage"] = dict(nh["leakage"])
+        if st.ceiling_totals:
+            header.extra["ceiling_totals"] = dict(st.ceiling_totals)
         if st.soft_sections:
             header.extra["unavailable_sections"] = dict(st.soft_sections)
         if st.section_meta:
@@ -2964,6 +3407,9 @@ class DataGateway:
             return str(cf["resolved"])
         if st.census_release:
             return st.census_release
+        lr = (st.live_release.get(str(getattr(desc, "source", None))) or {}) if st.live_release else {}
+        if lr.get("resolved"):
+            return str(lr["resolved"])                 # CT.gov dataTimestamp; the one cBioPortal study's importDate
         return None
 
     def _record(self, plan: CallPlan, st: _CallState, contract: ToolContract, t: Any, *, status: str,
@@ -2996,6 +3442,11 @@ class DataGateway:
                                              else None)))
         o = _rank_json(order) if order is not None else {}
         versions = _record_versions(t, rows, cols)
+        lr = st.live_release.get(desc.source) or {} if desc is not None else {}
+        if isinstance(lr.get("per"), Mapping):
+            # the records the call depends on (a cBioPortal study's importDate): replay reports a moved one
+            versions = {**dict(versions or {}), **{str(k): {str(i): str(v) for i, v in dict(m).items()}
+                                                   for k, m in lr["per"].items() if isinstance(m, Mapping)}}
         if native is not None:
             # the child's own header is the truth for a native tool: its source and release, totals and serving
             served_by = str(native.get("served_by") or served_by)
@@ -3006,6 +3457,7 @@ class DataGateway:
             served_by=served_by,
             source=SourceInfo(name=(native or {}).get("source") or (desc.source if desc else None),
                               release=(native or {}).get("release") or self._release_of(desc, st),
+                              versions={str(k): str(v) for k, v in dict(lr.get("versions") or {}).items()},
                               descriptor_sha256=self._safe_digest(desc.source) if desc else None,
                               overlay_sha256=self.catalog.overlay_digest(plan.server),
                               serving_source=str(t.served_from) if t is not None and t.served_from else None),
@@ -3241,6 +3693,42 @@ def _preview_cap(preview: Any, obj: Any) -> int | None:
         caps = [int(n) for path, n in preview.items() if isinstance(jp_first(obj, path), list)]
         return min(caps) if caps else None
     return None
+
+
+def _serve_error(resp: Any) -> dict[str, Any] | None:
+    """The typed error a ``_serve`` reply carries: ``error``, or ``sections["_error"]`` (how a live read's error
+    crosses MCPBridge, which reads a reply with a top-level ``error`` key as a failed call)."""
+    err = getattr(resp, "error", None) or (getattr(resp, "sections", None) or {}).get("_error")
+    return dict(err) if isinstance(err, Mapping) else None
+
+
+def _columns_of(p: Any) -> set[str]:
+    from ..predicate import columns as predicate_columns
+
+    try:
+        return set(predicate_columns(p))
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _engine_column(a: Any) -> str | None:
+    """The column (``source.table.path``) a free-text argument matched by the source's engine binds, else None."""
+    if a.role == "free_text" and a.interpreted_as == "engine" and not a.engine_param and isinstance(a.binds, str) \
+            and not a.escape:
+        return a.binds
+    return None
+
+
+def _sample_facet(cf: Any) -> dict[str, Any] | None:
+    """``count_first.sample`` as a mapping (None when the binding declares none)."""
+    facet = None
+    with contextlib.suppress(AttributeError):
+        facet = cf.sample
+    if facet is None:
+        return None
+    if hasattr(facet, "model_dump"):
+        return dict(facet.model_dump(exclude_none=True))
+    return dict(facet) if isinstance(facet, Mapping) else {}
 
 
 def _phantom_label(row: Any, contract: ToolContract) -> Any:

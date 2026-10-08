@@ -1,0 +1,261 @@
+{
+ "scenario": "ceiling_count",
+ "retrieved": "2026-10-08T20:41:03Z",
+ "seconds": 0.65,
+ "source": "recorded by S1 (scratchpad record_round3.py) through the shipped descriptors",
+ "available": 2323,
+ "available_and_unchanged": 87,
+ "exchanges": [
+  {
+   "url": "https://clinicaltrials.gov/api/v2/studies",
+   "params": {
+    "format": "json",
+    "filter.overallStatus": "RECRUITING",
+    "filter.advanced": "AREA[StudyFirstPostDate]RANGE[MIN,2017-12-31]",
+    "countTotal": "true",
+    "pageSize": "0",
+    "fields": "NCTId"
+   },
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:41:09 GMT",
+    "content-type": "application/json"
+   },
+   "body": {
+    "totalCount": 2323,
+    "studies": [
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02880163"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02344121"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02534649"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT03383978"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT03059043"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02872987"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02927158"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02994121"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT03024671"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT01204944"
+       }
+      },
+      "hasResults": null
+     }
+    ],
+    "nextPageToken": "ZVNj7o2Elu8o3lpwRtv5prbumpOQJJxuZvai1fg"
+   },
+   "bytes": 790,
+   "trimmed": "each study keeps protocolSection.identificationModule, statusModule and hasResults"
+  },
+  {
+   "url": "https://clinicaltrials.gov/api/v2/version",
+   "params": {},
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:41:09 GMT",
+    "content-type": "application/json"
+   },
+   "body": {
+    "apiVersion": "2.0.5",
+    "dataTimestamp": "2026-10-08T09:00:05"
+   },
+   "bytes": 71
+  },
+  {
+   "url": "https://clinicaltrials.gov/api/v2/studies",
+   "params": {
+    "format": "json",
+    "filter.overallStatus": "RECRUITING",
+    "filter.advanced": "AREA[LastUpdatePostDate]RANGE[MIN,2017-12-31] AND AREA[StudyFirstPostDate]RANGE[MIN,2017-12-31]",
+    "countTotal": "true",
+    "pageSize": "0",
+    "fields": "NCTId"
+   },
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:41:09 GMT",
+    "content-type": "application/json"
+   },
+   "body": {
+    "totalCount": 87,
+    "studies": [
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT03125980"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02701036"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02259556"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02137668"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT03222375"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02518542"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT03371121"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02797366"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT03019692"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02650453"
+       }
+      },
+      "hasResults": null
+     }
+    ],
+    "nextPageToken": "ZVNj7o2Elu8o3lpwRtv5prbumpOQJJxoY_Ci3PEW"
+   },
+   "bytes": 789,
+   "trimmed": "each study keeps protocolSection.identificationModule, statusModule and hasResults"
+  }
+ ],
+ "result": {
+  "header": {
+   "v": 1,
+   "status": "ok",
+   "source": "clinicaltrials_gov@2026-10-08T09:00:05",
+   "tables": [
+    "studies"
+   ],
+   "key": [
+    "protocolSection.identificationModule.nctId"
+   ],
+   "total": 2323,
+   "total_method": "upstream",
+   "coverage": "unknown",
+   "coverage_statement": "Studies registered on ClinicalTrials.gov at the recorded data timestamp; registry search expands synonyms, so a match is not a literal text match.",
+   "served_by": "upstream",
+   "ceiling_totals": {
+    "available": 2323,
+    "available_and_unchanged": 87,
+    "ceiling": "2017-12-31"
+   },
+   "notes": [
+    "evidence ceiling 2017-12-31 applied upstream through advanced_filter",
+    "under the evidence ceiling 2017-12-31 the total counts records available (studyFirstPostDateStruct) by then (2323); 87 of them were also last changed (lastUpdatePostDateStruct) by then: the rows a find returns under this ceiling (the others are withheld from rows)"
+   ],
+   "cite": "cite rows by key",
+   "prov": "dp_ad8f0e74ffb8"
+  }
+ }
+}

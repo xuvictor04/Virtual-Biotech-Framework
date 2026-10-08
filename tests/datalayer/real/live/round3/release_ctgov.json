@@ -1,0 +1,32 @@
+{
+ "scenario": "release_ctgov",
+ "retrieved": "2026-10-08T20:41:03Z",
+ "seconds": 0.25,
+ "source": "recorded by S1 (scratchpad record_round3.py) through the shipped descriptors",
+ "exchanges": [
+  {
+   "url": "https://clinicaltrials.gov/api/v2/version",
+   "params": {},
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:41:08 GMT",
+    "content-type": "application/json"
+   },
+   "body": {
+    "apiVersion": "2.0.5",
+    "dataTimestamp": "2026-10-08T09:00:05"
+   },
+   "bytes": 71
+  }
+ ],
+ "result": {
+  "release": {
+   "requested": null,
+   "resolved": "2026-10-08T09:00:05",
+   "release_confidence": "exact",
+   "versions": {
+    "apiVersion": "2.0.5"
+   }
+  }
+ }
+}

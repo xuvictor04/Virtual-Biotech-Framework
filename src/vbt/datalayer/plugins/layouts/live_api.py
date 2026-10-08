@@ -18,8 +18,10 @@ compiled from the bound predicates, §11.6). Options (``layout: {plugin: live_ap
     filters / remote_names / essie_param / text_params        how predicates compile (rest_json)
     count:           {endpoint, params: {countTotal: "true", pageSize: "0", fields: NCTId}, total_path: ...}
                      (or header: total-count, for APIs that report the total in a response header)
-    release:         {endpoint: version, path: $.dataTimestamp}   (the source's data release; ``_live_find``
-                                                                  reports it as the rows' ``as_of``)
+    release:         {endpoint: version, path: $.dataTimestamp, versions: {apiVersion: $.apiVersion}}
+                     (the source's data release, which ``_live_find`` reports as the rows' ``as_of``, and
+                     the software versions provenance records; a source without a global release, such as
+                     cBioPortal whose data release is each study's importDate, names only ``versions``)
 
 Requests honour the descriptor's ``budget`` (:class:`~vbt.datalayer.descriptor.models.RemoteBudget`):
 ``requests_per_min`` spaces requests per base URL, ``max_requests_per_call`` and ``max_pages`` bound one
@@ -77,7 +79,7 @@ RELEASE_TTL_S = 600.0                          # how long a source's release (op
 _LOCK = threading.Lock()
 _LAST_REQUEST: dict[str, float] = {}
 _AS_OF: dict[str, str] = {}
-_RELEASES: dict[str, tuple[float, str | None]] = {}
+_RELEASES: dict[str, tuple[float, dict[str, Any]]] = {}   # release URL -> (monotonic time, {release, versions})
 
 
 class RemoteError(Exception):
@@ -407,21 +409,36 @@ class LiveApiLayout(PluginBase):
     def release(self, spec: LayoutSpec, budget: Any = None, *, max_age_s: float | None = None) -> str | None:
         """The source's data release (``options.release: {endpoint, path}``), e.g. CT.gov ``dataTimestamp``.
         With ``max_age_s`` a release read less than that many seconds ago is reused (no request)."""
-        rel = dict(self._options(spec).get("release") or {})
-        if not rel.get("path"):
+        if not dict(self._options(spec).get("release") or {}).get("path"):
             return None
+        return self.release_info(spec, budget, max_age_s=max_age_s).get("release")
+
+    def release_info(self, spec: LayoutSpec, budget: Any = None, *, max_age_s: float | None = None
+                     ) -> dict[str, Any]:
+        """``{release, versions}`` from one request to ``options.release.endpoint``: the data release at ``path``
+        and the software versions at ``versions: {name: path}`` (CT.gov ``apiVersion``; cBioPortal ``portalVersion``
+        and ``dbVersion``, whose data release is per study; the PubMed build). Reused for ``max_age_s`` seconds."""
+        rel = dict(self._options(spec).get("release") or {})
+        if not rel.get("path") and not rel.get("versions"):
+            return {}
         url = self._url(spec, rel.get("endpoint"))
         if not url:
-            return None
+            return {}
         if max_age_s is not None:
             hit = _RELEASES.get(url)
             if hit is not None and time.monotonic() - hit[0] <= max_age_s:
-                return hit[1]
+                return dict(hit[1])
         payload, _headers = self._get(url, dict(rel.get("params") or {}), Budget.of(budget))
-        got = [v for v in jp_values(payload, str(rel["path"])) if v not in (None, "")]
-        value = str(got[0]) if got else None
-        _RELEASES[url] = (time.monotonic(), value)
-        return value
+
+        def first(path: Any) -> str | None:
+            got = [v for v in jp_values(payload, str(path)) if v not in (None, "")]
+            return str(got[0]) if got else None
+
+        out: dict[str, Any] = {"release": first(rel["path"]) if rel.get("path") else None}
+        versions = {str(k): first(p) for k, p in dict(rel.get("versions") or {}).items()}
+        out["versions"] = {k: v for k, v in versions.items() if v is not None}
+        _RELEASES[url] = (time.monotonic(), dict(out))
+        return out
 
     @classmethod
     def conformance_cases(cls) -> Any:
