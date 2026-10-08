@@ -525,7 +525,7 @@ def test_live_scenarios(name: str, tmp_path: Path) -> None:
     elif name == "cbio_patients_paged":
         assert len(out["rows"]) == 6 and out["truncated"] and out["total"] > 6
     elif name == "ctgov_lookup_unknown":
-        assert out["rows"] == []
+        assert out["kind"] == "not_found" and "NCT99999999" in out["message"]      # the registry holds no such key
     else:
         assert out["rows"], out
 
