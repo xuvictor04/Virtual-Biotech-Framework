@@ -1,15 +1,23 @@
 """Real Open Targets 25.09 through the unmodified upstream servers, the gateway and the data child.
 
 Offline (always): regression tests for what the real tables showed, each on the smallest fixture with the
-real shape:
+real shape (every 25.09 shard is a single row group; target and expression nest lists of structs):
 
-* R9 looked references up with a ``scan`` whose ``In`` predicate is tested row by row against every value of
-  the chunk in Python: the deep check of target_prioritisation (78,726 ``targetId`` -> ``target.id``) took
-  51 s for a 1 MB table. Flat string and integer target columns are now matched with Arrow ``is_in``.
+* readiness checks: R9 references matched with Arrow ``is_in`` (target_prioritisation deep 51 s -> 2 s); samples
+  that convert only the sampled rows of a one-group shard (study ``_stats`` > 4.6 GB -> 1.2 GB); item-table key
+  checks sampled by parent row (target standard 184 s -> 52 s); flat key uniqueness and container counts on Arrow
+  arrays; content-identity samples drawn in Arrow (interaction_evidence > 15 min -> 97 s); positional item keys;
+* serving: scans convert a row group in slices (MemoryError on interaction), predicates on columns that only say
+  what null means are pushed to Arrow, search ranks a row's own labels only (TP63 before TP53), resolver indexes
+  are reused across sessions;
+* memory: the shipped factors against a real load (target, 3.0 GB), flat values cost their slot, calibration
+  samples bounded by rows and by the seed budget.
 
 ``VBT_DL_REAL_DATA=<dir>`` (the ``open_targets/25.09`` output directory downloaded from
 https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/, or a ``data/real`` root holding it):
-the same checks on the real tables.
+the checks on the real tables, and the six correctness tests (DATA_LAYER.md §19) through the unmodified target
+and drug servers with the gateway enforcing and without it (those also need the upstream checkout: the submodule
+or ``VBT_UPSTREAM``). Each server stays under 5 GB and the data child under 3 GB.
 """
 
 from __future__ import annotations
@@ -277,6 +285,44 @@ def test_flat_key_uniqueness_is_counted_on_arrow_arrays(tmp_path, monkeypatch):
     assert sorted(checks(fast, "R5b")[0].detail.split(": ", 1)[1].split(", ")) == \
         sorted(checks(slow, "R5b")[0].detail.split(": ", 1)[1].split(", "))
     assert checks(fast, "R5")[0].detail == checks(slow, "R5")[0].detail
+
+
+def test_a_wide_key_is_counted_on_arrow_arrays_too(tmp_path, monkeypatch):
+    """25.09 interaction's key has seven parts (source, both interactors, both genes, both roles): the product of
+    their cardinalities (about 5e21) did not fit 63 bits, so its 14.5 M keys were rendered in Python, minutes of
+    the genetics and interaction session's first check. Codes combined so far are encoded again when the next part
+    would overflow; the duplicates and examples are the scan's."""
+    n = 60_000
+    parts = ["sourceDatabase", "intA", "intB", "targetA", "targetB"]
+    rows = [{"sourceDatabase": ("intact", "string")[i % 2], "intA": f"P{i:06d}", "intB": f"Q{(i * 7) % n:06d}",
+             "targetA": f"ENSG{i:011d}", "targetB": None if i % 9 == 0 else f"ENSG{(i * 3) % n:011d}"} for i in range(n)]
+    rows += [dict(rows[5]), dict(rows[9]), dict(rows[9]), dict(rows[n - 1])]
+    assert 2 * n ** 4 > 2 ** 63                     # source x four near-unique parts
+
+    def build(tmp: Path) -> ServiceContext:
+        write(tmp, "edges", rows[: n // 2], part="part-00000")
+        write(tmp, "edges", rows[n // 2:], part="part-00001", row_group_size=4096)
+        return make_ctx(tmp, {"edges": {"kind": "fact", "path": "edges", "grain": "pair",
+                                        "key": {"columns": parts, "nullable": ["targetB"], "check": "full"},
+                                        "columns": {p: {"role": "identifier"} for p in parts}}})
+
+    scans: list[Any] = []
+    real_scan = TableReader.scan
+
+    def counting_scan(self, predicate=None, **kw):
+        if self.ref == "s.edges" and kw.get("columns") == []:
+            scans.append(1)
+        return real_scan(self, predicate, **kw)
+
+    monkeypatch.setattr(TableReader, "scan", counting_scan)
+    fast = check_table(build(tmp_path / "fast"), "s.edges", "standard")
+    assert not scans, "the key was rendered row by row"
+    monkeypatch.setattr(_checks, "_arrow_key_duplicates", lambda *a, **k: None)
+    slow = check_table(build(tmp_path / "slow"), "s.edges", "standard")
+    assert scans
+    assert fast.key_check.duplicates == slow.key_check.duplicates == 4
+    assert sorted(checks(fast, "R5b")[0].detail.split(": ", 1)[1].split(", ")) == \
+        sorted(checks(slow, "R5b")[0].detail.split(": ", 1)[1].split(", "))
 
 
 def _evidence(tmp: Path, n: int) -> ServiceContext:

@@ -908,14 +908,16 @@ def _arrow_key_duplicates(reader: TableReader, key: Sequence[str], types: Sequen
     with NULLS NOT DISTINCT: each part is dictionary-encoded over the whole table and the codes are combined into one
     integer per row, whose repeats are the duplicate keys. Rendering every key in Python took 3.4 minutes of a
     standard check of the 4.0 M-row 25.09 association_overall_direct table, and the indirect tables hold 13 M rows.
-    None when a part is a partition or a cleaned column (in-band unknowns), the parts do not read as aligned
-    arrays, or the combined codes would not fit 63 bits: the caller scans the rows instead."""
+    When the product of the parts' cardinalities passes 63 bits (the seven-part key of the 14.5 M-row interaction
+    table: about 5e21) the codes combined so far are encoded again, which bounds them by the row count.
+    None when a part is a partition or a cleaned column (in-band unknowns) or the parts do not read as aligned
+    arrays: the caller scans the rows instead."""
     import pyarrow as pa
     import pyarrow.compute as pc
 
     if not key or any(k in reader.partitions or reader._unclean(k) for k in key):
         return None
-    codes: list[Any] = []
+    indices: list[Any] = []
     dictionaries: list[Any] = []
     try:
         layout = None
@@ -933,27 +935,33 @@ def _arrow_key_duplicates(reader: TableReader, key: Sequence[str], types: Sequen
             enc = pc.dictionary_encode(pa.chunked_array(chunks).combine_chunks())
             del chunks
             dictionaries.append(enc.dictionary)
-            codes.append(pc.add(pc.fill_null(enc.indices.cast(pa.int64()), -1), 1))     # 0 is null
+            indices.append(enc.indices)                 # int32, null where the part is null
+        combined: Any = None
         width = 1
-        for d in dictionaries:
-            width *= len(d) + 1
-        if width >= 2 ** 63:
-            return None
-        combined = codes[0]
-        for c, d in zip(codes[1:], dictionaries[1:]):
-            combined = pc.add(pc.multiply(combined, len(d) + 1), c)
+        for idx, d in zip(indices, dictionaries):
+            w = len(d) + 1
+            code = pc.add(pc.fill_null(idx.cast(pa.int64()), -1), 1)                  # 0 is null
+            if combined is None:
+                combined, width = code, w
+                continue
+            if width * w >= 2 ** 63:
+                again = pc.dictionary_encode(combined)
+                combined, width = again.indices.cast(pa.int64()), len(again.dictionary)
+                if width * w >= 2 ** 63:
+                    return None
+            combined = pc.add(pc.multiply(combined, w), code)
+            width *= w
         rows = len(combined)
         counts = pc.value_counts(combined)
         repeated = counts.filter(pc.greater(counts.field("counts"), 1))
         dups = int(pc.sum(pc.subtract(repeated.field("counts"), 1)).as_py() or 0)
         examples: list[str] = []
-        for code, n in zip(repeated.field("values").slice(0, 5).to_pylist(),
-                           repeated.field("counts").slice(0, 5).to_pylist()):
-            parts = []
-            for d in reversed(dictionaries):
-                code, i = divmod(code, len(d) + 1)
-                parts.append(None if i == 0 else d[i - 1].as_py())
-            examples.extend([canonical(list(reversed(parts)), types)] * (n - 1))   # one per repeat, as a scan lists
+        for value, n in zip(repeated.field("values").slice(0, 5).to_pylist(),
+                            repeated.field("counts").slice(0, 5).to_pylist()):
+            row = pc.index(combined, value).as_py()
+            parts = [None if not idx[row].is_valid else d[idx[row].as_py()].as_py()
+                     for idx, d in zip(indices, dictionaries)]
+            examples.extend([canonical(parts, types)] * (n - 1))   # one per repeat, as a scan lists
         examples = examples[:5]
     except (ServiceError, FormatError, ValueError, TypeError, NotImplementedError, pa.ArrowException):
         return None
