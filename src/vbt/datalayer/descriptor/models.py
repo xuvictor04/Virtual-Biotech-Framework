@@ -689,9 +689,11 @@ class SourceDescriptor(Strict):
     def _acquisition_tables(self) -> "SourceDescriptor":
         if self.acquisition is None:
             return self
-        unknown = [t for t in self.acquisition.tables if t not in self.tables]
-        if unknown:
-            raise ValueError(f"acquisition.tables names tables the descriptor does not declare: {unknown}")
+        # a descriptor narrowed to fewer tables keeps the others' files as optional download groups (acquired only
+        # when named), so a prepare step that reads them still resolves
+        for name in [t for t in self.acquisition.tables if t not in self.tables]:
+            entry = self.acquisition.tables.pop(name)
+            self.acquisition.extra[name] = entry.model_copy(update={"optional": True})
         items = [t for t in self.acquisition.tables if self.tables[t].items_of is not None]
         if items:
             raise ValueError(f"acquisition.tables names item tables (they share their parent's files): {items}")

@@ -92,7 +92,7 @@ def auto_decision(policy: Mapping[str, Any] | None, nbytes: int | None) -> tuple
     acquisition of ``nbytes``: ``off``, ``ask`` (queued for an operator's approval), ``auto`` (the system acquires
     it between turns) or ``over_budget``."""
     auto = (policy or {}).get("auto", "off")
-    auto = {False: "off", True: "under_budget"}.get(auto, auto) if isinstance(auto, bool) else str(auto)
+    auto = "off" if isinstance(auto, bool) else str(auto)       # YAML `off` is false; `on` names no policy
     if auto == "ask":
         return "ask", "data.acquisition.auto is ask: ask the operator to approve it (`vbt data acquire --pending`)"
     if auto == "under_budget":

@@ -101,9 +101,11 @@ class AcquisitionSettings:
 
         root = raw.get("root") or _config._expand("${VBT_DATA_DIR:-data}/sources", variables)
         auto = raw.get("auto", "off")
-        auto = {False: "off", True: "under_budget"}.get(auto, auto) if isinstance(auto, bool) else str(auto)
+        # YAML 1.1 reads an unquoted `off` as false: map it back; `on`/true names no policy and is refused
+        auto = "off" if auto is False else auto
         if auto not in ("off", "ask", "under_budget"):
-            raise ValueError(f"data.acquisition.auto must be off, ask or under_budget (got {auto!r})")
+            raise ValueError(f"data.acquisition.auto must be off, ask or under_budget (got {auto!r}); quote the "
+                             "value in YAML")
         workers = raw.get("workers", "auto")
         if workers in (None, "auto"):
             workers = max(1, min(32, 4 * (os.cpu_count() or 1)))

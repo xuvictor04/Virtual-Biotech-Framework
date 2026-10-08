@@ -183,7 +183,6 @@ def _base_desc(**acq: Any) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("acq, message", [
-    ({"tables": {"nope": {"files": ["a"]}}}, "does not declare"),
     ({"tables": {"items": {"files": ["a"]}}}, "item tables"),
     ({"tables": {"t": {}}}, "names `files` or"),
     ({"tables": {"t": {"prepared_by": "missing"}}}, "is not a prepare step"),
@@ -195,6 +194,17 @@ def _base_desc(**acq: Any) -> dict[str, Any]:
 def test_inconsistent_acquisition_sections_are_refused(acq, message):
     with pytest.raises(ValueError, match=message):
         SourceDescriptor.model_validate(_base_desc(**acq))
+
+
+def test_a_narrowed_descriptor_keeps_the_other_tables_files_as_optional_groups():
+    """A copy of a descriptor that declares fewer tables (a test, an operator's narrowed source) stays valid: the
+    files of the tables it dropped become optional download groups, so prepare steps that read them resolve."""
+    desc = SourceDescriptor.model_validate(_base_desc(
+        tables={"t": {"files": ["t/*"]}, "dropped": {"files": ["d/*"]}},
+        prepare={"p": {"command": ["x"], "needs": ["dropped"], "output": "o"}}))
+    acq = desc.acquisition
+    assert list(acq.tables) == ["t"]
+    assert acq.extra["dropped"].optional and acq.extra["dropped"].files == ["d/*"]
 
 
 def test_the_shipped_sections():
@@ -209,6 +219,8 @@ def test_the_shipped_sections():
         if acq is None:
             continue
         seen[desc.source] = acq
+        raw = yaml.safe_load(path.read_text())
+        assert set(raw["acquisition"].get("tables", {})) <= set(raw["tables"]), f"{desc.source}: table names"
         assert acq.licence, desc.source
         assert reg.find("acquisition", acq.transport.plugin) is not None, desc.source
         for var in acq.env:
@@ -233,6 +245,36 @@ def test_the_shipped_sections():
     assert step.manifest == "preparation_manifest.json" and step.needs == ["de_shards", "metadata"]
     assert all(e.prepared_by == "prepare_tahoe" for e in seen["tahoe_100m"].tables.values())
     assert seen["tahoe_100m"].extra["de_shards"].count == 1026
+
+
+def test_acquired_files_land_where_the_descriptors_read_them():
+    """With the variables an acquisition sets, each table's root + path (relative to the source's home) is what its
+    acquisition patterns name: a directory they fill, or the file (glob) itself."""
+    import re
+
+    home = Path("/H")
+    checked = 0
+    for path in sorted(SOURCES.glob("*.yaml")):
+        raw = yaml.safe_load(path.read_text())
+        desc = load_descriptor(path)
+        acq = desc.acquisition
+        if acq is None or acq.mode != "download":
+            continue
+        env = A.source_env(desc, home, A.source_release(desc))
+
+        def expand(text: str) -> str:
+            return re.sub(r"\$\{([A-Za-z_]\w*)(?::?-(?:[^{}]|\{[^{}]*\})*)?\}",      # one nested ${...} default
+                          lambda m: env.get(m.group(1), m.group(0)), text)
+
+        for name, entry in acq.tables.items():
+            if not entry.files:
+                continue
+            table_path = expand(str(raw["tables"][name]["path"]))
+            where = Path(table_path) if table_path.startswith("/") else Path(expand(str(raw.get("root") or ""))) / table_path
+            rel = where.relative_to(home).as_posix()
+            assert any(p == rel or p.startswith(rel + "/") for p in entry.files), (desc.source, name, rel, entry.files)
+            checked += 1
+    assert checked == 38 + 4 + 1 + 1 + 1 + 6          # OT, DepMap, GO, CL, MSigDB, Zenodo
 
 
 def test_globs_span_directories_only_with_two_stars():
