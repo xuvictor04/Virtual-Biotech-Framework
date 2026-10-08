@@ -174,7 +174,8 @@ class TrimSpec(Strict):
 
 
 class RecomputeSpec(Strict):
-    agg: Literal["count", "count_distinct", "sum", "mean", "median", "min", "max"]
+    # count_true: rows whose ``of`` is true (num_high_quality: probes with isHighQuality)
+    agg: Literal["count", "count_distinct", "count_true", "sum", "mean", "median", "min", "max"]
     of: str | None = None
     group_by: list[str] = []
 
@@ -253,6 +254,10 @@ class ResultSpec(Strict):
     total: str | TotalSpec | None = None
     as_of: str | None = None
     count_fields: list[str] | dict[str, str] = []
+    # the reply lists at most this many of the rows it returns or writes (association tools write ``limit`` rows
+    # to output_path and list head(10)): a preview is not a short page (W6), so it is never re-called. Per rows
+    # path ({$.top_regions: 10}) when only one of the reply's shapes is a preview
+    preview: int | dict[str, int] | None = None
     summary_fields: dict[str, Literal["drop"] | RecomputeSpec] = {}
     drop_fields: dict[str, str] = {}
     arg_echo: dict[str, str] = {}

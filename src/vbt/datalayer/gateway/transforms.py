@@ -50,13 +50,13 @@ from ..predicate import (
     map_columns,
 )
 from ..rowkey import canonical
-from .fields import concrete_paths, get_path, jp_get, jp_set, parse_jsonpath, recount, set_path
+from .fields import concrete_paths, get_path, jp_first, jp_get, jp_set, parse_jsonpath, recount, set_path
 from .leakage import withhold_rows
 
 __all__ = [
     "Counters", "t1_leakage", "t2_unknowns", "t3_existence", "t4_honour", "t5_unknown", "honour_arguments",
     "t6_negation", "t7_duplicates", "t8_pooled_over", "t9_levels", "t10_order_cut", "t11_counts", "t12_trim",
-    "t13_flag_partition", "t14_validity", "row_key", "split_container", "rank_keys", "on_item_rows",
+    "t13_flag_partition", "t14_validity", "row_key", "split_container", "rank_keys", "on_item_rows", "trim_column",
 ]
 
 
@@ -533,6 +533,8 @@ def t10_order_cut(rows: Sequence[Any], keys: Sequence[tuple[RankKey, Any, Any]],
 
 def _aggregate(values: list[Any], agg: str) -> Any:
     vals = [v for v in values if not is_null(v)]
+    if agg == "count_true":
+        return sum(1 for v in vals if v is True)
     if agg == "count":
         return len(vals)
     if agg == "count_distinct":
@@ -594,10 +596,24 @@ def t11_counts(obj: Any, rows: Sequence[Any], *, count_fields: Sequence[str] | M
                summary_fields: Mapping[str, Any] | None = None, full_rows: Sequence[Any] | None = None,
                drop_fields: Mapping[str, str] | None = None, vetoed: Mapping[str, str] | None = None,
                arg_echo: Mapping[str, str] | None = None, args_raw: Mapping[str, Any] | None = None,
-               counters: Counters) -> Any:
+               counters: Counters, upstream_returned: int | None = None) -> Any:
     """Set count fields to returned counts, recompute or drop summaries (``full_rows`` is the
     complete matching set; None means it is not known, so recomputes are dropped), remove
-    known-wrong and vetoed fields, and restore echoed arguments. Returns ``obj``."""
+    known-wrong and vetoed fields, and restore echoed arguments. Returns ``obj``.
+
+    A list-form count field counts the rows the reply lists: with ``upstream_returned`` (the rows upstream
+    listed, before the transforms) a field whose upstream value differs counts something else (the rows written
+    to a file, the high-quality probes) and is left as upstream returned it, with a note."""
+    if isinstance(count_fields, (list, tuple)) and upstream_returned is not None:
+        kept = []
+        for path in count_fields:
+            v = jp_first(obj, path)
+            if isinstance(v, int) and not isinstance(v, bool) and v != upstream_returned:
+                counters.notes.append(f"{path} ({v}) is not the number of rows upstream listed ({upstream_returned}); "
+                                      "left as returned")
+                continue
+            kept.append(path)
+        count_fields = kept
     if isinstance(obj, dict) or isinstance(obj, list):
         recount(obj, count_fields, len(rows))
     for path, spec in (summary_fields or {}).items():
@@ -641,18 +657,28 @@ def t11_counts(obj: Any, rows: Sequence[Any], *, count_fields: Sequence[str] | M
 # T12, T13, T14
 # ---------------------------------------------------------------------------
 
+def trim_column(path: str) -> str:
+    """The column a ``result.trim`` path names: ``$.descendants`` and ``descendants[]`` are ``descendants``."""
+    col = path[2:] if path.startswith("$.") else path
+    return col.replace("[]", "")
+
+
 def t12_trim(rows: Iterable[Any], trims: Mapping[str, Any], counters: Counters, *,
              orders: Mapping[str, Sequence[Any]] | None = None,
              item_keys: Mapping[str, Sequence[str]] | None = None) -> None:
     """Trim nested arrays to ``trims[path]`` (an int or ``{max, order}``) in declared order (the
-    container's ``rank``, else its item key), keeping ``{returned, total}`` per path."""
+    container's ``rank``, else its item key), keeping ``{returned, total}`` per path: ``total`` is the
+    list's length as stored. Paths naming the same column (``$.descendants``, ``descendants``) are trimmed
+    once, by the first entry. ``order: key`` sorts items by their item key, a list of scalars by value;
+    ``order: depth`` sorts items by their ``depth`` field (a list without depths keeps its key order)."""
+    done: set[str] = set()
     for path, spec in trims.items():
         cap = spec if isinstance(spec, int) else getattr(spec, "max", None)
         how = "declared" if isinstance(spec, int) else getattr(spec, "order", "declared")
-        if cap is None:
+        col = trim_column(path)
+        if cap is None or col in done:
             continue
-        col = path[2:] if path.startswith("$.") else path
-        col = col.replace("[]", "")
+        done.add(col)
         returned = total = 0
         for row in rows:
             items = get_path(row, col) if isinstance(row, Mapping) else None
@@ -662,8 +688,13 @@ def t12_trim(rows: Iterable[Any], trims: Mapping[str, Any], counters: Counters, 
             if len(items) > cap:
                 order = (orders or {}).get(col) if how == "declared" else None
                 keys = list((item_keys or {}).get(col) or [])
+                scalars = all(not isinstance(i, (Mapping, list)) for i in items)
                 if order:
                     items = _sort(list(items), rank_keys(order, None, None), lambda i: row_key(i, keys))
+                elif how == "depth" and not scalars:
+                    items = sorted(items, key=lambda i: (_depth(i), row_key(i, keys) if keys else canonical(i)))
+                elif how in ("key", "depth") and scalars:
+                    items = sorted(items, key=lambda i: canonical([i]))
                 elif how == "key" and keys:
                     items = sorted(items, key=lambda i: row_key(i, keys))
                 set_path(row, col, items[:cap])  # type: ignore[arg-type]
@@ -672,6 +703,11 @@ def t12_trim(rows: Iterable[Any], trims: Mapping[str, Any], counters: Counters, 
                 returned += len(items)
         if returned < total:
             counters.trimmed[col] = {"returned": returned, "total": total}
+
+
+def _depth(item: Any) -> float:
+    d = item.get("depth") if isinstance(item, Mapping) else None
+    return float(d) if isinstance(d, (int, float)) and not isinstance(d, bool) else math.inf
 
 
 def t13_flag_partition(rows: Iterable[Any], containers: Mapping[str, str]) -> int:

@@ -19,7 +19,8 @@ tools:
       limit:            {role: limit, min: 1, max: 100000}
     result:
       rows: $.top_associations
-      count_fields: [$.count]
+      preview: 10                               # head(10) of the `limit` rows written to output_path
+      # count is len(rows written to output_path), not of the preview: kept as upstream returned it
       arg_echo: {limit: $.limit}
       order: [{column: score, direction: desc, nulls: last}, {column: targetId, direction: asc}, {column: diseaseId, direction: asc}]
       order_source: upstream_full_sort          # sort_values('score') runs before head(limit)
@@ -40,7 +41,8 @@ tools:
       limit:            {role: limit, min: 1, max: 100000}
     result:
       rows: $.top_associations
-      count_fields: [$.count]
+      preview: 10                               # head(10) of the `limit` rows written to output_path
+      # count is len(rows written to output_path), not of the preview: kept as upstream returned it
       arg_echo: {limit: $.limit}
       order: [{column: score, direction: desc, nulls: last}, {column: targetId, direction: asc}]
       order_source: upstream_full_sort
@@ -61,7 +63,8 @@ tools:
       limit:            {role: limit, min: 1, max: 100000}
     result:
       rows: $.top_associations
-      count_fields: [$.count]
+      preview: 10                               # head(10) of the `limit` rows written to output_path
+      # count is len(rows written to output_path), not of the preview: kept as upstream returned it
       arg_echo: {limit: $.limit}
       order: [{column: score, direction: desc, nulls: last}, {column: diseaseId, direction: asc}]
       order_source: upstream_full_sort
@@ -120,7 +123,8 @@ tools:
     witness: false                              # an inflated limit would write extra rows to the agent's output_path
     result:
       rows: $.top_associations
-      count_fields: [$.count]
+      preview: 10                               # head(10) of the `limit` rows written to output_path
+      # count is len(rows written to output_path), not of the preview: kept as upstream returned it
       arg_echo: {limit: $.limit}
       order: [{column: score, direction: desc, nulls: last, within: [datatypeId]}, {column: targetId, direction: asc}]
       order_source: upstream_full_sort
@@ -147,7 +151,8 @@ tools:
     witness: false                              # an inflated limit would write extra rows to the agent's output_path
     result:
       rows: $.top_associations
-      count_fields: [$.count]
+      preview: 10                               # head(10) of the `limit` rows written to output_path
+      # count is len(rows written to output_path), not of the preview: kept as upstream returned it
       arg_echo: {limit: $.limit}
       order: [{column: score, direction: desc, nulls: last, within: [datasourceId]}, {column: targetId, direction: asc}]
       order_source: upstream_full_sort

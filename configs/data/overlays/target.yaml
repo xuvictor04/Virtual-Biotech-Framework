@@ -222,7 +222,8 @@ tools:
       rows: $.chemical_probes
       rows_of: open_targets.target_chemical_probes
       parent_key: {/id: $.target_id}                  # probes have their own id
-      count_fields: [$.num_high_quality]
+      # num_high_quality counts the probes with isHighQuality (9 of MTOR's 228 in 25.09), not the probes listed
+      summary_fields: {$.num_high_quality: {recompute: {agg: count_true, of: isHighQuality}}}
       drop_fields:
         $.num_probes: "a null list (not assessed) and an empty list (none listed) both read as 0"
         $.message: "the item table's coverage states what an empty list means"

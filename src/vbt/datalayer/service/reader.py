@@ -1167,7 +1167,7 @@ class TableReader:
                             break
                         dvals[name][r] = rendered(v, st)
             for name, g in grain_specs.items():
-                dsets[name].add(self._grain_value(m.row, m.positions, g))
+                dsets[name].update(self._grain_values(m.row, m.positions, g))
             if one_to_many and counter_open:
                 counts[ckey] = counts.get(ckey, 0) + 1
                 if len(counts) > cap:
@@ -1215,6 +1215,27 @@ class TableReader:
         parents = self._parents(canon) if canon else None
         return {"columns": [*cols, *unordered, *by], "plain": cols, "unordered": unordered, "by": by,
                 "canonicalize": parents}
+
+    def _grain_values(self, view: Mapping[str, Any], pos: Sequence[int], g: Mapping[str, Any]) -> list[str]:
+        """The grain's values in one match for a distinct count: none when a part is null (a null is no
+        entity: 88 PharmGKB drug items have no drugId), one per element when the grain is one column that crosses
+        a list of a row (``drugs[].drugId`` on pharmacogenomics counts drugs, not distinct lists of drugs)."""
+        plain = g.get("plain", g["columns"])
+        if len(plain) == 1 and not g.get("unordered") and not g.get("by") and not self.levels and \
+                parse_path(plain[0].lstrip("/")).crosses_list:
+            parents = g.get("canonicalize")
+            out = []
+            for v in _items.path_values(view, plain[0]):
+                if is_null(v):
+                    continue
+                if parents is not None:
+                    v = parents.get(str(v), v)
+                out.append(canonical([v]))
+            return out
+        vals = [_items.key_values(view, [c], pos, self.levels)[0] for c in plain]
+        if any(is_null(v) for v in vals) or any(is_null(_items.path_value(view, c)) for c in g.get("unordered") or []):
+            return []
+        return [self._grain_value(view, pos, g)]
 
     def _grain_value(self, view: Mapping[str, Any], pos: Sequence[int], g: Mapping[str, Any]) -> str:
         plain = g.get("plain", g["columns"])
@@ -1366,8 +1387,8 @@ class TableReader:
             # PCSK9's 142 GO annotations counted 63 genes)
             try:
                 spec = self._grain(g)
-                stats.grains_returned[name] = len({self._grain_value(item[2].row, item[2].positions, spec)
-                                                   for item in ordered})
+                stats.grains_returned[name] = len({v for item in ordered
+                                                   for v in self._grain_values(item[2].row, item[2].positions, spec)})
             except ServiceError:
                 continue                               # e.g. a canonicalize parent table that is absent: not counted
         out_rows: list[dict[str, Any]] = []

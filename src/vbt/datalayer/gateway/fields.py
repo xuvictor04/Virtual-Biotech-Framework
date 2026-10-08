@@ -24,9 +24,12 @@ import math
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
+from ..rowkey import canonical
+
 __all__ = [
     "WILDCARD", "parse_jsonpath", "jp_get", "jp_first", "jp_set", "jp_test", "parse_payload", "extract_rows",
     "place_rows", "FieldMapper", "cosine", "recount", "set_path", "get_path", "column_name", "concrete_paths",
+    "path_values", "grain_values",
 ]
 
 WILDCARD = "*"
@@ -280,6 +283,38 @@ def get_path(row: Any, column: str) -> Any:
             return None
         cur = cur.get(p)
     return cur
+
+
+def path_values(row: Any, column: str) -> list[Any]:
+    """Every value at a column path that crosses lists (``drugs[].drugId``), lists flattened."""
+    cur: list[Any] = [row]
+    for part in column_name(column).split("."):
+        name, crosses = (part[:-2], True) if part.endswith("[]") else (part, False)
+        nxt = [c.get(name) if isinstance(c, Mapping) else None for c in cur] if name else cur
+        if crosses:
+            nxt = [x for v in nxt if isinstance(v, list) for x in v]
+        cur = nxt
+    return cur
+
+
+def grain_values(row: Any, columns: Sequence[str]) -> list[str]:
+    """The canonical values of a grain in one returned row: none when a part is null (a null is no entity);
+    one per element for a one-column grain that crosses a list (the distinct drugs of ``drugs[].drugId``). In a
+    row that is an item, a list path's last field is the item's own (``drugs[].drugId`` is ``drugId``)."""
+    def value(col: str) -> Any:
+        v = get_path(row, col)
+        if v is None and "[]." in col:
+            v = get_path(row, col.rpartition("[].")[2])
+        return v
+
+    if len(columns) == 1 and "[]" in columns[0]:
+        vals = path_values(row, columns[0])
+        if not vals:
+            single = value(columns[0])
+            vals = list(single) if isinstance(single, list) else [single]
+        return [canonical([v]) for v in vals if v is not None]
+    parts = [value(c) for c in columns]
+    return [] if any(v is None for v in parts) else [canonical(parts)]
 
 
 def set_path(row: dict[str, Any], column: str, value: Any) -> bool:

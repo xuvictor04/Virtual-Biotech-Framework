@@ -322,6 +322,11 @@ class _DescriptorLinter:
                 self.resolve(name, c, where=f"{where}.grains.{gname}", rule="reference")
             if isinstance(grain, GrainSpec) and grain.canonicalize:
                 self.lint_canonical_grain(grain.canonicalize, f"{where}.grains.{gname}", name)
+            if spec.items_of is None and len(gcols) > 1 and any("[]" in c for c in gcols):
+                # a one-column list grain counts the list's elements; several columns would pair a row's
+                # scalars with a whole list (distinct lists, not entities)
+                self.add("error", f"{where}.grains.{gname}", "a grain of a table that is not an item table may "
+                         "cross a list only as its one column (declare it on the item table)", "reference")
         self.lint_shadowed(name, spec)
         for i, c in enumerate(spec.constraints):
             self.resolve(name, c.column, where=f"{where}.constraints[{i}]", rule="reference_soft", level=lvl)
@@ -1313,6 +1318,21 @@ class _OverlayLinter:
                     self.add("warning", f"{w}.summary_fields", str(exc), "binding", summary.of)
         for sname, sec in res.sections.items():
             self.table_of(sec.table, f"{w}.sections.{sname}")
+        self.lint_trim(w, res, d.tables[t])
+
+    def lint_trim(self, w: str, res: Any, spec: TableSpec) -> None:
+        """``order: depth`` needs items that carry their depth; a list of ids (``ancestors``) has none, and the
+        gateway cannot know a term's distance from the row (the trim would silently fall back to key order)."""
+        for path, trim in res.trim.items():
+            if isinstance(trim, int) or trim.order != "depth":
+                continue
+            name = (path[2:] if path.startswith("$.") else path).replace("[]", "")
+            fm = res.fields.get(name)
+            col = spec.columns.get(fm.column if fm is not None and fm.column else name)
+            fields = getattr(col, "fields", None) or {}
+            if col is not None and "depth" not in fields:
+                self.add("error", f"{w}.trim.{path}", "order: depth needs items with a depth field; this list "
+                         "holds none (use order: key, or declare the depth)", "binding", path)
 
     def lint_scope_bindings(self, tool: str, b: ToolBinding) -> None:
         """A forbid-pooled scope key column is fixed by an equality binding; an unbound one gets the

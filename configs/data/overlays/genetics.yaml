@@ -18,7 +18,8 @@ tools:
     require_any: [[study_id, variant_id, chromosome, region]]
     result:
       rows: $.top_associations
-      count_fields: [$.num_results]
+      preview: 10                               # head(10) of the rows written to output_path
+      # num_results is len(rows written to output_path), not of the preview: kept as upstream returned it
       order: [{column: pValueMantissa, direction: asc, nulls: last, statistic: pvalue_mantissa_exponent}]
       order_source: upstream_full_sort          # scan_top_rows ranks every matching row before the cut
       summary_fields: {$.summary_stats: drop}
@@ -52,7 +53,8 @@ tools:
       limit:          {role: limit, min: 1, max: 10000}
     result:
       rows: $.top_credible_sets
-      count_fields: [$.num_results]
+      preview: 10                               # head(10) of the rows written to output_path
+      # num_results is len(rows written to output_path), not of the preview: kept as upstream returned it
       order: [{column: credibleSetlog10BF, direction: desc, nulls: last}, {column: studyLocusId, direction: asc}]
       order_source: upstream_full_sort
       summary_fields: {$.summary_stats: drop}
@@ -166,7 +168,8 @@ tools:
     require_any: [[gene_id, chromosome]]
     result:
       rows: [$.top_regions, $.regions]
-      count_fields: [$.count]
+      preview: {$.top_regions: 10}              # the Arrow path writes the rows to output_path and lists head(10);
+      count_fields: [$.count]                   # the pandas fallback lists them all as regions (count recounted)
       order: [{column: score, direction: desc, nulls: last, within: [datasourceId]}]
       summary_fields: {$.summary_stats: drop}
       files: [{path_from: $.output_path, must_exist: false, write_once: true}]

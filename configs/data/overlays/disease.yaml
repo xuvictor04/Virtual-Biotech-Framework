@@ -15,7 +15,7 @@ tools:
       echo: {disease_id: {path: $.id, source: record}}
       trim:
         $.descendants: {max: 100, order: key}
-        $.ancestors: {max: 100, order: depth}
+        $.ancestors: {max: 100, order: key}       # ids without depths (stored order is not by depth); 25.09: at most 64
         $.children: {max: 100, order: key}
         $.dbXRefs: {max: 100, order: key}
         $.obsoleteTerms: {max: 100, order: key}
@@ -64,7 +64,7 @@ tools:
         "children[].name": {column: name, placeholders: [Unknown], on_placeholder: dangling_ref}
       trim:
         $.descendants: {max: 200, order: key}
-        $.ancestors: {max: 200, order: depth}
+        $.ancestors: {max: 200, order: key}       # ids without depths (stored order is not by depth); 25.09: at most 64
       drop_fields: {$.is_leaf: "ontology.leaf is false for every 25.09 term while most have no children (relation constraint refuted); use children"}
       not_found_when: ["$.error =~ '(?i)not found'"]
     serve: pass

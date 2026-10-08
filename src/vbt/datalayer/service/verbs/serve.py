@@ -239,8 +239,12 @@ def _labels_the_row(col: Any, scopes: Sequence[tuple[str, Mapping[str, Any]]], k
 
 
 def search(reader: TableReader, text: str, predicate: Any, limit: int | None, params: Mapping[str, Any],
-           budget: int | None) -> tuple[list[dict[str, Any]], list[list[Any]], int]:
-    """Rows ranked by match class, then the table's rank, then the key; ``(rows, keys, total matches)``."""
+           budget: int | None, *, order: Sequence[Mapping[str, Any]] = (),
+           grains_out: dict[str, dict[str, int | None]] | None = None
+           ) -> tuple[list[dict[str, Any]], list[list[Any]], int]:
+    """Rows ranked by match class, then ``order`` (the binding's declared order after ``match_class``: ties
+    within a class by ``approvedSymbol``), else the table's rank, then the key; ``(rows, keys, total matches)``.
+    With ``grains_out`` the table's grains are counted on the matches (``{grain: {returned, total}}``)."""
     phys: list[tuple[str, str]] = [(k, "key") for k in reader.key if not k.endswith("#")]
     keys = {_bare(k) for k in reader.key if not k.endswith("#")}
 
@@ -260,10 +264,21 @@ def search(reader: TableReader, text: str, predicate: Any, limit: int | None, pa
         walk(reader.spec.columns, "", [])
     needle = _fold(text)
     word = re.compile(rf"(?<!\w){re.escape(needle)}(?!\w)")
-    okeys = reader.order_keys([r.model_dump() for r in reader.table.spec.rank])
+    # ties within a match class: the declared order's own columns of this table (match_class is the class)
+    secondary = [dict(o) for o in order if o.get("column") not in (None, "match_class", "match") and
+                 reader.column_spec(reader.physical_path(str(o["column"]))) is not None]
+    okeys = reader.order_keys(secondary or [r.model_dump() for r in reader.table.spec.rank])
+    gspecs: dict[str, Any] = {}
+    if grains_out is not None:
+        for gname, g in reader.table.spec.grains.items():
+            try:
+                gspecs[gname] = reader._grain(g)
+            except ServiceError:
+                continue                               # e.g. an absent canonicalize parent table: not counted
     scored = []
     stats = ScanStats()
-    for m in reader.scan(predicate, columns=[p for p, _ in phys] + [p for *_, p in okeys], params=params,
+    gcols = [c for g in gspecs.values() for c in g["columns"]]
+    for m in reader.scan(predicate, columns=[p for p, _ in phys] + [p for *_, p in okeys] + gcols, params=params,
                          budget_bytes=budget, stats=stats, attribute_unknown=False):
         best: tuple[int, str, str, Any] | None = None
         for path, kind in phys:
@@ -296,7 +311,15 @@ def search(reader: TableReader, text: str, predicate: Any, limit: int | None, pa
     scored.sort(key=lambda x: (x[0], x[1], x[2]))
     total = len(scored)
     if limit is not None:
-        scored = scored[: int(limit)]
+        cut = scored[: int(limit)]
+    else:
+        cut = scored
+    if grains_out is not None:
+        for gname, g in gspecs.items():
+            values = [{v for v in reader._grain_values(x[3].row, x[3].positions, g)} for x in scored]
+            grains_out[gname] = {"returned": len(set().union(*values[: len(cut)])) if cut else 0,
+                                 "total": len(set().union(*values)) if values else 0}
+    scored = cut
     rows, keys = [], []
     for _r, _sk, ckey, m, best in scored:
         row = reader.output_row(m)
@@ -472,9 +495,11 @@ def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
         if req.verb == "search":
             if not req.search_text:
                 raise ServiceError("search needs search_text")
-            rows, keys, total = search(reader, req.search_text, req.predicate, req.limit, params, req.budget_bytes)
+            grains: dict[str, dict[str, int | None]] = {}
+            rows, keys, total = search(reader, req.search_text, req.predicate, req.limit, params, req.budget_bytes,
+                                       order=order, grains_out=grains)
             resp = ServeResponse(rows=rows, total=total, truncated=total > len(rows), key_columns=list(reader.key),
-                                 row_keys=keys)
+                                 row_keys=keys, grains=grains)
             return resp.model_dump(mode="json")
         if req.verb == "aggregate":
             rows, total = aggregate_rows(reader, req, params, order)
