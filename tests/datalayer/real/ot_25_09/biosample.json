@@ -1,0 +1,170 @@
+{
+ "bytes": 6447427,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "daa4068aa5e06a09d1fb506a326fa4de20cf9bfd9a5c32f7f245bb41678eb33d",
+ "leaves": {
+  "ancestors.list.element": [
+   "string",
+   2574,
+   418730,
+   "BFO_0000001",
+   "https://purl.brain-bican.org/ontology/mb"
+  ],
+  "biosampleId": [
+   "string",
+   0,
+   35007,
+   "BFO_0000001",
+   "valid_for_gocam"
+  ],
+  "biosampleName": [
+   "string",
+   0,
+   35007,
+   "(1->4)-beta-D-glucan",
+   "zymogen granule membrane"
+  ],
+  "children.list.element": [
+   "string",
+   24052,
+   67158,
+   "BFO_0000002",
+   "https://purl.brain-bican.org/ontology/mb"
+  ],
+  "descendants.list.element": [
+   "string",
+   24052,
+   424476,
+   "BFO_0000002",
+   "https://purl.brain-bican.org/ontology/mb"
+  ],
+  "description": [
+   "string",
+   7002,
+   35007,
+   "\nA cell line of leukemia characterized b",
+   "\u200b\u200bA uterine natural killer subset that i"
+  ],
+  "parents.list.element": [
+   "string",
+   2574,
+   50567,
+   "BFO_0000001",
+   "https://purl.brain-bican.org/ontology/mb"
+  ],
+  "synonyms.list.element": [
+   "string",
+   13942,
+   90539,
+   " C28/I2 cell",
+   "\u00e9thmo\u00efde lat\u00e9ral"
+  ],
+  "xrefs.list.element": [
+   "string",
+   18481,
+   77915,
+   " CLO:0001200",
+   "span:ProcessBoundary"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 1,
+ "rows": 35007,
+ "schema": [
+  {
+   "name": "biosampleId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "biosampleName",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "description",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "xrefs",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "synonyms",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "parents",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "ancestors",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "children",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "descendants",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  35007
+ ],
+ "shards": 1,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/biosample/",
+ "table": "biosample"
+}

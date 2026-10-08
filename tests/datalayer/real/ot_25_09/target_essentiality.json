@@ -1,0 +1,209 @@
+{
+ "bytes": 405282884,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "b82e63418127287264dd439a8a0eed3bff48287ffa070d8973f60fbe9b6f47f3",
+ "leaves": {
+  "geneEssentiality.list.element.depMapEssentiality.list.element.screens.list.element.cellLineName": [
+   "string",
+   0,
+   20955265,
+   "1273/99",
+   "no.11"
+  ],
+  "geneEssentiality.list.element.depMapEssentiality.list.element.screens.list.element.depmapId": [
+   "string",
+   0,
+   20955265,
+   "ACH-000001",
+   "ACH-003191"
+  ],
+  "geneEssentiality.list.element.depMapEssentiality.list.element.screens.list.element.diseaseCellLineId": [
+   "string",
+   8530974,
+   20955265,
+   "SIDM00001",
+   "SIDM01768"
+  ],
+  "geneEssentiality.list.element.depMapEssentiality.list.element.screens.list.element.diseaseFromSource": [
+   "string",
+   0,
+   20955265,
+   "Acute Leukemias of Ambiguous Lineage",
+   "Well-Differentiated Thyroid Cancer"
+  ],
+  "geneEssentiality.list.element.depMapEssentiality.list.element.screens.list.element.expression": [
+   "double",
+   1371004,
+   20955265,
+   0.0,
+   15.373793
+  ],
+  "geneEssentiality.list.element.depMapEssentiality.list.element.screens.list.element.geneEffect": [
+   "double",
+   0,
+   20955265,
+   -5.648909,
+   4.436478
+  ],
+  "geneEssentiality.list.element.depMapEssentiality.list.element.screens.list.element.mutation": [
+   "string",
+   20880106,
+   20955265,
+   "damaging",
+   "hotspot"
+  ],
+  "geneEssentiality.list.element.depMapEssentiality.list.element.tissueId": [
+   "string",
+   17867,
+   517111,
+   "CL_0000057",
+   "UBERON_0034929"
+  ],
+  "geneEssentiality.list.element.depMapEssentiality.list.element.tissueName": [
+   "string",
+   0,
+   517111,
+   "Peripheral Nervous System",
+   "uterus"
+  ],
+  "geneEssentiality.list.element.isEssential": [
+   "bool",
+   0,
+   17867,
+   false,
+   true
+  ],
+  "id": [
+   "string",
+   0,
+   17867,
+   "ENSG00000000003",
+   "ENSG00000310576"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 10,
+ "rows": 17867,
+ "schema": [
+  {
+   "name": "id",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "geneEssentiality",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "depMapEssentiality",
+        "nullable": true,
+        "type": {
+         "list": {
+          "name": "element",
+          "nullable": true,
+          "type": {
+           "struct": [
+            {
+             "name": "screens",
+             "nullable": true,
+             "type": {
+              "list": {
+               "name": "element",
+               "nullable": true,
+               "type": {
+                "struct": [
+                 {
+                  "name": "cellLineName",
+                  "nullable": true,
+                  "type": "string"
+                 },
+                 {
+                  "name": "depmapId",
+                  "nullable": true,
+                  "type": "string"
+                 },
+                 {
+                  "name": "diseaseCellLineId",
+                  "nullable": true,
+                  "type": "string"
+                 },
+                 {
+                  "name": "diseaseFromSource",
+                  "nullable": true,
+                  "type": "string"
+                 },
+                 {
+                  "name": "expression",
+                  "nullable": true,
+                  "type": "double"
+                 },
+                 {
+                  "name": "geneEffect",
+                  "nullable": true,
+                  "type": "double"
+                 },
+                 {
+                  "name": "mutation",
+                  "nullable": true,
+                  "type": "string"
+                 }
+                ]
+               }
+              }
+             }
+            },
+            {
+             "name": "tissueId",
+             "nullable": true,
+             "type": "string"
+            },
+            {
+             "name": "tissueName",
+             "nullable": true,
+             "type": "string"
+            }
+           ]
+          }
+         }
+        }
+       },
+       {
+        "name": "isEssential",
+        "nullable": true,
+        "type": "bool"
+       }
+      ]
+     }
+    }
+   }
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  1801,
+  1777,
+  1755,
+  1854,
+  1781,
+  1762,
+  1781,
+  1790,
+  1815,
+  1751
+ ],
+ "shards": 10,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/target_essentiality/",
+ "table": "target_essentiality"
+}

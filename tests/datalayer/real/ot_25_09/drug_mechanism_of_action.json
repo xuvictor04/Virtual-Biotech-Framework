@@ -1,0 +1,172 @@
+{
+ "bytes": 478223,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "64423a519dd7b6e44a427f8e9dee09bd7363242a6702ee4f60637bbd69f3e3ae",
+ "leaves": {
+  "actionType": [
+   "string",
+   0,
+   6332,
+   "ACTIVATOR",
+   "VACCINE ANTIGEN"
+  ],
+  "chemblIds.list.element": [
+   "string",
+   0,
+   7686,
+   "CHEMBL1000",
+   "CHEMBL99946"
+  ],
+  "mechanismOfAction": [
+   "string",
+   0,
+   6332,
+   "1,3-beta-glucan synthase inhibitor",
+   "von Willebrand factor inhibitor"
+  ],
+  "references.list.element.ids.list.element": [
+   "string",
+   47,
+   21412,
+   "0-12-184450-1",
+   "\u00bf-opioid_receptor"
+  ],
+  "references.list.element.source": [
+   "string",
+   39,
+   8531,
+   "BNF",
+   "Wikipedia"
+  ],
+  "references.list.element.urls.list.element": [
+   "string",
+   51,
+   21410,
+   "http://216.139.227.101/interactive/trgt2",
+   "\u00bfhttp://europepmc.org/abstract/MED/11897"
+  ],
+  "targetName": [
+   "string",
+   0,
+   6332,
+   "1,3-beta-glucan synthase",
+   "von Willebrand factor"
+  ],
+  "targetType": [
+   "string",
+   0,
+   6332,
+   "chimeric protein",
+   "single protein"
+  ],
+  "targets.list.element": [
+   "string",
+   678,
+   12699,
+   "ENSG00000000938",
+   "ENSG00000292357"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 1,
+ "rows": 6332,
+ "schema": [
+  {
+   "name": "actionType",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "mechanismOfAction",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "chemblIds",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "targetName",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "targetType",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "targets",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "references",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "source",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "ids",
+        "nullable": false,
+        "type": {
+         "list": {
+          "name": "element",
+          "nullable": false,
+          "type": "string"
+         }
+        }
+       },
+       {
+        "name": "urls",
+        "nullable": false,
+        "type": {
+         "list": {
+          "name": "element",
+          "nullable": false,
+          "type": "string"
+         }
+        }
+       }
+      ]
+     }
+    }
+   }
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  6332
+ ],
+ "shards": 1,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/drug_mechanism_of_action/",
+ "table": "drug_mechanism_of_action"
+}

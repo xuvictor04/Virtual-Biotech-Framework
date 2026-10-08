@@ -1,0 +1,194 @@
+{
+ "bytes": 3917110953,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "8eb6c0d4df1e40be20214bac97943354daa36f3da904861080f6c6afd0641bcc",
+ "leaves": {
+  "betaRatioSignAverage": [
+   "double",
+   0,
+   39964741,
+   -1.0,
+   1.0
+  ],
+  "chromosome": [
+   "string",
+   0,
+   39964741,
+   "1",
+   "X"
+  ],
+  "colocalisationMethod": [
+   "string",
+   0,
+   39964741,
+   "COLOC",
+   "COLOC"
+  ],
+  "h0": [
+   "double",
+   0,
+   39964741,
+   0.0,
+   0.23558115467973068
+  ],
+  "h1": [
+   "double",
+   0,
+   39964741,
+   0.0,
+   0.625296673814638
+  ],
+  "h2": [
+   "double",
+   0,
+   39964741,
+   0.0,
+   0.6790311465826893
+  ],
+  "h3": [
+   "double",
+   0,
+   39964741,
+   0.0,
+   0.9999969487619548
+  ],
+  "h4": [
+   "double",
+   0,
+   39964741,
+   3.0512380257823013e-06,
+   1.0
+  ],
+  "leftStudyLocusId": [
+   "string",
+   0,
+   39964741,
+   "0000623277941921b77ef5ea6d53f2e3",
+   "fffffbd701098e0700a7b674b33213ca"
+  ],
+  "numberColocalisingVariants": [
+   "int64",
+   0,
+   39964741,
+   1,
+   2889
+  ],
+  "rightStudyLocusId": [
+   "string",
+   0,
+   39964741,
+   "00000c478c22cc2fbb375c39dda70302",
+   "fffffef27b8b270d58113c7f971fc907"
+  ],
+  "rightStudyType": [
+   "string",
+   0,
+   39964741,
+   "eqtl",
+   "tuqtl"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 50,
+ "rows": 39964741,
+ "schema": [
+  {
+   "name": "leftStudyLocusId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "rightStudyLocusId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "chromosome",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "rightStudyType",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "numberColocalisingVariants",
+   "nullable": false,
+   "type": "int64"
+  },
+  {
+   "name": "h0",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "h1",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "h2",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "h3",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "h4",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "colocalisationMethod",
+   "nullable": false,
+   "type": "string"
+  },
+  {
+   "name": "betaRatioSignAverage",
+   "nullable": true,
+   "type": "double"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  1598496,
+  1596640,
+  1599844,
+  1599355,
+  1597035,
+  1598082,
+  1598064,
+  1597275,
+  1600390,
+  1599806,
+  1599365,
+  1599389,
+  1597588,
+  1598493,
+  1597567,
+  1600630,
+  1597838,
+  1597552,
+  1597456,
+  1597113,
+  1598649,
+  1598576,
+  1600813,
+  1597887,
+  1600838
+ ],
+ "shards": 25,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/colocalisation_coloc/",
+ "table": "colocalisation_coloc"
+}

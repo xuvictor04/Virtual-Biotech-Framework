@@ -1,0 +1,528 @@
+{
+ "bytes": 2588111695,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "52a83c641a4edd0243d3fc5776cdc638c25e7a5b6d8f3d1ab6b21bb2f888536d",
+ "leaves": {
+  "beta": [
+   "double",
+   52395,
+   2862043,
+   -15750.792,
+   78729.0
+  ],
+  "chromosome": [
+   "string",
+   0,
+   2862043,
+   "1",
+   "Y"
+  ],
+  "confidence": [
+   "string",
+   0,
+   2862043,
+   "PICS fine-mapped credible set based on r",
+   "SuSiE fine-mapped credible set with out-"
+  ],
+  "credibleSetIndex": [
+   "int32",
+   304854,
+   2862043,
+   1,
+   10
+  ],
+  "credibleSetlog10BF": [
+   "double",
+   304881,
+   2862043,
+   0.529420678056,
+   2142642079.466912
+  ],
+  "effectAlleleFrequencyFromSource": [
+   "float",
+   2687681,
+   2862043,
+   0.0,
+   1.0
+  ],
+  "finemappingMethod": [
+   "string",
+   0,
+   2862043,
+   "PICS",
+   "SuSie"
+  ],
+  "isTransQtl": [
+   "bool",
+   817738,
+   2862043,
+   false,
+   true
+  ],
+  "ldSet.list.element.r2Overall": [
+   "double",
+   2557189,
+   37701849,
+   0.0,
+   1.0000000000005778
+  ],
+  "ldSet.list.element.tagVariantId": [
+   "string",
+   2557189,
+   37701849,
+   "10_100000235_C_T",
+   "Y_20577481_C_T"
+  ],
+  "locus.list.element.beta": [
+   "double",
+   9234910,
+   70427301,
+   -15750.792,
+   78729.0
+  ],
+  "locus.list.element.is95CredibleSet": [
+   "bool",
+   0,
+   70427301,
+   true,
+   true
+  ],
+  "locus.list.element.is99CredibleSet": [
+   "bool",
+   0,
+   70427301,
+   true,
+   true
+  ],
+  "locus.list.element.logBF": [
+   "double",
+   9487369,
+   70427301,
+   -0.886426304446791,
+   4933615719.867019
+  ],
+  "locus.list.element.pValueExponent": [
+   "int32",
+   19083937,
+   70427301,
+   -28539,
+   -1
+  ],
+  "locus.list.element.pValueMantissa": [
+   "float",
+   19083937,
+   70427301,
+   1.0,
+   10.0
+  ],
+  "locus.list.element.posteriorProbability": [
+   "double",
+   0,
+   70427301,
+   5.4428556424997e-06,
+   1.0
+  ],
+  "locus.list.element.r2Overall": [
+   "double",
+   60939932,
+   70427301,
+   0.5022320776380795,
+   1.0000000000005778
+  ],
+  "locus.list.element.standardError": [
+   "double",
+   9901422,
+   70427301,
+   0.00127852,
+   3.56105
+  ],
+  "locus.list.element.variantId": [
+   "string",
+   0,
+   70427301,
+   "10_100000235_C_T",
+   "Y_20577481_C_T"
+  ],
+  "locusEnd": [
+   "int32",
+   2317009,
+   2862043,
+   154754,
+   249687425
+  ],
+  "locusStart": [
+   "int32",
+   2317009,
+   2862043,
+   0,
+   248788688
+  ],
+  "pValueExponent": [
+   "int32",
+   0,
+   2862043,
+   -28539,
+   -4
+  ],
+  "pValueMantissa": [
+   "float",
+   0,
+   2862043,
+   1.0,
+   10.0
+  ],
+  "position": [
+   "int32",
+   0,
+   2862043,
+   10869,
+   248897507
+  ],
+  "purityMeanR2": [
+   "double",
+   2317009,
+   2862043,
+   7.7315139136e-08,
+   1.0
+  ],
+  "purityMinR2": [
+   "double",
+   2317009,
+   2862043,
+   0.0,
+   1.0
+  ],
+  "qualityControls.list.element": [
+   "string",
+   2032873,
+   3235924,
+   "Palindrome alleles - cannot harmonize",
+   "Variant not found in LD reference"
+  ],
+  "region": [
+   "string",
+   304854,
+   2862043,
+   "10:0-1048415",
+   "chrX:99990801-101990801"
+  ],
+  "sampleSize": [
+   "int32",
+   2774784,
+   2862043,
+   1,
+   2345290
+  ],
+  "standardError": [
+   "double",
+   576711,
+   2862043,
+   0.0,
+   9457.2
+  ],
+  "studyId": [
+   "string",
+   0,
+   2862043,
+   "FINNGEN_R12_AB1_BACTINF_NOS",
+   "young_2019_txrev_microglia_naive_ensg000"
+  ],
+  "studyLocusId": [
+   "string",
+   0,
+   2862043,
+   "0000075e718162e97fa85756e055e8cd",
+   "fffffef27b8b270d58113c7f971fc907"
+  ],
+  "studyType": [
+   "string",
+   0,
+   2862043,
+   "eqtl",
+   "tuqtl"
+  ],
+  "subStudyDescription": [
+   "string",
+   2862043,
+   2862043,
+   null,
+   null
+  ],
+  "variantId": [
+   "string",
+   0,
+   2862043,
+   "10_100000235_C_T",
+   "Y_20577481_C_T"
+  ],
+  "zScore": [
+   "double",
+   2337727,
+   2862043,
+   -182.7826086956522,
+   361.45454545454544
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 26,
+ "rows": 2862043,
+ "schema": [
+  {
+   "name": "studyLocusId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "studyId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "variantId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "chromosome",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "position",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "region",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "beta",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "zScore",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "pValueMantissa",
+   "nullable": true,
+   "type": "float"
+  },
+  {
+   "name": "pValueExponent",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "effectAlleleFrequencyFromSource",
+   "nullable": true,
+   "type": "float"
+  },
+  {
+   "name": "standardError",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "subStudyDescription",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "qualityControls",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "finemappingMethod",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "credibleSetIndex",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "credibleSetlog10BF",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "purityMeanR2",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "purityMinR2",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "locusStart",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "locusEnd",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "sampleSize",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "ldSet",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "tagVariantId",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "r2Overall",
+        "nullable": true,
+        "type": "double"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "locus",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "is95CredibleSet",
+        "nullable": true,
+        "type": "bool"
+       },
+       {
+        "name": "is99CredibleSet",
+        "nullable": true,
+        "type": "bool"
+       },
+       {
+        "name": "logBF",
+        "nullable": true,
+        "type": "double"
+       },
+       {
+        "name": "posteriorProbability",
+        "nullable": true,
+        "type": "double"
+       },
+       {
+        "name": "variantId",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "pValueMantissa",
+        "nullable": true,
+        "type": "float"
+       },
+       {
+        "name": "pValueExponent",
+        "nullable": true,
+        "type": "int32"
+       },
+       {
+        "name": "beta",
+        "nullable": true,
+        "type": "double"
+       },
+       {
+        "name": "standardError",
+        "nullable": true,
+        "type": "double"
+       },
+       {
+        "name": "r2Overall",
+        "nullable": true,
+        "type": "double"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "confidence",
+   "nullable": false,
+   "type": "string"
+  },
+  {
+   "name": "studyType",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "isTransQtl",
+   "nullable": true,
+   "type": "bool"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  106526,
+  112306,
+  120230,
+  105318,
+  105862,
+  123832,
+  111699,
+  106437,
+  114968,
+  112134,
+  109329,
+  125443,
+  121354,
+  127950,
+  111086,
+  107918,
+  120678,
+  113785,
+  108482,
+  113084,
+  113319,
+  126062,
+  111963,
+  114359,
+  117919
+ ],
+ "shards": 25,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/credible_set/",
+ "table": "credible_set"
+}

@@ -1,0 +1,139 @@
+{
+ "bytes": 314192617,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "d0d46d531c3a06294875c7e8678018fa15f01030d931832766b0d9f81ddfe3e4",
+ "leaves": {
+  "features.list.element.name": [
+   "string",
+   0,
+   44578431,
+   "credibleSetConfidence",
+   "vepMeanNeighbourhood"
+  ],
+  "features.list.element.shapValue": [
+   "float",
+   0,
+   44578431,
+   -0.0754217877984047,
+   0.36027082800865173
+  ],
+  "features.list.element.value": [
+   "float",
+   0,
+   44578431,
+   0.0,
+   121.0
+  ],
+  "geneId": [
+   "string",
+   0,
+   1651053,
+   "ENSG00000000003",
+   "ENSG00000310576"
+  ],
+  "score": [
+   "double",
+   0,
+   1651053,
+   0.05000028759241104,
+   0.9859942197799683
+  ],
+  "shapBaseValue": [
+   "float",
+   0,
+   1651053,
+   0.0379222109913826,
+   0.0379222109913826
+  ],
+  "studyLocusId": [
+   "string",
+   0,
+   1651053,
+   "000039146db5c177e57f81c11d6bdcd8",
+   "fffffbd701098e0700a7b674b33213ca"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 16,
+ "rows": 1651053,
+ "schema": [
+  {
+   "name": "studyLocusId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "geneId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "score",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "features",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "name",
+        "nullable": false,
+        "type": "string"
+       },
+       {
+        "name": "value",
+        "nullable": true,
+        "type": "float"
+       },
+       {
+        "name": "shapValue",
+        "nullable": true,
+        "type": "float"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "shapBaseValue",
+   "nullable": false,
+   "type": "float"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  102400,
+  103424,
+  103424,
+  103424,
+  103424,
+  102400,
+  103424,
+  103424,
+  103424,
+  103424,
+  102400,
+  103424,
+  103424,
+  103424,
+  103424,
+  102765
+ ],
+ "shards": 16,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/l2g_prediction/",
+ "table": "l2g_prediction"
+}

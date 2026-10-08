@@ -1,0 +1,48 @@
+{
+ "bytes": 26339,
+ "created_by": [
+  "Polars"
+ ],
+ "file_names_sha256": "efa2777db2b6d75c6486682d4cafde9d5d19ba2f4887a3a67755adb7c3022c28",
+ "leaves": {
+  "id": [
+   "large_string",
+   0,
+   2611,
+   "SO:0000000",
+   "SO:3000000"
+  ],
+  "label": [
+   "large_string",
+   0,
+   2611,
+   "2A_self_cleaving_peptide_region",
+   "zinc_repressed_element"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 1,
+ "rows": 2611,
+ "schema": [
+  {
+   "name": "id",
+   "nullable": true,
+   "type": "large_string"
+  },
+  {
+   "name": "label",
+   "nullable": true,
+   "type": "large_string"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  2611
+ ],
+ "shards": 1,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/so/",
+ "table": "so"
+}

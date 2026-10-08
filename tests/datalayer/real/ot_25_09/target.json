@@ -1,0 +1,1707 @@
+{
+ "bytes": 75568567,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "6578d76ba4691230c9fd9ea2ab154e3bd4e9d05f89801df8e0e2d09a54765c1e",
+ "leaves": {
+  "alternativeGenes.list.element": [
+   "string",
+   77393,
+   79752,
+   "ENSG00000096150",
+   "ENSG00000293547"
+  ],
+  "approvedName": [
+   "string",
+   0,
+   78726,
+   "",
+   "zyxin pseudogene 1"
+  ],
+  "approvedSymbol": [
+   "string",
+   0,
+   78726,
+   "5S_rRNA",
+   "snoZ196"
+  ],
+  "biotype": [
+   "string",
+   0,
+   78726,
+   "",
+   "vault_RNA"
+  ],
+  "canonicalExons.list.element": [
+   "string",
+   18535,
+   607497,
+   "100000637",
+   "99999492"
+  ],
+  "canonicalTranscript.chromosome": [
+   "string",
+   18452,
+   78726,
+   "1",
+   "Y"
+  ],
+  "canonicalTranscript.end": [
+   "int64",
+   18452,
+   78726,
+   647,
+   248937043
+  ],
+  "canonicalTranscript.id": [
+   "string",
+   18452,
+   78726,
+   "ENST00000000233",
+   "ENST00000696892"
+  ],
+  "canonicalTranscript.start": [
+   "int64",
+   18452,
+   78726,
+   577,
+   248936581
+  ],
+  "canonicalTranscript.strand": [
+   "string",
+   18452,
+   78726,
+   "+",
+   "-"
+  ],
+  "chemicalProbes.list.element.control": [
+   "string",
+   81580,
+   82899,
+   "(-)-JQ1",
+   "nc_VHL"
+  ],
+  "chemicalProbes.list.element.drugId": [
+   "string",
+   77950,
+   82899,
+   "CHEMBL100231",
+   "CHEMBL99203"
+  ],
+  "chemicalProbes.list.element.id": [
+   "string",
+   77809,
+   82899,
+   "(+)-JQ1",
+   "vistusertib"
+  ],
+  "chemicalProbes.list.element.isHighQuality": [
+   "bool",
+   77809,
+   82899,
+   false,
+   true
+  ],
+  "chemicalProbes.list.element.mechanismOfAction.list.element": [
+   "string",
+   81499,
+   83004,
+   "activator",
+   "potentiator"
+  ],
+  "chemicalProbes.list.element.origin.list.element": [
+   "string",
+   77809,
+   83184,
+   "calculated",
+   "experimental"
+  ],
+  "chemicalProbes.list.element.probeMinerScore": [
+   "int64",
+   78725,
+   82899,
+   2,
+   84
+  ],
+  "chemicalProbes.list.element.probesDrugsScore": [
+   "int64",
+   77826,
+   82899,
+   3,
+   100
+  ],
+  "chemicalProbes.list.element.scoreInCells": [
+   "int64",
+   81966,
+   82899,
+   25,
+   100
+  ],
+  "chemicalProbes.list.element.scoreInOrganisms": [
+   "int64",
+   82237,
+   82899,
+   25,
+   100
+  ],
+  "chemicalProbes.list.element.targetFromSourceId": [
+   "string",
+   77809,
+   82899,
+   "B2RXH2",
+   "Q9Y6E0"
+  ],
+  "chemicalProbes.list.element.urls.list.element.niceName": [
+   "string",
+   77809,
+   84755,
+   "Bromodomains chemical toolbox",
+   "opnMe Portal"
+  ],
+  "chemicalProbes.list.element.urls.list.element.url": [
+   "string",
+   78759,
+   84755,
+   "http://probeminer.icr.ac.uk/#/",
+   "https://www.nature.com/articles/s41467-0"
+  ],
+  "constraint.list.element.constraintType": [
+   "string",
+   60117,
+   115944,
+   "lof",
+   "syn"
+  ],
+  "constraint.list.element.exp": [
+   "float",
+   60642,
+   115944,
+   0.07485900074243546,
+   44309.0
+  ],
+  "constraint.list.element.obs": [
+   "int32",
+   60642,
+   115944,
+   0,
+   40245
+  ],
+  "constraint.list.element.oe": [
+   "float",
+   60642,
+   115944,
+   0.0,
+   7.720600128173828
+  ],
+  "constraint.list.element.oeLower": [
+   "float",
+   60642,
+   115944,
+   0.0,
+   1.9529999494552612
+  ],
+  "constraint.list.element.oeUpper": [
+   "float",
+   60642,
+   115944,
+   0.020999999716877937,
+   1.9989999532699585
+  ],
+  "constraint.list.element.score": [
+   "float",
+   60642,
+   115944,
+   -15.696999549865723,
+   16.077999114990234
+  ],
+  "constraint.list.element.upperBin": [
+   "int32",
+   98081,
+   115944,
+   0,
+   9
+  ],
+  "constraint.list.element.upperBin6": [
+   "int32",
+   98081,
+   115944,
+   0,
+   5
+  ],
+  "constraint.list.element.upperRank": [
+   "int32",
+   98081,
+   115944,
+   0,
+   18130
+  ],
+  "dbXrefs.list.element.id": [
+   "string",
+   36980,
+   385590,
+   "100",
+   "SignalP-noTM"
+  ],
+  "dbXrefs.list.element.source": [
+   "string",
+   36980,
+   385590,
+   "ChEMBL",
+   "signalP"
+  ],
+  "functionDescriptions.list.element": [
+   "string",
+   61638,
+   80624,
+   "(Microbial infection) A number of viral ",
+   "tRNA methylase which 2'-O-methylates cyt"
+  ],
+  "genomicLocation.chromosome": [
+   "string",
+   0,
+   78726,
+   "1",
+   "Y"
+  ],
+  "genomicLocation.end": [
+   "int64",
+   0,
+   78726,
+   647,
+   248937105
+  ],
+  "genomicLocation.start": [
+   "int64",
+   0,
+   78726,
+   577,
+   248936581
+  ],
+  "genomicLocation.strand": [
+   "int32",
+   0,
+   78726,
+   -1,
+   1
+  ],
+  "go.list.element.aspect": [
+   "string",
+   57728,
+   879105,
+   "C",
+   "P"
+  ],
+  "go.list.element.ecoId": [
+   "string",
+   62565,
+   879105,
+   "ECO:0000031",
+   "ECO:0007758"
+  ],
+  "go.list.element.evidence": [
+   "string",
+   57728,
+   879105,
+   "EXP",
+   "TAS"
+  ],
+  "go.list.element.geneProduct": [
+   "string",
+   57728,
+   879105,
+   "A0A024RBG1",
+   "X6R8R1"
+  ],
+  "go.list.element.id": [
+   "string",
+   57728,
+   879105,
+   "GO:0000002",
+   "GO:2001311"
+  ],
+  "go.list.element.source": [
+   "string",
+   57728,
+   879105,
+   "DOI:10.1002/sita.200600112",
+   "Reactome:R-NUL-997411"
+  ],
+  "hallmarks.attributes.list.element.attribute_name": [
+   "string",
+   78358,
+   82342,
+   "cell division control",
+   "types of alteration in cancer"
+  ],
+  "hallmarks.attributes.list.element.description": [
+   "string",
+   78358,
+   82342,
+   " PDGFRA signaling in progenitor cells pr",
+   "zinc finger domain 3-affecting p.R394W a"
+  ],
+  "hallmarks.attributes.list.element.pmid": [
+   "int64",
+   78361,
+   82342,
+   1180975,
+   39957908
+  ],
+  "hallmarks.cancerHallmarks.list.element.description": [
+   "string",
+   78367,
+   80659,
+   " Rac1 nuclear accumulation alters the ba",
+   "wild-type protein induces caspase 8 and "
+  ],
+  "hallmarks.cancerHallmarks.list.element.impact": [
+   "string",
+   78526,
+   80659,
+   "promotes",
+   "suppresses"
+  ],
+  "hallmarks.cancerHallmarks.list.element.label": [
+   "string",
+   78367,
+   80659,
+   "angiogenesis",
+   "tumour promoting inflammation"
+  ],
+  "hallmarks.cancerHallmarks.list.element.pmid": [
+   "int64",
+   78367,
+   80659,
+   1180975,
+   39837827
+  ],
+  "homologues.list.element.homologyType": [
+   "string",
+   53194,
+   3873790,
+   "gene_split",
+   "within_species_paralog"
+  ],
+  "homologues.list.element.isHighConfidence": [
+   "string",
+   53194,
+   3873790,
+   "0",
+   "NULL"
+  ],
+  "homologues.list.element.priority": [
+   "int32",
+   53194,
+   3873790,
+   0,
+   12
+  ],
+  "homologues.list.element.queryPercentageIdentity": [
+   "double",
+   53194,
+   3873790,
+   0.0,
+   100.0
+  ],
+  "homologues.list.element.speciesId": [
+   "string",
+   53194,
+   3873790,
+   "10090",
+   "9986"
+  ],
+  "homologues.list.element.speciesName": [
+   "string",
+   53194,
+   3873790,
+   "Caenorhabditis elegans (Nematode, N2)",
+   "Zebrafish"
+  ],
+  "homologues.list.element.targetGeneId": [
+   "string",
+   53194,
+   3873790,
+   "ENSCAFG00845000002",
+   "WBGene00305157"
+  ],
+  "homologues.list.element.targetGeneSymbol": [
+   "string",
+   53194,
+   3873790,
+   "0610010K14Rik",
+   "zyg11l"
+  ],
+  "homologues.list.element.targetPercentageIdentity": [
+   "double",
+   53194,
+   3873790,
+   0.0,
+   100.0
+  ],
+  "id": [
+   "string",
+   0,
+   78726,
+   "ENSG00000000003",
+   "ENSG00000310577"
+  ],
+  "nameSynonyms.list.element.label": [
+   "string",
+   51219,
+   209293,
+   "(1-49)-CCK58",
+   "\u201ccytosolic aspartoacylase\u201d"
+  ],
+  "nameSynonyms.list.element.source": [
+   "string",
+   51219,
+   209293,
+   "HGNC",
+   "uniprot"
+  ],
+  "obsoleteNames.list.element.label": [
+   "string",
+   57122,
+   89065,
+   " aph-1B gamma-secretase subunit",
+   "zymogen granule protein 16 homolog B (ra"
+  ],
+  "obsoleteNames.list.element.source": [
+   "string",
+   57122,
+   89065,
+   "HGNC",
+   "HGNC"
+  ],
+  "obsoleteSymbols.list.element.label": [
+   "string",
+   66989,
+   81666,
+   "A1BG-AS",
+   "ZZANK1"
+  ],
+  "obsoleteSymbols.list.element.source": [
+   "string",
+   66989,
+   81666,
+   "HGNC",
+   "HGNC"
+  ],
+  "pathways.list.element.pathway": [
+   "string",
+   67310,
+   114744,
+   "2-LTR circle formation",
+   "vRNP Assembly"
+  ],
+  "pathways.list.element.pathwayId": [
+   "string",
+   67310,
+   114744,
+   "R-HSA-1059683",
+   "R-HSA-997272"
+  ],
+  "pathways.list.element.topLevelTerm": [
+   "string",
+   67310,
+   114744,
+   "Autophagy",
+   "Vesicle-mediated transport"
+  ],
+  "proteinIds.list.element.id": [
+   "string",
+   57588,
+   324672,
+   "A0A023HHK9",
+   "X6RM59"
+  ],
+  "proteinIds.list.element.source": [
+   "string",
+   57588,
+   324672,
+   "ensembl_PRO",
+   "uniprot_trembl"
+  ],
+  "safetyLiabilities.list.element.biosamples.list.element.cellFormat": [
+   "string",
+   84827,
+   85265,
+   "cell line",
+   "tissue-based cell-free"
+  ],
+  "safetyLiabilities.list.element.biosamples.list.element.cellLabel": [
+   "string",
+   84994,
+   85265,
+   "22Rv1",
+   "umbilical vein endothelium and periphera"
+  ],
+  "safetyLiabilities.list.element.biosamples.list.element.tissueId": [
+   "string",
+   80193,
+   85265,
+   "UBERON:0000062",
+   "UBERON_0005409"
+  ],
+  "safetyLiabilities.list.element.biosamples.list.element.tissueLabel": [
+   "string",
+   80144,
+   85265,
+   "CNS",
+   "vascular"
+  ],
+  "safetyLiabilities.list.element.datasource": [
+   "string",
+   77783,
+   82267,
+   "AOP-Wiki",
+   "Urban et al. (2012)"
+  ],
+  "safetyLiabilities.list.element.effects.list.element.direction": [
+   "string",
+   79953,
+   82302,
+   "Activation/Increase/Upregulation",
+   "Inhibition/Decrease/Downregulation"
+  ],
+  "safetyLiabilities.list.element.effects.list.element.dosing": [
+   "string",
+   80359,
+   82302,
+   "acute",
+   "general"
+  ],
+  "safetyLiabilities.list.element.event": [
+   "string",
+   77783,
+   82267,
+   ", or absent, increase in nicotine cravin",
+   "worsening of working memory"
+  ],
+  "safetyLiabilities.list.element.eventId": [
+   "string",
+   79143,
+   82267,
+   "CHEBI_25435",
+   "Orphanet_68335"
+  ],
+  "safetyLiabilities.list.element.literature": [
+   "string",
+   80326,
+   82267,
+   "21283106",
+   "38773351"
+  ],
+  "safetyLiabilities.list.element.studies.list.element.description": [
+   "string",
+   78225,
+   83481,
+   "ACEA_AR_80hr, is one of two assay compon",
+   "weight gain"
+  ],
+  "safetyLiabilities.list.element.studies.list.element.name": [
+   "string",
+   78425,
+   83481,
+   "3,4-methylenedioxymethamphetamine induce",
+   "zonisamide induced effect"
+  ],
+  "safetyLiabilities.list.element.studies.list.element.type": [
+   "string",
+   77784,
+   83481,
+   "biochemical",
+   "preclinical"
+  ],
+  "safetyLiabilities.list.element.url": [
+   "string",
+   79724,
+   82267,
+   "https://aopwiki.org/aops/10",
+   "https://www.epa.gov/chemical-research/ex"
+  ],
+  "subcellularLocations.list.element.labelSL": [
+   "string",
+   63134,
+   116709,
+   "Cell junction",
+   "Vesicle"
+  ],
+  "subcellularLocations.list.element.location": [
+   "string",
+   59727,
+   116709,
+   "Acrosome",
+   "[proBNP(3-108)]: Secreted"
+  ],
+  "subcellularLocations.list.element.source": [
+   "string",
+   59727,
+   116709,
+   "HPA_additional",
+   "uniprot"
+  ],
+  "subcellularLocations.list.element.termSL": [
+   "string",
+   63134,
+   116709,
+   "SL-0015",
+   "SL-0549"
+  ],
+  "symbolSynonyms.list.element.label": [
+   "string",
+   38869,
+   251041,
+   "'C-K-RAS",
+   "\u03c32R"
+  ],
+  "symbolSynonyms.list.element.source": [
+   "string",
+   38869,
+   251041,
+   "HGNC",
+   "uniprot"
+  ],
+  "synonyms.list.element.label": [
+   "string",
+   38834,
+   409004,
+   "'C-K-RAS",
+   "\u201ccytosolic aspartoacylase\u201d"
+  ],
+  "synonyms.list.element.source": [
+   "string",
+   38834,
+   409004,
+   "HGNC",
+   "uniprot"
+  ],
+  "targetClass.list.element.id": [
+   "int64",
+   73798,
+   88036,
+   1,
+   1715
+  ],
+  "targetClass.list.element.label": [
+   "string",
+   73798,
+   88036,
+   "5HT3 receptor",
+   "p300/CBP family"
+  ],
+  "targetClass.list.element.level": [
+   "string",
+   73798,
+   88036,
+   "l1",
+   "l6"
+  ],
+  "tep.description": [
+   "string",
+   78685,
+   78726,
+   "Artemis (DCLRE1C, SNM1C)",
+   "Potassium/Chloride Co-transporter 1 and "
+  ],
+  "tep.targetFromSourceId": [
+   "string",
+   78685,
+   78726,
+   "AASS",
+   "WNK3"
+  ],
+  "tep.therapeuticArea": [
+   "string",
+   78685,
+   78726,
+   "Cancer",
+   "Sickle cell disease (SCD), Neurological"
+  ],
+  "tep.url": [
+   "string",
+   78685,
+   78726,
+   "https://www.thesgc.org/tep/aass",
+   "https://www.thesgc.org/tep/wnk3"
+  ],
+  "tractability.list.element.id": [
+   "string",
+   59846,
+   588486,
+   "Advanced Clinical",
+   "UniProt loc med conf"
+  ],
+  "tractability.list.element.modality": [
+   "string",
+   59846,
+   588486,
+   "AB",
+   "SM"
+  ],
+  "tractability.list.element.value": [
+   "bool",
+   59846,
+   588486,
+   false,
+   true
+  ],
+  "transcriptIds.list.element": [
+   "string",
+   0,
+   385773,
+   "ENST00000000233",
+   "ENST00000850960"
+  ],
+  "tss": [
+   "int64",
+   18452,
+   78726,
+   577,
+   248936581
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 10,
+ "rows": 78726,
+ "schema": [
+  {
+   "name": "id",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "approvedSymbol",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "biotype",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "transcriptIds",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "canonicalTranscript",
+   "nullable": true,
+   "type": {
+    "struct": [
+     {
+      "name": "id",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "chromosome",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "start",
+      "nullable": true,
+      "type": "int64"
+     },
+     {
+      "name": "end",
+      "nullable": true,
+      "type": "int64"
+     },
+     {
+      "name": "strand",
+      "nullable": true,
+      "type": "string"
+     }
+    ]
+   }
+  },
+  {
+   "name": "canonicalExons",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "genomicLocation",
+   "nullable": false,
+   "type": {
+    "struct": [
+     {
+      "name": "chromosome",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "start",
+      "nullable": true,
+      "type": "int64"
+     },
+     {
+      "name": "end",
+      "nullable": true,
+      "type": "int64"
+     },
+     {
+      "name": "strand",
+      "nullable": true,
+      "type": "int32"
+     }
+    ]
+   }
+  },
+  {
+   "name": "alternativeGenes",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "approvedName",
+   "nullable": false,
+   "type": "string"
+  },
+  {
+   "name": "go",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "id",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "source",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "evidence",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "aspect",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "geneProduct",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "ecoId",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "hallmarks",
+   "nullable": true,
+   "type": {
+    "struct": [
+     {
+      "name": "attributes",
+      "nullable": true,
+      "type": {
+       "list": {
+        "name": "element",
+        "nullable": false,
+        "type": {
+         "struct": [
+          {
+           "name": "pmid",
+           "nullable": true,
+           "type": "int64"
+          },
+          {
+           "name": "description",
+           "nullable": true,
+           "type": "string"
+          },
+          {
+           "name": "attribute_name",
+           "nullable": true,
+           "type": "string"
+          }
+         ]
+        }
+       }
+      }
+     },
+     {
+      "name": "cancerHallmarks",
+      "nullable": true,
+      "type": {
+       "list": {
+        "name": "element",
+        "nullable": false,
+        "type": {
+         "struct": [
+          {
+           "name": "pmid",
+           "nullable": true,
+           "type": "int64"
+          },
+          {
+           "name": "description",
+           "nullable": true,
+           "type": "string"
+          },
+          {
+           "name": "impact",
+           "nullable": true,
+           "type": "string"
+          },
+          {
+           "name": "label",
+           "nullable": true,
+           "type": "string"
+          }
+         ]
+        }
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "synonyms",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "label",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "source",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "symbolSynonyms",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "label",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "source",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "nameSynonyms",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "label",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "source",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "functionDescriptions",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "subcellularLocations",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "location",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "source",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "termSL",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "labelSL",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "targetClass",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "id",
+        "nullable": true,
+        "type": "int64"
+       },
+       {
+        "name": "label",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "level",
+        "nullable": false,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "obsoleteSymbols",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "label",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "source",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "obsoleteNames",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "label",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "source",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "constraint",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "constraintType",
+        "nullable": false,
+        "type": "string"
+       },
+       {
+        "name": "score",
+        "nullable": true,
+        "type": "float"
+       },
+       {
+        "name": "exp",
+        "nullable": true,
+        "type": "float"
+       },
+       {
+        "name": "obs",
+        "nullable": true,
+        "type": "int32"
+       },
+       {
+        "name": "oe",
+        "nullable": true,
+        "type": "float"
+       },
+       {
+        "name": "oeLower",
+        "nullable": true,
+        "type": "float"
+       },
+       {
+        "name": "oeUpper",
+        "nullable": true,
+        "type": "float"
+       },
+       {
+        "name": "upperRank",
+        "nullable": true,
+        "type": "int32"
+       },
+       {
+        "name": "upperBin",
+        "nullable": true,
+        "type": "int32"
+       },
+       {
+        "name": "upperBin6",
+        "nullable": true,
+        "type": "int32"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "tep",
+   "nullable": true,
+   "type": {
+    "struct": [
+     {
+      "name": "targetFromSourceId",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "description",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "therapeuticArea",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "url",
+      "nullable": true,
+      "type": "string"
+     }
+    ]
+   }
+  },
+  {
+   "name": "proteinIds",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "id",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "source",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "dbXrefs",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "id",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "source",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "chemicalProbes",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "control",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "drugId",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "id",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "isHighQuality",
+        "nullable": true,
+        "type": "bool"
+       },
+       {
+        "name": "mechanismOfAction",
+        "nullable": true,
+        "type": {
+         "list": {
+          "name": "element",
+          "nullable": true,
+          "type": "string"
+         }
+        }
+       },
+       {
+        "name": "origin",
+        "nullable": true,
+        "type": {
+         "list": {
+          "name": "element",
+          "nullable": true,
+          "type": "string"
+         }
+        }
+       },
+       {
+        "name": "probeMinerScore",
+        "nullable": true,
+        "type": "int64"
+       },
+       {
+        "name": "probesDrugsScore",
+        "nullable": true,
+        "type": "int64"
+       },
+       {
+        "name": "scoreInCells",
+        "nullable": true,
+        "type": "int64"
+       },
+       {
+        "name": "scoreInOrganisms",
+        "nullable": true,
+        "type": "int64"
+       },
+       {
+        "name": "targetFromSourceId",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "urls",
+        "nullable": true,
+        "type": {
+         "list": {
+          "name": "element",
+          "nullable": true,
+          "type": {
+           "struct": [
+            {
+             "name": "niceName",
+             "nullable": true,
+             "type": "string"
+            },
+            {
+             "name": "url",
+             "nullable": true,
+             "type": "string"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "homologues",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "speciesId",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "speciesName",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "homologyType",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "targetGeneId",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "isHighConfidence",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "targetGeneSymbol",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "queryPercentageIdentity",
+        "nullable": true,
+        "type": "double"
+       },
+       {
+        "name": "targetPercentageIdentity",
+        "nullable": true,
+        "type": "double"
+       },
+       {
+        "name": "priority",
+        "nullable": true,
+        "type": "int32"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "tractability",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "modality",
+        "nullable": false,
+        "type": "string"
+       },
+       {
+        "name": "id",
+        "nullable": false,
+        "type": "string"
+       },
+       {
+        "name": "value",
+        "nullable": false,
+        "type": "bool"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "safetyLiabilities",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "event",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "eventId",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "effects",
+        "nullable": true,
+        "type": {
+         "list": {
+          "name": "element",
+          "nullable": true,
+          "type": {
+           "struct": [
+            {
+             "name": "direction",
+             "nullable": true,
+             "type": "string"
+            },
+            {
+             "name": "dosing",
+             "nullable": true,
+             "type": "string"
+            }
+           ]
+          }
+         }
+        }
+       },
+       {
+        "name": "biosamples",
+        "nullable": true,
+        "type": {
+         "list": {
+          "name": "element",
+          "nullable": true,
+          "type": {
+           "struct": [
+            {
+             "name": "cellFormat",
+             "nullable": true,
+             "type": "string"
+            },
+            {
+             "name": "cellLabel",
+             "nullable": true,
+             "type": "string"
+            },
+            {
+             "name": "tissueId",
+             "nullable": true,
+             "type": "string"
+            },
+            {
+             "name": "tissueLabel",
+             "nullable": true,
+             "type": "string"
+            }
+           ]
+          }
+         }
+        }
+       },
+       {
+        "name": "datasource",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "literature",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "url",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "studies",
+        "nullable": true,
+        "type": {
+         "list": {
+          "name": "element",
+          "nullable": true,
+          "type": {
+           "struct": [
+            {
+             "name": "description",
+             "nullable": true,
+             "type": "string"
+            },
+            {
+             "name": "name",
+             "nullable": true,
+             "type": "string"
+            },
+            {
+             "name": "type",
+             "nullable": true,
+             "type": "string"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "pathways",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "pathwayId",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "pathway",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "topLevelTerm",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "tss",
+   "nullable": true,
+   "type": "int64"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  7877,
+  7834,
+  7821,
+  7847,
+  8069,
+  7830,
+  7868,
+  7791,
+  7862,
+  7927
+ ],
+ "shards": 10,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/target/",
+ "table": "target"
+}

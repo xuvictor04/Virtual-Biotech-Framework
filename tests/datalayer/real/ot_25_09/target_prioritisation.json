@@ -1,0 +1,239 @@
+{
+ "bytes": 1014771,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "5001d033dd1609ab57229f2dd1b0a94fa20483cb396481c2e1056fae541bd3e8",
+ "leaves": {
+  "geneticConstraint": [
+   "double",
+   60863,
+   78726,
+   -1.0,
+   1.0
+  ],
+  "hasHighQualityChemicalProbes": [
+   "int32",
+   77809,
+   78726,
+   0,
+   1
+  ],
+  "hasLigand": [
+   "int32",
+   59846,
+   78726,
+   0,
+   1
+  ],
+  "hasPocket": [
+   "int32",
+   59846,
+   78726,
+   0,
+   1
+  ],
+  "hasSafetyEvent": [
+   "int32",
+   77783,
+   78726,
+   -1,
+   -1
+  ],
+  "hasSmallMoleculeBinder": [
+   "int32",
+   59846,
+   78726,
+   0,
+   1
+  ],
+  "hasTEP": [
+   "int32",
+   78685,
+   78726,
+   1,
+   1
+  ],
+  "isCancerDriverGene": [
+   "int32",
+   78396,
+   78726,
+   -1,
+   -1
+  ],
+  "isInMembrane": [
+   "int32",
+   59727,
+   78726,
+   0,
+   1
+  ],
+  "isSecreted": [
+   "int32",
+   59727,
+   78726,
+   0,
+   1
+  ],
+  "maxClinicalTrialPhase": [
+   "double",
+   77171,
+   78726,
+   0.25,
+   1.0
+  ],
+  "mouseKOScore": [
+   "double",
+   65946,
+   78726,
+   -0.9935245454260024,
+   0.0
+  ],
+  "mouseOrthologMaxIdentityPercentage": [
+   "double",
+   59349,
+   78726,
+   0.0,
+   1.0
+  ],
+  "paralogMaxIdentityPercentage": [
+   "double",
+   57867,
+   78726,
+   -1.0,
+   0.0
+  ],
+  "targetId": [
+   "string",
+   0,
+   78726,
+   "ENSG00000000003",
+   "ENSG00000310577"
+  ],
+  "tissueDistribution": [
+   "double",
+   59626,
+   78726,
+   -1.0,
+   1.0
+  ],
+  "tissueSpecificity": [
+   "double",
+   59626,
+   78726,
+   -1.0,
+   1.0
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 10,
+ "rows": 78726,
+ "schema": [
+  {
+   "name": "targetId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "isInMembrane",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "isSecreted",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "hasSafetyEvent",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "hasPocket",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "hasLigand",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "hasSmallMoleculeBinder",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "geneticConstraint",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "paralogMaxIdentityPercentage",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "mouseOrthologMaxIdentityPercentage",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "isCancerDriverGene",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "hasTEP",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "mouseKOScore",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "hasHighQualityChemicalProbes",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "maxClinicalTrialPhase",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "tissueSpecificity",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "tissueDistribution",
+   "nullable": true,
+   "type": "double"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  7847,
+  8069,
+  7868,
+  7862,
+  7791,
+  7927,
+  7877,
+  7834,
+  7830,
+  7821
+ ],
+ "shards": 10,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/target_prioritisation/",
+ "table": "target_prioritisation"
+}

@@ -1,0 +1,57 @@
+{
+ "bytes": 976586,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "51a3a72445a16361b9693139640854bd71b7ce53f4c99aa1b80f8cc3ed8fd597",
+ "leaves": {
+  "id": [
+   "string",
+   0,
+   48165,
+   "GO:0000001",
+   "GO:7770010"
+  ],
+  "name": [
+   "string",
+   0,
+   48165,
+   "'de novo' AMP biosynthetic process",
+   "zymosterol metabolic process"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 8,
+ "rows": 48165,
+ "schema": [
+  {
+   "name": "id",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "name",
+   "nullable": true,
+   "type": "string"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  6020,
+  6021,
+  6020,
+  6021,
+  6021,
+  6020,
+  6021,
+  6021
+ ],
+ "shards": 8,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/go/",
+ "table": "go"
+}

@@ -1,0 +1,204 @@
+{
+ "bytes": 9848028,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "d8ed32ba16784c3f48457eab2a77738185dee5e4bc95b1d02d17a290e62c06ce",
+ "leaves": {
+  "biologicalModels.list.element.allelicComposition": [
+   "string",
+   0,
+   264590,
+   "1110059G10Rik<tm1a(KOMP)Wtsi> hom early",
+   "mt-Tl1<m1Jiha>"
+  ],
+  "biologicalModels.list.element.geneticBackground": [
+   "string",
+   0,
+   264590,
+   "(129/Sv x BALB/c)F1",
+   "wild Corsican mouse"
+  ],
+  "biologicalModels.list.element.id": [
+   "string",
+   771,
+   264590,
+   "MGI:1856228",
+   "MGI:8166401"
+  ],
+  "biologicalModels.list.element.literature.list.element": [
+   "string",
+   42347,
+   1301226,
+   "1001817",
+   "9990093"
+  ],
+  "modelPhenotypeClasses.list.element.id": [
+   "string",
+   0,
+   284137,
+   "MP:0001186",
+   "MP:0010771"
+  ],
+  "modelPhenotypeClasses.list.element.label": [
+   "string",
+   0,
+   284137,
+   "adipose tissue phenotype",
+   "vision/eye phenotype"
+  ],
+  "modelPhenotypeId": [
+   "string",
+   0,
+   210579,
+   "MP:0000003",
+   "MP:3000003"
+  ],
+  "modelPhenotypeLabel": [
+   "string",
+   0,
+   210579,
+   "Bergmeister's papilla",
+   "zygomatic arch hypoplasia"
+  ],
+  "targetFromSourceId": [
+   "string",
+   0,
+   210579,
+   "ENSG00000000003",
+   "ENSG00000293386"
+  ],
+  "targetInModel": [
+   "string",
+   0,
+   210579,
+   "1110059G10Rik",
+   "mt-Tl1"
+  ],
+  "targetInModelEnsemblId": [
+   "string",
+   11,
+   210579,
+   "ENSMUSG00000000001",
+   "ENSMUSG00002076083"
+  ],
+  "targetInModelMgiId": [
+   "string",
+   0,
+   210579,
+   "MGI:101757",
+   "MGI:99961"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 1,
+ "rows": 210579,
+ "schema": [
+  {
+   "name": "biologicalModels",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "allelicComposition",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "geneticBackground",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "id",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "literature",
+        "nullable": true,
+        "type": {
+         "list": {
+          "name": "element",
+          "nullable": true,
+          "type": "string"
+         }
+        }
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "modelPhenotypeClasses",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "id",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "label",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "modelPhenotypeId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "modelPhenotypeLabel",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "targetFromSourceId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "targetInModel",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "targetInModelEnsemblId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "targetInModelMgiId",
+   "nullable": true,
+   "type": "string"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  210579
+ ],
+ "shards": 1,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/mouse_phenotype/",
+ "table": "mouse_phenotype"
+}

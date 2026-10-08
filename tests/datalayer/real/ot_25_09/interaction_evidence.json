@@ -1,0 +1,711 @@
+{
+ "bytes": 296743279,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "ab740bcc3067413782dfbcaa46a5a8e06233748ff9f1c9070fec4bf445fa8d91",
+ "leaves": {
+  "evidenceScore": [
+   "double",
+   2316152,
+   27286700,
+   0.001,
+   0.999
+  ],
+  "expansionMethodMiIdentifier": [
+   "string",
+   25868056,
+   27286700,
+   "MI:1060",
+   "MI:1061"
+  ],
+  "expansionMethodShortName": [
+   "string",
+   25868056,
+   27286700,
+   "matrix expansion",
+   "spoke expansion"
+  ],
+  "hostOrganismScientificName": [
+   "string",
+   24970584,
+   27286700,
+   " Mouse src transformed embryo fibroblast",
+   "university of Arizona melanoma cell cult"
+  ],
+  "hostOrganismTaxId": [
+   "int64",
+   24970548,
+   27286700,
+   -4,
+   1007065
+  ],
+  "hostOrganismTissue.fullName": [
+   "string",
+   27240085,
+   27286700,
+   "ADIPOCYTE",
+   "white adipose tissue"
+  ],
+  "hostOrganismTissue.shortName": [
+   "string",
+   27239174,
+   27286700,
+   "adenocarcinoma",
+   "zygote"
+  ],
+  "hostOrganismTissue.xrefs.list.element": [
+   "string",
+   27283004,
+   27288053,
+   "15469992",
+   "UBERON:0012652"
+  ],
+  "intA": [
+   "string",
+   0,
+   27286700,
+   " Q9UFF9",
+   "X6RLT1"
+  ],
+  "intABiologicalRole": [
+   "string",
+   0,
+   27286700,
+   "acceptor",
+   "unspecified role"
+  ],
+  "intASource": [
+   "string",
+   0,
+   27286700,
+   "ensembl_protein",
+   "uniprotkb"
+  ],
+  "intB": [
+   "string",
+   0,
+   27286700,
+   " Q9UFF9",
+   "X6RLT1"
+  ],
+  "intBBiologicalRole": [
+   "string",
+   0,
+   27286700,
+   "acceptor",
+   "unspecified role"
+  ],
+  "intBSource": [
+   "string",
+   0,
+   27286700,
+   "chebi",
+   "uniprotkb"
+  ],
+  "interactionDetectionMethodMiIdentifier": [
+   "string",
+   0,
+   27286700,
+   "",
+   "MI:2404"
+  ],
+  "interactionDetectionMethodShortName": [
+   "string",
+   0,
+   27286700,
+   "2 hybrid",
+   "zymography"
+  ],
+  "interactionIdentifier": [
+   "string",
+   24970548,
+   27286700,
+   "EBI-1000008",
+   "SIGNOR-99995"
+  ],
+  "interactionResources.databaseVersion": [
+   "string",
+   0,
+   27286700,
+   "12",
+   "Not Available"
+  ],
+  "interactionResources.sourceDatabase": [
+   "string",
+   0,
+   27286700,
+   "intact",
+   "string"
+  ],
+  "interactionScore": [
+   "double",
+   267522,
+   27286700,
+   0.15,
+   1.0
+  ],
+  "interactionTypeMiIdentifier": [
+   "string",
+   24970548,
+   27286700,
+   "GO:0031648",
+   "MI:2364"
+  ],
+  "interactionTypeShortName": [
+   "string",
+   24970548,
+   27286700,
+   "acetylation",
+   "ubiquitination"
+  ],
+  "participantDetectionMethodA.list.element.miIdentifier": [
+   "string",
+   25020502,
+   27341177,
+   "MI:0032",
+   "MI:2321"
+  ],
+  "participantDetectionMethodA.list.element.shortName": [
+   "string",
+   25020502,
+   27341177,
+   "anti tag immunost",
+   "western blot"
+  ],
+  "participantDetectionMethodB.list.element.miIdentifier": [
+   "string",
+   25020948,
+   27339253,
+   "MI:0032",
+   "MI:2321"
+  ],
+  "participantDetectionMethodB.list.element.shortName": [
+   "string",
+   25020948,
+   27339253,
+   "anti tag immunost",
+   "western blot"
+  ],
+  "pubmedId": [
+   "string",
+   24970554,
+   27286700,
+   "    16301520",
+   "unassigned85"
+  ],
+  "speciesA.mnemonic": [
+   "string",
+   0,
+   27286700,
+   "human",
+   "human"
+  ],
+  "speciesA.scientificName": [
+   "string",
+   0,
+   27286700,
+   "Homo sapiens",
+   "Homo sapiens"
+  ],
+  "speciesA.taxonId": [
+   "int64",
+   0,
+   27286700,
+   9606,
+   9606
+  ],
+  "speciesB.mnemonic": [
+   "string",
+   0,
+   27286700,
+   "9PAPI",
+   "zikv"
+  ],
+  "speciesB.scientificName": [
+   "string",
+   94,
+   27286700,
+   "Abelson murine leukemia virus",
+   "vsnjo"
+  ],
+  "speciesB.taxonId": [
+   "int64",
+   0,
+   27286700,
+   -2,
+   3052342
+  ],
+  "targetA": [
+   "string",
+   0,
+   27286700,
+   "ENSAMEG00000026011.1",
+   "MGP_SPRETEiJ_G0036647.1"
+  ],
+  "targetB": [
+   "string",
+   465748,
+   27286700,
+   "ENSAMEG00000026011.1",
+   "MGP_SPRETEiJ_G0007343.1"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 200,
+ "rows": 27286700,
+ "schema": [
+  {
+   "name": "participantDetectionMethodA",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "miIdentifier",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "shortName",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "participantDetectionMethodB",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "miIdentifier",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "shortName",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "hostOrganismTaxId",
+   "nullable": true,
+   "type": "int64"
+  },
+  {
+   "name": "targetB",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "evidenceScore",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "expansionMethodShortName",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "hostOrganismScientificName",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "intBBiologicalRole",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "interactionResources",
+   "nullable": true,
+   "type": {
+    "struct": [
+     {
+      "name": "databaseVersion",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "sourceDatabase",
+      "nullable": true,
+      "type": "string"
+     }
+    ]
+   }
+  },
+  {
+   "name": "interactionDetectionMethodShortName",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "intA",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "intBSource",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "interactionTypeMiIdentifier",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "speciesB",
+   "nullable": true,
+   "type": {
+    "struct": [
+     {
+      "name": "mnemonic",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "scientificName",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "taxonId",
+      "nullable": true,
+      "type": "int64"
+     }
+    ]
+   }
+  },
+  {
+   "name": "expansionMethodMiIdentifier",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "interactionTypeShortName",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "interactionIdentifier",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "hostOrganismTissue",
+   "nullable": true,
+   "type": {
+    "struct": [
+     {
+      "name": "fullName",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "shortName",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "xrefs",
+      "nullable": true,
+      "type": {
+       "list": {
+        "name": "element",
+        "nullable": true,
+        "type": "string"
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "speciesA",
+   "nullable": true,
+   "type": {
+    "struct": [
+     {
+      "name": "mnemonic",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "scientificName",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "taxonId",
+      "nullable": true,
+      "type": "int64"
+     }
+    ]
+   }
+  },
+  {
+   "name": "intASource",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "intB",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "pubmedId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "intABiologicalRole",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "interactionScore",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "targetA",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "interactionDetectionMethodMiIdentifier",
+   "nullable": true,
+   "type": "string"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  140931,
+  139926,
+  131858,
+  110682,
+  143846,
+  147175,
+  136390,
+  153272,
+  134168,
+  139283,
+  133079,
+  133864,
+  163183,
+  151190,
+  148957,
+  123711,
+  126993,
+  139133,
+  143167,
+  147287,
+  132606,
+  124057,
+  135462,
+  128373,
+  137935,
+  126336,
+  136306,
+  123470,
+  128143,
+  128800,
+  143230,
+  134171,
+  132671,
+  125075,
+  130132,
+  111413,
+  150152,
+  151810,
+  152106,
+  132558,
+  153870,
+  151502,
+  150460,
+  138080,
+  120186,
+  138127,
+  151567,
+  125875,
+  132683,
+  120693,
+  138265,
+  126940,
+  125569,
+  146413,
+  142102,
+  142888,
+  121375,
+  125844,
+  102466,
+  148340,
+  131869,
+  112776,
+  122487,
+  135187,
+  128203,
+  139182,
+  139030,
+  128248,
+  149143,
+  136231,
+  148306,
+  150905,
+  118838,
+  135794,
+  151295,
+  164292,
+  155224,
+  123330,
+  122184,
+  119304,
+  133698,
+  162794,
+  161541,
+  132392,
+  109091,
+  149810,
+  127589,
+  116226,
+  129859,
+  143549,
+  155219,
+  119556,
+  157811,
+  149018,
+  135081,
+  124346,
+  153798,
+  121861,
+  137373,
+  137880,
+  162475,
+  128421,
+  141449,
+  154880,
+  132124,
+  128232,
+  153668,
+  143434,
+  134849,
+  141061,
+  124458,
+  137606,
+  117641,
+  142568,
+  102667,
+  127528,
+  130339,
+  127932,
+  139417,
+  145174,
+  119816,
+  127278,
+  122049,
+  149167,
+  149599,
+  141985,
+  143759,
+  121955,
+  152072,
+  141401,
+  141898,
+  126955,
+  128238,
+  137994,
+  121228,
+  157560,
+  122123,
+  140484,
+  122397,
+  134137,
+  132306,
+  129373,
+  151346,
+  114613,
+  132779,
+  118482,
+  135441,
+  124607,
+  149767,
+  110254,
+  151338,
+  125085,
+  159886,
+  141669,
+  146006,
+  132987,
+  136630,
+  151296,
+  130157,
+  112547,
+  174324,
+  145841,
+  161060,
+  128162,
+  129287,
+  118015,
+  145699,
+  137899,
+  135764,
+  133685,
+  132756,
+  163528,
+  146695,
+  162408,
+  161915,
+  119305,
+  122826,
+  139140,
+  146587,
+  149328,
+  141678,
+  129384,
+  118562,
+  129864,
+  143120,
+  124927,
+  142330,
+  148377,
+  117613,
+  137732,
+  136723,
+  150197,
+  127765,
+  131068,
+  129493,
+  145775,
+  140801,
+  138640,
+  127431,
+  139943
+ ],
+ "shards": 200,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/interaction_evidence/",
+ "table": "interaction_evidence"
+}

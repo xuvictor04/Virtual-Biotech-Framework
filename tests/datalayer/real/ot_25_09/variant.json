@@ -1,0 +1,580 @@
+{
+ "bytes": 3176223849,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "433324311110d3e0b07e5ef6b13d83c46cb88aff6998458366dbfa1d36956a7d",
+ "leaves": {
+  "alleleFrequencies.list.element.alleleFrequency": [
+   "double",
+   613526,
+   62450486,
+   0.0,
+   1.0
+  ],
+  "alleleFrequencies.list.element.populationName": [
+   "string",
+   611356,
+   62450486,
+   "afr_adj",
+   "sas_adj"
+  ],
+  "alternateAllele": [
+   "string",
+   0,
+   6795269,
+   "A",
+   "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTA"
+  ],
+  "chromosome": [
+   "string",
+   0,
+   6795269,
+   "1",
+   "Y"
+  ],
+  "dbXrefs.list.element.id": [
+   "string",
+   155304,
+   15469855,
+   "1-10000044-A-T",
+   "rs9999996"
+  ],
+  "dbXrefs.list.element.source": [
+   "string",
+   155304,
+   15469855,
+   "clinvar",
+   "protvar"
+  ],
+  "hgvsId": [
+   "string",
+   1756,
+   6795269,
+   "10:g.100000235C>T",
+   "Y:g.7064150G>C"
+  ],
+  "mostSevereConsequenceId": [
+   "string",
+   0,
+   6795269,
+   "SO_0001060",
+   "SO_0002170"
+  ],
+  "position": [
+   "int32",
+   0,
+   6795269,
+   73,
+   248921666
+  ],
+  "referenceAllele": [
+   "string",
+   0,
+   6795269,
+   "A",
+   "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTG"
+  ],
+  "rsIds.list.element": [
+   "string",
+   370618,
+   6817218,
+   "rs10000",
+   "rs9999996"
+  ],
+  "transcriptConsequences.list.element.aminoAcidChange": [
+   "string",
+   241213788,
+   242306409,
+   "*1014Y*",
+   "YYY178X"
+  ],
+  "transcriptConsequences.list.element.appris": [
+   "string",
+   167351092,
+   242306409,
+   "A1",
+   "P5"
+  ],
+  "transcriptConsequences.list.element.approvedSymbol": [
+   "string",
+   99482047,
+   242306409,
+   "5S_rRNA",
+   "snoZ196"
+  ],
+  "transcriptConsequences.list.element.biotype": [
+   "string",
+   290,
+   242306409,
+   "IG_C_gene",
+   "vault_RNA"
+  ],
+  "transcriptConsequences.list.element.codons": [
+   "string",
+   240805083,
+   242306409,
+   "-/A",
+   "ttt/ttTTTCTGTATTCCTGTAATGGGGCTGATGATAt"
+  ],
+  "transcriptConsequences.list.element.consequenceScore": [
+   "float",
+   290,
+   242306409,
+   0.0,
+   1.0
+  ],
+  "transcriptConsequences.list.element.distanceFromFootprint": [
+   "int64",
+   290,
+   242306409,
+   0,
+   500000
+  ],
+  "transcriptConsequences.list.element.distanceFromTss": [
+   "int64",
+   290,
+   242306409,
+   -2800613,
+   500000
+  ],
+  "transcriptConsequences.list.element.impact": [
+   "string",
+   290,
+   242306409,
+   "HIGH",
+   "MODIFIER"
+  ],
+  "transcriptConsequences.list.element.isEnsemblCanonical": [
+   "bool",
+   290,
+   242306409,
+   true,
+   true
+  ],
+  "transcriptConsequences.list.element.lofteePrediction": [
+   "string",
+   242093663,
+   242306409,
+   "HC",
+   "LC"
+  ],
+  "transcriptConsequences.list.element.maneSelect": [
+   "string",
+   166380729,
+   242306409,
+   "NM_000014.6",
+   "NR_197388.1"
+  ],
+  "transcriptConsequences.list.element.polyphenPrediction": [
+   "float",
+   242306409,
+   242306409,
+   null,
+   null
+  ],
+  "transcriptConsequences.list.element.siftPrediction": [
+   "float",
+   242306409,
+   242306409,
+   null,
+   null
+  ],
+  "transcriptConsequences.list.element.targetId": [
+   "string",
+   290,
+   242306409,
+   "ENSG00000000003",
+   "ENSG00000310576"
+  ],
+  "transcriptConsequences.list.element.transcriptId": [
+   "string",
+   290,
+   242306409,
+   "ENST00000000233",
+   "ENST00000850960"
+  ],
+  "transcriptConsequences.list.element.transcriptIndex": [
+   "int32",
+   290,
+   242306409,
+   1,
+   186
+  ],
+  "transcriptConsequences.list.element.uniprotAccessions.list.element": [
+   "string",
+   164964062,
+   252409295,
+   "A0A023T6R1",
+   "X6RM59"
+  ],
+  "transcriptConsequences.list.element.variantFunctionalConsequenceIds.list.element": [
+   "string",
+   290,
+   244274658,
+   "SO_0001567",
+   "SO_0002170"
+  ],
+  "variantDescription": [
+   "string",
+   0,
+   6795269,
+   "3 prime utr variant 10,444 basepair away",
+   "Upstream gene variant overlapping with W"
+  ],
+  "variantEffect.list.element.assessment": [
+   "string",
+   6941370,
+   15311831,
+   "3_prime_UTR_variant",
+   "upstream_gene_variant"
+  ],
+  "variantEffect.list.element.assessmentFlag": [
+   "string",
+   15286438,
+   15311831,
+   "3UTR_SPLICE",
+   "GC_TO_GT_DONOR,ANC_ALLELE"
+  ],
+  "variantEffect.list.element.method": [
+   "string",
+   0,
+   15311831,
+   "AlphaMissense",
+   "VEP"
+  ],
+  "variantEffect.list.element.normalisedScore": [
+   "double",
+   0,
+   15311831,
+   -1.0,
+   1.0
+  ],
+  "variantEffect.list.element.score": [
+   "float",
+   212553,
+   15311831,
+   -19.799999237060547,
+   106.3290023803711
+  ],
+  "variantEffect.list.element.targetId": [
+   "string",
+   7314441,
+   15311831,
+   "ENSG00000000003",
+   "ENSG00000310576"
+  ],
+  "variantId": [
+   "string",
+   0,
+   6795269,
+   "10_100000235_C_T",
+   "Y_7064150_G_C"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 35,
+ "rows": 6795269,
+ "schema": [
+  {
+   "name": "variantId",
+   "nullable": false,
+   "type": "string"
+  },
+  {
+   "name": "chromosome",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "position",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "referenceAllele",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "alternateAllele",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "variantEffect",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "method",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "assessment",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "score",
+        "nullable": true,
+        "type": "float"
+       },
+       {
+        "name": "assessmentFlag",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "targetId",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "normalisedScore",
+        "nullable": true,
+        "type": "double"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "mostSevereConsequenceId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "transcriptConsequences",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "variantFunctionalConsequenceIds",
+        "nullable": true,
+        "type": {
+         "list": {
+          "name": "element",
+          "nullable": true,
+          "type": "string"
+         }
+        }
+       },
+       {
+        "name": "aminoAcidChange",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "uniprotAccessions",
+        "nullable": true,
+        "type": {
+         "list": {
+          "name": "element",
+          "nullable": true,
+          "type": "string"
+         }
+        }
+       },
+       {
+        "name": "isEnsemblCanonical",
+        "nullable": true,
+        "type": "bool"
+       },
+       {
+        "name": "codons",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "distanceFromFootprint",
+        "nullable": true,
+        "type": "int64"
+       },
+       {
+        "name": "distanceFromTss",
+        "nullable": true,
+        "type": "int64"
+       },
+       {
+        "name": "appris",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "maneSelect",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "targetId",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "impact",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "lofteePrediction",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "siftPrediction",
+        "nullable": true,
+        "type": "float"
+       },
+       {
+        "name": "polyphenPrediction",
+        "nullable": true,
+        "type": "float"
+       },
+       {
+        "name": "consequenceScore",
+        "nullable": true,
+        "type": "float"
+       },
+       {
+        "name": "transcriptIndex",
+        "nullable": true,
+        "type": "int32"
+       },
+       {
+        "name": "approvedSymbol",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "biotype",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "transcriptId",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "rsIds",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "hgvsId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "alleleFrequencies",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "populationName",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "alleleFrequency",
+        "nullable": true,
+        "type": "double"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "dbXrefs",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "id",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "source",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "variantDescription",
+   "nullable": false,
+   "type": "string"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  291629,
+  269250,
+  271812,
+  278806,
+  269099,
+  283009,
+  288554,
+  295042,
+  280881,
+  264674,
+  243029,
+  252880,
+  280745,
+  262395,
+  263001,
+  288301,
+  253274,
+  315954,
+  258370,
+  256496,
+  255715,
+  271940,
+  270213,
+  261111,
+  269089
+ ],
+ "shards": 25,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/variant/",
+ "table": "variant"
+}

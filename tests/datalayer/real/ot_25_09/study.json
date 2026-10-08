@@ -1,0 +1,532 @@
+{
+ "bytes": 93350458,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "3e2aef064a5b5f46079bfc591e53956254086db116f109611bc2f76196f37193",
+ "leaves": {
+  "analysisFlags.list.element": [
+   "string",
+   1946472,
+   1964234,
+   "ExWAS",
+   "wgsGWAS"
+  ],
+  "backgroundDiseaseIds.list.element": [
+   "string",
+   1957236,
+   1964375,
+   "EFO_0000094",
+   "OBA_2050296"
+  ],
+  "backgroundTraitFromSourceMappedIds.list.element": [
+   "string",
+   1957213,
+   1964375,
+   "EFO_0000094",
+   "OBA_2050296"
+  ],
+  "biosampleFromSourceId": [
+   "string",
+   98582,
+   1964234,
+   "CL_0000057",
+   "UBERON_0036149"
+  ],
+  "biosampleId": [
+   "string",
+   98582,
+   1964234,
+   "CL_0000057",
+   "UBERON_0036149"
+  ],
+  "cohorts.list.element": [
+   "string",
+   1880232,
+   2006731,
+   "",
+   "\ufeffPGC"
+  ],
+  "condition": [
+   "string",
+   101536,
+   1964234,
+   "IFNg_18h",
+   "statin"
+  ],
+  "discoverySamples.list.element.ancestry": [
+   "string",
+   1862715,
+   2009201,
+   "Aboriginal Australian",
+   "Sub-Saharan African"
+  ],
+  "discoverySamples.list.element.sampleSize": [
+   "int32",
+   1862715,
+   2009201,
+   0,
+   5519491
+  ],
+  "diseaseIds.list.element": [
+   "string",
+   1865652,
+   1972380,
+   "DOID_1947",
+   "Orphanet_98977"
+  ],
+  "geneId": [
+   "string",
+   98582,
+   1964234,
+   "ENSG00000000003",
+   "ENSG00000289643"
+  ],
+  "hasSumstats": [
+   "bool",
+   930,
+   1964234,
+   false,
+   true
+  ],
+  "initialSampleSize": [
+   "string",
+   1866224,
+   1964234,
+   "(see Lambert 2013 and Okbay 2016)",
+   "~6,400 European ancestry female cases, 9"
+  ],
+  "ldPopulationStructure.list.element.ldPopulation": [
+   "string",
+   1862715,
+   1991127,
+   "afr",
+   "nfe"
+  ],
+  "ldPopulationStructure.list.element.relativeSampleSize": [
+   "double",
+   1862732,
+   1991127,
+   0.0,
+   1.0
+  ],
+  "nCases": [
+   "int32",
+   1865655,
+   1964234,
+   0,
+   863802
+  ],
+  "nControls": [
+   "int32",
+   1865655,
+   1964234,
+   0,
+   5300627
+  ],
+  "nSamples": [
+   "int32",
+   575,
+   1964234,
+   6,
+   5519491
+  ],
+  "projectId": [
+   "string",
+   0,
+   1964234,
+   "Alasoo_2018",
+   "van_de_Bunt_2015"
+  ],
+  "publicationDate": [
+   "string",
+   1867973,
+   1964234,
+   "2005-03-10",
+   "2025-06-09"
+  ],
+  "publicationFirstAuthor": [
+   "string",
+   1867973,
+   1964234,
+   "A Christensen M",
+   "von Berg J"
+  ],
+  "publicationJournal": [
+   "string",
+   1867973,
+   1964234,
+   "AIDS",
+   "mSystems"
+  ],
+  "publicationTitle": [
+   "string",
+   1867973,
+   1964234,
+   "\"The Heidelberg Five\" personality dimens",
+   "rs762855 single nucleotide polymorphism "
+  ],
+  "pubmedId": [
+   "string",
+   2954,
+   1964234,
+   "15761122",
+   "40495383"
+  ],
+  "qualityControls.list.element": [
+   "string",
+   1910294,
+   1964234,
+   "Harmonized summary statistics are not av",
+   "The number of SNPs in the study is below"
+  ],
+  "replicationSamples.list.element.ancestry": [
+   "string",
+   1947666,
+   1970308,
+   "Aboriginal Australian",
+   "Sub-Saharan African, African unspecified"
+  ],
+  "replicationSamples.list.element.sampleSize": [
+   "int32",
+   1947689,
+   1970308,
+   0,
+   2904664
+  ],
+  "studyId": [
+   "string",
+   0,
+   1964234,
+   "FINNGEN_R12_AB1TUBERCU_MILIARY",
+   "young_2019_txrev_microglia_naive_ensg000"
+  ],
+  "studyType": [
+   "string",
+   0,
+   1964234,
+   "eqtl",
+   "tuqtl"
+  ],
+  "summarystatsLocation": [
+   "string",
+   96261,
+   1964234,
+   "gs://finngen-public-data-r12/summary_sta",
+   "https://ftp.ebi.ac.uk/pub/databases/spot"
+  ],
+  "sumstatQCValues.list.element.QCCheckName": [
+   "string",
+   1919623,
+   2187289,
+   "gc_lambda",
+   "se_diff_pz"
+  ],
+  "sumstatQCValues.list.element.QCCheckValue": [
+   "float",
+   1919623,
+   2187289,
+   -0.04990231990814209,
+   75602504.0
+  ],
+  "traitFromSource": [
+   "string",
+   0,
+   1964234,
+   "&beta;2-Glycoprotein I (&beta;2-GPI) pla",
+   "wg rh intensity-contrast unknown"
+  ],
+  "traitFromSourceMappedIds.list.element": [
+   "string",
+   1865652,
+   1972855,
+   "DOID_1947",
+   "gastric adenocarcinoma"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 1,
+ "rows": 1964234,
+ "schema": [
+  {
+   "name": "studyId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "geneId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "projectId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "studyType",
+   "nullable": false,
+   "type": "string"
+  },
+  {
+   "name": "traitFromSource",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "traitFromSourceMappedIds",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "biosampleFromSourceId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "pubmedId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "publicationTitle",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "publicationFirstAuthor",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "publicationDate",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "publicationJournal",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "backgroundTraitFromSourceMappedIds",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "initialSampleSize",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "nCases",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "nControls",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "nSamples",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "cohorts",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "ldPopulationStructure",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "ldPopulation",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "relativeSampleSize",
+        "nullable": true,
+        "type": "double"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "discoverySamples",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "sampleSize",
+        "nullable": true,
+        "type": "int32"
+       },
+       {
+        "name": "ancestry",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "replicationSamples",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "sampleSize",
+        "nullable": true,
+        "type": "int32"
+       },
+       {
+        "name": "ancestry",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "qualityControls",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "analysisFlags",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "summarystatsLocation",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "hasSumstats",
+   "nullable": true,
+   "type": "bool"
+  },
+  {
+   "name": "condition",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "sumstatQCValues",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "QCCheckName",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "QCCheckValue",
+        "nullable": true,
+        "type": "float"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "diseaseIds",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "backgroundDiseaseIds",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "biosampleId",
+   "nullable": true,
+   "type": "string"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  1964234
+ ],
+ "shards": 1,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/study/",
+ "table": "study"
+}

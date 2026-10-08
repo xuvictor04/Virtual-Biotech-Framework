@@ -1,0 +1,117 @@
+{
+ "bytes": 31548642,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "57d6b6f4c20bbc3900c60125bb6b56acfcd2cdb610f59c81632f3a14aa2d9ddc",
+ "leaves": {
+  "datasourceId": [
+   "string",
+   0,
+   4200235,
+   "cancer_biomarkers",
+   "uniprot_variants"
+  ],
+  "datatypeId": [
+   "string",
+   0,
+   4200235,
+   "affected_pathway",
+   "somatic_mutation"
+  ],
+  "diseaseId": [
+   "string",
+   0,
+   4200235,
+   "DOID_0050890",
+   "UBERON_0000104"
+  ],
+  "evidenceCount": [
+   "int64",
+   0,
+   4200235,
+   1,
+   51346
+  ],
+  "score": [
+   "double",
+   0,
+   4200235,
+   0.006079307976116211,
+   0.9997249064482479
+  ],
+  "targetId": [
+   "string",
+   0,
+   4200235,
+   "ENSG00000000003",
+   "ENSG00000310576"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 20,
+ "rows": 4200235,
+ "schema": [
+  {
+   "name": "datatypeId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "datasourceId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "diseaseId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "targetId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "score",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "evidenceCount",
+   "nullable": false,
+   "type": "int64"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  214417,
+  226817,
+  204056,
+  201755,
+  202268,
+  208264,
+  201008,
+  201797,
+  218281,
+  213682,
+  219812,
+  193966,
+  196101,
+  220820,
+  218280,
+  221123,
+  198662,
+  193384,
+  221728,
+  224014
+ ],
+ "shards": 20,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/association_by_datasource_direct/",
+ "table": "association_by_datasource_direct"
+}

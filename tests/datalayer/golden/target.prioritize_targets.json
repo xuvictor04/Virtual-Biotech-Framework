@@ -31,7 +31,7 @@
    "min_clinical_phase": {
     "default": null,
     "description": "Keeps rows with maxClinicalTrialPhase >= this value; unknown values never pass.",
-    "maximum": 4.0,
+    "maximum": 1.0,
     "minimum": 0.0,
     "type": "integer"
    },

@@ -1,0 +1,146 @@
+{
+ "bytes": 5160478150,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "5f280e76f41c6ff0ba32cc3a965c44470c5d816468e7544f426261b5b20e717d",
+ "leaves": {
+  "betaRatioSignAverage": [
+   "double",
+   22310413,
+   76636749,
+   -1.0,
+   1.0
+  ],
+  "chromosome": [
+   "string",
+   0,
+   76636749,
+   "1",
+   "X"
+  ],
+  "clpp": [
+   "double",
+   0,
+   76636749,
+   3.713182629208061e-10,
+   1.0
+  ],
+  "colocalisationMethod": [
+   "string",
+   0,
+   76636749,
+   "eCAVIAR",
+   "eCAVIAR"
+  ],
+  "leftStudyLocusId": [
+   "string",
+   0,
+   76636749,
+   "000039146db5c177e57f81c11d6bdcd8",
+   "fffffbd701098e0700a7b674b33213ca"
+  ],
+  "numberColocalisingVariants": [
+   "int64",
+   0,
+   76636749,
+   1,
+   3077
+  ],
+  "rightStudyLocusId": [
+   "string",
+   0,
+   76636749,
+   "0000075e718162e97fa85756e055e8cd",
+   "fffffef27b8b270d58113c7f971fc907"
+  ],
+  "rightStudyType": [
+   "string",
+   0,
+   76636749,
+   "eqtl",
+   "tuqtl"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 50,
+ "rows": 76636749,
+ "schema": [
+  {
+   "name": "leftStudyLocusId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "rightStudyLocusId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "chromosome",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "rightStudyType",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "numberColocalisingVariants",
+   "nullable": false,
+   "type": "int64"
+  },
+  {
+   "name": "clpp",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "colocalisationMethod",
+   "nullable": false,
+   "type": "string"
+  },
+  {
+   "name": "betaRatioSignAverage",
+   "nullable": true,
+   "type": "double"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  3064036,
+  3064076,
+  3065789,
+  3064633,
+  3064452,
+  3065307,
+  3065932,
+  3067182,
+  3066508,
+  3066868,
+  3067247,
+  3065441,
+  3063207,
+  3067505,
+  3064077,
+  3068352,
+  3064954,
+  3065007,
+  3062332,
+  3065691,
+  3064704,
+  3063986,
+  3065910,
+  3064776,
+  3068777
+ ],
+ "shards": 25,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/colocalisation_ecaviar/",
+ "table": "colocalisation_ecaviar"
+}

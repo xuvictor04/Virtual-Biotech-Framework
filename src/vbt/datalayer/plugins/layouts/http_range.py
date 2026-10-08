@@ -8,9 +8,12 @@ existing range reader :class:`vbt.data.zenodo.HTTPRangeFile` (via
 it reads.
 
 :meth:`HttpRangeLayout.footer_stats` gives **footer-only** statistics of a remote Parquet file: the
-8-byte tail and the footer are fetched with two range requests and parsed with
-``pyarrow.parquet.read_metadata``; no row group is transferred. Formats without footers fall back
-to their own ``stats``.
+size comes from one ``HEAD``, the tail and the footer from range requests (one when the footer fits
+in pyarrow's first 64 KiB read), parsed with ``pyarrow.parquet.ParquetFile``; no row group is
+transferred. The statistics are the parquet format's own
+(:func:`~vbt.datalayer.plugins.formats.parquet.footer_stats`: Arrow storage types, null counts,
+min/max), so a remote fragment reports what the same file reports locally. Formats without footers
+fall back to their own ``stats``.
 
 * ``signature`` cannot ``stat`` a URL: it hashes the URL list (stdlib only, no request), so the
   harness's per-turn check is free; the content is identified by ``fingerprint``.
@@ -26,11 +29,11 @@ from __future__ import annotations
 import hashlib
 from typing import Any, ClassVar, Mapping
 
-from ..base import CheckItem, ColumnStats, FormatError, Fragment, FragmentStats, LayoutSpec, Manifest, PluginBase
+from ..base import CheckItem, FormatError, Fragment, FragmentStats, LayoutSpec, Manifest, PluginBase
 from ..registry import register
 from . import manifest_entry
 
-__all__ = ["HttpRangeLayout", "head", "footer_stats"]
+__all__ = ["HttpRangeLayout", "head", "read_footer", "footer_stats"]
 
 _TIMEOUT = 60.0
 
@@ -52,9 +55,10 @@ def head(url: str, *, client: Any = None, timeout: float = _TIMEOUT) -> dict[str
             "ranges": r.headers.get("accept-ranges", "").lower() == "bytes"}
 
 
-def footer_stats(frag: Fragment | str, *, size: int | None = None) -> FragmentStats:
-    """Parquet footer statistics of a remote file read with range requests only (no row group is
-    transferred). Raises :class:`FormatError` when the file has no readable footer."""
+def read_footer(frag: Fragment | str, *, size: int | None = None) -> tuple[Any, Any]:
+    """``(arrow schema, FileMetaData)`` of a remote Parquet file, read with range requests only (the
+    size, the 8-byte tail and the footer; no row group is transferred). Raises :class:`FormatError`
+    when the file has no readable footer."""
     from ....data.zenodo import HTTPRangeFile
 
     uri = frag.uri if isinstance(frag, Fragment) else str(frag)
@@ -66,34 +70,25 @@ def footer_stats(frag: Fragment | str, *, size: int | None = None) -> FragmentSt
     try:
         raw = HTTPRangeFile(uri, size=size if size is not None else (frag.size if isinstance(frag, Fragment)
                                                                       else None))
-        md = pq.read_metadata(raw)
+        pf = pq.ParquetFile(raw)
+        return pf.schema_arrow, pf.metadata
     except Exception as exc:  # noqa: BLE001 - any transport or footer error: never an empty table
         raise FormatError(f"{uri}: no readable Parquet footer over HTTP ranges ({type(exc).__name__}: {exc})",
                           fragment=uri) from exc
     finally:
         if raw is not None:
             raw.close()
-    cols: dict[str, ColumnStats] = {}
-    for i in range(md.num_columns):
-        col = md.schema.column(i)
-        unc = nv = 0
-        nulls: int | None = 0
-        for rg in range(md.num_row_groups):
-            cc = md.row_group(rg).column(i)
-            unc += int(cc.total_uncompressed_size or 0)
-            nv += int(cc.num_values or 0)
-            st = cc.statistics
-            if st is None or not st.has_null_count:
-                nulls = None
-            elif nulls is not None:
-                nulls += int(st.null_count)
-        kind = "nested" if col.max_repetition_level > 0 else (
-            "string" if str(col.physical_type) == "BYTE_ARRAY" else "flat")
-        cols[col.path] = ColumnStats(uncompressed_bytes=unc, null_count=nulls, num_values=nv,
-                                     max_rep_level=int(col.max_repetition_level),
-                                     max_def_level=int(col.max_definition_level),
-                                     storage_type=str(col.physical_type).lower(), kind=kind)  # type: ignore[arg-type]
-    return FragmentStats(rows=int(md.num_rows), row_groups=int(md.num_row_groups), columns=cols, method="footer")
+
+
+def footer_stats(frag: Fragment | str, *, size: int | None = None) -> FragmentStats:
+    """Parquet footer statistics of a remote file read with range requests only (no row group is
+    transferred): the same per-leaf Arrow storage types, null counts and min/max as a local file's
+    :meth:`~vbt.datalayer.plugins.formats.parquet.ParquetFormat.stats`. Raises :class:`FormatError`
+    when the file has no readable footer."""
+    from ..formats.parquet import footer_stats as stats_of
+
+    schema, md = read_footer(frag, size=size)
+    return stats_of(schema, md)
 
 
 @register

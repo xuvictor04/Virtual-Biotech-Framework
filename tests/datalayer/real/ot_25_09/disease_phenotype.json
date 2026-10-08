@@ -1,0 +1,248 @@
+{
+ "bytes": 7089121,
+ "created_by": [
+  "Polars"
+ ],
+ "file_names_sha256": "909150e1ab2d3c047e486b85d161c71b467ad1efc66cc928792e741d45cb8c78",
+ "leaves": {
+  "disease": [
+   "large_string",
+   0,
+   162346,
+   "EFO_0000095",
+   "Orphanet_99947"
+  ],
+  "evidence.list.element.aspect": [
+   "large_string",
+   0,
+   195392,
+   "C",
+   "P"
+  ],
+  "evidence.list.element.bioCuration": [
+   "large_string",
+   0,
+   195392,
+   "HP:probinson[2009-02-17]",
+   "ZFIN:bruef[2012-04-24]; HPO:sdoelken[201"
+  ],
+  "evidence.list.element.diseaseFromSource": [
+   "large_string",
+   0,
+   195392,
+   "12q14 microdeletion syndrome",
+   "von Willebrand disease, type 3"
+  ],
+  "evidence.list.element.diseaseFromSourceId": [
+   "large_string",
+   0,
+   195392,
+   "DECIPHER:1",
+   "OMIM:620901"
+  ],
+  "evidence.list.element.diseaseName": [
+   "large_string",
+   0,
+   195392,
+   "10p11.21p12.31 microdeletion syndrome",
+   "\u00c5land Islands eye disease"
+  ],
+  "evidence.list.element.evidenceType": [
+   "large_string",
+   0,
+   195392,
+   "IEA",
+   "TAS"
+  ],
+  "evidence.list.element.frequency": [
+   "large_string",
+   83326,
+   195392,
+   "0/1",
+   "HP_0040284"
+  ],
+  "evidence.list.element.modifiers.list.element": [
+   "large_string",
+   0,
+   195433,
+   "HP:0003676",
+   "HP:4000103"
+  ],
+  "evidence.list.element.onset.list.element": [
+   "large_string",
+   0,
+   195392,
+   "HP:0003577",
+   "HP:0034199"
+  ],
+  "evidence.list.element.qualifier": [
+   "large_string",
+   195392,
+   195392,
+   null,
+   null
+  ],
+  "evidence.list.element.qualifierNot": [
+   "bool",
+   0,
+   195392,
+   false,
+   false
+  ],
+  "evidence.list.element.references.list.element": [
+   "large_string",
+   0,
+   213337,
+   "DECIPHER:1",
+   "https://www.ncbi.nlm.nih.gov/books/NBK13"
+  ],
+  "evidence.list.element.resource": [
+   "large_string",
+   0,
+   195392,
+   "HPO",
+   "HPO"
+  ],
+  "evidence.list.element.sex": [
+   "large_string",
+   194495,
+   195392,
+   "FEMALE",
+   "MALE"
+  ],
+  "phenotype": [
+   "large_string",
+   0,
+   162346,
+   "HP_0000002",
+   "HP_6001124"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 1,
+ "rows": 162346,
+ "schema": [
+  {
+   "name": "disease",
+   "nullable": true,
+   "type": "large_string"
+  },
+  {
+   "name": "phenotype",
+   "nullable": true,
+   "type": "large_string"
+  },
+  {
+   "name": "evidence",
+   "nullable": true,
+   "type": {
+    "large_list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "aspect",
+        "nullable": true,
+        "type": "large_string"
+       },
+       {
+        "name": "bioCuration",
+        "nullable": true,
+        "type": "large_string"
+       },
+       {
+        "name": "diseaseFromSourceId",
+        "nullable": true,
+        "type": "large_string"
+       },
+       {
+        "name": "diseaseFromSource",
+        "nullable": true,
+        "type": "large_string"
+       },
+       {
+        "name": "diseaseName",
+        "nullable": true,
+        "type": "large_string"
+       },
+       {
+        "name": "evidenceType",
+        "nullable": true,
+        "type": "large_string"
+       },
+       {
+        "name": "frequency",
+        "nullable": true,
+        "type": "large_string"
+       },
+       {
+        "name": "modifiers",
+        "nullable": true,
+        "type": {
+         "large_list": {
+          "name": "element",
+          "nullable": true,
+          "type": "large_string"
+         }
+        }
+       },
+       {
+        "name": "onset",
+        "nullable": true,
+        "type": {
+         "large_list": {
+          "name": "element",
+          "nullable": true,
+          "type": "large_string"
+         }
+        }
+       },
+       {
+        "name": "qualifier",
+        "nullable": true,
+        "type": "large_string"
+       },
+       {
+        "name": "qualifierNot",
+        "nullable": true,
+        "type": "bool"
+       },
+       {
+        "name": "references",
+        "nullable": true,
+        "type": {
+         "large_list": {
+          "name": "element",
+          "nullable": true,
+          "type": "large_string"
+         }
+        }
+       },
+       {
+        "name": "sex",
+        "nullable": true,
+        "type": "large_string"
+       },
+       {
+        "name": "resource",
+        "nullable": true,
+        "type": "large_string"
+       }
+      ]
+     }
+    }
+   }
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  162346
+ ],
+ "shards": 1,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/disease_phenotype/",
+ "table": "disease_phenotype"
+}

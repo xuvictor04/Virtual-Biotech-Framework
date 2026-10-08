@@ -1,0 +1,229 @@
+{
+ "bytes": 90202596,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "5dedb0b1f169498b81631805a73f79d97d389a7af36dee865dd1a73ca9d12405",
+ "leaves": {
+  "count": [
+   "int64",
+   0,
+   14524000,
+   1,
+   288
+  ],
+  "intA": [
+   "string",
+   0,
+   14524000,
+   " Q9UFF9",
+   "X6RLT1"
+  ],
+  "intABiologicalRole": [
+   "string",
+   0,
+   14524000,
+   "acceptor",
+   "unspecified role"
+  ],
+  "intB": [
+   "string",
+   0,
+   14524000,
+   " Q9UFF9",
+   "X6RLT1"
+  ],
+  "intBBiologicalRole": [
+   "string",
+   0,
+   14524000,
+   "acceptor",
+   "unspecified role"
+  ],
+  "scoring": [
+   "double",
+   91808,
+   14524000,
+   0.15,
+   1.0
+  ],
+  "sourceDatabase": [
+   "string",
+   0,
+   14524000,
+   "intact",
+   "string"
+  ],
+  "speciesA.mnemonic": [
+   "string",
+   0,
+   14524000,
+   "human",
+   "human"
+  ],
+  "speciesA.scientific_name": [
+   "string",
+   0,
+   14524000,
+   "Homo sapiens",
+   "Homo sapiens"
+  ],
+  "speciesA.taxon_id": [
+   "int64",
+   0,
+   14524000,
+   9606,
+   9606
+  ],
+  "speciesB.mnemonic": [
+   "string",
+   0,
+   14524000,
+   "9PAPI",
+   "zikv"
+  ],
+  "speciesB.scientific_name": [
+   "string",
+   33,
+   14524000,
+   "Abelson murine leukemia virus",
+   "vsnjo"
+  ],
+  "speciesB.taxon_id": [
+   "int64",
+   0,
+   14524000,
+   -2,
+   3052342
+  ],
+  "targetA": [
+   "string",
+   0,
+   14524000,
+   "ENSAMEG00000026011.1",
+   "MGP_SPRETEiJ_G0036647.1"
+  ],
+  "targetB": [
+   "string",
+   263536,
+   14524000,
+   "ENSAMEG00000026011.1",
+   "MGP_SPRETEiJ_G0007343.1"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 8,
+ "rows": 14524000,
+ "schema": [
+  {
+   "name": "sourceDatabase",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "targetA",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "intA",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "intABiologicalRole",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "targetB",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "intB",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "intBBiologicalRole",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "speciesA",
+   "nullable": true,
+   "type": {
+    "struct": [
+     {
+      "name": "mnemonic",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "scientific_name",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "taxon_id",
+      "nullable": true,
+      "type": "int64"
+     }
+    ]
+   }
+  },
+  {
+   "name": "speciesB",
+   "nullable": true,
+   "type": {
+    "struct": [
+     {
+      "name": "mnemonic",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "scientific_name",
+      "nullable": true,
+      "type": "string"
+     },
+     {
+      "name": "taxon_id",
+      "nullable": true,
+      "type": "int64"
+     }
+    ]
+   }
+  },
+  {
+   "name": "count",
+   "nullable": false,
+   "type": "int64"
+  },
+  {
+   "name": "scoring",
+   "nullable": true,
+   "type": "double"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  1306878,
+  1980969,
+  1980502,
+  1985562,
+  1981451,
+  1982135,
+  1982992,
+  1323511
+ ],
+ "shards": 8,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/interaction/",
+ "table": "interaction"
+}
