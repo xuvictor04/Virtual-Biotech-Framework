@@ -1,0 +1,766 @@
+{
+ "_retrieved": "2026-10-08",
+ "_source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/target/ (10 shards)",
+ "_what": "the data child's _stats footer statistics of open_targets.target (per leaf: uncompressed bytes, values, repetition level, kind, storage type); the upstream loader's whole-table load measured 3,031 MB over its 107.7 MB baseline (peak 3,138.5 MB RSS, ds.dataset(...).to_table().to_pandas(), system allocator, MALLOC_ARENA_MAX=2)",
+ "bytes_on_disk": 75568567,
+ "columns": {
+  "alternativeGenes[]": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 79752,
+   "storage_type": "string",
+   "uncompressed_bytes": 50609
+  },
+  "approvedName": {
+   "kind": "string",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "string",
+   "uncompressed_bytes": 2230867
+  },
+  "approvedSymbol": {
+   "kind": "string",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "string",
+   "uncompressed_bytes": 1138762
+  },
+  "biotype": {
+   "kind": "string",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "string",
+   "uncompressed_bytes": 34842
+  },
+  "canonicalExons[]": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 607497,
+   "storage_type": "string",
+   "uncompressed_bytes": 7261309
+  },
+  "canonicalTranscript.chromosome": {
+   "kind": "string",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "string",
+   "uncompressed_bytes": 38627
+  },
+  "canonicalTranscript.end": {
+   "kind": "flat",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "int64",
+   "uncompressed_bytes": 482770
+  },
+  "canonicalTranscript.id": {
+   "kind": "string",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "string",
+   "uncompressed_bytes": 1145784
+  },
+  "canonicalTranscript.start": {
+   "kind": "flat",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "int64",
+   "uncompressed_bytes": 482770
+  },
+  "canonicalTranscript.strand": {
+   "kind": "string",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "string",
+   "uncompressed_bytes": 8605
+  },
+  "chemicalProbes[].control": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82899,
+   "storage_type": "string",
+   "uncompressed_bytes": 10672
+  },
+  "chemicalProbes[].drugId": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82899,
+   "storage_type": "string",
+   "uncompressed_bytes": 87677
+  },
+  "chemicalProbes[].id": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82899,
+   "storage_type": "string",
+   "uncompressed_bytes": 68606
+  },
+  "chemicalProbes[].isHighQuality": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82899,
+   "storage_type": "bool",
+   "uncompressed_bytes": 6219
+  },
+  "chemicalProbes[].mechanismOfAction[]": {
+   "kind": "nested",
+   "max_rep_level": 2,
+   "num_values": 83004,
+   "storage_type": "string",
+   "uncompressed_bytes": 9605
+  },
+  "chemicalProbes[].origin[]": {
+   "kind": "nested",
+   "max_rep_level": 2,
+   "num_values": 83184,
+   "storage_type": "string",
+   "uncompressed_bytes": 8188
+  },
+  "chemicalProbes[].probeMinerScore": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82899,
+   "storage_type": "int64",
+   "uncompressed_bytes": 14078
+  },
+  "chemicalProbes[].probesDrugsScore": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82899,
+   "storage_type": "int64",
+   "uncompressed_bytes": 13640
+  },
+  "chemicalProbes[].scoreInCells": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82899,
+   "storage_type": "int64",
+   "uncompressed_bytes": 7431
+  },
+  "chemicalProbes[].scoreInOrganisms": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82899,
+   "storage_type": "int64",
+   "uncompressed_bytes": 7190
+  },
+  "chemicalProbes[].targetFromSourceId": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82899,
+   "storage_type": "string",
+   "uncompressed_bytes": 17261
+  },
+  "chemicalProbes[].urls[].niceName": {
+   "kind": "nested",
+   "max_rep_level": 2,
+   "num_values": 84755,
+   "storage_type": "string",
+   "uncompressed_bytes": 16410
+  },
+  "chemicalProbes[].urls[].url": {
+   "kind": "nested",
+   "max_rep_level": 2,
+   "num_values": 84755,
+   "storage_type": "string",
+   "uncompressed_bytes": 16787
+  },
+  "constraint[].constraintType": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 115944,
+   "storage_type": "string",
+   "uncompressed_bytes": 37644
+  },
+  "constraint[].exp": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 115944,
+   "storage_type": "float",
+   "uncompressed_bytes": 244612
+  },
+  "constraint[].obs": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 115944,
+   "storage_type": "int32",
+   "uncompressed_bytes": 144197
+  },
+  "constraint[].oe": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 115944,
+   "storage_type": "float",
+   "uncompressed_bytes": 244612
+  },
+  "constraint[].oeLower": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 115944,
+   "storage_type": "float",
+   "uncompressed_bytes": 148835
+  },
+  "constraint[].oeUpper": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 115944,
+   "storage_type": "float",
+   "uncompressed_bytes": 157632
+  },
+  "constraint[].score": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 115944,
+   "storage_type": "float",
+   "uncompressed_bytes": 244612
+  },
+  "constraint[].upperBin": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 115944,
+   "storage_type": "int32",
+   "uncompressed_bytes": 40519
+  },
+  "constraint[].upperBin6": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 115944,
+   "storage_type": "int32",
+   "uncompressed_bytes": 38120
+  },
+  "constraint[].upperRank": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 115944,
+   "storage_type": "int32",
+   "uncompressed_bytes": 102402
+  },
+  "dbXrefs[].id": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 385590,
+   "storage_type": "string",
+   "uncompressed_bytes": 3002266
+  },
+  "dbXrefs[].source": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 385590,
+   "storage_type": "string",
+   "uncompressed_bytes": 138456
+  },
+  "functionDescriptions[]": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 80624,
+   "storage_type": "string",
+   "uncompressed_bytes": 11278103
+  },
+  "genomicLocation.chromosome": {
+   "kind": "string",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "string",
+   "uncompressed_bytes": 50858
+  },
+  "genomicLocation.end": {
+   "kind": "flat",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "int64",
+   "uncompressed_bytes": 630158
+  },
+  "genomicLocation.start": {
+   "kind": "flat",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "int64",
+   "uncompressed_bytes": 630156
+  },
+  "genomicLocation.strand": {
+   "kind": "flat",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "int32",
+   "uncompressed_bytes": 10727
+  },
+  "go[].aspect": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 879105,
+   "storage_type": "string",
+   "uncompressed_bytes": 296631
+  },
+  "go[].ecoId": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 879105,
+   "storage_type": "string",
+   "uncompressed_bytes": 710139
+  },
+  "go[].evidence": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 879105,
+   "storage_type": "string",
+   "uncompressed_bytes": 597159
+  },
+  "go[].geneProduct": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 879105,
+   "storage_type": "string",
+   "uncompressed_bytes": 424196
+  },
+  "go[].id": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 879105,
+   "storage_type": "string",
+   "uncompressed_bytes": 2486945
+  },
+  "go[].source": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 879105,
+   "storage_type": "string",
+   "uncompressed_bytes": 4076577
+  },
+  "hallmarks.attributes[].attribute_name": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82342,
+   "storage_type": "string",
+   "uncompressed_bytes": 9063
+  },
+  "hallmarks.attributes[].description": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82342,
+   "storage_type": "string",
+   "uncompressed_bytes": 309104
+  },
+  "hallmarks.attributes[].pmid": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82342,
+   "storage_type": "int64",
+   "uncompressed_bytes": 31483
+  },
+  "hallmarks.cancerHallmarks[].description": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 80659,
+   "storage_type": "string",
+   "uncompressed_bytes": 214911
+  },
+  "hallmarks.cancerHallmarks[].impact": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 80659,
+   "storage_type": "string",
+   "uncompressed_bytes": 4857
+  },
+  "hallmarks.cancerHallmarks[].label": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 80659,
+   "storage_type": "string",
+   "uncompressed_bytes": 7885
+  },
+  "hallmarks.cancerHallmarks[].pmid": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 80659,
+   "storage_type": "int64",
+   "uncompressed_bytes": 21079
+  },
+  "homologues[].homologyType": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 3873790,
+   "storage_type": "string",
+   "uncompressed_bytes": 393987
+  },
+  "homologues[].isHighConfidence": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 3873790,
+   "storage_type": "string",
+   "uncompressed_bytes": 221801
+  },
+  "homologues[].priority": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 3873790,
+   "storage_type": "int32",
+   "uncompressed_bytes": 305199
+  },
+  "homologues[].queryPercentageIdentity": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 3873790,
+   "storage_type": "double",
+   "uncompressed_bytes": 10351277
+  },
+  "homologues[].speciesId": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 3873790,
+   "storage_type": "string",
+   "uncompressed_bytes": 306393
+  },
+  "homologues[].speciesName": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 3873790,
+   "storage_type": "string",
+   "uncompressed_bytes": 308110
+  },
+  "homologues[].targetGeneId": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 3873790,
+   "storage_type": "string",
+   "uncompressed_bytes": 15304738
+  },
+  "homologues[].targetGeneSymbol": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 3873790,
+   "storage_type": "string",
+   "uncompressed_bytes": 9132378
+  },
+  "homologues[].targetPercentageIdentity": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 3873790,
+   "storage_type": "double",
+   "uncompressed_bytes": 11086211
+  },
+  "id": {
+   "kind": "string",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "string",
+   "uncompressed_bytes": 1496144
+  },
+  "nameSynonyms[].label": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 209293,
+   "storage_type": "string",
+   "uncompressed_bytes": 5380829
+  },
+  "nameSynonyms[].source": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 209293,
+   "storage_type": "string",
+   "uncompressed_bytes": 86448
+  },
+  "obsoleteNames[].label": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 89065,
+   "storage_type": "string",
+   "uncompressed_bytes": 1504641
+  },
+  "obsoleteNames[].source": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 89065,
+   "storage_type": "string",
+   "uncompressed_bytes": 26021
+  },
+  "obsoleteSymbols[].label": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 81666,
+   "storage_type": "string",
+   "uncompressed_bytes": 171678
+  },
+  "obsoleteSymbols[].source": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 81666,
+   "storage_type": "string",
+   "uncompressed_bytes": 19915
+  },
+  "pathways[].pathway": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 114744,
+   "storage_type": "string",
+   "uncompressed_bytes": 679251
+  },
+  "pathways[].pathwayId": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 114744,
+   "storage_type": "string",
+   "uncompressed_bytes": 315350
+  },
+  "pathways[].topLevelTerm": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 114744,
+   "storage_type": "string",
+   "uncompressed_bytes": 58379
+  },
+  "proteinIds[].id": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 324672,
+   "storage_type": "string",
+   "uncompressed_bytes": 3828962
+  },
+  "proteinIds[].source": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 324672,
+   "storage_type": "string",
+   "uncompressed_bytes": 119270
+  },
+  "safetyLiabilities[].biosamples[].cellFormat": {
+   "kind": "nested",
+   "max_rep_level": 2,
+   "num_values": 85265,
+   "storage_type": "string",
+   "uncompressed_bytes": 9536
+  },
+  "safetyLiabilities[].biosamples[].cellLabel": {
+   "kind": "nested",
+   "max_rep_level": 2,
+   "num_values": 85265,
+   "storage_type": "string",
+   "uncompressed_bytes": 10642
+  },
+  "safetyLiabilities[].biosamples[].tissueId": {
+   "kind": "nested",
+   "max_rep_level": 2,
+   "num_values": 85265,
+   "storage_type": "string",
+   "uncompressed_bytes": 13966
+  },
+  "safetyLiabilities[].biosamples[].tissueLabel": {
+   "kind": "nested",
+   "max_rep_level": 2,
+   "num_values": 85265,
+   "storage_type": "string",
+   "uncompressed_bytes": 14286
+  },
+  "safetyLiabilities[].datasource": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82267,
+   "storage_type": "string",
+   "uncompressed_bytes": 9136
+  },
+  "safetyLiabilities[].effects[].direction": {
+   "kind": "nested",
+   "max_rep_level": 2,
+   "num_values": 82302,
+   "storage_type": "string",
+   "uncompressed_bytes": 8362
+  },
+  "safetyLiabilities[].effects[].dosing": {
+   "kind": "nested",
+   "max_rep_level": 2,
+   "num_values": 82302,
+   "storage_type": "string",
+   "uncompressed_bytes": 8171
+  },
+  "safetyLiabilities[].event": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82267,
+   "storage_type": "string",
+   "uncompressed_bytes": 84476
+  },
+  "safetyLiabilities[].eventId": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82267,
+   "storage_type": "string",
+   "uncompressed_bytes": 32916
+  },
+  "safetyLiabilities[].literature": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82267,
+   "storage_type": "string",
+   "uncompressed_bytes": 7096
+  },
+  "safetyLiabilities[].studies[].description": {
+   "kind": "nested",
+   "max_rep_level": 2,
+   "num_values": 83481,
+   "storage_type": "string",
+   "uncompressed_bytes": 350121
+  },
+  "safetyLiabilities[].studies[].name": {
+   "kind": "nested",
+   "max_rep_level": 2,
+   "num_values": 83481,
+   "storage_type": "string",
+   "uncompressed_bytes": 73448
+  },
+  "safetyLiabilities[].studies[].type": {
+   "kind": "nested",
+   "max_rep_level": 2,
+   "num_values": 83481,
+   "storage_type": "string",
+   "uncompressed_bytes": 9640
+  },
+  "safetyLiabilities[].url": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 82267,
+   "storage_type": "string",
+   "uncompressed_bytes": 44866
+  },
+  "subcellularLocations[].labelSL": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 116709,
+   "storage_type": "string",
+   "uncompressed_bytes": 69113
+  },
+  "subcellularLocations[].location": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 116709,
+   "storage_type": "string",
+   "uncompressed_bytes": 150113
+  },
+  "subcellularLocations[].source": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 116709,
+   "storage_type": "string",
+   "uncompressed_bytes": 39826
+  },
+  "subcellularLocations[].termSL": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 116709,
+   "storage_type": "string",
+   "uncompressed_bytes": 88616
+  },
+  "symbolSynonyms[].label": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 251041,
+   "storage_type": "string",
+   "uncompressed_bytes": 1939342
+  },
+  "symbolSynonyms[].source": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 251041,
+   "storage_type": "string",
+   "uncompressed_bytes": 111414
+  },
+  "synonyms[].label": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 409004,
+   "storage_type": "string",
+   "uncompressed_bytes": 7242335
+  },
+  "synonyms[].source": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 409004,
+   "storage_type": "string",
+   "uncompressed_bytes": 178192
+  },
+  "targetClass[].id": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 88036,
+   "storage_type": "int64",
+   "uncompressed_bytes": 41598
+  },
+  "targetClass[].label": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 88036,
+   "storage_type": "string",
+   "uncompressed_bytes": 112065
+  },
+  "targetClass[].level": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 88036,
+   "storage_type": "string",
+   "uncompressed_bytes": 19223
+  },
+  "tep.description": {
+   "kind": "string",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "string",
+   "uncompressed_bytes": 2723
+  },
+  "tep.targetFromSourceId": {
+   "kind": "string",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "string",
+   "uncompressed_bytes": 929
+  },
+  "tep.therapeuticArea": {
+   "kind": "string",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "string",
+   "uncompressed_bytes": 1420
+  },
+  "tep.url": {
+   "kind": "string",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "string",
+   "uncompressed_bytes": 2084
+  },
+  "tractability[].id": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 588486,
+   "storage_type": "string",
+   "uncompressed_bytes": 425710
+  },
+  "tractability[].modality": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 588486,
+   "storage_type": "string",
+   "uncompressed_bytes": 231494
+  },
+  "tractability[].value": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 588486,
+   "storage_type": "bool",
+   "uncompressed_bytes": 155527
+  },
+  "transcriptIds[]": {
+   "kind": "nested",
+   "max_rep_level": 1,
+   "num_values": 385773,
+   "storage_type": "string",
+   "uncompressed_bytes": 7380320
+  },
+  "tss": {
+   "kind": "flat",
+   "max_rep_level": 0,
+   "num_values": 78726,
+   "storage_type": "int64",
+   "uncompressed_bytes": 482735
+  }
+ },
+ "fragments": 10,
+ "rows": 78726
+}

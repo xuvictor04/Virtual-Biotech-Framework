@@ -236,8 +236,12 @@ data:
     default_server_mb: 12000      # 'auto' derives from estimates
     limit_kind: rlimit_data       # rlimit_data | cgroup | watchdog | none
     estimate_safety: 1.3
-    expansion: {flat: 1.5, string: 3.5, nested: 8.0, fragmentation: 1.15}
-    object_overhead_bytes: {string: 50, nested_item: 120, struct_item: 240}
+    # Fitted to the peak RSS of the upstream loader's whole-table pandas loads of the real Open Targets 25.09
+    # tables (26 measured, 6 MB to 3.0 GB; estimate/measured 0.70-1.46, median 1.00, on the 18 over 50 MB).
+    # The original seeds (flat 1.5, string 3.5, nested 8.0; string 50, nested_item 120, struct_item 240, no
+    # flat_value) estimated target at 12.3 GB for a 3.0 GB load and missed dictionary-encoded numbers.
+    expansion: {flat: 1.0, string: 4.0, nested: 2.1, fragmentation: 1.15}
+    object_overhead_bytes: {flat_value: 20, string: 16, nested_item: 8, struct_item: 170}
     recycle_idle_servers: true
     recycle_wait_s: 30
     max_recycles_per_10min: 4

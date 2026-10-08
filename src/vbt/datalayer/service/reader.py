@@ -866,9 +866,11 @@ class TableReader:
     def scan(self, predicate: Any = None, *, columns: Sequence[str] | None = None,
              params: Mapping[str, Any] | None = None, unknown_columns: Sequence[str] | None = None,
              budget_bytes: int | None = None, stats: ScanStats | None = None,
-             attribute_unknown: bool = True) -> Iterator[Match]:
+             attribute_unknown: bool = True,
+             row_filter: Callable[[Mapping[str, Any]], bool] | None = None) -> Iterator[Match]:
         """Matches of ``predicate`` (rows, or items of an item table) with the key and ``columns``
-        (physical paths; ``"*"`` for every column) materialised. Fills ``stats`` with the totals."""
+        (physical paths; ``"*"`` for every column) materialised. Fills ``stats`` with the totals.
+        ``row_filter`` skips a stored row (with all its items) before anything else looks at it."""
         pred, names = self._prepare(predicate, params)
         conj = conjuncts(pred) if pred is not None else []
         conj_paths = [predicate_paths(c) for c in conj]
@@ -905,6 +907,8 @@ class TableReader:
                     stats.scanned_bytes += info.bytes(pass1, [rg or 0])
                 hits: list[tuple[int, tuple[int, ...]]] = []
                 for i, row in zip(index, rows):
+                    if row_filter is not None and not row_filter(row):
+                        continue
                     views = _items.explode(row, self.levels, stats.counts) if self.levels else [(row, ())]
                     for view, pos in views:
                         truths = [evaluate(c, view, None, kind_of=kind_of) for c in conj]
@@ -1441,7 +1445,8 @@ class TableReader:
         leaves = self.leaves([ALL_COLUMNS] if columns is None else [*columns, *self.key])
         for frag, rg in pairs:
             info = self.footer(frag)
-            rows = self._read(frag, rg, leaves, info)
+            want = n - len(out)
+            rows = self._sample_group(frag, rg, leaves, info, want, rng)
             if self.levels:
                 rows = [_items.item_row(v, self.levels, self.key, p)
                         for r in rows for v, p in _items.explode(r, self.levels)]
@@ -1451,6 +1456,52 @@ class TableReader:
             if len(out) >= n:
                 break
         return out
+
+    def _sample_group(self, frag: Fragment, rg: int | None, leaves: Sequence[str], info: FooterInfo | None,
+                      want: int, rng: random.Random) -> list[dict[str, Any]]:
+        """The rows of one row group a sample of ``want`` needs, as native rows: never the whole group when it is
+        larger. Every Open Targets 25.09 shard is one row group (study: 1,964,234 rows), and converting it whole
+        to Python rows took 4.6 GB for a 500-row ``_stats`` sample.
+
+        A table's rows are drawn exactly as before (``rng.sample`` over the group's row positions, then only those
+        rows are converted). An item table needs whole rows to find its items: a group over
+        :data:`SAMPLE_WHOLE_GROUP_ROWS` rows or :data:`SAMPLE_WHOLE_GROUP_BYTES` is converted in chunks of rows in a
+        seeded order until ``want`` items are found; a smaller one is converted whole, as before."""
+        rows_in = info.row_groups[rg or 0].rows if info is not None and rg is not None else None
+        if rows_in is None or not leaves or rows_in <= want:
+            return self._read(frag, rg, leaves, info)
+        if not self.levels:
+            return self._read_take(frag, rg or 0, leaves, rng.sample(range(rows_in), want))
+        if rows_in <= SAMPLE_WHOLE_GROUP_ROWS and info is not None and \
+                info.bytes(leaves, [rg or 0]) <= SAMPLE_WHOLE_GROUP_BYTES:
+            return self._read(frag, rg, leaves, info)
+        import pyarrow as pa
+
+        tbl = self.fmt.read_leaves(frag, list(leaves), [rg])
+        order = list(range(rows_in))
+        rng.shuffle(order)
+        out: list[dict[str, Any]] = []
+        items = 0
+        for i in range(0, rows_in, SAMPLE_CHUNK_ROWS):
+            chunk = sorted(order[i:i + SAMPLE_CHUNK_ROWS])
+            rows = self.fmt.to_native(tbl.take(pa.array(chunk, pa.int64())))
+            for row in rows:
+                for k, v in (frag.partition or {}).items():
+                    row[k] = v
+                self.clean(row)
+                items += sum(1 for _ in _items.explode(row, self.levels))
+            out.extend(rows)
+            if items >= want:
+                break
+        return out
+
+
+#: An item table's row group with more rows than this, or more uncompressed bytes in the leaves read, is sampled in
+#: chunks of :data:`SAMPLE_CHUNK_ROWS` rows instead of converted whole. Footer bytes understate nested rows as
+#: Python objects: one 25.09 expression group (11,082 genes, 11.4 MB) took 2.4 GB converted whole.
+SAMPLE_WHOLE_GROUP_ROWS = 2048
+SAMPLE_WHOLE_GROUP_BYTES = 16 * 1024 * 1024
+SAMPLE_CHUNK_ROWS = 256
 
 
 def _value_counts(arr: Any) -> list[tuple[Any, int]]:

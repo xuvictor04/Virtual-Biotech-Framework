@@ -762,9 +762,22 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
     prefix = list(spec_key.sample_prefix) or key[:-1]
     prefix_idx = [key.index(p) for p in prefix if p in key]
     rows_hint = total_rows or 0
+    if t.is_item_table and method == "sampled":
+        rows_hint = _item_count_hint(run.ctx, reader)
     fraction = 1.0 if method == "full" or rows_hint <= run.sample_rows else run.sample_rows / rows_hint
     buckets = 1 << 16
     keep_below = max(1, int(buckets * fraction))
+    row_filter = None
+    parent_parts = [k for k in flat if k not in reader.partitions]
+    if t.is_item_table and fraction < 1.0 and parent_parts:
+        # every item of a parent row shares the parent's key parts: whole parent rows are sampled, decided before
+        # their items are expanded. Deciding per item expanded and rendered every item: 5.7 M items of the 25.09
+        # target item tables took 12 minutes of a standard check (an item table had no row count, so its
+        # declared check: sampled always ran in full).
+        def row_filter(row: Mapping[str, Any]) -> bool:
+            return _hash(canonical([_items.path_value(row, k) for k in parent_parts])) % buckets < keep_below
+
+        prefix_idx = []
     seen: set[str] = set()
     spill: _Spill | None = None
     dups = 0
@@ -772,7 +785,7 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
     scanned = 0
     types = reader.storage_types(key)
     try:
-        for m in reader.scan(None, columns=None if content else [], attribute_unknown=False):
+        for m in reader.scan(None, columns=None if content else [], attribute_unknown=False, row_filter=row_filter):
             scanned += 1
             for k, v in zip(key, m.key):
                 if v is None and k in nulls and (t.is_item_table or k not in flat):
@@ -782,7 +795,7 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
                 if _hash(canonical([m.key[i] for i in prefix_idx])) % buckets >= keep_below:
                     continue
             ck = content_hash(m.row) if content else canonical(list(m.key), types)
-            if fraction < 1.0 and not prefix_idx and _hash(ck) % buckets >= keep_below:
+            if fraction < 1.0 and not prefix_idx and row_filter is None and _hash(ck) % buckets >= keep_below:
                 continue
             if spill is not None:
                 spill.add(ck)
@@ -821,7 +834,8 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
                 column=next(iter(null_bad)))
     else:
         run.add("R5", True, f"no nulls in non-nullable key parts{where} ({scanned} keys)")
-    sampled = f"sampled {fraction:.1%} of prefix blocks" if fraction < 1.0 else "every key"
+    sampled = (f"sampled {fraction:.1%} of {'parent rows' if row_filter is not None else 'prefix blocks'}"
+               if fraction < 1.0 else "every key")
     if dups and content:
         run.add("R5b", False, f"{dups} row(s) equal to another row ({sampled}; content hashes {', '.join(examples)})",
                 status="key_violation", hint="row_identity content_hash needs rows that are never equal; every "
@@ -836,6 +850,21 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
     model.ok = not dups and not null_bad
     model.detail = f"{scanned} keys scanned; {sampled}"
     return model
+
+
+def _item_count_hint(ctx: ServiceContext, reader: TableReader) -> int:
+    """The items of an item table as its footers count them: the most values of a field directly in the innermost
+    list (a null or empty list adds one null value, so this errs high). 0 when the footers do not say."""
+    if not reader.levels:
+        return 0
+    inner = reader.levels[-1].text + "."
+    try:
+        cols, _rows, _size = aggregate_stats(ctx.reader(str(reader.table.physical)))
+    except (ServiceError, FormatError, TableUnavailable):
+        return 0
+    counts = [int(cs.num_values or 0) for path, cs in cols.items()
+              if path.startswith(inner) and "[" not in path[len(inner):]]
+    return max(counts, default=0)
 
 
 #: Distinct keys held in memory before the uniqueness pass spills to hash-partitioned files.
@@ -1405,13 +1434,15 @@ def r9_refs(run: CheckRun) -> None:
             if max_values is not None and len(values) > max_values:
                 values = random.Random(0).sample(values, max_values)
             treader = run.ctx.reader(target[0])
-            found: set[str] = set()
-            for i in range(0, len(values), 1000):
-                chunk = values[i:i + 1000]
-                for m in treader.scan(In("/" + target[1], tuple(chunk)), columns=[target[1]],
-                                      attribute_unknown=False):
-                    for v in _items.path_values(m.row, target[1]):
-                        found.add(render_value(v))
+            found = _found_in_column(treader, target[1], values)
+            if found is None:
+                found = set()
+                for i in range(0, len(values), 1000):
+                    chunk = values[i:i + 1000]
+                    for m in treader.scan(In("/" + target[1], tuple(chunk)), columns=[target[1]],
+                                          attribute_unknown=False):
+                        for v in _items.path_values(m.row, target[1]):
+                            found.add(render_value(v))
         except (ServiceError, FormatError) as exc:
             run.add("R9", False, f"{path} -> {ref}: not checked ({exc})", level="warning", column=path)
             continue
@@ -1428,6 +1459,40 @@ def r9_refs(run: CheckRun) -> None:
                     f"{dangling[:5]}", status="key_violation", column=path,
                     hint="declare integrity: partial if dangling references are expected")
     _stored_forms(run)
+
+
+def _found_in_column(treader: TableReader, column: str, values: Sequence[Any]) -> set[str] | None:
+    """The rendered ``values`` that occur in the flat ``column`` of ``treader``: the column is read row group by
+    row group and matched with Arrow's ``is_in``. A ``scan`` with ``In`` tests every row it keeps against every
+    value of the chunk in Python: the deep R9 of the real target_prioritisation (78,726 targetIds -> target.id)
+    took 51 s that way, 39 M comparisons. None when the column is nested, an item table's, cleaned (in-band
+    unknowns are rewritten before matching), mixes value types or is not a string or integer column: the caller
+    scans instead."""
+    if treader.levels or any(ch in column for ch in ".[]") or treader._unclean(column):
+        return None
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if all(isinstance(v, str) for v in values):
+        wanted, as_type, ok = pa.array(values, type=pa.large_string()), pa.large_string(), pa.types.is_string
+    elif all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+        wanted, as_type, ok = pa.array(values, type=pa.int64()), pa.int64(), pa.types.is_integer
+    else:
+        return None
+    found: set[str] = set()
+    try:
+        for _frag, _rg, arr in treader.leaf_arrays(column):
+            if isinstance(arr, pa.ChunkedArray):
+                arr = arr.combine_chunks()
+            if pa.types.is_dictionary(arr.type):
+                arr = arr.dictionary_decode()
+            if not (ok(arr.type) or pa.types.is_large_string(arr.type) and as_type == pa.large_string()):
+                return None
+            hits = pc.filter(arr, pc.is_in(pc.cast(arr, as_type), value_set=wanted))
+            found.update(render_value(v) for v in pc.unique(hits).to_pylist() if v is not None)
+    except (ServiceError, FormatError, ValueError, TypeError, NotImplementedError, pa.ArrowException):
+        return None
+    return found
 
 
 def _composite_ref(run: CheckRun, path: str, ref: CompositeRef) -> None:

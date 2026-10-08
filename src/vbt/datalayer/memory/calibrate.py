@@ -4,7 +4,9 @@ The phase-1 estimator (:mod:`.estimate`) multiplies footer statistics by **seed*
 replaces them in two tiers, each stored next to the data it describes:
 
 1. **Sample** (``vbt ds calibrate``; runs in the data child): one to three row groups of the table
-   (first, middle, last) are read as Arrow, then converted to pandas the way upstream loads them.
+   (first, middle, last) are read as Arrow, at most :data:`MAX_SAMPLE_ROWS` evenly spaced rows of them are
+   kept (a row group can be a whole shard: 1,964,234 rows of the 25.09 study table, whose measurement ran
+   out of memory), then converted to pandas the way upstream loads them.
    Per top-level column the Arrow ``nbytes`` and the pandas size are measured (``memory_usage(deep=True)``
    for flat columns; object columns are walked recursively, because ``deep=True`` counts a list or a
    dict shallowly, which is exactly the nested-item cost that made footer bytes understate the peak
@@ -33,8 +35,8 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 __all__ = [
-    "CALIBRATION_FILE", "FEEDBACK_FILE", "MAX_ROW_GROUPS", "calibration_path", "feedback_path", "pick_samples",
-    "deep_bytes", "measure_table", "fit", "calibrate_fragments", "calibrate_table", "write_calibration",
+    "CALIBRATION_FILE", "FEEDBACK_FILE", "MAX_ROW_GROUPS", "MAX_SAMPLE_ROWS", "calibration_path", "feedback_path",
+    "pick_samples", "deep_bytes", "measure_table", "fit", "calibrate_fragments", "calibrate_table", "write_calibration",
     "load_calibrations", "load_feedback", "record_feedback", "feedback_from_status", "stats_of_fragments",
     "factors_summary", "calibrate",
 ]
@@ -42,6 +44,11 @@ __all__ = [
 CALIBRATION_FILE = "calibration.json"
 FEEDBACK_FILE = "memory_feedback.json"
 MAX_ROW_GROUPS = 3
+#: Rows measured at most, spread over the sampled row groups (each Open Targets 25.09 shard is one row group).
+MAX_SAMPLE_ROWS = 30000
+#: The seed model's pandas bytes a sample may hold, and the rows it keeps whatever the estimate.
+SAMPLE_BUDGET_BYTES = 256 * 1024 * 1024
+MIN_SAMPLE_ROWS = 200
 MB = 1024 * 1024
 
 
@@ -166,7 +173,7 @@ def stats_of_fragments(fmt: Any, frags: Sequence[Any]) -> dict[str, Any]:
 
 
 def _read_sample(fmt: Any, frags: Sequence[Any], partitions: Mapping[str, str], columns: Sequence[str] | None,
-                 footer: Any, k: int) -> tuple[Any, list[dict[str, Any]]]:
+                 footer: Any, k: int, max_rows: int = MAX_SAMPLE_ROWS) -> tuple[Any, list[dict[str, Any]]]:
     import pyarrow as pa
 
     units: list[tuple[Any, int | None]] = []
@@ -177,6 +184,7 @@ def _read_sample(fmt: Any, frags: Sequence[Any], partitions: Mapping[str, str], 
         else:
             units.append((frag, None))
     picked = [units[i] for i in pick_samples(len(units), k)]
+    per_unit = max(1, int(max_rows) // max(1, len(picked)))
     tables = []
     where = []
     for frag, rg in picked:
@@ -185,9 +193,16 @@ def _read_sample(fmt: Any, frags: Sequence[Any], partitions: Mapping[str, str], 
         if rg is not None:
             kwargs["row_groups"] = {frag.uri: [rg]}
         batches = list(fmt.scan([frag], **kwargs))
+        entry: dict[str, Any] = {"fragment": frag.uri, "row_group": rg}
         if batches:
-            tables.append(pa.Table.from_batches(batches))
-        where.append({"fragment": frag.uri, "row_group": rg})
+            tbl = pa.Table.from_batches(batches)
+            if tbl.num_rows > per_unit:
+                # evenly spaced rows: a whole 25.09 study shard (one row group of 1,964,234 rows) did not fit
+                step = tbl.num_rows / per_unit
+                entry["rows"] = [tbl.num_rows, per_unit]
+                tbl = tbl.take(pa.array([int(i * step) for i in range(per_unit)], pa.int64()))
+            tables.append(tbl)
+        where.append(entry)
     if not tables:
         return None, where
     return (pa.concat_tables(tables, promote_options="permissive") if len(tables) > 1 else tables[0]), where
@@ -196,13 +211,22 @@ def _read_sample(fmt: Any, frags: Sequence[Any], partitions: Mapping[str, str], 
 def calibrate_fragments(fmt: Any, frags: Sequence[Any], *, table_stats: Mapping[str, Any] | None = None,
                         partitions: Mapping[str, str] | None = None, columns: Sequence[str] | None = None,
                         row_groups: int = MAX_ROW_GROUPS, seed: Any = None, table: str | None = None,
-                        fingerprint: str | None = None) -> dict[str, Any]:
+                        fingerprint: str | None = None, max_rows: int = MAX_SAMPLE_ROWS) -> dict[str, Any]:
     """Sample up to ``row_groups`` row groups of ``frags``, measure them and :func:`fit` the seed model.
-    ``table_stats`` defaults to :func:`stats_of_fragments`. Runs in the data child (pyarrow, pandas)."""
+    ``table_stats`` defaults to :func:`stats_of_fragments`. Runs in the data child (pyarrow, pandas).
+
+    At most ``max_rows`` rows are measured, and no more than the seed model expects to fit in
+    :data:`SAMPLE_BUDGET_BYTES` as pandas (at least :data:`MIN_SAMPLE_ROWS`): 10,000 rows of each of three
+    25.09 expression shards (genes with nested tissues and cell types) ran the data child out of memory."""
     from ..service.sidecar import footer_reader
 
     stats = dict(table_stats) if table_stats is not None else stats_of_fragments(fmt, frags)
-    sample, where = _read_sample(fmt, frags, partitions or {}, columns, footer_reader(fmt), row_groups)
+    rows = stats.get("rows")
+    if seed is not None and rows:
+        per_row = seed.peak_upstream(stats) / float(rows)
+        if per_row > 0:
+            max_rows = min(int(max_rows), max(MIN_SAMPLE_ROWS, int(SAMPLE_BUDGET_BYTES // per_row)))
+    sample, where = _read_sample(fmt, frags, partitions or {}, columns, footer_reader(fmt), row_groups, max_rows)
     if sample is None or sample.num_rows == 0:
         raise ValueError("calibration needs at least one non-empty row group")
     measured = measure_table(sample)
@@ -289,11 +313,12 @@ def fit(table_stats: Mapping[str, Any], measured: Mapping[str, Mapping[str, int]
         footer = float(sum(lf.uncompressed_bytes for lf in col_leaves))
         columns[col] = {"kind": kind, "pandas_bytes": int(round(pandas_full)), "arrow_bytes": int(round(arrow_full)),
                         "seed_bytes": int(round(bytes_term + objects_term)), "footer_bytes": int(footer)}
-        s = sums.setdefault(kind, {"pandas": 0.0, "seed": 0.0, "arrow": 0.0, "footer": 0.0})
+        s = sums.setdefault(kind, {"pandas": 0.0, "seed": 0.0, "arrow": 0.0, "footer": 0.0, "objects": 0.0})
         s["pandas"] += pandas_full
         s["seed"] += bytes_term + objects_term
         s["arrow"] += arrow_full
         s["footer"] += footer
+        s["objects"] += objects_term
         if kind in residual:
             residual[kind] += max(0.0, pandas_full - bytes_term)
             weights[kind] += objects_term
@@ -305,9 +330,10 @@ def fit(table_stats: Mapping[str, Any], measured: Mapping[str, Mapping[str, int]
         return s[a] / s[b]
 
     expansion = dict(est.expansion)
-    flat = ratio("flat", "pandas", "footer")
-    if flat is not None:
-        expansion["flat"] = round(flat, 4)
+    flat_sums = sums.get("flat")
+    if flat_sums and flat_sums["footer"] > 0:
+        # what the per-value ``flat_value`` term does not explain is left to the bytes (all of it without one)
+        expansion["flat"] = round(max(0.0, flat_sums["pandas"] - flat_sums["objects"]) / flat_sums["footer"], 4)
     overhead = dict(est.object_overhead)
     for kind, keys in (("string", ("string",)), ("nested", ("nested_item", "struct_item"))):
         if weights[kind] > 0:
