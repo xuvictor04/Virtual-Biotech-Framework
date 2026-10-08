@@ -65,7 +65,7 @@ from ..formats.rest_json import RestJsonFormat, jp_values
 from ..registry import register
 
 __all__ = ["LiveApiLayout", "RemoteError", "Budget", "http_get", "release_from_payload", "RemoteVocab",
-           "RecordVersions", "fetch_all", "LOCAL_HOSTS"]
+           "RecordVersions", "fetch_all", "project_row", "LOCAL_HOSTS"]
 
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 DEFAULT_TIMEOUT_S = 30.0
@@ -235,12 +235,16 @@ class LiveApiLayout(PluginBase):
 
     # ------------------------------------------------------------------ requests
 
-    def request_map(self, spec: LayoutSpec, remote_names: Mapping[str, str] | None = None) -> dict[str, Any]:
-        """The compile map of ``rest_json`` from the options (and the descriptor's ``remote_name`` facets)."""
+    def request_map(self, spec: LayoutSpec, remote_names: Mapping[str, str] | None = None,
+                    kinds: Mapping[str, str] | None = None) -> dict[str, Any]:
+        """The compile map of ``rest_json`` from the options (and the descriptor's ``remote_name`` facets and
+        column kinds: ``integer`` counts take strict bounds as the next whole number, ``text`` columns are
+        matched by the source's engine)."""
         opts = self._options(spec)
         return {"filters": dict(opts.get("filters") or {}),
                 "remote_names": {**dict(remote_names or {}), **dict(opts.get("remote_names") or {})},
-                "essie_param": opts.get("essie_param"), "text_params": dict(opts.get("text_params") or {})}
+                "essie_param": opts.get("essie_param"), "text_params": dict(opts.get("text_params") or {}),
+                "kinds": dict(kinds or {})}
 
     @staticmethod
     def fill_path(endpoint: str, predicate: Predicate | None) -> tuple[str, Predicate | None]:
@@ -313,9 +317,11 @@ class LiveApiLayout(PluginBase):
             raise RemoteError(f"{url} did not return JSON: {exc}", status=status, url=url, filled=filled) from exc
 
     def request(self, spec: LayoutSpec, *, predicate: Predicate | None, projection: list[str],
-                page_token: str | None, budget: Any, remote_names: Mapping[str, str] | None = None) -> Page:
+                page_token: str | None, budget: Any, remote_names: Mapping[str, str] | None = None,
+                kinds: Mapping[str, str] | None = None) -> Page:
         """One page of rows matching ``predicate`` (its residual is applied to the rows; with a residual
-        the page's ``total`` is None: the source's total counts the pushed-down part only)."""
+        the page's ``total`` is None: the source's total counts the pushed-down part only). ``projection``
+        names column paths (``protocolSection.identificationModule.nctId``): each row keeps those paths."""
         b = Budget.of(budget)
         opts = self._options(spec)
         keyed = self._key_target(spec, predicate) if not page_token else None
@@ -324,7 +330,7 @@ class LiveApiLayout(PluginBase):
         url, query, predicate, filled = self._target(spec, predicate)
         if not url:
             raise RemoteError(f"{spec.table}: live_api needs options.base_url")
-        params, residual = self.fmt.compile(predicate, self.request_map(spec, remote_names))
+        params, residual = self.fmt.compile(predicate, self.request_map(spec, remote_names, kinds))
         params = {**dict(opts.get("params") or {}), **query, **params}
         size = int(b.page_size or opts.get("page_size") or DEFAULT_PAGE_SIZE)
         offset = 0
@@ -346,7 +352,7 @@ class LiveApiLayout(PluginBase):
         if residual is not None:
             rows = [r for r in rows if evaluate(residual, r) is True]
         if projection:
-            rows = [{k: v for k, v in r.items() if k in projection} if isinstance(r, Mapping) else r for r in rows]
+            rows = [project_row(r, projection) if isinstance(r, Mapping) else r for r in rows]
         if page.as_of:
             _AS_OF[url] = page.as_of
         return Page(rows=rows, total=None if residual is not None else page.total, next=page.next, as_of=page.as_of)
@@ -370,11 +376,11 @@ class LiveApiLayout(PluginBase):
         if predicate is not None:
             rows = [r for r in rows if evaluate(predicate, r) is True]    # the rest of the filter, on the record
         if projection:
-            rows = [{k: v for k, v in r.items() if k in projection} for r in rows]
+            rows = [project_row(r, projection) for r in rows]
         return Page(rows=rows, total=len(rows), next=None, as_of=page.as_of)
 
     def count(self, spec: LayoutSpec, *, predicate: Predicate | None, budget: Any,
-              remote_names: Mapping[str, str] | None = None) -> int | None:
+              remote_names: Mapping[str, str] | None = None, kinds: Mapping[str, str] | None = None) -> int | None:
         """An independent count request (the remote witness): None when the predicate does not compile
         completely or the source does not report a total."""
         opts = self._options(spec)
@@ -382,7 +388,7 @@ class LiveApiLayout(PluginBase):
         if not count:
             return None
         url, query, predicate, filled = self._target(spec, predicate, count.get("endpoint"))
-        params, residual = self.fmt.compile(predicate, self.request_map(spec, remote_names))
+        params, residual = self.fmt.compile(predicate, self.request_map(spec, remote_names, kinds))
         if residual is not None or not url:
             return None
         params = {**dict(opts.get("params") or {}), **query, **params,
@@ -425,9 +431,44 @@ class LiveApiLayout(PluginBase):
         return LayoutCases(tree="none", path=None, format="rest_json")
 
 
+def project_row(row: Mapping[str, Any], paths: Iterable[str]) -> dict[str, Any]:
+    """``row`` reduced to the column ``paths`` (dotted, ``[]`` for list items: ``a.b[].c`` keeps ``c`` of every
+    item of ``a.b``), nesting kept; a path the row does not hold is left out."""
+    out: dict[str, Any] = {}
+    for path in paths:
+        parts = [p for p in str(path).replace("[]", "").split(".") if p]
+        if parts:
+            _copy_path(row, out, parts)
+    return out
+
+
+def _copy_path(src: Any, dst: dict[str, Any], parts: list[str]) -> None:
+    head, rest = parts[0], parts[1:]
+    if not isinstance(src, Mapping) or head not in src:
+        return
+    value = src[head]
+    if not rest:
+        dst[head] = value
+        return
+    if head in dst and dst[head] is value:
+        return                                         # the whole value is already kept
+    if isinstance(value, Mapping):
+        sub = dst.get(head)
+        if not isinstance(sub, dict):
+            sub = dst[head] = {}
+        _copy_path(value, sub, rest)
+    elif isinstance(value, list):
+        items = dst.get(head)
+        if not (isinstance(items, list) and len(items) == len(value)):
+            items = dst[head] = [{} if isinstance(v, Mapping) else v for v in value]
+        for v, d in zip(value, items):
+            if isinstance(v, Mapping) and isinstance(d, dict):
+                _copy_path(v, d, rest)
+
+
 def fetch_all(layout: LiveApiLayout, spec: LayoutSpec, predicate: Predicate | None, budget: Any, *,
               projection: list[str] | None = None, remote_names: Mapping[str, str] | None = None,
-              max_rows: int | None = None) -> dict[str, Any]:
+              max_rows: int | None = None, kinds: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Every page within the budget's ``max_pages``: ``{rows, total, as_of, truncated, pages}``. With
     ``max_rows`` the reading stops once that many rows are in hand (more pages left: ``truncated``)."""
     b = Budget.of(budget)
@@ -437,7 +478,9 @@ def fetch_all(layout: LiveApiLayout, spec: LayoutSpec, predicate: Predicate | No
     as_of = None
     pages = 0
     while True:
-        extra = {"remote_names": remote_names} if remote_names is not None else {}
+        extra: dict[str, Any] = {"remote_names": remote_names} if remote_names is not None else {}
+        if kinds is not None:
+            extra["kinds"] = kinds
         page = layout.request(spec, predicate=predicate, projection=list(projection or []), page_token=token,
                               budget=b, **extra)
         pages += 1

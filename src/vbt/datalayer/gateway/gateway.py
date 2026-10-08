@@ -205,6 +205,7 @@ class _CallState:
     soma_added: bool = False
     native_header: dict[str, Any] | None = None                     # a native data tool: the child's own _vbt
     soma_predicate: Predicate | None = None
+    census_release: str | None = None                               # the dated release a SOMA alias names
     resolved_columns: dict[str, str] = field(default_factory=dict)   # identifier argument -> bound column
     force_partial: bool = False
     in_universe: bool | None = None
@@ -236,6 +237,13 @@ def _ms(t0: float) -> float:
 
 def _last(path: str) -> str:
     return str(path).lstrip("/").split(".")[-1].replace("[]", "")
+
+
+def _one_source(contract: Any) -> Any:
+    """The descriptor of the one source every table a tool reads belongs to (a record over several tables of one
+    source, such as get_census_info: its release is that source's), else None."""
+    descs = {id(t.descriptor): t.descriptor for t in (getattr(contract, "tables", None) or {}).values()}
+    return next(iter(descs.values())) if len(descs) == 1 else None
 
 
 def _record_versions(t: Any, rows: Sequence[Any], cols: Sequence[str]) -> dict[str, dict[str, str]] | None:
@@ -770,6 +778,7 @@ class DataGateway:
         if plan.route == "upstream" and st.mode == "enforce":
             if b.count_first is not None:
                 await self._count_first(plan, st, contract)
+            await self._census_release(plan, st, contract)
             await self._admit(plan, st, contract)
         # 10. limit inflation
         if plan.route == "upstream":
@@ -810,6 +819,43 @@ class DataGateway:
             st.notes.append(f"count-first admission could not count: {resp.reason}")
         else:
             st.notes.append(f"count-first: the filter selects {resp.n_cells} cells")
+
+    def _soma_tables(self, contract: ToolContract) -> list[str]:
+        """The tables the tool reads whose layout resolves a moving release alias (SOMA: ``stable``)."""
+        out = []
+        for ref, t in contract.tables.items():
+            try:
+                layout = self.registry.find("layout", t.layout) if self.registry is not None else None
+            except Exception:  # noqa: BLE001
+                layout = None
+            if layout is not None and callable(getattr(layout, "resolve", None)):
+                out.append(ref)
+        return out
+
+    async def _census_release(self, plan: CallPlan, st: _CallState, contract: ToolContract) -> None:
+        """Every call of a tool that reads the Census records the dated release ``stable`` names (the witness or
+        count-first may have resolved it already): when the alias moves, the same cited count changes and the
+        provenance shows why (get_census_info and count_cells recorded no release)."""
+        w = st.witness
+        cf = (st.count_first or {}).get("release") if isinstance(st.count_first, Mapping) else None
+        if (w is not None and getattr(w, "as_of", None)) or (isinstance(cf, Mapping) and cf.get("resolved")):
+            return
+        tables = self._soma_tables(contract)
+        if not tables:
+            return
+        try:
+            resp = await self.service.call(VERB_CENSUS_COUNT, CensusCountRequest(table=tables[0], release_only=True))
+        except ServiceError as exc:
+            st.notes.append(f"{tables[0]} release not resolved ({exc.message[:200]})")
+            return
+        rel = resp.release or {}
+        if rel.get("resolved"):
+            st.census_release = str(rel["resolved"])
+            if rel.get("drift"):
+                st.notes.append(f"{tables[0]}: {rel.get('requested')} moved from {rel['drift'].get('before')} to "
+                                f"{rel['drift'].get('now')} during this session")
+        else:
+            st.notes.append(f"{tables[0]} release unknown: {rel.get('reason') or resp.reason or 'not resolved'}")
 
     async def _recompute_genes(self, plan: CallPlan, st: _CallState, contract: ToolContract, obj: Any) -> None:
         """``count_first.recompute_genes``: genes_found/genes_not_found of the written file, from its
@@ -1357,13 +1403,16 @@ class DataGateway:
                 st.per_arg.pop(name, None)
                 return
 
-    def _inexpressible(self, plan: CallPlan, contract: ToolContract, *, remote: bool = False) -> str | None:
+    def _inexpressible(self, plan: CallPlan, contract: ToolContract, *, remote: bool = False,
+                       parsed: Sequence[str] = ()) -> str | None:
         """Why the witness cannot count this call (None: it can). A remote count request sends an engine
-        argument with an ``engine_param`` to that parameter, so the source's engine matches it there too."""
+        argument with an ``engine_param`` to that parameter, so the source's engine matches it there too; an
+        argument the gateway parsed into the predicate IR itself (``parsed``: a SOMA ``value_filter``) is counted
+        from that predicate."""
         for name, a in contract.args.items():
             if not is_present(plan.args_raw.get(name)):
                 continue
-            if remote and a.engine_param:
+            if remote and (a.engine_param or name in parsed):
                 continue
             # text matched over several columns (binds_any) is the source's matching, not one column's
             if a.role == "free_text" and (a.interpreted_as in ("engine", "regex") or not a.binds):
@@ -1371,6 +1420,16 @@ class DataGateway:
             if a.role == "unbound":
                 return f"{name} is not bound to a column"
         return None
+
+    @staticmethod
+    def _soma_parsed(contract: ToolContract, st: _CallState) -> list[str]:
+        """The SOMA filter arguments the gateway parsed into ``st.soma_predicate`` that a remote witness can count:
+        only for a count, or a written file with a declared total (cells); a tool whose rows are value counts or
+        datasets has no total in cells to compare."""
+        b = contract.binding
+        if st.soma_predicate is None or b is None or b.result.total is None or b.result.kind not in ("count", "file"):
+            return []
+        return [n for n, a in contract.args.items() if a.escape == soma_filter.LANGUAGE]
 
     async def _witness(self, plan: CallPlan, st: _CallState, contract: ToolContract, selected: str | None, *,
                        derived: bool) -> None:
@@ -1387,7 +1446,7 @@ class DataGateway:
         if not remote and not self._scannable(contract, table):
             st.witness_reason = f"{table} is not scannable by the data child and declares no count capability"
             return
-        why = self._inexpressible(plan, contract, remote=remote)
+        why = self._inexpressible(plan, contract, remote=remote, parsed=self._soma_parsed(contract, st))
         if why:
             st.witness_reason = why
             st.engine_matched = True
@@ -1405,6 +1464,10 @@ class DataGateway:
             parts = [] if st.predicate is None else list(st.predicate.preds if isinstance(st.predicate, And)
                                                           else (st.predicate,))
             parts.extend(TextMatch(f"@{param}", text) for param, text in st.engine_text.items())
+            if self._soma_parsed(contract, st):
+                # the SOMA filter as the gateway parsed and sent it (is_primary_data == True included)
+                sp = st.soma_predicate
+                parts.extend(sp.preds if isinstance(sp, And) else (sp,))
             pred = None if not parts else (parts[0] if len(parts) == 1 else And(tuple(parts)))
             req = WitnessRequest(table=table, predicate=to_json(pred) if pred is not None else None,
                                  key=[], params=self._params(plan, st))
@@ -1773,6 +1836,9 @@ class DataGateway:
             raise GatewayError(ErrorKind.source_error, "no upstream result", tool=st.name)
         if plan.server == DATA_SERVER:
             st.native_header = self._native_envelope(raw, st)
+            missing = (st.native_header or {}).get("not_found_items")
+            if missing:
+                st.not_found_items = list(missing)     # keys the source does not hold: never a complete answer
         w = st.witness
         cls = classify(raw, contract, plan, universe_tables=self._universe_tables(contract),
                        witness_total=w.total if w is not None and w.total_method != "unknown" else None,
@@ -2694,7 +2760,7 @@ class DataGateway:
         t = self._rows_table(plan, contract)
         cols = list(cols if cols is not None else self._key_columns(contract, t))
         types = [st.storage_types.get(c) for c in cols]
-        desc = t.descriptor if t is not None else None
+        desc = t.descriptor if t is not None else _one_source(contract)
         release = self._release_of(desc, st)
         source = f"{desc.source}@{release}" if desc is not None and release else (desc.source if desc else None)
         excluded_unknown = dict(counters.excluded_unknown)
@@ -2837,6 +2903,14 @@ class DataGateway:
                          "tables", "key"):
                 if nh.get(name) is not None:
                     setattr(header, name, nh[name])
+            if isinstance(nh.get("withheld"), Mapping):
+                # rows the child withheld (the evidence ceiling of a live source) are this answer's withheld rows
+                header.withheld = {**dict(header.withheld or {}), **{str(k): int(v) for k, v in nh["withheld"].items()}}
+            if nh.get("notes"):
+                # the child's disclosures (a default filter it added, an engine match, a ceiling, missing keys)
+                header.notes = list(dict.fromkeys([*map(str, nh["notes"]), *header.notes]))
+            if isinstance(nh.get("leakage"), Mapping):
+                header.extra["leakage"] = dict(nh["leakage"])
         if st.soft_sections:
             header.extra["unavailable_sections"] = dict(st.soft_sections)
         if st.section_meta:
@@ -2868,7 +2942,8 @@ class DataGateway:
                 "total_method": nh.get("total_method"), "served_by": nh.get("served_by"),
                 "record_versions": {str(k): {str(i): str(v) for i, v in dict(m).items()}
                                     for k, m in dict(versions).items() if isinstance(m, Mapping)}
-                if isinstance(versions, Mapping) else None}
+                if isinstance(versions, Mapping) else None,
+                "leakage": dict(nh["leakage"]) if isinstance(nh.get("leakage"), Mapping) else None}
 
     @staticmethod
     def _release_of(desc: Any, st: _CallState) -> str | None:
@@ -2887,6 +2962,8 @@ class DataGateway:
         cf = (st.count_first or {}).get("release") if isinstance(st.count_first, Mapping) else None
         if isinstance(cf, Mapping) and cf.get("resolved"):
             return str(cf["resolved"])
+        if st.census_release:
+            return st.census_release
         return None
 
     def _record(self, plan: CallPlan, st: _CallState, contract: ToolContract, t: Any, *, status: str,
@@ -2896,7 +2973,7 @@ class DataGateway:
                 leakage_unchecked: int = 0, derived: dict[str, Any] | None = None,
                 native: Mapping[str, Any] | None = None) -> DataProvenance:
         b = contract.binding
-        desc = t.descriptor if t is not None else None
+        desc = t.descriptor if t is not None else _one_source(contract)
         self._stamp_times(st)
         tables = []
         refs = tables_read(contract, plan.bound_table, plan.args_raw)
@@ -2947,8 +3024,9 @@ class DataGateway:
                               key_storage_types=list(types) if cols and any(types) else None,
                               transforms=list(st.transforms), record_versions=versions),
             memory=st.admission.to_record() if st.admission is not None else {"admission": "not_applicable"},
-            leakage=leakage_record(st.leakage.ceiling, withheld_leakage, st.leakage.risk or leakage_unchecked > 0)
-            if st.leakage is not None and st.leakage.active else None,
+            leakage=(dict(native["leakage"]) if native is not None and native.get("leakage") else
+                     leakage_record(st.leakage.ceiling, withheld_leakage, st.leakage.risk or leakage_unchecked > 0)
+                     if st.leakage is not None and st.leakage.active else None),
             evidence_nature=(t.spec.evidence_nature.model_dump() if t is not None and t.spec.evidence_nature
                              else None),
             upstream=self._upstream_info(plan), t_ms=dict(st.t_ms), derived=derived or None)

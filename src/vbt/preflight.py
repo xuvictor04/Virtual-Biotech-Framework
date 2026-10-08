@@ -443,11 +443,15 @@ def _leakage_ceiling(config: dict[str, Any]) -> list[CheckResult]:
         return []
     if ((config.get("data") or {}).get("leakage") or {}).get("ceiling"):
         return []
+    from .datalayer.descriptor.models import DATA_CEILING
+
     try:
         _settings, catalog, _registry = data_catalog(config)
     except Exception:  # noqa: BLE001 - the catalog's own failure is reported elsewhere
         return []
-    leaky = sorted(src for src, d in catalog.sources.items() if getattr(d, "leakage", None) is not None)
+    # a source whose server applies its own ceiling (PubMed: web.literature_max_date) is not bounded by this one
+    leaky = sorted(src for src, d in catalog.sources.items() if getattr(d, "leakage", None) is not None and
+                   getattr(d.leakage, "ceiling_from", DATA_CEILING) == DATA_CEILING)
     if not leaky:
         return []
     return [CheckResult("data: evidence ceiling", False, required=False, kind="data",

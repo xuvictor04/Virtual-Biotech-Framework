@@ -304,6 +304,7 @@ class CensusCountRequest(IpcModel):
     sample: dict[str, Any] | None = None               # {max_cells, seed}
     genes_file: str | None = None
     genes: list[str] | None = None
+    release_only: bool = False                         # only the dated release the alias names (no count)
 
 
 class CensusCountResponse(IpcModel):

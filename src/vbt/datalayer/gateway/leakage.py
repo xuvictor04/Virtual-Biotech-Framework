@@ -13,21 +13,32 @@ source that declares ``leakage``, facts dated after the ceiling must not reach t
   ``2004-01`` counts as 2004-01-31 and ``2004`` as 2004-12-31, so a record that might postdate the
   ceiling is treated as if it did. A row whose date is missing or unparsable cannot be checked: it
   is kept and ``provenance.leakage.risk`` is set.
+
+A source whose tool applies a ceiling itself declares where it comes from (``ceiling_from``): the PubMed
+server bounds every search by ``VBT_LITERATURE_MAXDATE`` (``web.literature_max_date``), so that source's
+``leakage`` names ``web.literature_max_date``. The gateway's prepare and T1 act on ``data.leakage.ceiling``
+sources only; the data child bounds its own counts and live reads by each source's ceiling
+(:func:`ceiling_for`), so a witness counts what the tool counted.
 """
 
 from __future__ import annotations
 
 import calendar
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Iterable, Mapping
 
+from ..descriptor.models import CEILING_SOURCES, DATA_CEILING, LITERATURE_CEILING
 from ..errors import ErrorKind, GatewayError
 from .fields import get_path, set_path
 
-__all__ = ["LeakagePlan", "ceiling_of", "parse_date", "leakage_specs", "is_counting", "prepare_leakage",
-           "withhold_rows", "leakage_record"]
+__all__ = ["LeakagePlan", "ceiling_of", "ceiling_for", "parse_date", "leakage_specs", "is_counting",
+           "prepare_leakage", "withhold_rows", "leakage_record", "DATA_CEILING", "LITERATURE_CEILING",
+           "CEILING_SOURCES"]
+
+LITERATURE_MAXDATE_ENV = "VBT_LITERATURE_MAXDATE"     # web.literature_max_date, as the harness exports it
 
 _MONTHS = {name.lower(): i for i, name in enumerate(calendar.month_name) if name}
 _MONTHS.update({name.lower(): i for i, name in enumerate(calendar.month_abbr) if name})
@@ -81,12 +92,24 @@ def ceiling_of(settings: Any) -> date | None:
     return parse_date(raw, "earliest")
 
 
+def ceiling_for(spec: Any, settings: Any, environ: Mapping[str, str] | None = None) -> date | None:
+    """The ceiling of one source's ``leakage`` (its ``ceiling_from``): ``data.leakage.ceiling``, or the
+    literature ceiling ``VBT_LITERATURE_MAXDATE`` (``YYYY/MM/DD``) the harness exports to every server and to
+    the data child; None when that ceiling is unset."""
+    src = getattr(spec, "ceiling_from", DATA_CEILING) or DATA_CEILING
+    if src == LITERATURE_CEILING:
+        raw = str((os.environ if environ is None else environ).get(LITERATURE_MAXDATE_ENV) or "").strip()
+        return parse_date(raw.replace("/", "-"), "earliest") if raw else None
+    return ceiling_of(settings)
+
+
 def leakage_specs(contract: Any) -> dict[str, Any]:
-    """``{source.table: LeakageSpec}`` for the tables the tool reads whose source declares ``leakage``."""
+    """``{source.table: LeakageSpec}`` for the tables the tool reads whose source declares ``leakage`` bounded
+    by ``data.leakage.ceiling`` (a source whose server applies its own ceiling is not the gateway's to bound)."""
     out: dict[str, Any] = {}
     for ref, t in getattr(contract, "tables", {}).items():
         spec = getattr(t.descriptor, "leakage", None)
-        if spec is not None:
+        if spec is not None and (getattr(spec, "ceiling_from", DATA_CEILING) or DATA_CEILING) == DATA_CEILING:
             out[ref] = spec
     return out
 

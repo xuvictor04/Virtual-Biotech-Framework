@@ -172,6 +172,8 @@ def census_count(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, A
     release = layout.resolve(lspec) if callable(getattr(layout, "resolve", None)) else None
     out: dict[str, Any] = {"table": req.table, "value_filter": sent.get("value_filter"),
                            "release": dict(release) if release is not None else None}
+    if req.release_only:
+        return out
     try:
         n = layout.count(lspec, predicate=predicate, budget=t.descriptor.budget)
     except Exception as exc:  # noqa: BLE001 - an outage is not a count of zero

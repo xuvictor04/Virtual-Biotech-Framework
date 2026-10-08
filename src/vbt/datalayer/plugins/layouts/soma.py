@@ -5,15 +5,25 @@ Options (``layout: {plugin: soma, options: {...}}``)::
     uri:            census_data/homo_sapiens/obs     the dataframe inside the Census (``ms/RNA/var`` for genes)
     census_version: stable                            what the upstream server opens; resolved, never assumed
     module:         cellxgene_census                  the Census client module (imported in the data child)
-    tiledb_config:  {soma.init_buffer_bytes: 134217728, py.init_buffer_bytes: 134217728}
-                                                      passed to ``open_soma`` (default: 128 MiB read buffers)
+    tiledb_config:  {soma.init_buffer_bytes: 33554432, py.init_buffer_bytes: 33554432}
+                                                      passed to ``open_soma`` (default: 32 MiB read buffers)
+    row_buffer_bytes: 16777216                        the per-column cap of a row read (default 16 MiB)
 
 Read buffers: ``cellxgene_census.open_soma`` reserves 1 GiB per column read by default. Under the data
 child's ``RLIMIT_DATA`` (which counts reserved, not resident, memory) that fails with ``std::bad_alloc``
 before any data arrives: on the real Census (2025-11-08) a one-column count failed under a 5000 MB limit
-at 260 MB resident. With 128 MiB buffers the same count of one dataset (7,750 cells) took 2.9 s, and
-counting a tissue (1.6 M cells) about 1.3 s. Counts stream the ``soma_joinid`` batches (never one
-table of every id).
+at 260 MB resident. 128 MiB buffers held for one call, but after two witness counts the next native find's
+count failed the same way under 3000 MB (std::bad_alloc through MCPBridge; a segmentation fault in process);
+with 32 MiB buffers the same sequence passed, and counting the 555,767 primary cells of the adrenal gland
+took 6.0 s (6.8 s with 128 MiB). Counts stream the ``soma_joinid`` batches (never one table of every id).
+
+Row reads name their columns: every column read reserves its own buffer, so a read of all 28 obs columns
+reserved about 3.5 GiB and failed with ``std::bad_alloc`` under the data child's 3000 MB ``RLIMIT_DATA``
+(158 cells of one dataset, 2025-11-08), while the same read of 4 columns took 6.1 s at 1,246 MB. ``_live_find``
+therefore reads the requested columns, else the descriptor's declared ones (``reads_columns``), plus the key
+and the filter's columns, and a row read (at most ``_live_find``'s admitted 1,000 rows) uses 16 MiB buffers
+(``row_buffer_bytes``): the 13 declared columns of that read still failed with 128 MiB buffers under 3000 MB and
+took 5.6 s at 1,246 MB with 16 MiB ones. Counts use the table's buffers (one column, streamed).
 
 ``stable`` is an alias that moves. :func:`resolve_version` asks the client
 (``cellxgene_census.get_census_version_description``) which dated release it names, records it, and
@@ -25,7 +35,9 @@ description, and ``unknown`` when the description cannot be read.
 Implements ``live`` (:meth:`SomaLayout.request`: one read, the whole match; SOMA does not page) and
 ``count`` (:meth:`SomaLayout.count`: the count-first admission of Census pulls and the remote witness;
 the predicate is compiled to a ``value_filter`` by the ``soma`` format, and a residual makes the count
-unknown). ``probe``, ``signature`` and ``fingerprint`` never open the store.
+unknown). :meth:`SomaLayout.release` is the dated release the alias names (reused for ``max_age_s``), which
+the remote witness and ``_live_find`` report as their ``as_of``. ``probe``, ``signature`` and ``fingerprint``
+never open the store.
 """
 
 from __future__ import annotations
@@ -35,6 +47,7 @@ import importlib
 import inspect
 import json
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, ClassVar, Mapping
@@ -46,14 +59,17 @@ from ..formats.soma import SomaFormat
 from ..registry import register
 
 __all__ = ["SomaLayout", "Resolved", "resolve_version", "open_dataframe", "soma_uri", "census_module",
-           "count_rows", "read_columns", "VERSION_RECORD", "DEFAULT_TILEDB_CONFIG"]
+           "count_rows", "read_columns", "VERSION_RECORD", "DEFAULT_TILEDB_CONFIG", "ROW_BUFFER_BYTES"]
 
 DEFAULT_MODULE = "cellxgene_census"
 VERSION_RECORD = "census_versions.json"
-DEFAULT_TILEDB_CONFIG = {"soma.init_buffer_bytes": 128 * 1024 ** 2, "py.init_buffer_bytes": 128 * 1024 ** 2}
+DEFAULT_TILEDB_CONFIG = {"soma.init_buffer_bytes": 32 * 1024 ** 2, "py.init_buffer_bytes": 32 * 1024 ** 2}
+ROW_BUFFER_BYTES = 16 * 1024 ** 2                # per column, for row reads (module docstring)
+_BUFFER_KEYS = ("soma.init_buffer_bytes", "py.init_buffer_bytes")
 _DATED = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _RESOLVED: dict[str, str] = {}                 # requested alias -> dated release, this process
 _AS_OF: dict[str, str] = {}
+_RELEASES: dict[str, tuple[float, str | None]] = {}   # requested alias -> (monotonic time, release) of release()
 
 
 def census_module(name: str | None = None) -> Any:
@@ -198,6 +214,8 @@ class SomaLayout(PluginBase):
     name: ClassVar[str] = "soma"
     version: ClassVar[str] = "1.0"
     capabilities: ClassVar[frozenset[str]] = frozenset({"live", "count"})
+    #: Each column read reserves a read buffer: row reads name their columns (module docstring).
+    reads_columns: ClassVar[bool] = True
 
     def __init__(self) -> None:
         self.fmt = SomaFormat()
@@ -207,6 +225,14 @@ class SomaLayout(PluginBase):
     def _config(self, spec: LayoutSpec) -> dict[str, Any] | None:
         cfg = self._options(spec).get("tiledb_config")
         return dict(cfg) if isinstance(cfg, Mapping) else None
+
+    def _row_config(self, spec: LayoutSpec) -> dict[str, Any]:
+        """The read config of a row read: the table's, with every column buffer at most ``row_buffer_bytes``."""
+        cfg = dict(self._config(spec) or DEFAULT_TILEDB_CONFIG)
+        cap = int(self._options(spec).get("row_buffer_bytes") or ROW_BUFFER_BYTES)
+        for k in _BUFFER_KEYS:
+            cfg[k] = min(int(cfg.get(k) or cap), cap)
+        return cfg
 
     @staticmethod
     def _options(spec: LayoutSpec) -> dict[str, Any]:
@@ -258,6 +284,19 @@ class SomaLayout(PluginBase):
         requested = str(self._options(spec).get("census_version") or "stable")
         return resolve_version(requested, module=self._module(spec), record=self.record)
 
+    def release(self, spec: LayoutSpec, budget: Any = None, *, max_age_s: float | None = None) -> str | None:
+        """The dated release the table's ``census_version`` names (``stable`` -> ``2025-11-08``), None when it
+        cannot be resolved; with ``max_age_s`` a release resolved less than that many seconds ago is reused."""
+        requested = str(self._options(spec).get("census_version") or "stable")
+        if max_age_s is not None:
+            hit = _RELEASES.get(requested)
+            if hit is not None and time.monotonic() - hit[0] <= max_age_s:
+                return hit[1]
+        got = self.resolve(spec).get("resolved")
+        value = str(got) if got else None
+        _RELEASES[requested] = (time.monotonic(), value)
+        return value
+
     def _read_target(self, spec: LayoutSpec) -> tuple[str, str, Resolved]:
         opts = self._options(spec)
         path = str(opts.get("uri") or spec.path or "")
@@ -271,7 +310,7 @@ class SomaLayout(PluginBase):
                 page_token: str | None, budget: Any) -> Page:
         value_filter, residual = self.fmt.compile(predicate)
         version, path, res = self._read_target(spec)
-        with _open(version, path, self._module(spec), self._config(spec)) as frame:
+        with _open(version, path, self._module(spec), self._row_config(spec)) as frame:
             rows = _rows(frame, value_filter, list(projection or []) or None)
         if residual is not None:
             rows = [r for r in rows if evaluate(residual, r) is True]

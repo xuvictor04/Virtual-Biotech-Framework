@@ -229,10 +229,12 @@ def test_ctgov_find_reads_what_the_limit_asks_for(tmp_path: Path, replay: Callab
 
 
 def test_ctgov_unknown_nct(tmp_path: Path, replay: Callable[[str], Replay]) -> None:
-    """filter.ids of an unknown NCT ID is an empty page (the record endpoint answers 404 text)."""
+    """filter.ids of an unknown NCT ID is an empty page (the record endpoint answers 404 text): the registry is
+    the authority on its IDs, so the lookup is not_found naming the key (it was empty_unverified), as the
+    upstream get_clinical_trial_details answers."""
     replay("ctgov_lookup_unknown")
     out = s_ctgov_lookup_unknown(tmp_path)
-    assert out["rows"] == [] and out["_vbt"]["status"] == "empty"
+    assert out["status"] == "tool_error" and out["kind"] == "not_found" and "NCT99999999" in out["message"]
     rec = fixture("ctgov/study_unknown_nct.json")
     assert rec["status"] == 404 and "NCT99999999 not found" in rec["text"]
 
@@ -242,7 +244,7 @@ def test_live_lookup_takes_the_short_key_name(tmp_path: Path, replay: Callable[[
     same request goes out (the replay fails on any other) and a key without it is incomplete_key."""
     replay("ctgov_lookup_unknown")
     out = _run(_ctx(tmp_path), "lookup", {"table": "clinicaltrials_gov.studies", "key": {"nctId": "NCT99999999"}})
-    assert out["rows"] == [] and out["_vbt"]["status"] == "empty"
+    assert out["kind"] == "not_found" and "NCT99999999" in out["message"]
     bad = _run(_ctx(tmp_path), "lookup", {"table": "clinicaltrials_gov.studies", "key": {"briefTitle": "x"}})
     assert "incomplete_key" in json.dumps(bad), bad
 
@@ -397,7 +399,8 @@ def test_census_stable_alias_resolves_to_the_recorded_release(tmp_path: Path, mo
 
 def test_census_soma_reads_use_small_buffers(monkeypatch: pytest.MonkeyPatch) -> None:
     """open_soma reserves 1 GiB per column by default, which fails under RLIMIT_DATA (std::bad_alloc on the
-    real Census at 260 MB resident): the soma layout passes 128 MiB buffers, and counts stream the batches."""
+    real Census at 260 MB resident): the soma layout passes 32 MiB buffers (128 MiB failed once a session had counted),
+    and counts stream the batches."""
     seen: dict[str, Any] = {}
 
     class Frame:
@@ -419,7 +422,7 @@ def test_census_soma_reads_use_small_buffers(monkeypatch: pytest.MonkeyPatch) ->
     spec = LayoutSpec(table="cellxgene_census.obs", path=None, options={"uri": "census_data/homo_sapiens/obs"})
     assert layout.count(spec, predicate=Eq("dataset_id", "d1")) == 7
     assert seen["config"] == soma_layout.DEFAULT_TILEDB_CONFIG
-    assert seen["config"]["soma.init_buffer_bytes"] == 128 * 1024 ** 2
+    assert seen["config"]["soma.init_buffer_bytes"] == 32 * 1024 ** 2
     assert seen["read"] == {"column_names": ["soma_joinid"], "value_filter": "dataset_id == 'd1'"}
 
 

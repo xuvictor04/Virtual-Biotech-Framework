@@ -58,6 +58,12 @@ def _expr(p: Predicate) -> str:
     if isinstance(p, In):
         if not p.values:
             raise SomaCompileError("an empty 'in' list")
+        if all(isinstance(v, bool) for v in p.values):
+            # tiledbsoma has no 'in' over booleans (is_primary_data in [True, False] failed with
+            # "PyQueryCondition.create_uint8() not found" on the real Census): one == per value
+            values = list(dict.fromkeys(p.values))
+            text = " or ".join(f"{_col(p.column)} == {soma_quote(v)}" for v in values)
+            return text if len(values) == 1 else f"({text})"
         return f"{_col(p.column)} in [{', '.join(soma_quote(v) for v in p.values)}]"
     if isinstance(p, Cmp):
         return f"{_col(p.column)} {p.op} {soma_quote(p.value)}"
@@ -75,6 +81,8 @@ def _expr(p: Predicate) -> str:
         if isinstance(inner, Eq):
             return f"{_col(inner.column)} != {soma_quote(inner.value)}"
         if isinstance(inner, In) and inner.values:
+            if all(isinstance(v, bool) for v in inner.values):
+                return " and ".join(f"{_col(inner.column)} != {soma_quote(v)}" for v in dict.fromkeys(inner.values))
             return f"{_col(inner.column)} not in [{', '.join(soma_quote(v) for v in inner.values)}]"
         raise SomaCompileError("only 'not' of == and 'in' is expressible")
     if isinstance(p, And):

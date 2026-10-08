@@ -6,6 +6,10 @@
 # querytranslation, and reconciles requested with returned PMIDs (phase 4, fixed in place).
 # Phase 4: the remote witness is one esearch request with rettype=count (live_api; the query is the
 # source's own engine syntax, sent as `term`; the literature ceiling becomes datetype=pdat&maxdate).
+# The server bounds every search by VBT_LITERATURE_MAXDATE (web.literature_max_date, which no-web profiles
+# set): `leakage` below names that ceiling, so the witness's count and a native find are bounded by the same
+# date. Without it every search under a ceiling was a W1 tool_defect (a real 'PCSK9 AND evolocumab': the server
+# counted 1,003 by 2025/01/31 and 304 by 2017/12/31, the unbounded witness 1,212; 2026-10-08).
 schema: vbt.datasource/1
 source: pubmed
 title: PubMed (NCBI E-utilities)
@@ -14,6 +18,12 @@ release: {from: as_of}
 defaults: {format: none, layout: upstream_only, missing: unknown}
 budget: {requests_per_min: 180}
 strict: false
+leakage:
+  ceiling_from: web.literature_max_date      # VBT_LITERATURE_MAXDATE, applied by the server itself (datetype=pdat)
+  available_at: pubdate
+  partial_dates: latest
+  rows: withhold
+  counts: inject_filter
 
 id_types:
   pmid:  {plugin: pmid, resolvable: false}      # existence is decided by efetch (existence: upstream)

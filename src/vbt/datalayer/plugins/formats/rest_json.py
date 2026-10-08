@@ -10,8 +10,9 @@ The format of ``live_api`` tables (ClinicalTrials.gov v2, E-utilities, cBioPorta
                                   range: {lo, hi, lo_default, hi_default, format, extra}}},
        "remote_names": {<column>: "AREA[OverallStatus]"},     # Essie fields (CT.gov)
        "essie_param": "filter.advanced",                      # where Essie fragments go (ANDed)
-       "text_params": {<column> | "*": <param>}}              # TextMatch: the source's own search engine
+       "text_params": {<column> | "*": <param>},              # TextMatch: the source's own search engine
                                                               # (a TextMatch on "@<param>" sets <param>)
+       "kinds":       {<column>: integer | day | text}}       # from the descriptor's roles (see below)
 
   ``Eq``/``In`` (and ``Contains`` on a list column, and an ``Or`` of those on one column) on a filtered column
   become one parameter (values joined); ``Range``/``Cmp`` with a ``range`` entry become the lo/hi parameters; a column with a
@@ -19,6 +20,15 @@ The format of ``live_api`` tables (ClinicalTrials.gov v2, E-utilities, cBioPorta
   with every literal quoted by :func:`essie_quote`. Anything else (``Not``, ``Or`` across columns,
   ``IsNull``, an unmapped column) is returned as the residual, evaluated on the returned rows; a
   residual makes a count request impossible (the remote witness then says ``unknown``).
+
+  Both ``RANGE[lo,hi]`` and ``mindate``/``maxdate`` include their bounds (CT.gov: ``RANGE[100,MAX] AND
+  RANGE[MIN,101]`` counted the 18,064 trials enrolling 100 and the 889 enrolling 101, 2026-10-08). A strict
+  bound (``>``, ``<``, an exclusive ``Range`` end) is sent as the next value where one exists: the next whole
+  number on an ``integer`` column (``> 100`` is ``RANGE[101,MAX]``), the next day for a ``YYYY-MM-DD`` value;
+  otherwise it stays a residual. A column of kind ``text`` is matched by the source's search engine (words,
+  synonyms: ``AREA[BriefTitle]Cancer`` matched 65,307 trials, titles without the word among them), so
+  ``Eq``/``In``/``Contains`` on it are residuals (compared on the rows) and only a ``TextMatch`` is sent to the
+  engine (``AREA[BriefTitle]...``).
 * **decode** a page (:meth:`RestJsonFormat.decode_page`): rows, the upstream total, the next page token
   (``next_path``), page index (``page_number_param``) or offset, and ``as_of`` from the payload
   (``as_of_path``) or the ``Date`` header.
@@ -30,7 +40,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable, ClassVar, Iterator, Mapping, Sequence
 
@@ -38,7 +48,7 @@ from ...predicate import All, And, Any as AnyP, Cmp, Contains, Eq, In, Or, Predi
 from ..base import Fragment, FormatError, FragmentStats, Page, PluginBase
 from ..registry import register
 
-__all__ = ["RestJsonFormat", "essie_quote", "eutils_quote", "iso_date", "jp_values"]
+__all__ = ["RestJsonFormat", "essie_quote", "eutils_quote", "iso_date", "jp_values", "inclusive_bounds"]
 
 _TOKEN = re.compile(r"\.([^.\[\]]+)|\[\s*(\*|-?\d+)\s*\]")
 _ESSIE_PLAIN = re.compile(r"^[A-Za-z0-9_\-.]+$")
@@ -146,13 +156,21 @@ class RestJsonFormat(PluginBase):
         filters = dict(spec.get("filters") or {})
         remote = dict(spec.get("remote_names") or {})
         texts = dict(spec.get("text_params") or {})
+        kinds = dict(spec.get("kinds") or {})
         if isinstance(p, TextMatch):
             # "@<param>" names the request parameter itself (a free-text argument the source's engine
             # matches, which has no column)
             param = p.column[1:] if str(p.column).startswith("@") else (texts.get(p.column) or texts.get("*"))
-            if not param or param in params:
+            if param:
+                if param in params:
+                    return False
+                params[param] = str(p.text)
+                return True
+            base = str(p.column).replace("[]", "")
+            name = remote.get(p.column) or remote.get(base)
+            if not name:
                 return False
-            params[param] = str(p.text)
+            essie.append(f"{name}{essie_quote(p.text)}")       # the engine's word and synonym match on that field
             return True
         if isinstance(p, Or):
             # one column equal to (or a list holding) any of several values: the same request as In
@@ -167,19 +185,22 @@ class RestJsonFormat(PluginBase):
         if column is None:
             return False
         base = str(column).replace("[]", "")
+        kind = kinds.get(column) or kinds.get(base)
         f = filters.get(column) or filters.get(base)
         if f is not None:
-            return self._param(p, dict(f), params)
+            return self._param(p, dict(f), params, kind)
         name = remote.get(column) or remote.get(base)
         if name:
-            frag = self._essie(p, str(name))
+            if kind == "text" and isinstance(p, (Eq, In, Contains)):
+                return False                                   # the engine would match words, not the value
+            frag = self._essie(p, str(name), kind)
             if frag is None:
                 return False
             essie.append(frag)
             return True
         return False
 
-    def _param(self, p: Predicate, f: Mapping[str, Any], params: dict[str, str]) -> bool:
+    def _param(self, p: Predicate, f: Mapping[str, Any], params: dict[str, str], kind: str | None = None) -> bool:
         quote = _QUOTES.get(str(f.get("quote") or "none"), str)
         if isinstance(p, (Eq, In, Contains)) and f.get("param"):
             values = [p.value] if isinstance(p, (Eq, Contains)) else list(p.values)
@@ -189,15 +210,10 @@ class RestJsonFormat(PluginBase):
             return True
         rng = f.get("range")
         if isinstance(p, (Range, Cmp)) and isinstance(rng, Mapping):
-            lo = hi = None
-            if isinstance(p, Range):
-                lo, hi = p.lo, p.hi
-            elif p.op in (">=", ">"):
-                lo = p.value
-            elif p.op in ("<=", "<"):
-                hi = p.value
-            else:
-                return False
+            bounds = inclusive_bounds(p, kind)
+            if bounds is None:
+                return False                                   # a strict bound without a next value: a residual
+            lo, hi = bounds
             fmt = rng.get("format")
             for key, v in (("lo", lo), ("hi", hi)):
                 if v is None:
@@ -209,7 +225,7 @@ class RestJsonFormat(PluginBase):
             return True
         return False
 
-    def _essie(self, p: Predicate, area: str) -> str | None:
+    def _essie(self, p: Predicate, area: str, kind: str | None = None) -> str | None:
         if isinstance(p, (Eq, Contains)):
             return f"{area}{essie_quote(_text(p.value))}"
         if isinstance(p, In):
@@ -218,15 +234,12 @@ class RestJsonFormat(PluginBase):
             if len(p.values) == 1:
                 return f"{area}{essie_quote(_text(p.values[0]))}"
             return f"{area}(" + " OR ".join(essie_quote(_text(v)) for v in p.values) + ")"
-        lo = hi = None
-        if isinstance(p, Range):
-            lo, hi = p.lo, p.hi
-        elif isinstance(p, Cmp) and p.op in (">=", ">"):
-            lo = p.value
-        elif isinstance(p, Cmp) and p.op in ("<=", "<"):
-            hi = p.value
-        else:
+        if not isinstance(p, (Range, Cmp)):
             return None
+        bounds = inclusive_bounds(p, kind)
+        if bounds is None:
+            return None
+        lo, hi = bounds
         return f"{area}RANGE[{_text(lo) if lo is not None else 'MIN'},{_text(hi) if hi is not None else 'MAX'}]"
 
     # ------------------------------------------------------------------ decode
@@ -336,6 +349,57 @@ class RestJsonFormat(PluginBase):
         other = copy.copy(self)
         other.options = dict(options or {})                  # type: ignore[attr-defined]
         return other
+
+
+_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _next(v: Any, step: int, kind: str | None) -> Any:
+    """The value ``step`` (+1/-1) after ``v`` on a discrete scale (the next whole number on an ``integer``
+    column, the next day of a ``YYYY-MM-DD`` value), else None (no next value: the bound stays a residual)."""
+    if isinstance(v, bool) or v is None:
+        return None
+    if kind == "integer" and isinstance(v, int):
+        return v + step
+    if kind == "integer" and isinstance(v, float) and v.is_integer():
+        return int(v) + step
+    if isinstance(v, datetime):
+        return None
+    if isinstance(v, date):
+        return (v + timedelta(days=step)).isoformat()
+    if isinstance(v, str) and _DAY.fullmatch(v.strip()):
+        try:
+            return (date.fromisoformat(v.strip()) + timedelta(days=step)).isoformat()
+        except ValueError:
+            return None
+    return None
+
+
+def inclusive_bounds(p: Predicate, kind: str | None = None) -> tuple[Any, Any] | None:
+    """``(lo, hi)`` (None: open) of a ``Range`` or ``Cmp`` as inclusive bounds, which is what range requests send;
+    None when the predicate is not a bound or a strict bound has no next value (module docstring)."""
+    if isinstance(p, Range):
+        lo, hi = p.lo, p.hi
+        if lo is not None and not p.lo_inclusive:
+            lo = _next(lo, 1, kind)
+            if lo is None:
+                return None
+        if hi is not None and not p.hi_inclusive:
+            hi = _next(hi, -1, kind)
+            if hi is None:
+                return None
+        return lo, hi
+    if isinstance(p, Cmp):
+        if p.op == ">=":
+            return p.value, None
+        if p.op == "<=":
+            return None, p.value
+        if p.op in (">", "<"):
+            v = _next(p.value, 1 if p.op == ">" else -1, kind)
+            if v is None:
+                return None
+            return (v, None) if p.op == ">" else (None, v)
+    return None
 
 
 def _text(v: Any) -> str:

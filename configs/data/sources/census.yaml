@@ -15,8 +15,10 @@
 # Checked against the real Census on 2026-10-08 (cellxgene-census 1.18.0, tiledbsoma 2.3.0;
 # tests/datalayer/real/live/census): release.json names stable = 2025-11-08 (latest = 2025-11-17);
 # census_schema_version 2.4.0, 217,768,036 cells (125,463,259 unique), 1,845 datasets. The soma layout
-# opens the Census with 128 MiB read buffers (layout option tiledb_config): the client's default 1 GiB per
-# column fails with std::bad_alloc under the data child's RLIMIT_DATA.
+# opens the Census with 32 MiB read buffers (layout option tiledb_config) and caps a row read at 16 MiB per
+# column: the client's default 1 GiB per column, and 128 MiB once a session had counted, failed with
+# std::bad_alloc under the data child's 3000 MB RLIMIT_DATA. A native find reads the declared columns (not all
+# 28) and adds is_primary_data == True (default_filter) unless `where` names it.
 schema: vbt.datasource/1
 source: cellxgene_census
 title: CZ CELLxGENE Census (human)

@@ -45,6 +45,7 @@ from vbt.datalayer.plugins.layouts.live_api import Budget, RecordVersions, Remot
 from vbt.datalayer.predicate import And, Cmp, Contains, Eq, In, IsNull, Not, Or, Range, TextMatch, to_json
 from vbt.datalayer.service import ServiceContext
 from vbt.datalayer.service.verbs import load_verbs
+from vbt.datalayer.service.verbs import witness as witness_verbs
 from vbt.datalayer.service.verbs.census_count import donor_balanced
 from vbt.datalayer.settings import DataSettings
 
@@ -64,6 +65,7 @@ class Stub:
         self.requests: list[tuple[str, dict[str, str]]] = []
         self.count = 17
         self.study_version = "2024-05-01"
+        self.import_date = "2026-06-05 15:19:54"
         self.clinical: list[dict[str, Any]] = [
             {"studyId": "s1", "patientId": "p1", "clinicalAttributeId": "OS_MONTHS", "value": "12.5"},
             {"studyId": "s1", "patientId": "p1", "clinicalAttributeId": "OS_STATUS", "value": "1:DECEASED"},
@@ -100,6 +102,8 @@ def _handler(stub: Stub) -> type:
                 return self._send(200, {"studies": [study], "totalCount": 2, "nextPageToken": "p2"})
             if url.path == "/cbio/studies/s1/clinical-data":
                 return self._send(200, stub.clinical)
+            if url.path == "/cbio/studies/s1":
+                return self._send(200, {"studyId": "s1", "name": "Study one", "importDate": stub.import_date})
             if url.path == "/cbio/studies/s1/samples":
                 if q.get("projection") == "META":
                     return self._send(200, {}, {"total-count": "5"})
@@ -334,16 +338,37 @@ def test_classify_compares_remote_totals_only() -> None:
 # --------------------------------------------------------------------------- live find, versions
 
 
-def test_patient_level_find_pivots_clinical_data(ctx: ServiceContext, stub: Stub) -> None:
+def test_patient_level_find_pivots_clinical_data(ctx: ServiceContext, stub: Stub, monkeypatch) -> None:
+    monkeypatch.setattr(witness_verbs, "_STUDY_RELEASES", {})
     out = load_verbs()["_live_find"](ctx, {"table": "cbioportal.patient_clinical",
                                           "predicate": to_json(Eq("studyId", "s1"))})
     rows = {r["patientId"]: r for r in out["rows"]}
     assert set(rows) == {"p1", "p2"} and rows["p1"]["OS_MONTHS"] == "12.5" and rows["p2"]["OS_STATUS"] == "0:LIVING"
-    assert stub.requests[-1] == ("/cbio/studies/s1/clinical-data", {"clinicalDataType": "PATIENT"})
+    assert ("/cbio/studies/s1/clinical-data", {"clinicalDataType": "PATIENT"}) in stub.requests
     out = load_verbs()["_live_find"](ctx, {"table": "cbioportal.patient_clinical",
                                           "predicate": to_json(And((Eq("studyId", "s1"),
                                                                     Eq("OS_STATUS", "1:DECEASED"))))})
     assert [r["patientId"] for r in out["rows"]] == ["p1"]
+
+
+def test_cbioportal_rows_name_their_study_import_as_the_release(ctx: ServiceContext, stub: Stub, monkeypatch) -> None:
+    """LIVE-11: rows of a study (patients, samples, clinical data) depend on that study's import: its importDate
+    (``release.per``) is the answer's as_of and the study's record version, not the HTTP fetch time, and a
+    re-import is reported as source_updated."""
+    monkeypatch.setattr(witness_verbs, "_STUDY_RELEASES", {})
+    monkeypatch.setattr(stub, "import_date", "2026-06-05 15:19:54")
+    out = load_verbs()["_live_find"](ctx, {"table": "cbioportal.patient_clinical",
+                                          "predicate": to_json(Eq("studyId", "s1"))})
+    assert out["as_of"] == "2026-06-05 15:19:54" and out["fetched_at"] != out["as_of"]
+    assert out["record_versions"] == {"cbioportal.study": {"s1": "2026-06-05 15:19:54"}}
+    assert ("/cbio/studies/s1", {"projection": "DETAILED"}) in stub.requests
+    found = load_verbs()["find"](ctx, {"table": "cbioportal.sample", "where": {"studyId": "s1"}})
+    assert found["_vbt"]["source"] == "cbioportal@2026-06-05 15:19:54"
+    assert found["record_versions"] == {"cbioportal.study": {"s1": "2026-06-05 15:19:54"}}
+    monkeypatch.setattr(witness_verbs, "_STUDY_RELEASES", {})
+    monkeypatch.setattr(stub, "import_date", "2026-09-01 08:00:00")               # the study was re-imported
+    again = load_verbs()["_live_find"](ctx, {"table": "cbioportal.sample", "predicate": to_json(Eq("studyId", "s1"))})
+    assert again["as_of"] == "2026-09-01 08:00:00" and again["source_updated"] == ["cbioportal.study:s1"]
 
 
 def test_public_find_and_lookup_serve_live_tables(ctx: ServiceContext, stub: Stub) -> None:

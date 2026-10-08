@@ -677,7 +677,10 @@ def _max_rows(ctx: ServiceContext) -> int:
 
 # ---------------------------------------------------------------------------- live tables (F20)
 
-_LIVE_OPS = {"eq", "in", "ne", "ge", "gt", "le", "lt", "contains"}
+_LIVE_OPS = {"eq", "in", "ne", "ge", "gt", "le", "lt", "contains", "search"}
+#: Notes of a live answer whose filter included a text matched by the source's engine (``search``).
+ENGINE_MATCH_NOTE = ("{cols} matched by the source's search engine (words and synonyms, not the literal text): "
+                     "the rows and the total are the engine's matches")
 
 
 def is_live(ctx: ServiceContext, table: Any) -> bool:
@@ -691,39 +694,115 @@ def is_live(ctx: ServiceContext, table: Any) -> bool:
     return "live" in caps and "scan" not in caps
 
 
-def _live_predicate(table: Any, where: Any) -> Predicate | None:
+def live_column(table: Any, path: str) -> Any:
+    """The declared column a dotted path names on a live table (``protocolSection.identificationModule.nctId``),
+    or True for a path inside a column declared without fields (a payload: its JSON is the source's), else None."""
+    parts = [p for p in str(path).replace("[]", "").split(".") if p]
+    cols: Any = table.columns
+    for i, part in enumerate(parts):
+        col = (cols or {}).get(part) if isinstance(cols, Mapping) else None
+        if col is None:
+            return None
+        if i == len(parts) - 1:
+            return col
+        fields = getattr(col, "fields", None)
+        if not fields:
+            return True if getattr(col, "role", None) == "payload" else None
+        cols = fields
+    return None
+
+
+def _engine_text(table: Any, path: str) -> bool:
+    """A text column the source's search engine matches (``remote_name`` on a ``text`` role): words and synonyms,
+    never the literal value (``AREA[BriefTitle]Cancer`` matched titles without the word)."""
+    col = live_column(table, path)
+    return getattr(col, "role", None) == "text" and bool(getattr(col, "remote_name", None))
+
+
+def _live_predicate(table: Any, where: Any, notes: list[str] | None = None) -> Predicate | None:
     """``where`` of a live find: ``{column: value | [values] | {op: value}}`` on the table's columns (dotted
     paths into a nested column allowed; a pivoted table's attribute columns are named by the source);
-    identifiers are sent as given (the source resolves them)."""
+    identifiers are sent as given (the source resolves them). A text column the source's engine matches takes
+    ``{search: text}`` only (an equality would be answered with the engine's word and synonym matches)."""
+    from ...predicate import TextMatch
+
     if where is None:
         return None
     if not isinstance(where, Mapping):
         raise _invalid("where", where, "where maps columns to values")
     parts: list[Predicate] = []
+    engine: list[str] = []
     for col, v in where.items():
         if table.spec.pivot is None and str(col).split(".")[0].split("[")[0] not in table.columns:
             raise _invalid("where", col, f"{table.ref} has no column {col!r}", sorted(table.columns))
-        if isinstance(v, Mapping):
-            for op, x in v.items():
-                if op not in _LIVE_OPS:
-                    raise _invalid("where", op, f"unknown operator {op!r}", sorted(_LIVE_OPS))
-                parts.append(Eq(col, x) if op == "eq" else In(col, tuple(x if isinstance(x, list) else [x]))
-                             if op == "in" else Not(Eq(col, x)) if op == "ne" else Contains(col, x)
-                             if op == "contains" else Cmp(col, op, x))
-        elif isinstance(v, list):
-            parts.append(In(col, tuple(v)))
-        else:
-            parts.append(Eq(col, v))
+        text = table.spec.pivot is None and _engine_text(table, str(col))
+        ops = dict(v) if isinstance(v, Mapping) else {"in" if isinstance(v, list) else "eq": v}
+        if text and set(ops) != {"search"}:
+            raise GatewayError(ErrorKind.invalid_argument,
+                               f"{col} is matched by the source's search engine (words and synonyms), never compared "
+                               f"as a value: pass {{\"{col}\": {{\"search\": \"<text>\"}}}}",
+                               payload=invalid_argument_payload("where", {col: v}, ["search"]))
+        for op, x in ops.items():
+            if op not in _LIVE_OPS:
+                raise _invalid("where", op, f"unknown operator {op!r}", sorted(_LIVE_OPS))
+            if op == "search":
+                if not text or not isinstance(x, str) or not x.strip():
+                    raise _invalid("where", {col: v}, f"search takes a text and applies to text columns the source's "
+                                   f"engine matches; {col} is not one")
+                parts.append(TextMatch(str(col), x.strip(), "word"))
+                engine.append(str(col))
+                continue
+            parts.append(Eq(col, x) if op == "eq" else In(col, tuple(x if isinstance(x, list) else [x]))
+                         if op == "in" else Not(Eq(col, x)) if op == "ne" else Contains(col, x)
+                         if op == "contains" else Cmp(col, op, x))
+    if engine and notes is not None:
+        notes.append(ENGINE_MATCH_NOTE.format(cols=", ".join(engine)))
+    return None if not parts else (parts[0] if len(parts) == 1 else And(tuple(parts)))
+
+
+def _live_columns(table: Any, payload: Mapping[str, Any]) -> list[str]:
+    """``columns`` of a live find: declared column paths (a pivoted table's attributes are the source's)."""
+    cols = payload.get("columns") or []
+    if not isinstance(cols, list) or not all(isinstance(c, str) for c in cols):
+        raise _invalid("columns", cols, "columns is a list of column paths", sorted(table.columns))
+    if table.spec.pivot is None:
+        bad = [c for c in cols if live_column(table, c) is None]
+        if bad:
+            raise _invalid("columns", bad[0], f"{table.ref} has no column {bad[0]!r} (name nested columns by their "
+                           "dotted path)", sorted(table.columns))
+    return list(cols)
+
+
+def _default_filters(table: Any, pred: Predicate | None, where: Any, notes: list[str]) -> Predicate | None:
+    """Qualifier columns with ``default_filter`` (Census ``is_primary_data``: a cell's other copies are duplicates)
+    are fixed to true unless ``where`` names them; the filter is disclosed. A native find counted 158 duplicate
+    cells where single_cell.count_cells, which adds the same filter, answered 0."""
+    named = {str(c).split(".")[0] for c in (where or {})} if isinstance(where, Mapping) else set()
+    added: list[str] = []
+    parts = [] if pred is None else (list(pred.preds) if isinstance(pred, And) else [pred])
+    for name, col in (table.columns or {}).items():
+        if getattr(col, "role", None) == "qualifier" and getattr(col, "default_filter", False) and name not in named:
+            parts.append(Eq(name, True))
+            added.append(name)
+    if added:
+        effect = {getattr(table.columns[n], "effect", None) for n in added}
+        why = "duplicate rows excluded" if effect == {"duplicate"} else "the declared default"
+        notes.append(f"{', '.join(f'{n} == true' for n in added)} added ({why}; name "
+                     f"{added[0]} in where, e.g. [true, false], to include them)")
     return None if not parts else (parts[0] if len(parts) == 1 else And(tuple(parts)))
 
 
 def _live_find(ctx: ServiceContext, table: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
     from ...predicate import to_json
     from .. import layout_spec
-    from .witness import live_find
+    from .witness import live_find, requested_keys
 
     ref = str(table.ref)
-    pred = _live_predicate(table, payload.get("where"))
+    notes: list[str] = []
+    pred = _live_predicate(table, payload.get("where"), notes)
+    if requested_keys(pred, [c for c in table.key if not str(c).endswith("#")]) is None:
+        pred = _default_filters(table, pred, payload.get("where"), notes)   # a named record is read as named
+    columns = _live_columns(table, payload)
     limit = _limit(payload, 50, _max_rows(ctx))
     budget = getattr(table.descriptor, "budget", None)
     max_pages = getattr(budget, "max_pages", None) if budget is not None else None
@@ -741,16 +820,48 @@ def _live_find(ctx: ServiceContext, table: Any, payload: Mapping[str, Any]) -> d
                                f"({'counted ' + str(n) if n is not None else why}); narrow where",
                                payload={"table": ref, "count": n})
     got = live_find(ctx, {"table": ref, "predicate": to_json(pred) if pred is not None else None,
-                          "columns": list(payload.get("columns") or []), "limit": limit})
+                          "columns": columns, "limit": limit})
     rows = list(got.get("rows") or [])
-    notes = []
     if got.get("truncated"):
         notes.append(f"{got.get('pages')} page(s) read within the source's budget: the rows are a prefix, not all")
     if got.get("source_updated"):
         notes.append("records changed at the source since an earlier call: " + ", ".join(
             map(str, got["source_updated"][:10])))
+    leakage = got.get("leakage") or None
+    withheld = None
+    if leakage:
+        n_out = int(leakage.get("withheld") or 0)
+        withheld = {"leakage": n_out} if n_out else None
+        how = ("sent with the request and the count (records available and last changed by then)"
+               if leakage.get("sent") else "checked on the records named")
+        notes.append(f"evidence ceiling {leakage['ceiling']} applied: {how}; {n_out} row(s) withheld as dated "
+                     "after it")
+        if leakage.get("redacted"):
+            notes.append(f"{leakage['redacted']} row(s) redacted (fields changed after the ceiling nulled)")
+    # keys the filter named that the source did not return (and that no ceiling withheld): unknown to the source
+    asked = got.get("requested_keys")
+    missing: list[Any] = []
+    if asked is not None and not got.get("truncated"):
+        key = [c for c in table.key if not str(c).endswith("#")]
+        from ...gateway.fields import get_path
+
+        seen = {json.dumps([get_path(r, c) for c in key], default=str) for r in rows if isinstance(r, Mapping)}
+        held = {json.dumps([w.get(c) for c in key] if isinstance(w, Mapping) else [w], default=str)
+                for w in got.get("withheld_keys") or []}
+        for k in asked:
+            parts = [k.get(c) for c in key] if isinstance(k, Mapping) else [k]
+            text = json.dumps(parts, default=str)
+            if text not in seen and text not in held:
+                missing.append(k)
+    if missing and payload.get("_lookup") and len(asked or []) == 1:
+        k = missing[0]
+        raise GatewayError(ErrorKind.not_found, f"{ref}: no record with key {json.dumps(k, default=str)} at the source",
+                           payload={"table": ref, "key": k})
+    if missing:
+        notes.append(f"{len(missing)} requested key(s) not at the source: "
+                     + ", ".join(json.dumps(k, default=str) for k in missing[:10]))
     status = "ok" if rows else "empty"
-    if rows and got.get("truncated"):
+    if rows and (got.get("truncated") or missing):
         status = "partial"
     coverage, statement = coverage_of(table) if not rows else (None, None)
     as_of = got.get("as_of")
@@ -758,9 +869,12 @@ def _live_find(ctx: ServiceContext, table: Any, payload: Mapping[str, Any]) -> d
     hdr = Header(status=status, source=f"{src}@{as_of}" if as_of else src, tables=[ref],  # type: ignore[arg-type]
                  key=list(table.key), returned=len(rows), total=got.get("total"),
                  total_method="remote" if got.get("total") is not None else "unknown",
-                 truncated=bool(got.get("truncated")), coverage=coverage, coverage_statement=statement,  # type: ignore
+                 truncated=bool(got.get("truncated")), withheld=withheld, not_found_items=missing or None,
+                 coverage=coverage, coverage_statement=statement,  # type: ignore[arg-type]
                  served_by="derived", notes=notes,
-                 extra={"source_updated": got.get("source_updated") or None})
+                 extra={"source_updated": got.get("source_updated") or None,
+                        "leakage": {k: leakage[k] for k in ("ceiling", "withheld") if k in leakage} | {
+                            "risk": bool(leakage.get("unchecked"))} if leakage else None})
     return inject_header({"rows": json_value(rows), "record_versions": got.get("record_versions") or None}, hdr)
 
 
@@ -826,8 +940,10 @@ def lookup(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
                            payload={"argument": "key", "missing": missing, "key": names})
     if view is None:
         where = {k: key.get(k, key.get(s)) for s, k in short.items()}
-    else:
-        where = {(k if k in view.columns else s): key.get(s, key.get(k)) for s, k in short.items()}
+        # a live record: the source is the authority on its keys (a key it does not hold is not_found)
+        return find(ctx, {"table": str(table.ref), "where": where, "limit": 10, "agent": payload.get("agent"),
+                          "columns": payload.get("columns"), "_lookup": True})
+    where = {(k if k in view.columns else s): key.get(s, key.get(k)) for s, k in short.items()}
     return find(ctx, {"table": str(table.ref), "where": where, "limit": 10, "agent": payload.get("agent")})
 
 

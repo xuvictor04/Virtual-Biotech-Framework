@@ -410,10 +410,18 @@ class Lineage(Strict):
     table: str | None = None
 
 
+#: Where a source's evidence ceiling comes from (``LeakageSpec.ceiling_from``): the run's ``data.leakage.ceiling``,
+#: or the literature ceiling ``web.literature_max_date`` (exported as ``VBT_LITERATURE_MAXDATE``), which the PubMed
+#: server applies to every search itself.
+DATA_CEILING = "data.leakage.ceiling"
+LITERATURE_CEILING = "web.literature_max_date"
+CEILING_SOURCES = (DATA_CEILING, LITERATURE_CEILING)
+
+
 class LeakageSpec(Strict):
     """The source can return facts dated after the evidence ceiling (rev 2)."""
 
-    ceiling_from: str = "data.leakage.ceiling"
+    ceiling_from: str = DATA_CEILING
     available_at: str
     changed_at: str | None = None
     partial_dates: Literal["latest", "earliest"] = "latest"

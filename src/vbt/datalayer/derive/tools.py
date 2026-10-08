@@ -188,6 +188,11 @@ def _column_schema(catalog: Any, table: Any, name: str, spec: Any, enum_max: int
             out["minimum"], out["maximum"] = scale[0], scale[1]
         out["description"] = "thresholds as {ge: x}; unknown values never pass"
         return out
+    if role == "text" and getattr(spec, "remote_name", None):
+        # a live source's search engine matches it (words and synonyms): never an equality
+        out["x-vbt-ops"] = ["search"]
+        out["description"] = "matched by the source's search engine (words and synonyms): {search: text}"
+        return out
     out["x-vbt-ops"] = ["eq", "in", "ne", "contains"]
     return out
 
@@ -203,7 +208,8 @@ def native_input_schema(catalog: Any, verb: str, tables: list[str], *, enum_max:
     """The argument schema of one verb, with the ``table`` enum and the ``where`` schema per table."""
     table = {"type": "string", "enum": tables, "description": "source.table (see mcp__data__describe)"}
     where = {"type": "object", "description": "{column: value | [values] | {op: value}}; ops eq, in, ne, ge, gt, "
-                                              "le, lt, contains (per column: x-vbt-where)",
+                                              "le, lt, contains, search (a live source's engine-matched text; per "
+                                              "column: x-vbt-where)",
              "x-vbt-where": {ref: where_schema(catalog, ref, enum_max=enum_max) for ref in tables}}
     limit = {"type": "integer", "minimum": 1, "maximum": 1000}
     props: dict[str, Any]

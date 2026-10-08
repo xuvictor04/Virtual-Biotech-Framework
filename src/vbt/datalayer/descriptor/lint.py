@@ -48,7 +48,8 @@ from .columns import (
     ParseSpec,
     is_container,
 )
-from .models import GrainSpec, SourceDescriptor, TableSpec, UniverseSpec, id_type_identity, plugin_name
+from .models import (CEILING_SOURCES, GrainSpec, SourceDescriptor, TableSpec, UniverseSpec, id_type_identity,
+                     plugin_name)
 from .overlay import ArgBinding, DerivedSpec, EchoSpec, Overlay, ToolBinding
 from .scoping import AmbiguousReference, Resolved, ScopeError, TableScope, UnknownReference
 
@@ -877,6 +878,9 @@ class _DescriptorLinter:
     def lint_source(self) -> None:
         d = self.desc
         if d.leakage is not None:
+            if d.leakage.ceiling_from not in CEILING_SOURCES:
+                self.add("error", "leakage.ceiling_from", f"{d.leakage.ceiling_from!r} is not a ceiling the run sets "
+                         f"({', '.join(CEILING_SOURCES)})", "reference", d.leakage.ceiling_from)
             for facet in ("available_at", "changed_at"):
                 v = getattr(d.leakage, facet)
                 if v and not self._in_any_table(v):

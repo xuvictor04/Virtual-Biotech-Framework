@@ -586,7 +586,9 @@ class EdgeSpec(BaseModel):                        # kind edges (rev 2)
     sides: dict[Literal["a", "b"], list[str]] = {}  # columns that swap with the endpoints
 
 class LeakageSpec(BaseModel):                     # (rev 2) the source can return facts dated after the evidence ceiling
-    ceiling_from: str = "data.leakage.ceiling"    # config path
+    ceiling_from: str = "data.leakage.ceiling"    # config path, or web.literature_max_date (PubMed: the server
+                                                  # applies VBT_LITERATURE_MAXDATE itself; the data child bounds its
+                                                  # counts and live reads by it, the gateway's T1 does not)
     available_at: str                             # column: when the record became public (studyFirstPostDateStruct.date)
     changed_at: str | None = None                 # column: last content change (lastUpdatePostDateStruct.date)
     partial_dates: Literal["latest", "earliest"] = "latest"   # "2004-01" counts as 2004-01-31
