@@ -1,0 +1,432 @@
+{
+ "bytes": 5893338,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "2a2de02908e152e5ce88ba19aa9a4490bc728a77c323c2b45959f5c24e3fc99b",
+ "leaves": {
+  "datasourceId": [
+   "string",
+   0,
+   32783,
+   "clinpgx",
+   "clinpgx"
+  ],
+  "datasourceVersion": [
+   "string",
+   0,
+   32783,
+   "2025-07-05",
+   "2025-07-05"
+  ],
+  "datatypeId": [
+   "string",
+   0,
+   32783,
+   "clinical_annotation",
+   "clinical_annotation"
+  ],
+  "directionality": [
+   "string",
+   26198,
+   32783,
+   "Decreased function",
+   "Unknown function"
+  ],
+  "drugs.list.element.drugFromSource": [
+   "string",
+   0,
+   33009,
+   "(r)-methadone",
+   "zuclopenthixol"
+  ],
+  "drugs.list.element.drugId": [
+   "string",
+   4402,
+   33009,
+   "CHEMBL1005",
+   "CHEMBL991"
+  ],
+  "evidenceLevel": [
+   "string",
+   0,
+   32783,
+   "1A",
+   "4"
+  ],
+  "genotype": [
+   "string",
+   0,
+   32783,
+   "(AGCCCACCC)12/(AGCCCACCC)12",
+   "null/null"
+  ],
+  "genotypeAnnotationText": [
+   "string",
+   0,
+   32783,
+   "5-HT1b receptors in patients with the rs",
+   "Women with the UGT1A1*28/*28 genotype an"
+  ],
+  "genotypeId": [
+   "string",
+   9295,
+   32783,
+   "10_103109774_C_C,C",
+   "X_78013005_G_G,G"
+  ],
+  "haplotypeFromSourceId": [
+   "string",
+   24858,
+   32783,
+   "PA165816522",
+   "PA166363465"
+  ],
+  "haplotypeId": [
+   "string",
+   23574,
+   32783,
+   "CYP1A1*1/*1",
+   "UGT2B15*2/*2"
+  ],
+  "isDirectTarget": [
+   "bool",
+   0,
+   32783,
+   false,
+   true
+  ],
+  "literature.list.element": [
+   "string",
+   0,
+   186923,
+   "10022751",
+   "9950117"
+  ],
+  "pgxCategory": [
+   "string",
+   0,
+   32783,
+   "dosage",
+   "toxicity"
+  ],
+  "phenotypeFromSourceId": [
+   "string",
+   32092,
+   32783,
+   "EFO_0000480",
+   "NCIT_C95746"
+  ],
+  "phenotypeText": [
+   "string",
+   976,
+   32783,
+   "ACE inhibitor induced cough",
+   "worse treatment response"
+  ],
+  "studyId": [
+   "string",
+   0,
+   32783,
+   "1043858606",
+   "982047910"
+  ],
+  "targetFromSourceId": [
+   "string",
+   1614,
+   32783,
+   "ENSG00000000971",
+   "ENSG00000293584"
+  ],
+  "variantAnnotation.list.element.baseAlleleOrGenotype": [
+   "string",
+   10717,
+   56729,
+   "(CA)16/(CA)16",
+   "null/null"
+  ],
+  "variantAnnotation.list.element.comparisonAlleleOrGenotype": [
+   "string",
+   19204,
+   56729,
+   "(CA)16/(CA)17 + (CA)17/(CA)17",
+   "null"
+  ],
+  "variantAnnotation.list.element.directionality": [
+   "string",
+   13564,
+   56729,
+   "decreased",
+   "increased"
+  ],
+  "variantAnnotation.list.element.effect": [
+   "string",
+   19302,
+   56729,
+   "activity of",
+   "uptake of"
+  ],
+  "variantAnnotation.list.element.effectDescription": [
+   "string",
+   10717,
+   56729,
+   "Allele (CCGCGCCACTTGGCCTGCCTCCGTCCCG)3 i",
+   "UGT2B15 *2/*2 is associated with increas"
+  ],
+  "variantAnnotation.list.element.effectType": [
+   "string",
+   10717,
+   56729,
+   "drug",
+   "phenotype"
+  ],
+  "variantAnnotation.list.element.entity": [
+   "string",
+   12344,
+   56729,
+   " ADP-induced on treatment platelet aggre",
+   "zuclopenthixol"
+  ],
+  "variantAnnotation.list.element.id": [
+   "string",
+   10717,
+   56729,
+   "1000539696",
+   "994166507"
+  ],
+  "variantAnnotation.list.element.literature": [
+   "string",
+   10717,
+   56729,
+   "10022751",
+   "9950117"
+  ],
+  "variantFunctionalConsequenceId": [
+   "string",
+   10823,
+   32783,
+   "SO_0001574",
+   "SO_0002170"
+  ],
+  "variantId": [
+   "string",
+   16848,
+   32783,
+   "10_103109774_C_G",
+   "X_78013005_G_C"
+  ],
+  "variantRsId": [
+   "string",
+   9209,
+   32783,
+   "rs10007051",
+   "rs9996584"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 1,
+ "rows": 32783,
+ "schema": [
+  {
+   "name": "datasourceId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "datasourceVersion",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "datatypeId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "directionality",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "evidenceLevel",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "genotype",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "genotypeAnnotationText",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "genotypeId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "haplotypeFromSourceId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "haplotypeId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "literature",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "pgxCategory",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "phenotypeFromSourceId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "phenotypeText",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "variantAnnotation",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "baseAlleleOrGenotype",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "comparisonAlleleOrGenotype",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "directionality",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "effect",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "effectDescription",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "effectType",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "entity",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "id",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "literature",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "studyId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "targetFromSourceId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "variantFunctionalConsequenceId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "variantRsId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "variantId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "isDirectTarget",
+   "nullable": false,
+   "type": "bool"
+  },
+  {
+   "name": "drugs",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "drugFromSource",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "drugId",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  32783
+ ],
+ "shards": 1,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/pharmacogenomics/",
+ "table": "pharmacogenomics"
+}

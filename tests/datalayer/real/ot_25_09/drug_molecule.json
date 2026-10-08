@@ -1,0 +1,344 @@
+{
+ "bytes": 2275731,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "688bb70f0144cb1195ffb7d59e4e22a75b162605d6534b31a0cfb4d10ee60229",
+ "leaves": {
+  "blackBoxWarning": [
+   "bool",
+   0,
+   18119,
+   false,
+   true
+  ],
+  "canonicalSmiles": [
+   "string",
+   2995,
+   18119,
+   "B[P@@](=O)(OC[C@H]1O[C@@H](n2cnc3c(N)nc(",
+   "c1nc[nH]n1"
+  ],
+  "childChemblIds.list.element": [
+   "string",
+   15042,
+   19343,
+   "CHEMBL1003",
+   "CHEMBL995"
+  ],
+  "crossReferences.list.element.ids.list.element": [
+   "string",
+   7731,
+   23132,
+   "100147",
+   "zonisamide"
+  ],
+  "crossReferences.list.element.source": [
+   "string",
+   7731,
+   23077,
+   "DailyMed",
+   "drugbank"
+  ],
+  "description": [
+   "string",
+   0,
+   18119,
+   "Antibody drug and has 1 investigational ",
+   "Unknown drug."
+  ],
+  "drugType": [
+   "string",
+   0,
+   18119,
+   "Antibody",
+   "Unknown"
+  ],
+  "hasBeenWithdrawn": [
+   "bool",
+   0,
+   18119,
+   false,
+   true
+  ],
+  "id": [
+   "string",
+   0,
+   18119,
+   "CHEMBL1000",
+   "CHEMBL99965"
+  ],
+  "inchiKey": [
+   "string",
+   2995,
+   18119,
+   "AAAQFGUYHFJNHI-SFHVURJKSA-N",
+   "ZZZQDZDFSDBALW-QMMMGPOBSA-N"
+  ],
+  "isApproved": [
+   "bool",
+   6842,
+   18119,
+   false,
+   true
+  ],
+  "linkedDiseases.count": [
+   "int32",
+   8441,
+   18119,
+   1,
+   347
+  ],
+  "linkedDiseases.rows.list.element": [
+   "string",
+   8441,
+   70070,
+   "DOID_10113",
+   "Orphanet_98974"
+  ],
+  "linkedTargets.count": [
+   "int32",
+   12396,
+   18119,
+   0,
+   79
+  ],
+  "linkedTargets.rows.list.element": [
+   "string",
+   13132,
+   27028,
+   "ENSG00000000938",
+   "ENSG00000292357"
+  ],
+  "maximumClinicalTrialPhase": [
+   "double",
+   6842,
+   18119,
+   -1.0,
+   4.0
+  ],
+  "name": [
+   "string",
+   0,
+   18119,
+   "(+)-(6S)-PARASORBIC ACID",
+   "p-NITROPHENYLPHOSPHATE"
+  ],
+  "parentId": [
+   "string",
+   16491,
+   18119,
+   "CHEMBL1000",
+   "CHEMBL99946"
+  ],
+  "synonyms.list.element": [
+   "string",
+   6005,
+   65263,
+   "((sup 13)n)ammonia",
+   "trans-Caffeate"
+  ],
+  "tradeNames.list.element": [
+   "string",
+   15015,
+   26262,
+   "\"clopra-\"\"yellow\"\"\"",
+   "Zyvox"
+  ],
+  "yearOfFirstApproval": [
+   "int64",
+   14707,
+   18119,
+   1939,
+   2023
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 1,
+ "rows": 18119,
+ "schema": [
+  {
+   "name": "id",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "canonicalSmiles",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "inchiKey",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "drugType",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "blackBoxWarning",
+   "nullable": true,
+   "type": "bool"
+  },
+  {
+   "name": "name",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "yearOfFirstApproval",
+   "nullable": true,
+   "type": "int64"
+  },
+  {
+   "name": "maximumClinicalTrialPhase",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "parentId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "hasBeenWithdrawn",
+   "nullable": true,
+   "type": "bool"
+  },
+  {
+   "name": "isApproved",
+   "nullable": true,
+   "type": "bool"
+  },
+  {
+   "name": "tradeNames",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "synonyms",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "crossReferences",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "source",
+        "nullable": false,
+        "type": "string"
+       },
+       {
+        "name": "ids",
+        "nullable": true,
+        "type": {
+         "list": {
+          "name": "element",
+          "nullable": true,
+          "type": "string"
+         }
+        }
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "childChemblIds",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "linkedDiseases",
+   "nullable": true,
+   "type": {
+    "struct": [
+     {
+      "name": "rows",
+      "nullable": false,
+      "type": {
+       "list": {
+        "name": "element",
+        "nullable": true,
+        "type": "string"
+       }
+      }
+     },
+     {
+      "name": "count",
+      "nullable": false,
+      "type": "int32"
+     }
+    ]
+   }
+  },
+  {
+   "name": "linkedTargets",
+   "nullable": true,
+   "type": {
+    "struct": [
+     {
+      "name": "rows",
+      "nullable": false,
+      "type": {
+       "list": {
+        "name": "element",
+        "nullable": false,
+        "type": "string"
+       }
+      }
+     },
+     {
+      "name": "count",
+      "nullable": false,
+      "type": "int32"
+     }
+    ]
+   }
+  },
+  {
+   "name": "description",
+   "nullable": true,
+   "type": "string"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  18119
+ ],
+ "shards": 1,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/drug_molecule/",
+ "table": "drug_molecule"
+}

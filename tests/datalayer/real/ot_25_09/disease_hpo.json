@@ -1,0 +1,114 @@
+{
+ "bytes": 1757137,
+ "created_by": [
+  "Polars"
+ ],
+ "file_names_sha256": "abb48a63b91a126616d237b12bcf4d8c02ac9993fc68e5af2e7a910c8e1db802",
+ "leaves": {
+  "dbXRefs.list.element": [
+   "large_string",
+   0,
+   58622,
+   "AAO:0000001",
+   "snap:Quality"
+  ],
+  "description": [
+   "large_string",
+   3537,
+   31115,
+   "\"A behavior that occurs predominantly or",
+   "information about the patient's previous"
+  ],
+  "id": [
+   "large_string",
+   0,
+   31115,
+   "CHEBI_10545",
+   "UBERON_8850000"
+  ],
+  "name": [
+   "large_string",
+   0,
+   31115,
+   "(-)-cotinine",
+   "zymogen granule membrane"
+  ],
+  "obsoleteTerms.list.element": [
+   "large_string",
+   0,
+   33935,
+   "CHEBI_10004",
+   "UBERON_4200144"
+  ],
+  "parents.list.element": [
+   "large_string",
+   0,
+   43190,
+   "CHEBI_11596",
+   "UBERON_8600006"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 1,
+ "rows": 31115,
+ "schema": [
+  {
+   "name": "id",
+   "nullable": true,
+   "type": "large_string"
+  },
+  {
+   "name": "name",
+   "nullable": true,
+   "type": "large_string"
+  },
+  {
+   "name": "description",
+   "nullable": true,
+   "type": "large_string"
+  },
+  {
+   "name": "dbXRefs",
+   "nullable": true,
+   "type": {
+    "large_list": {
+     "name": "element",
+     "nullable": true,
+     "type": "large_string"
+    }
+   }
+  },
+  {
+   "name": "parents",
+   "nullable": true,
+   "type": {
+    "large_list": {
+     "name": "element",
+     "nullable": true,
+     "type": "large_string"
+    }
+   }
+  },
+  {
+   "name": "obsoleteTerms",
+   "nullable": true,
+   "type": {
+    "large_list": {
+     "name": "element",
+     "nullable": true,
+     "type": "large_string"
+    }
+   }
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  31115
+ ],
+ "shards": 1,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/disease_hpo/",
+ "table": "disease_hpo"
+}

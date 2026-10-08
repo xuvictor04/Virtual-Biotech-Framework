@@ -1,0 +1,117 @@
+{
+ "bytes": 103431546,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "9bf2b49473f9357df421839f9a50cfb72a6626a9db8d70012f957052fee27d97",
+ "leaves": {
+  "datasourceId": [
+   "string",
+   0,
+   13242757,
+   "cancer_biomarkers",
+   "uniprot_variants"
+  ],
+  "datatypeId": [
+   "string",
+   0,
+   13242757,
+   "affected_pathway",
+   "somatic_mutation"
+  ],
+  "diseaseId": [
+   "string",
+   0,
+   13242757,
+   "DOID_0050890",
+   "UBERON_0000104"
+  ],
+  "evidenceCount": [
+   "int64",
+   0,
+   13242757,
+   1,
+   191171
+  ],
+  "score": [
+   "double",
+   0,
+   13242757,
+   0.006079307976116211,
+   0.9998407628523348
+  ],
+  "targetId": [
+   "string",
+   0,
+   13242757,
+   "ENSG00000000003",
+   "ENSG00000310576"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 20,
+ "rows": 13242757,
+ "schema": [
+  {
+   "name": "datatypeId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "datasourceId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "diseaseId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "targetId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "score",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "evidenceCount",
+   "nullable": false,
+   "type": "int64"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  652952,
+  634778,
+  606213,
+  713989,
+  650672,
+  676844,
+  763173,
+  605297,
+  616713,
+  618931,
+  712414,
+  673194,
+  587949,
+  722903,
+  689282,
+  715780,
+  639482,
+  683052,
+  701286,
+  577853
+ ],
+ "shards": 20,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/association_by_datasource_indirect/",
+ "table": "association_by_datasource_indirect"
+}

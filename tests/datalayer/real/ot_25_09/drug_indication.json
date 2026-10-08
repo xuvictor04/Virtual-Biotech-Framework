@@ -1,0 +1,162 @@
+{
+ "bytes": 2758480,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "16d71371adbcf98072ebd4944f422d63ef1638e5ba8ef29f1921444ce25ef7d4",
+ "leaves": {
+  "approvedIndications.list.element": [
+   "string",
+   6615,
+   15951,
+   "DOID_10113",
+   "Orphanet_95157"
+  ],
+  "id": [
+   "string",
+   0,
+   9678,
+   "CHEMBL1000",
+   "CHEMBL99946"
+  ],
+  "indicationCount": [
+   "int32",
+   0,
+   9678,
+   1,
+   347
+  ],
+  "indications.list.element.disease": [
+   "string",
+   0,
+   61629,
+   "DOID_10113",
+   "Orphanet_98974"
+  ],
+  "indications.list.element.efoName": [
+   "string",
+   0,
+   61629,
+   "22q11.2 deletion syndrome",
+   "zollinger-ellison syndrome"
+  ],
+  "indications.list.element.maxPhaseForIndication": [
+   "double",
+   0,
+   61629,
+   -1.0,
+   4.0
+  ],
+  "indications.list.element.references.list.element.ids.list.element": [
+   "string",
+   0,
+   228762,
+   "00011703-bc55-4c0c-858c-149dc674bc3c",
+   "nda/2018/761077Orig1s000SumR.pdf"
+  ],
+  "indications.list.element.references.list.element.source": [
+   "string",
+   0,
+   66578,
+   "ATC",
+   "USAN"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 1,
+ "rows": 9678,
+ "schema": [
+  {
+   "name": "id",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "indications",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "disease",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "efoName",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "references",
+        "nullable": false,
+        "type": {
+         "list": {
+          "name": "element",
+          "nullable": false,
+          "type": {
+           "struct": [
+            {
+             "name": "source",
+             "nullable": true,
+             "type": "string"
+            },
+            {
+             "name": "ids",
+             "nullable": false,
+             "type": {
+              "list": {
+               "name": "element",
+               "nullable": false,
+               "type": "string"
+              }
+             }
+            }
+           ]
+          }
+         }
+        }
+       },
+       {
+        "name": "maxPhaseForIndication",
+        "nullable": true,
+        "type": "double"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "approvedIndications",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "indicationCount",
+   "nullable": false,
+   "type": "int32"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  9678
+ ],
+ "shards": 1,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/drug_indication/",
+ "table": "drug_indication"
+}

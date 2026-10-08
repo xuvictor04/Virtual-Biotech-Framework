@@ -1,0 +1,302 @@
+{
+ "bytes": 3226652611,
+ "created_by": [
+  "parquet-mr version 1.13.1"
+ ],
+ "file_names_sha256": "fcdfaf91ac5d2c98268d30b1ce618bb8c9384c62abaeb0d2add57d145278c411",
+ "leaves": {
+  "biosampleId": [
+   "string",
+   0,
+   48854316,
+   "BTO_0001948",
+   "UBERON_8600039"
+  ],
+  "biosampleName": [
+   "string",
+   0,
+   48854316,
+   "8988T",
+   "vagina"
+  ],
+  "chromosome": [
+   "string",
+   0,
+   48854316,
+   "1",
+   "X"
+  ],
+  "datasourceId": [
+   "string",
+   0,
+   48854316,
+   "E2G",
+   "E2G"
+  ],
+  "distanceToTss": [
+   "int32",
+   0,
+   48854316,
+   0,
+   55760344
+  ],
+  "end": [
+   "int32",
+   0,
+   48854316,
+   10859,
+   248925639
+  ],
+  "geneId": [
+   "string",
+   0,
+   48854316,
+   "ENSG00000000003",
+   "ENSG00000290840"
+  ],
+  "intervalId": [
+   "string",
+   0,
+   48854316,
+   "0000003fd6d2cb68bded5324ec43230df01a9a62",
+   "ffffffaa801e8dd2e5cf78e683e5973c796341ab"
+  ],
+  "intervalType": [
+   "string",
+   0,
+   48854316,
+   "genic",
+   "promoter"
+  ],
+  "pmid": [
+   "string",
+   0,
+   48854316,
+   "38014075",
+   "38014075"
+  ],
+  "resourceScore.list.element.name": [
+   "string",
+   0,
+   97708632,
+   "DNase",
+   "HiC_contacts"
+  ],
+  "resourceScore.list.element.value": [
+   "float",
+   0,
+   97708632,
+   0.0003549999964889139,
+   1.0
+  ],
+  "score": [
+   "double",
+   0,
+   48854316,
+   0.600000002954682,
+   0.9999999988532128
+  ],
+  "start": [
+   "int32",
+   0,
+   48854316,
+   10107,
+   248924588
+  ],
+  "studyId": [
+   "string",
+   0,
+   48854316,
+   "ENCFF003BKC",
+   "ENCFF999XQJ"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 83,
+ "rows": 48854316,
+ "schema": [
+  {
+   "name": "chromosome",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "start",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "end",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "geneId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "biosampleName",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "intervalType",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "distanceToTss",
+   "nullable": true,
+   "type": "int32"
+  },
+  {
+   "name": "score",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "resourceScore",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "name",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "value",
+        "nullable": true,
+        "type": "float"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "datasourceId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "pmid",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "studyId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "biosampleId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "intervalId",
+   "nullable": true,
+   "type": "string"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  799968,
+  565049,
+  585182,
+  595564,
+  588336,
+  603790,
+  596092,
+  598031,
+  598063,
+  589029,
+  596096,
+  594012,
+  593106,
+  593806,
+  593939,
+  557238,
+  591622,
+  622562,
+  620331,
+  595996,
+  597956,
+  599783,
+  596150,
+  593079,
+  594848,
+  601159,
+  587616,
+  619279,
+  592254,
+  592330,
+  589069,
+  606104,
+  587711,
+  560176,
+  593311,
+  597022,
+  616749,
+  594684,
+  588904,
+  612029,
+  584808,
+  587254,
+  609494,
+  590462,
+  583049,
+  588071,
+  598556,
+  591288,
+  587871,
+  581648,
+  600070,
+  580810,
+  520128,
+  599182,
+  564096,
+  589057,
+  598828,
+  559535,
+  556891,
+  583614,
+  560233,
+  590508,
+  600296,
+  591095,
+  584127,
+  550157,
+  583321,
+  597583,
+  572910,
+  582271,
+  556357,
+  579048,
+  576177,
+  577312,
+  545301,
+  587378,
+  585009,
+  574376,
+  574550,
+  556908,
+  575087,
+  555295,
+  546280
+ ],
+ "shards": 83,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/interval/",
+ "table": "interval"
+}

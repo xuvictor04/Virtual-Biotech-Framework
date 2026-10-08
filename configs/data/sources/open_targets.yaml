@@ -9,6 +9,14 @@
 # (enrichment contracts, propagation through id_type hierarchies, the literature keywordId sidecar,
 # interaction-evidence identity), so phase-3/4 work never edits this file. Upstream paths are
 # relative to third_party/TheVirtualBiotech.
+#
+# Checked against the real release on 2026-10-08
+# (https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/): the footers of all 3,508
+# Parquet shards of the 38 tables (snapshots in tests/datalayer/real/ot_25_09/) and the values of every
+# table small enough to download (`vbt ds check --depth deep` plus column scans). "(25.09: ...)" notes
+# what the release showed. `verified: true` facts were confirmed there; a fact still `verified: false`
+# needs data this machine could not hold, or was REFUTED in a way only a change outside this file can
+# fix (the note gives the observed counts, and readiness refutes it again on the real data).
 schema: vbt.datasource/1
 source: open_targets
 title: Open Targets Platform
@@ -27,11 +35,15 @@ id_types:
                              "synonym:previous", "synonym:alias"],
                      disambiguate_with: [biotype, genomicLocation.chromosome]}
   hgnc_symbol:      {plugin: hgnc_symbol, label_of: ensembl_gene}       # 1,613 duplicate symbols in 25.09: label, not key
+                                                                          # (25.09: 1,613 rows repeat one of 482 symbols)
   ensembl_gene_any: {plugin: ensembl_gene_any, resolvable: false}       # homologue IDs: syntax only
   ensembl_gene_mouse: {plugin: ensembl_gene_mouse, resolvable: false}   # mouse orthologues in mouse_phenotype
   uniprot_accession: {plugin: uniprot_accession,
                       universe: {table: target, keys: ["proteinIds[].id"],
                                  where: {in: ["proteinIds[].source", [uniprot_swissprot, uniprot_trembl]]}}}
+                     # 25.09: proteinIds holds ensembl_PRO 112,428 (ENSP ids), uniprot_obsolete 71,627, uniprot_trembl
+                     # 63,566 and uniprot_swissprot 19,463 items; every uniprot_* id is a canonical accession. Readiness
+                     # R4b samples the whole column and reports the ENSP ids (same contract request as hpo)
   ncbi_taxon:       {plugin: ncbi_taxon, resolvable: false}             # digits; species names are categories
   chemical_probe:   {plugin: local_key, options: {canonical: "^[A-Za-z0-9][A-Za-z0-9_.\\- ]*$"}, resolvable: false}
   ot_disease:       {plugin: ot_disease, options: {prefixes: from_universe}, universe: disease.id,
@@ -45,7 +57,11 @@ id_types:
   mesh:             {plugin: local_key, options: {canonical: "^MESH:[CD][0-9]+$", normalize: [strip, upper]}, resolvable: false}
   omim:             {plugin: local_key, options: {canonical: "^OMIM:[0-9]{6}$", normalize: [strip, upper]}, resolvable: false}
   umls:             {plugin: local_key, options: {canonical: "^UMLS:C[0-9]{7}$", normalize: [strip, upper]}, resolvable: false}
-  hpo:              {plugin: hpo, universe: disease_hpo.id, resolve_via: [disease_hpo.name]}
+  hpo:              {plugin: hpo, universe: {table: disease_hpo, keys: [id], where: {text: [id, "HP_", substring]}},
+                     resolve_via: [disease_hpo.name]}
+                     # 25.09 disease_hpo holds 19,034 HP_ terms and 12,081 imported terms (UBERON 5,624, GO 2,518,
+                     # CHEBI 1,845, CL 1,177, PATO 566, PR 206, MPATH 75, NBO 64, HsapDv 5, RO 1): the universe is
+                     # the HP_ terms (readiness R4b still samples the whole column; contract request filed)
   chembl_molecule:  {plugin: chembl_molecule, universe: drug_molecule.id,
                      resolve_via: [drug_molecule.name, drug_molecule.synonyms, drug_molecule.tradeNames],
                      canonicalize: {parent: drug_molecule.parentId}}
@@ -56,13 +72,25 @@ id_types:
                      # the Reactome event hierarchy: propagation and include_descendants walk `parents` (phase 3)
   go_term:          {plugin: go, universe: go.id, resolve_via: [go.name],
                      retired: {label_prefix: "obsolete "}}               # 8,259 obsolete names in OT go (VERIFIED)
+                                                                         # (25.09: 8,259 of 48,165 names; ids GO:NNNNNNN)
                      # OT's go table has no hierarchy: gene_ontology:go_term `extends` this type with the
                      # go-basic.obo DAG (is_a and part_of propagate, regulates does not)
-  so_term:          {plugin: so, options: {separator: "_"}, universe: so.id,   # 25.09 stores SO_0001583
+  so_term:          {plugin: so, options: {separator: "_"}, universe: so.id,
                      resolve_via: [so.label]}
-  biosample:        {plugin: local_key, options: {canonical: "^[A-Za-z]+_[A-Za-z0-9]+$", normalize: [strip]},
+                     # REFUTED: the real 25.09 so.id is SO:NNNNNNN (all 2,611 terms, written by Polars; the
+                     # SO_0001583 form is what variant.mostSevereConsequenceId stores). The test fixtures store
+                     # SO_, so the separator and the fixtures change together (contract request); until then
+                     # readiness R4b reports encoding_drift on the real so table.
+  biosample:        {plugin: local_key, options: {canonical: "^\\S+$", normalize: [strip]},
                      universe: biosample.biosampleId, resolve_via: [biosample.biosampleName, biosample.synonyms]}
-  gwas_study:       {plugin: gwas_study, universe: study.studyId}
+                     # 25.09: 33,902 of 35,007 ids are PREFIX_LOCAL (UBERON 16,054, GO 8,703, CL 3,402, ...); the
+                     # other 1,105 are stored as IRIs and annotation properties (http://identifiers.org/ncbigene/107376,
+                     # uberon/core#channels_into, PR_P01732-1), none with whitespace
+  gwas_study:       {plugin: gwas_study, universe: study.studyId,
+                     options: {patterns: ["GCST\\d+_\\d+", "[a-z][a-z0-9\\-]*_[a-z0-9_\\-]+"]}}
+                     # 25.09 study: 98,582 GWAS (GCST, FINNGEN_R12_, UKB_PPP_; 934 GCST sub-studies GCST000337_7) and
+                     # 1,865,652 QTL studies with eQTL Catalogue IDs (gtex_ge_brain_cerebellar_hemisphere_ensg00000067445,
+                     # cap_leafcutter_lcl_naive_3_158650061_158652096_clu_41901_-)
   gwas_project:     {plugin: local_key, options: {canonical: "^[A-Za-z0-9_\\-]+$", normalize: [strip]}, universe: study.projectId}
   ot_datasource:    {plugin: local_key, options: {canonical: "^[a-z0-9_]+$", normalize: [strip, lower]},
                      universe: association_by_datasource_direct.datasourceId}
@@ -99,7 +127,7 @@ tables:
       id:              {role: identifier, id_type: ensembl_gene, self: true}
       approvedSymbol:  {role: label, of: id, id_type: hgnc_symbol, unique: false}
       approvedName:    {role: label, of: id}
-      biotype:         {role: category, vocab: data}
+      biotype:         {role: category, vocab: data, placeholders: [""]}   # 25.09: "" for 1,019 of 78,726 genes
       symbolSynonyms:  {role: synonym, of: id, synonym_kind: alias,    path: "[].label"}
       obsoleteSymbols: {role: synonym, of: id, synonym_kind: previous, path: "[].label"}
       nameSynonyms:    {role: synonym, of: id, synonym_kind: related,  path: "[].label"}
@@ -126,6 +154,8 @@ tables:
       pathways:
         role: member
         item_key: [pathwayId, topLevelTerm]       # a pathway can sit under two top-level terms (SCHEMA-DEPENDENT)
+                                                  # 25.09: unique; pathwayId alone is also unique within every gene
+                                                  # (47,434 items in 11,416 genes; 67,310 genes null)
         membership:
           set: {path: "pathwayId", id_type: reactome_pathway}
           member: {parent: id}
@@ -146,6 +176,12 @@ tables:
           topLevelTerm: {role: category, vocab: data, projection_of: reactome_pathway, lossy: true}
       go:
         role: member
+        # REFUTED (the §23 target.go item-key question): in 25.09 (id, aspect, evidence, source, geneProduct)
+        # repeats in 12,806 genes (98,095 items) that differ only in ecoId (GO:0005794/C/IEA/GO_REF:0000043 with
+        # ECO:0000265, ECO:0000256, ECO:0007322); with ecoId the key is unique over all 821,377 items (20,998
+        # genes; 57,728 genes null, none empty; ecoId null in 4,837 items). The CT-3 oracle in the test fixtures
+        # pins the five-part key and an item key cannot declare a nullable part, so the key changes together
+        # with them (contract request); until then readiness reports key_violation on the real target_go.
         item_key: {columns: [id, aspect, evidence, source, geneProduct], check: sampled}
         membership:
           set: {path: id, id_type: go_term}
@@ -165,7 +201,7 @@ tables:
         rank: [{column: id, direction: asc}]
         fields:
           id:          {role: identifier, id_type: go_term, ref: go.id, integrity: partial}
-          aspect:      {role: category, vocab: [C, F, P], verified: false,
+          aspect:      {role: category, vocab: [C, F, P], verified: true,   # 25.09: C 323,220, F 255,814, P 242,343
                         aliases: {cellular_component: C, molecular_function: F, biological_process: P},
                         values: {C: cellular component, F: molecular function, P: biological process},
                         scope: {kind: stratum, pooling: group, determined_by: [id]}}
@@ -178,20 +214,28 @@ tables:
         item_key: [speciesId, targetGeneId, homologyType]
         grain: one homologue of the gene in one species
         fields:
-          speciesId:   {role: identifier, id_type: ncbi_taxon, verified: false}   # str vs int: SCHEMA-DEPENDENT
+          speciesId:   {role: identifier, id_type: ncbi_taxon, verified: true}    # str vs int: SCHEMA-DEPENDENT
+                                                                                  # 25.09: string ("10090".."9986")
           speciesName: {role: category, vocab: data, match: casefold}
           targetGeneId: {role: identifier, id_type: ensembl_gene_any}
           targetGeneSymbol: {role: label, of: targetGeneId}
           homologyType: {role: category, vocab: data}
           queryPercentageIdentity:  {role: measure, statistic: percent, scale: [0, 100], missing: unknown}
           targetPercentageIdentity: {role: measure, statistic: percent, scale: [0, 100], missing: unknown}
-          isHighConfidence: {role: flag, encoding: {"1": true, "0": false}, missing: unknown, verified: false}
+          isHighConfidence: {role: flag, encoding: {"1": true, "0": false, "NULL": null}, missing: unknown,
+                             verified: true}   # 25.09: "1" 171,042, "0" 97,128, the string "NULL" 3,552,426
+                                               # (paralogues: no confidence call)
           priority: {role: measure, statistic: ordinal, missing: unknown}
       chemicalProbes:
         role: nested
-        item_key: [id, origin]
+        # 25.09: (id, origin) repeats in 16 genes (17 items: one probe listed by two portals, or with two drugIds,
+        # e.g. DGY-09-192 from Chemical Probes.org and Gray Laboratory Probes); unique with drugId and urls
+        item_key: [id, origin, drugId, urls]
         null_means: unknown
         empty_means: absent
+        # 25.09: 917 genes list probes (5,090 items), 77,809 are null and none is empty: a gene without probes
+        # is null, so "none listed" cannot be told from "not covered" and this stays unconfirmed (REFUTED as
+        # stated: no empty lists exist)
         coverage: {statement: "Probes listed by Probes & Drugs as integrated in OT 25.09; an empty list means none listed, not proof that no probe exists.",
                    absence_means: absent, verified: false}   # confirmed at readiness from null vs empty list counts
         fields:
@@ -209,7 +253,9 @@ tables:
           urls: {role: payload}
       safetyLiabilities:
         role: nested
-        item_key: [event, eventId, datasource]
+        # 25.09: (event, eventId, datasource) repeats in 22 genes (50 items: one AOP-Wiki event from several
+        # pathways, e.g. "Increased Mortality" with aops/363 and aops/159); unique with url
+        item_key: [event, eventId, datasource, url]
         coverage: {statement: "Curated target safety liabilities; an empty list means none curated, not that the target is safe.",
                    absence_means: unknown}
         fields:
@@ -246,7 +292,7 @@ tables:
         role: nested
         item_key: [constraintType]
         fields:
-          constraintType: {role: category, vocab: [syn, mis, lof], verified: false}
+          constraintType: {role: category, vocab: [syn, mis, lof], verified: true}   # 25.09: 18,609 genes x 3
           score:    {role: measure, statistic: numeric, missing: unknown}
           exp:      {role: measure, statistic: numeric, missing: unknown}
           obs:      {role: count, counts: "observed variants of this type"}
@@ -295,7 +341,8 @@ tables:
     kind: sets
     items_of: {table: target, path: "go[]"}
     grain: one direct GO annotation record of one gene
-    # composed key: (id, go[].id, go[].aspect, go[].evidence, go[].source, go[].geneProduct)
+    # composed key: (id, go[].id, go[].aspect, go[].evidence, go[].source, go[].geneProduct); REFUTED by 25.09,
+    # see target.go
     key: {columns: [], check: sampled}
     grains: {go_membership: [id, "go[].id"], gene: [id], term: ["go[].id"]}
     rank: [{column: "go[].id", direction: asc}]
@@ -334,7 +381,10 @@ tables:
     kind: fact
     items_of: {table: target, path: "chemicalProbes[]"}
     grain: one chemical probe of one target from one origin
-    key: {columns: [], check: sampled}
+    # 25.09: (id, chemicalProbes[].id, origin, drugId, urls) is unique over all 5,090 items with NULLS NOT DISTINCT;
+    # drugId is null in 141 and an item key cannot declare a nullable part, so R5 would report a false
+    # key_violation: check: none until item keys take `nullable` (contract request)
+    key: {columns: [], check: none}
     coverage: {statement: "Probes listed by Probes & Drugs as integrated in OT 25.09; covered for genes whose list is present (empty = none listed).",
                absence_means: absent, verified: false}
 
@@ -374,7 +424,9 @@ tables:
     kind: fact
     items_of: {table: target, path: "safetyLiabilities[]"}
     grain: one curated safety liability (event, source) of one target
-    key: {columns: [], check: sampled}
+    # 25.09: (id, event, eventId, datasource, url) is unique over all 4,484 items with NULLS NOT DISTINCT; eventId
+    # is null in 1,360 and url in 1,941, so check: none for the reason given at target_chemical_probes
+    key: {columns: [], check: none}
     grains: {target: [id], event: ["safetyLiabilities[].eventId"]}
     coverage: {statement: "Curated target safety liabilities; an empty list means none curated, not that the target is safe.",
                absence_means: unknown}
@@ -402,31 +454,48 @@ tables:
                absence_means: unknown}
     columns:
       targetId:          {role: identifier, id_type: ensembl_gene, ref: target.id}
-      isInMembrane:      {role: measure, statistic: binary_factor, missing: unknown, verified: false}
-      isSecreted:        {role: measure, statistic: binary_factor, missing: unknown, verified: false}
-      hasPocket:         {role: measure, statistic: binary_factor, missing: unknown, verified: false}
-      hasLigand:         {role: measure, statistic: binary_factor, missing: unknown, verified: false}
-      hasSmallMoleculeBinder: {role: measure, statistic: binary_factor, missing: unknown, verified: false}
+      # 25.09 (78,726 genes, 10 shards): the binary factors are int32 codes 0/1 with null where not assessed
+      # (isInMembrane/isSecreted 59,727 null, hasPocket/hasLigand/hasSmallMoleculeBinder 59,846,
+      # hasHighQualityChemicalProbes 77,809); the scaled factors are doubles within their declared scales.
+      isInMembrane:      {role: measure, statistic: binary_factor, missing: unknown, verified: true}
+      isSecreted:        {role: measure, statistic: binary_factor, missing: unknown, verified: true}
+      hasPocket:         {role: measure, statistic: binary_factor, missing: unknown, verified: true}
+      hasLigand:         {role: measure, statistic: binary_factor, missing: unknown, verified: true}
+      hasSmallMoleculeBinder: {role: measure, statistic: binary_factor, missing: unknown, verified: true}
+      # REFUTED (the SCHEMA-DEPENDENT question of DATA_LAYER.md §23): 25.09 stores only -1 (943 genes) and null
+      # (77,783); "none recorded" is never 0, so `no_safety_events` cannot be answered and readiness refutes
+      # the 0 code (unsupported_filter, as designed). The encoding, the overlay flag and the tests that pin
+      # them change together (contract request).
       hasSafetyEvent:    {role: measure, statistic: signed_factor, scale: [-1, 0], missing: unknown,
                           encoding: {-1: known_unfavourable, 0: none_recorded}, verified: false,
                           description: "-1 = a safety event is recorded, 0 = none recorded, null = not assessed"}
       geneticConstraint: {role: measure, statistic: signed_factor, scale: [-1, 1], direction: lower_is_stronger,
-                          missing: unknown, verified: false}   # lower = more constrained (LoF-intolerant)
-      paralogMaxIdentityPercentage: {role: measure, statistic: signed_factor, scale: [-1, 0], missing: unknown, verified: false}
-      mouseOrthologMaxIdentityPercentage: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown, verified: false}
-      isCancerDriverGene: {role: measure, statistic: binary_factor, missing: unknown, verified: false}
-      hasTEP:            {role: measure, statistic: binary_factor, missing: unknown, verified: false}
-      mouseKOScore:      {role: measure, statistic: signed_factor, scale: [-1, 0], missing: unknown, verified: false}
-      hasHighQualityChemicalProbes: {role: measure, statistic: binary_factor, missing: unknown, verified: false}
-      maxClinicalTrialPhase: {role: measure, statistic: clinical_phase, missing: unknown, verified: false}   # 0-1 here vs 0-4 in known_drug
-      tissueSpecificity: {role: measure, statistic: signed_factor, scale: [-1, 1], missing: unknown, verified: false}
-      tissueDistribution: {role: measure, statistic: signed_factor, scale: [-1, 1], missing: unknown, verified: false}
+                          missing: unknown, verified: true}   # lower = more constrained (LoF-intolerant); 25.09: [-1, 1]
+      paralogMaxIdentityPercentage: {role: measure, statistic: signed_factor, scale: [-1, 0], missing: unknown,
+                                     verified: true}   # 25.09: [-1, -0.0]
+      mouseOrthologMaxIdentityPercentage: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown,
+                                           verified: true}   # 25.09: [0, 1]
+      # 25.09: only -1 (330 genes) and null (78,396): a cancer driver gene is an unfavourable -1, never 0/1
+      isCancerDriverGene: {role: measure, statistic: signed_factor, scale: [-1, 0], encoding: {-1: cancer_driver},
+                           missing: unknown, verified: true,
+                           description: "-1 = a cancer driver gene, null = not a known driver or not assessed"}
+      # 25.09: only 1 (41 genes) and null (78,685): a gene without a TEP is null, never 0
+      hasTEP:            {role: measure, statistic: binary_factor, encoding: {1: "yes"}, missing: unknown, verified: true,
+                          description: "1 = a Target Enabling Package exists, null = none or not assessed"}
+      mouseKOScore:      {role: measure, statistic: signed_factor, scale: [-1, 0], missing: unknown, verified: true}
+                         # 25.09: [-0.9935, 0]
+      hasHighQualityChemicalProbes: {role: measure, statistic: binary_factor, missing: unknown, verified: true}
+      maxClinicalTrialPhase: {role: measure, statistic: clinical_phase, scale: [0, 1], missing: unknown,
+                              verified: true}   # 0-1 here vs 0-4 in known_drug; 25.09: [0.25, 1.0] (0.25 per phase)
+      tissueSpecificity: {role: measure, statistic: signed_factor, scale: [-1, 1], missing: unknown, verified: true}
+      tissueDistribution: {role: measure, statistic: signed_factor, scale: [-1, 1], missing: unknown, verified: true}
 
   openfda_significant_adverse_target_reactions:
     kind: fact
     path: openfda_significant_adverse_target_reactions
     grain: one FAERS adverse event significantly reported for drugs acting on one target
-    key: {columns: [targetId, event], check: full, verified: false}
+    key: {columns: [targetId, event], check: full, verified: true}   # 25.09: unique over 28,341 rows (20 shards),
+                                                                    # also casefolded; llr > critval on every row
     rank: [{column: llr, direction: desc, nulls: last}, {column: event, direction: asc}]
     coverage: {statement: "openFDA FAERS events with llr above the critical value for drugs on this target; FAERS target signals exist only for targets of marketed drugs; absence means not significant or not reported and is not evidence of safety.",
                absence_means: unknown}
@@ -442,7 +511,8 @@ tables:
     kind: fact
     path: openfda_significant_adverse_drug_reactions
     grain: one FAERS adverse event significantly reported for one drug
-    key: {columns: [chembl_id, event], check: full, verified: false}
+    key: {columns: [chembl_id, event], check: full, verified: true}   # 25.09: unique over 114,270 rows (20 shards),
+                                                                     # also casefolded; llr > critval on every row
     rank: [{column: llr, direction: desc, nulls: last}, {column: event, direction: asc}]
     coverage: {statement: "openFDA FAERS events with llr above the drug's critical value; absence means not significant or not reported.",
                absence_means: unknown}
@@ -458,8 +528,10 @@ tables:
     kind: fact
     path: mouse_phenotype
     grain: one mouse phenotype observed in models of one mouse orthologue of one human gene
+    # 25.09: unique over all 210,579 rows; targetInModelEnsemblId null in 11 rows; every targetInModelEnsemblId is
+    # ENSMUSG, every targetInModelMgiId MGI: and every modelPhenotypeId MP: (the §23 column-semantics question)
     key: {columns: [targetFromSourceId, targetInModelEnsemblId, modelPhenotypeId], nullable: [targetInModelEnsemblId],
-          check: sampled, verified: false}
+          check: sampled, verified: true}
     rank: [{column: modelPhenotypeId, direction: asc}]
     coverage: {statement: "IMPC/MGI mouse phenotypes of orthologues of the human gene; absence means no phenotype curated.",
                absence_means: unknown}
@@ -474,7 +546,9 @@ tables:
                                                                      label: {role: label, of: id}}}
       biologicalModels:
         role: nested
-        item_key: [id]
+        # 25.09: a model id repeats in 2,334 rows with different allelic compositions ("Acvr1b<tm1.1(KOMP)Vlcg> hem
+        # early" and "... het embryo" for MGI:5548443); (id, allelicComposition, geneticBackground) is unique
+        item_key: [id, allelicComposition, geneticBackground]
         grain: one mouse model (allelic composition on a genetic background) showing the phenotype
         fields:
           id:                  {role: identifier, resolvable: false}
@@ -494,9 +568,17 @@ tables:
     path: pharmacogenomics
     grain: one PharmGKB variant or haplotype annotation linking a genotype to a drug response
     # genotype- and haplotype-level rows: one of genotypeId/haplotypeId is null; the key is a grouping
-    # key and rows are identified by content (verified: false until R5b samples it).
-    key: {columns: [targetFromSourceId, variantRsId, genotypeId, haplotypeId, phenotypeText],
-          nullable: [variantRsId, genotypeId, haplotypeId], row_identity: content_hash, check: sampled, verified: false}
+    # key and rows are identified by content.
+    # 25.09 (32,783 rows, datasourceId clinpgx): 23,488 genotype rows, 9,209 haplotype rows and 86 with neither;
+    # targetFromSourceId is null in 1,614 rows and phenotypeText in 976 (both nullable here), so the grouping
+    # key leads with studyId (the PharmGKB clinical annotation, never null). The former grouping key repeats
+    # 9,703 times and no column set short of the whole row is unique (studyId + genotype + haplotypeId + target
+    # + phenotypeText + drugs still repeats 1,074 times), while no two rows are equal: content identity holds.
+    # check: none because R5b tests the grouping key, not the content hash (contract request); with it, every
+    # real check would be a false key_violation.
+    key: {columns: [studyId, targetFromSourceId, variantRsId, genotypeId, haplotypeId, phenotypeText],
+          nullable: [targetFromSourceId, variantRsId, genotypeId, haplotypeId, phenotypeText], row_identity: content_hash,
+          check: none, verified: true}
     grains: {drug: ["drugs[].drugId"], variant: [variantRsId]}
     rank: [{column: evidenceLevel, direction: asc, nulls: last, statistic: ordinal}, {column: variantRsId, direction: asc}]
     coverage: {statement: "PharmGKB clinical annotations integrated by OT 25.09; absence means none curated.",
@@ -531,7 +613,7 @@ tables:
           entity:                     {role: category, vocab: data}
           literature:                 {role: reference, ref_kinds: [pmid]}
       isDirectTarget: {role: flag, missing: unknown}
-      studyId:       {role: payload}
+      studyId:       {role: identifier, resolvable: false}   # the PharmGKB clinical annotation (1043858606)
       literature:    {role: reference, ref_kinds: [pmid], path: "[]"}
       datasourceId:  {role: category, vocab: data}
       datasourceVersion: {role: payload}
@@ -580,7 +662,8 @@ tables:
       isApproved: {role: flag, missing: unknown}
       yearOfFirstApproval: {role: time, precision: year, missing: unknown}
       maximumClinicalTrialPhase: {role: measure, statistic: clinical_phase, scale: [0, 4], missing_values: [-1],
-                                  encoding: {0.5: early_phase_1, 4: approved}, missing: unknown, verified: false}
+                                  encoding: {0.5: early_phase_1, 4: approved}, missing: unknown, verified: true}
+                                  # 25.09: 4.0 4,037, 3.0 1,654, 2.0 3,970, 1.0 1,295, 0.5 17, -1.0 304, null 6,842
       childChemblIds: {role: identifier, id_type: chembl_molecule, ref: drug_molecule.id, integrity: partial, path: "[]",
                        cardinality: many}
       crossReferences: {role: nested, item_key: [source], fields: {
@@ -600,24 +683,32 @@ tables:
     kind: entity_detail
     path: drug_indication
     grain: the indications of one ChEMBL molecule
-    key: {columns: [id], check: full}
+    key: {columns: [id], check: full}               # 25.09: 9,678 molecules, 61,629 indication items
     coverage: {statement: "ChEMBL drug indications integrated by OT 25.09; absence means none curated.",
                absence_means: unknown}
     columns:
       id: {role: identifier, id_type: chembl_molecule, ref: drug_molecule.id, integrity: partial}
       indications:
         role: nested
-        item_key: [disease]
+        # 25.09: a disease repeats within one drug in 866 drugs (2,574 items): one item per evidence group, e.g.
+        # CHEMBL1000/HP_0000989 from DailyMed at phase 4 and from ClinicalTrials at phase 3; the items are unique
+        # by (disease, maxPhaseForIndication, references)
+        item_key: [disease, maxPhaseForIndication, references]
         grain: one indication of one drug
         fields:
           disease: {role: identifier, id_type: ot_disease, ref: disease.id, integrity: partial}
           efoName: {role: label, of: disease}
-          maxPhaseForIndication: {role: measure, statistic: clinical_phase, scale: [0, 4], missing: unknown, verified: false}
-          references: {role: nested, item_key: [source], fields: {
+          maxPhaseForIndication: {role: measure, statistic: clinical_phase, scale: [0, 4], missing: unknown, verified: true}
+                                 # 25.09: 0.5-4.0, and -1 (unknown) in 614 items
+          # 25.09: source is unique within every one of the 61,629 indication items (up to 5 references each);
+          # check: none because R5b:items flattens a list nested in a list per row, so the same source under
+          # two indications of one drug reads as a repeat (1,130 of 2,000 sampled rows; contract request)
+          references: {role: nested, item_key: {columns: [source], check: none}, fields: {
                          source: {role: category, vocab: data},
                          ids:    {role: reference, ref_kinds: [pmid, url, nct_id], path: "[]"}}}
       approvedIndications: {role: identifier, id_type: ot_disease, path: "[]", cardinality: many}
       indicationCount: {role: count, counts: "indications of the drug", length_of: indications}
+                       # 25.09: equals len(indications) in all 9,678 rows, so a disease listed twice counts twice
 
   drug_indications:                             # item table: rows of get_drug_indications
     kind: fact
@@ -632,7 +723,7 @@ tables:
     kind: fact
     path: drug_warning
     grain: one ChEMBL drug warning (withdrawal or black box) for one or more molecules
-    key: {columns: [id], check: full, verified: false}
+    key: {columns: [id], check: full, verified: true}   # 25.09: unique over 1,676 rows (int64 ids)
     rank: [{column: year, direction: desc, nulls: last}, {column: id, direction: asc}]
     coverage: {statement: "ChEMBL drug warnings; absence means no warning curated, not that the drug is safe.",
                absence_means: unknown}
@@ -656,8 +747,12 @@ tables:
     kind: fact
     path: drug_mechanism_of_action
     grain: one mechanism of action (action on one target) shared by one or more molecules
+    # 25.09 (6,332 rows): the grouping key repeats 4,651 times (one row per set of 1-2 chemblIds, e.g.
+    # "Antithrombin-III activator" for [CHEMBL1200644, CHEMBL1201202] and for [CHEMBL1201414]); no two rows
+    # are equal, and with chemblIds the key is unique, so content identity holds. check: none for the same
+    # reason as pharmacogenomics (R5b tests the grouping key; contract request).
     key: {columns: [mechanismOfAction, actionType, targetName], nullable: [actionType, targetName],
-          row_identity: content_hash, check: sampled, verified: false}
+          row_identity: content_hash, check: none, verified: true}
     coverage: {statement: "ChEMBL mechanisms of action; absence means none curated.", absence_means: unknown}
     columns:
       mechanismOfAction: {role: category, vocab: data, match: casefold}
@@ -677,6 +772,8 @@ tables:
     grain: one (drug, target, disease) clinical-precedence record per phase and trial status
     key: {columns: [drugId, targetId, diseaseId, phase, status], nullable: [phase, status], check: full}
     # unique with NULLS NOT DISTINCT on the real 126,689-row 25.09 file (VERIFIED); up to 21 rows per triple
+    # 25.09 full table: 2 shards (126,689 + 126,753 = 253,442 rows), still unique with NULLS NOT DISTINCT (status
+    # null in 11,951 rows, phase never null), up to 36 rows per (drug, target, disease) triple
     grains:
       drug: [drugId]
       parent_drug: {columns: [drugId], canonicalize: chembl_molecule.parent}
@@ -690,8 +787,10 @@ tables:
       drugId:    {role: identifier, id_type: chembl_molecule, ref: drug_molecule.id, form: as_stored}
       targetId:  {role: identifier, id_type: ensembl_gene, ref: target.id}
       diseaseId: {role: identifier, id_type: ot_disease, ref: disease.id}
-      ancestors: {role: hierarchy, relation: ancestor, of: diseaseId, closure: transitive, reflexive: false, verified: false}
-      phase:     {role: measure, statistic: clinical_phase, scale: [0, 4], missing: unknown, verified: false}
+      ancestors: {role: hierarchy, relation: ancestor, of: diseaseId, closure: transitive, reflexive: false, verified: true}
+                 # 25.09: equals disease.ancestors of diseaseId in all 253,442 rows (never contains diseaseId itself)
+      phase:     {role: measure, statistic: clinical_phase, scale: [0, 4], missing: unknown, verified: true}
+                 # 25.09: 0.5 6,590, 1.0 68,351, 2.0 106,067, 3.0 53,912, 4.0 18,522
       status:    {role: category, vocab: data}
       urls:      {role: nested, item_key: [url], fields: {niceName: {role: category, vocab: data},
                                                          url: {role: reference, ref_kinds: [url]}}}
@@ -718,7 +817,11 @@ tables:
     sentinels:
       present: [{key: {id: MONDO_0005148}}]
       absent:  [{key: {id: EFO_0000000}}]
+    # 25.09 (one Polars-written shard): 39,530 terms (EFO 11,907, MONDO 11,780, OBA 11,136, HP 2,133,
+    # Orphanet 2,045, GO 485, 9 more prefixes); 26 therapeutic areas; 4,880 distinct obsoleteTerms.
     constraints:
+      # REFUTED again by the real 25.09 file: ontology.leaf is false for all 39,530 terms and 31,635 have no
+      # children; it stays verified: false so readiness keeps dropping the field (on_refute: drop_field)
       - {column: ontology.leaf, op: equals_expr, expr: "len(children) == 0", verified: false, on_refute: drop_field,
          origin: "false for all 39,530 terms while 31,635 have no children (Zenodo 22259123)"}
     columns:
@@ -736,21 +839,24 @@ tables:
       parents:       {role: hierarchy, relation: parent, of: id, closure: direct, inverse_of: children}
       children:      {role: hierarchy, relation: child, of: id, closure: direct, inverse_of: parents}
       ancestors:     {role: hierarchy, relation: ancestor, of: id, closure: transitive, closure_of: parents, reflexive: false,
-                      verified: false}
+                      verified: true}   # 25.09: equals the transitive closure of parents for all 39,530 terms
       descendants:   {role: hierarchy, relation: descendant, of: id, closure: transitive, closure_of: children, reflexive: false,
-                      verified: false}
+                      verified: true}   # 25.09: equals the transitive closure of children for all 39,530 terms
       therapeuticAreas: {role: identifier, id_type: ot_disease, ref: disease.id, path: "[]", cardinality: many}
-      directLocationIds: {role: payload}
-      indirectLocationIds: {role: payload}
+      directLocationIds: {role: payload, optional: true}     # absent from the 25.09 file
+      indirectLocationIds: {role: payload, optional: true}   # absent from the 25.09 file
       ontology:      {role: nested, fields: {isTherapeuticArea: {role: flag, missing: unknown},
-                                             leaf: {role: flag, missing: unknown, verified: false},
-                                             name: {role: payload},
+                                             leaf: {role: flag, missing: unknown, verified: false},   # REFUTED: see constraints
+                                             name: {role: payload, optional: true},   # absent from the 25.09 file
                                              sources: {role: payload}}}
 
   disease_phenotype:
     kind: fact
     path: disease_phenotype
     grain: one (disease, HPO phenotype) association with its evidence records
+    # 25.09 (one Polars shard): 162,346 pairs, unique; 195,392 evidence items (never null or empty); every
+    # phenotype is an HP_ term of disease_hpo and every disease is in disease; qualifierNot is false in all
+    # 195,392 items (no negated evidence in this release); evidenceType PCS 125,432, IEA 42,084, TAS 27,876
     key: {columns: [disease, phenotype], check: full}
     grains: {disease: [disease], phenotype: [phenotype]}
     rank: [{column: disease, direction: asc}]
@@ -799,13 +905,15 @@ tables:
     coverage: {statement: "HPO terms integrated by OT 25.09 (existence only).", absence_means: absent, applies_to: entity}
     columns:
       id:            {role: identifier, id_type: hpo, self: true}
-      code:          {role: reference, ref_kinds: [url]}
+      code:          {role: reference, ref_kinds: [url], optional: true}   # absent from the 25.09 file
       name:          {role: label, of: id}
       description:   {role: text}
       dbXRefs:       {role: payload}
-      namespace:     {role: payload}
+      namespace:     {role: payload, optional: true}                       # absent from the 25.09 file
       obsoleteTerms: {role: identifier, id_type: hpo, retired_into: id, path: "[]"}
       parents:       {role: hierarchy, relation: parent, of: id, closure: direct, optional: true}
+      # the §23 "25.09 disease_hpo columns" question: the 25.09 file (Polars, 31,115 rows) has exactly id, name,
+      # description, dbXRefs, parents and obsoleteTerms (large_string / large_list)
 
   # -------------------------------------------------------------------- associations
   association_overall_direct:
@@ -913,6 +1021,9 @@ tables:
     rank: [{column: score, direction: desc, nulls: last, within: [sourceId]}, {column: id, direction: asc}]
     coverage: {statement: "Evidence strings of the 23 OT 25.09 data sources; absence means no evidence in these sources, not a negative finding.",
                absence_means: absent}   # partial_unknown when rows were excluded as unknown (CT-6)
+    # 25.09: 2,294 shards in exactly these 23 sourceId=SOURCE directories (100 each; progeny 98, sysbio 96),
+    # 30,396,274 rows, 8.99 GB; europepmc alone has 22,881,069 rows (8.12 GB). datasourceId equals the
+    # directory's source in every shard (footer min = max). One schema (90 columns) in every shard.
     partitions:
       sourceId: {column: {role: category, vocab: [cancer_biomarkers, cancer_gene_census, chembl, clingen, crispr, crispr_screen,
                           europepmc, eva, eva_somatic, expression_atlas, gene2phenotype, gene_burden, genomics_england,
@@ -939,9 +1050,11 @@ tables:
       score:        {role: measure, statistic: score_0_1, scale: [0, 1], comparable_within: [sourceId], missing: unknown}
       resourceScore: {role: measure, statistic: numeric, comparable_within: [sourceId], missing: unknown,
                       by_partition: {gwas_credible_sets: {scale: [0, 1]}}}
-      clinicalPhase: {role: measure, statistic: clinical_phase, applies_when: {sourceId: [chembl]}, missing: unknown, verified: false}
+      clinicalPhase: {role: measure, statistic: clinical_phase, scale: [0, 4], applies_when: {sourceId: [chembl]}, missing: unknown,
+                      verified: true}   # 25.09: filled only in chembl (573,103 rows, none null), range [0.5, 4.0]
       publicationYear: {role: time, precision: year, missing: unknown,
                         fallback: [{column: publicationDate, precision: day}]}   # gwas_credible_sets: year null, date set
+                        # 25.09: publicationYear is filled only in europepmc (1906-2124); the others give a date
       publicationDate: {role: time, precision: day, stored_as: iso8601_string, missing: unknown}
       literature:   {role: reference, ref_kinds: [pmid, europepmc_ppr], path: "[]"}
       pmcIds:       {role: reference, ref_kinds: [pmcid], path: "[]"}
@@ -1013,7 +1126,8 @@ tables:
       geneticBackground:   {role: category, vocab: data}
       log2FoldChangePercentileRank: {role: measure, statistic: ordinal, missing: unknown}
       log2FoldChangeValue: {role: measure, statistic: numeric, direction: signed, missing: unknown,
-                            applies_when: {sourceId: [expression_atlas]}}
+                            applies_when: {sourceId: [expression_atlas, crispr_screen]}}
+                            # 25.09: also filled in all 21,685 crispr_screen rows ([-37.2, 33.6])
       oddsRatio:           {role: measure, statistic: numeric, missing: unknown}
       oddsRatioConfidenceIntervalLower: {role: measure, statistic: numeric, of: oddsRatio, missing: unknown}
       oddsRatioConfidenceIntervalUpper: {role: measure, statistic: numeric, of: oddsRatio, missing: unknown}
@@ -1065,7 +1179,12 @@ tables:
     path: literature
     size_class: huge
     grain: one (publication, entity) co-mention from Europe PMC text mining
-    key: {columns: [pmid, keywordId], check: sampled, verified: false}
+    # 25.09: 151,961,320 rows in 334 single-row-group shards (2.27 GB). A pmid's rows are spread over many
+    # shards (of the pmids of 4 sampled shards, 203,994 occur in two of them) and every shard spans
+    # pmid "100".."PPR..."/"c83..", so row-group statistics on pmid prune nothing. (pmid, keywordId) is unique
+    # over all 151,961,320 rows (the pmid and keywordId column chunks of every shard read remotely, 1.42 GB);
+    # 2,349,085 rows (759,406 ids) carry a non-numeric Europe PMC id in pmid (IND20360743, PPR..., c8345).
+    key: {columns: [pmid, keywordId], check: sampled, verified: true}
     access_paths:
       - {columns: [keywordId], via: sidecar_index, build: on_demand}    # built by index_huge (phase 4, F19)
       - {columns: [pmid], via: row_group_stats}
@@ -1080,7 +1199,8 @@ tables:
       day:         {role: payload}
       keywordId:   {role: identifier, id_type: literature_word, integrity: partial}
       keywordType: {role: category, vocab: [GP, DS, CD], values: {GP: gene or protein, DS: disease, CD: chemical or drug},
-                    verified: false}
+                    verified: true}   # 25.09, all 334 shards: DS 64,396,525, GP 54,128,978, CD 33,435,817
+                                      # (GP keywordIds are ENSG, CD CHEMBL, DS EFO/MONDO/HP/Orphanet/MP/OTAR)
       relevance:   {role: measure, statistic: numeric, missing: unknown}
 
   # S12: literature_vector with a multi-kind identifier and a vector relation
@@ -1093,16 +1213,19 @@ tables:
     evidence_nature: {kind: literature_cooccurrence, caveat: "Similarity means co-mention in the literature, not function, mechanism or causality."}
     coverage: {statement: "Entities with a literature embedding in OT 25.09; an entity without one was too rarely mentioned.",
                absence_means: unknown}
+    # 25.09: 54,787 words in 256 shards (35.4 MB): target 29,670 (all ENSG), drug 11,067 (all CHEMBL), disease
+    # 14,050 (no ENSG or CHEMBL); word unique; norm in [0.0254, 7.0016]; every vector has 100 doubles and
+    # |norm - l2(vector)| is 0.0 on every row (not unit vectors).
     constraints:
       - {column: norm, op: ">", value: 0, origin: "cosine undefined at norm 0", on_refute: not_ready}
-      - {column: norm, op: equals_expr, expr: "l2(vector)", tolerance: 1.0e-6, origin: "platform-etl-backend Vectors.scala", verified: false}
+      - {column: norm, op: equals_expr, expr: "l2(vector)", tolerance: 1.0e-6, origin: "platform-etl-backend Vectors.scala", verified: true}
     columns:
       word:     {role: identifier, id_type: literature_word, self: true,
                  kind_from: {column: category, map: {target: ensembl_gene, drug: chembl_molecule}, otherwise: ot_disease}}
       category: {role: category, vocab: [target, drug, disease],
                  values: {disease: "any ID that is not ENSG or CHEMBL, including phenotypes and measurements"}}
       norm:     {role: measure, statistic: numeric, missing: unknown}
-      vector:   {role: vector, dim: 100, metric: cosine, normalized: false, norm_column: norm, verified: false}
+      vector:   {role: vector, dim: 100, metric: cosine, normalized: false, norm_column: norm, verified: true}
 
   # -------------------------------------------------------------------- expression
   expression:
@@ -1114,9 +1237,15 @@ tables:
                absence_means: unknown}
     columns:
       id: {role: identifier, id_type: ensembl_gene, ref: target.id, integrity: partial}
+      # 25.09 (43,804 genes, 4 shards; 2,286 ids are not in target): 4,940,421 tissue items, never null or empty.
+      # The in-band codes of the §23 question are all present: rna.unit is "" in 2,732,448 items (1,122,807 of
+      # them with value 0.0, the rest with a value but no unit, read as unknown here), rna.level is -1 in
+      # 2,525,761 and protein.level -1 in 4,350,738; rna.zscore is an int32 that is -1 in 3,763,002 items.
       tissues:
         role: nested
-        item_key: [efo_code]
+        # 25.09: efo_code CL_0002618 occurs twice in 43,663 genes ("endothelial cell of umbilical vein
+        # (proliferating)" and "(resting)"); (efo_code, label) is unique
+        item_key: [efo_code, label]
         null_means: unknown
         grain: one tissue's expression of one gene
         coverage: {statement: "Tissues with a measurement for this gene; absence means not measured.", absence_means: unknown}
@@ -1138,6 +1267,11 @@ tables:
             fields:
               reliability: {role: flag, missing: unknown}
               level:       {role: measure, statistic: ordinal, missing_values: [-1], missing: unknown}
+              # 25.09 also stores protein.cell_type, list<struct<name, reliability, level>> (HPA cell types of the
+              # tissue, 1,109,986 items, level -1 in 278). It is not declared yet: an optional field absent from
+              # the data (the test fixtures) marks its container unready, which would take the tissue tools
+              # down there (contract request); strict readiness checks top-level columns only, so the real
+              # release is unaffected.
 
   expression_tissues:                           # item table: rows of the per-tissue expression tools
     kind: fact
@@ -1161,6 +1295,11 @@ tables:
       description:   {role: text}
       xrefs:         {role: payload}
       synonyms:      {role: synonym, of: biosampleId, synonym_kind: related, path: "[]"}
+      # REFUTED as exact closures by the 25.09 file (35,007 terms, never reflexive): ancestors equals the transitive
+      # closure of parents for 27,680 terms; 4,189 lack closure terms (mostly the BFO upper level, then UBERON
+      # and CL), 396 hold extra terms and 2,742 differ both ways. descendants equals the closure of children for
+      # 33,029 (1,951 hold extra terms). 4,978 parent links have no inverse child link and 11 parents are not
+      # terms of the table. Kept verified: false: use them as the release states them, not as complete closures.
       parents:       {role: hierarchy, relation: parent, of: biosampleId, closure: direct}
       ancestors:     {role: hierarchy, relation: ancestor, of: biosampleId, closure: transitive, verified: false}
       children:      {role: hierarchy, relation: child, of: biosampleId, closure: direct}
@@ -1184,6 +1323,9 @@ tables:
           isEssential: {role: flag, missing: unknown}
           depMapEssentiality:
             role: nested
+            # 25.09 (17,867 genes, 517,111 tissue items, 20,955,265 screens): every gene has exactly one item with
+            # tissueId null and tissueName "other" (1,593,364 screens); (gene, tissueId, depmapId) and
+            # (gene, depmapId) are both unique
             item_key: [tissueId]
             fields:
               tissueId:   {role: category, vocab: data}
@@ -1206,7 +1348,10 @@ tables:
     kind: fact
     items_of: {table: target_essentiality, path: "geneEssentiality[].depMapEssentiality[].screens[]"}
     grain: one DepMap CRISPR screen result of one gene in one cell line (grouped by tissue)
-    key: {columns: [], check: sampled}          # composed: (id, depMapEssentiality[].tissueId, screens[].depmapId)
+    # composed: (id, depMapEssentiality[].tissueId, screens[].depmapId); 25.09: unique over all 20,955,265
+    # screens (deep check), but tissueId is null for the "other" tissue group (1,593,364 screens) and an item
+    # key cannot declare a nullable part: check: none for the reason given at target_chemical_probes
+    key: {columns: [], check: none}
     grains: {gene: [id], cell_line: ["geneEssentiality[].depMapEssentiality[].screens[].depmapId"]}
     rank: [{column: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect", direction: asc, nulls: last}]
     coverage: {statement: "DepMap CRISPR screens of cancer cell lines only; a missing gene or line means not screened.",
@@ -1245,6 +1390,16 @@ tables:
       sampleSize:   {role: count, counts: "samples of the study behind the credible set", missing: unknown}
       confidence:   {role: category, vocab: data}
       qualityControls: {role: category, vocab: data, path: "[]"}
+      # in the 25.09 files (2,862,043 credible sets, 25 shards), absent from the test fixtures:
+      effectAlleleFrequencyFromSource: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown, optional: true}
+      subStudyDescription: {role: text, optional: true}           # null in every 25.09 row
+      isTransQtl:   {role: flag, missing: unknown, optional: true}
+      ldSet:                                                      # 25.09: r2Overall up to 1.0000000000005778
+        role: nested
+        optional: true
+        fields:
+          tagVariantId: {role: identifier, id_type: ot_variant, integrity: partial, optional: true}
+          r2Overall:    {role: measure, statistic: numeric, missing: unknown, optional: true}
       locus:
         role: nested
         item_key: [variantId]
@@ -1310,9 +1465,33 @@ tables:
       referenceAllele: {role: payload}
       alternateAllele: {role: payload}
       rsIds:           {role: identifier, id_type: rsid, path: "[]", cardinality: many}   # one rsID can name several alleles
-      mostSevereConsequenceId: {role: category, vocab: data}
+      mostSevereConsequenceId: {role: category, vocab: data}   # 25.09: SO_NNNNNNN (so.id stores SO:NNNNNNN)
       variantDescription: {role: text}
       hgvsId:          {role: identifier, resolvable: false}
+      # in the 25.09 files (6,795,269 variants, 25 shards), absent from the test fixtures:
+      variantEffect:
+        role: nested
+        optional: true
+        fields:
+          method:          {role: category, vocab: data, optional: true}
+          assessment:      {role: category, vocab: data, optional: true}
+          score:           {role: measure, statistic: numeric, missing: unknown, optional: true}
+          assessmentFlag:  {role: category, vocab: data, optional: true}
+          targetId:        {role: identifier, id_type: ensembl_gene, integrity: partial, optional: true}
+          normalisedScore: {role: measure, statistic: numeric, missing: unknown, optional: true}
+      transcriptConsequences: {role: payload, optional: true}   # per-transcript VEP annotation (18 fields)
+      alleleFrequencies:
+        role: nested
+        optional: true
+        fields:
+          populationName:  {role: category, vocab: data, optional: true}
+          alleleFrequency: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown, optional: true}
+      dbXrefs:
+        role: nested
+        optional: true
+        fields:
+          id:     {role: payload, optional: true}
+          source: {role: category, vocab: data, optional: true}
 
   study:
     kind: entity
@@ -1349,6 +1528,12 @@ tables:
       summarystatsLocation: {role: payload}
       hasSumstats:     {role: flag, missing: unknown}
       condition:       {role: payload}
+      sumstatQCValues:                 # in the 25.09 file, absent from the test fixtures
+        role: nested
+        optional: true
+        fields:
+          QCCheckName:  {role: category, vocab: data, optional: true}
+          QCCheckValue: {role: measure, statistic: numeric, missing: unknown, optional: true}
       diseaseIds:      {role: identifier, id_type: ot_disease, path: "[]", cardinality: many, integrity: partial}
       backgroundDiseaseIds: {role: payload}
       biosampleId:     {role: identifier, id_type: biosample, integrity: partial}
@@ -1358,6 +1543,10 @@ tables:
     path: interval
     size_class: huge
     grain: one regulatory interval linked to one gene in one biosample by one source
+    # 25.09: 48,854,316 rows in 83 shards (3.23 GB), all from datasourceId E2G (pmid 38014075), score [0.6, 1.0].
+    # REFUTED content identity: in 2 downloaded shards (1,365,017 rows) the grouping key repeats 19,496 times
+    # and 67 rows are exact duplicates (584 repeat the 40-hex intervalId), so rows are not identified by their
+    # content either; kept verified: false.
     key: {columns: [chromosome, start, end, geneId, intervalType, datasourceId, biosampleName],
           nullable: [biosampleName], row_identity: content_hash, check: sampled, verified: false}
     rank: [{column: score, direction: desc, nulls: last, within: [datasourceId]}]
@@ -1374,10 +1563,18 @@ tables:
       datasourceId:  {role: category, vocab: data, scope: {kind: stratum, pooling: group}}
       score:         {role: measure, statistic: numeric, comparable_within: [datasourceId], missing: unknown}
       distanceToTss: {role: measure, statistic: numeric, missing: unknown}
-      datatypeId:    {role: category, vocab: data, scope: {kind: stratum, pooling: group, determined_by: [datasourceId]}}
+      datatypeId:    {role: category, vocab: data, scope: {kind: stratum, pooling: group, determined_by: [datasourceId]},
+                      optional: true}   # absent from the 25.09 files
       pmid:          {role: reference, ref_kinds: [pmid]}
-      studyId:       {role: identifier, id_type: gwas_study, integrity: partial}
+      studyId:       {role: identifier, resolvable: false}   # 25.09: ENCODE file accessions (ENCFF003BKC), not studies
       intervalId:    {role: identifier, resolvable: false}
+      resourceScore:                    # in the 25.09 files, absent from the test fixtures: DNase and HiC_contacts
+        role: nested
+        optional: true
+        item_key: [name]
+        fields:
+          name:  {role: category, vocab: data, optional: true}
+          value: {role: measure, statistic: numeric, comparable_within: [name], missing: unknown, optional: true}
 
   colocalisation_coloc:
     kind: fact
@@ -1425,9 +1622,20 @@ tables:
     kind: edges
     path: interaction
     grain: one interactor pair mapped to one gene pair, aggregated over the pair's evidence in one source database
-    key: {columns: [sourceDatabase, intA, intB, targetA, targetB], nullable: [targetB], check: full}
-    edge: {a: targetA, b: targetB, directed: false, directed_when: {sourceDatabase: [signor]},
-           orientation: as_reported, verified: false,
+    # 25.09: 14,524,000 rows in 8 shards (string 13,217,122, intact 1,215,070, reactome 55,172, signor 36,636).
+    # (sourceDatabase, intA, intB, targetA, targetB) repeats 6,981 times (up to 9 rows: one row per pair of
+    # biological roles, e.g. "unspecified role"/"competitor" next to "unspecified role"/"unspecified role");
+    # with the two roles the key is unique over all rows. targetB is null in 263,536 rows.
+    key: {columns: [sourceDatabase, intA, intB, targetA, targetB, intABiologicalRole, intBBiologicalRole],
+          nullable: [targetB], check: full}
+    # 25.09: every gene pair (A != B) is stored in both orientations in every source (1,094,900 intact,
+    # 49,310 reactome, 35,070 signor and 12,990,032 string ordered pairs, each with its reverse), so the two
+    # stored rows are one edge (orientation: both). SIGNOR is mirrored too, with the roles swapped
+    # ("regulator" / "regulator target"): its causal direction is in the roles, not in the A/B order, so
+    # reading the A/B order as directed (the former directed_when: {sourceDatabase: [signor]}) would add a
+    # reversed edge for every SIGNOR relation; edges are undirected until direction can come from the roles
+    # (contract request). 6,086 rows pair a gene with itself.
+    edge: {a: targetA, b: targetB, directed: false, orientation: both, verified: true,
            sides: {a: [intA, intABiologicalRole, speciesA], b: [intB, intBBiologicalRole, speciesB]}}
     grains: {edge: {unordered: [targetA, targetB], by: [sourceDatabase]}, partner: {unordered: [targetA, targetB]}}
     rank: [{column: scoring, direction: desc, nulls: last, within: [sourceDatabase]}]
@@ -1438,22 +1646,33 @@ tables:
       per_scope: {signor: "causal (directed) edges only", reactome: "pathway-reaction co-membership"}
     columns:
       sourceDatabase: {role: category, vocab: [intact, reactome, signor, string], scope: {kind: stratum, pooling: group}}
-      targetA: {role: endpoint, side: a, id_type: ensembl_gene, ref: target.id}
-      targetB: {role: endpoint, side: b, id_type: ensembl_gene, ref: target.id, missing: non_entity}
+      # 25.09: about 700 endpoints are Ensembl genes of other species (ENSAMEG00000026011.1, MGP_SPRETEiJ_G0036647.1),
+      # absent from target (readiness R9 found 543 of 20,363 sampled targetA values dangling)
+      targetA: {role: endpoint, side: a, id_type: ensembl_gene, ref: target.id, integrity: partial}
+      targetB: {role: endpoint, side: b, id_type: ensembl_gene, ref: target.id, integrity: partial, missing: non_entity}
       intA: {role: identifier, side: a, id_type_from: {field: intASource, map: {uniprotkb: uniprot_accession}}}
       intB: {role: identifier, side: b, id_type_from: {field: intBSource, map: {uniprotkb: uniprot_accession}}}
-      intASource: {role: category, vocab: data, side: a}
-      intBSource: {role: category, vocab: data, side: b}
+      intASource: {role: category, vocab: data, side: a, optional: true}   # absent from the 25.09 files
+      intBSource: {role: category, vocab: data, side: b, optional: true}   # absent from the 25.09 files
       intABiologicalRole: {role: category, vocab: data, side: a}
       intBBiologicalRole: {role: category, vocab: data, side: b}
+      # 25.09 names the species fields scientific_name and taxon_id (interaction_evidence keeps scientificName
+      # and taxonId); speciesA is Homo sapiens (9606) in every row, speciesB taxon_id ranges -2..3052342.
+      # Both spellings are declared optional; the overlay's `species` argument binds scientificName (contract
+      # request: bind scientific_name).
       speciesA: {role: nested, side: a, fields: {mnemonic: {role: category, vocab: data},
-                                                 scientificName: {role: category, vocab: data, match: casefold},
-                                                 taxonId: {role: identifier, id_type: ncbi_taxon}}}
+                                                 scientificName: {role: category, vocab: data, match: casefold, optional: true},
+                                                 taxonId: {role: identifier, id_type: ncbi_taxon, optional: true},
+                                                 scientific_name: {role: category, vocab: data, match: casefold, optional: true},
+                                                 taxon_id: {role: identifier, id_type: ncbi_taxon, optional: true}}}
       speciesB: {role: nested, side: b, fields: {mnemonic: {role: category, vocab: data},
-                                                 scientificName: {role: category, vocab: data, match: casefold},
-                                                 taxonId: {role: identifier, id_type: ncbi_taxon}}}
+                                                 scientificName: {role: category, vocab: data, match: casefold, optional: true},
+                                                 taxonId: {role: identifier, id_type: ncbi_taxon, optional: true},
+                                                 scientific_name: {role: category, vocab: data, match: casefold, optional: true},
+                                                 taxon_id: {role: identifier, id_type: ncbi_taxon, optional: true}}}
       scoring: {role: measure, statistic: score_0_1, scale: [0, 1], comparable_within: [sourceDatabase],
                 missing: unknown, by_partition: {reactome: {missing: not_applicable}, signor: {missing: not_applicable}}}
+                # 25.09: null exactly in the 55,172 reactome and 36,636 signor rows; [0.15, 1.0] elsewhere
       count: {role: count, counts: "evidence records for this pair in this source", comparable_within: [sourceDatabase]}
 
   interaction_evidence:
@@ -1463,9 +1682,15 @@ tables:
     grain: one interaction evidence record (one experiment or curated statement) for one interactor pair
     # Rows are identified by content: one experiment can be reported twice for one pair, and the
     # identifier is null for curated statements; key.columns are the grouping key of a record.
+    # 25.09 (whole table: 27,286,700 rows; string 24,970,548, intact 2,048,630, reactome 217,568, signor 49,954):
+    # interactionIdentifier is null in exactly the string rows; the grouping key repeats 11,779,651 times and
+    # REFUTED content identity: 24,280 rows are exact copies of another row (nested fields included), so
+    # neither the key nor the content identifies a record (kept verified: false).
     key: {columns: [interactionIdentifier, intA, intB, targetA, targetB], nullable: [interactionIdentifier, targetA, targetB],
           row_identity: content_hash, check: sampled, verified: false}
-    edge: {a: targetA, b: targetB, directed: false, orientation: as_reported, verified: false,
+    # 25.09: as in interaction, every gene pair is stored in both orientations in every source (string
+    # 12,990,032, intact 1,094,900, reactome 49,310 and signor 35,070 ordered pairs, each with its reverse)
+    edge: {a: targetA, b: targetB, directed: false, orientation: both, verified: true,
            sides: {a: [intA, intABiologicalRole], b: [intB, intBBiologicalRole]}}
     grains: {pair: {unordered: [targetA, targetB], by: ["interactionResources.sourceDatabase"]},
              experiment: [interactionIdentifier]}
@@ -1473,11 +1698,15 @@ tables:
                absence_means: unknown}
     columns:
       interactionIdentifier: {role: identifier}
-      targetA: {role: endpoint, side: a, id_type: ensembl_gene, ref: target.id, missing: non_entity}
-      targetB: {role: endpoint, side: b, id_type: ensembl_gene, ref: target.id, missing: non_entity}
-      # each evidence record belongs to one aggregated interaction row (composite reference)
+      # 25.09: as in interaction, some endpoints are Ensembl genes of other species (ENSAMEG00000026011.1) that are
+      # not in target (readiness R9: 543 of 20,363 sampled targetA and 383 of 20,180 targetB values dangle)
+      targetA: {role: endpoint, side: a, id_type: ensembl_gene, ref: target.id, integrity: partial, missing: non_entity}
+      targetB: {role: endpoint, side: b, id_type: ensembl_gene, ref: target.id, integrity: partial, missing: non_entity}
+      # each evidence record belongs to one aggregated interaction row (composite reference); 25.09: all
+      # 27,286,700 records match one of the 14,524,000 interaction rows on these seven columns
       intA:    {role: identifier, side: a, resolvable: false, integrity: partial,
                 ref: {table: interaction, on: {intA: intA, intB: intB, targetA: targetA, targetB: targetB,
+                                               intABiologicalRole: intABiologicalRole, intBBiologicalRole: intBBiologicalRole,
                                                sourceDatabase: "interactionResources.sourceDatabase"}}}
       intB:    {role: identifier, side: b, resolvable: false}
       intABiologicalRole: {role: category, vocab: data, side: a}
@@ -1485,8 +1714,36 @@ tables:
       interactionDetectionMethodShortName: {role: category, vocab: data}
       interactionResources: {role: nested, fields: {sourceDatabase: {role: category, vocab: [intact, reactome, signor, string]},
                                                     databaseVersion: {role: payload}}}
-      interactionScore: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown, verified: false}
-      pubmedId: {role: identifier, id_type: pmid, integrity: partial}
+      interactionScore: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown, verified: true}
+                        # 25.09 footers of all 200 shards: [0.15, 1.0]; null in 267,522 rows (the reactome and signor ones)
+      pubmedId: {role: identifier, id_type: pmid, integrity: partial}   # 25.09 also stores "unassigned85", "NBK6142"
+      # in the 25.09 files (27,286,700 rows, 200 shards), absent from the test fixtures:
+      intASource: {role: category, vocab: data, side: a, optional: true}   # ensembl_protein (string), uniprotkb, ...
+      intBSource: {role: category, vocab: data, side: b, optional: true}
+      speciesA:   {role: nested, side: a, optional: true,
+                  fields: {mnemonic: {role: category, vocab: data, optional: true},
+                           scientificName: {role: category, vocab: data, match: casefold, optional: true},
+                           taxonId: {role: identifier, id_type: ncbi_taxon, optional: true}}}
+      speciesB:   {role: nested, side: b, optional: true,
+                  fields: {mnemonic: {role: category, vocab: data, optional: true},
+                           scientificName: {role: category, vocab: data, match: casefold, optional: true},
+                           taxonId: {role: identifier, id_type: ncbi_taxon, optional: true}}}
+      evidenceScore: {role: measure, statistic: score_0_1, scale: [0, 1], missing: unknown, optional: true}
+                     # 25.09: [0.001, 0.999], filled only in the string rows
+      interactionDetectionMethodMiIdentifier: {role: category, vocab: data, optional: true}
+      interactionTypeMiIdentifier: {role: category, vocab: data, optional: true}
+      interactionTypeShortName: {role: label, of: interactionTypeMiIdentifier, optional: true}
+      expansionMethodMiIdentifier: {role: category, vocab: data, optional: true}
+      expansionMethodShortName: {role: label, of: expansionMethodMiIdentifier, optional: true}
+      participantDetectionMethodA: {role: nested, side: a, optional: true,
+                                    fields: {miIdentifier: {role: category, vocab: data, optional: true},
+                                             shortName: {role: label, of: miIdentifier, optional: true}}}
+      participantDetectionMethodB: {role: nested, side: b, optional: true,
+                                    fields: {miIdentifier: {role: category, vocab: data, optional: true},
+                                             shortName: {role: label, of: miIdentifier, optional: true}}}
+      hostOrganismTaxId: {role: category, vocab: data, optional: true}   # NCBI taxa and negative PSI-MI codes (min -4)
+      hostOrganismScientificName: {role: category, vocab: data, optional: true}
+      hostOrganismTissue: {role: payload, optional: true}
 
   # -------------------------------------------------------------------- ontologies
   go:
@@ -1508,20 +1765,24 @@ tables:
     grain: one Reactome pathway or reaction
     key: {columns: [id], check: full}
     coverage: {statement: "Reactome pathways of OT 25.09 (existence only).", absence_means: absent, applies_to: entity}
+    # 25.09: 2,803 R-HSA events; every parent link has its child link; ancestors and descendants equal the
+    # transitive closures of parents and children for every event and never contain the event itself
     columns:
       id:          {role: identifier, id_type: reactome_pathway, self: true}
       label:       {role: label, of: id}
-      parents:     {role: hierarchy, relation: parent, of: id, closure: direct}
-      children:    {role: hierarchy, relation: child, of: id, closure: direct}
-      ancestors:   {role: hierarchy, relation: ancestor, of: id, closure: transitive, verified: false}
-      descendants: {role: hierarchy, relation: descendant, of: id, closure: transitive, verified: false}
+      parents:     {role: hierarchy, relation: parent, of: id, closure: direct, inverse_of: children}
+      children:    {role: hierarchy, relation: child, of: id, closure: direct, inverse_of: parents}
+      ancestors:   {role: hierarchy, relation: ancestor, of: id, closure: transitive, closure_of: parents, reflexive: false,
+                    verified: true}
+      descendants: {role: hierarchy, relation: descendant, of: id, closure: transitive, closure_of: children, reflexive: false,
+                    verified: true}
       path:        {role: payload}
 
   so:
     kind: ontology
     path: so
     grain: one Sequence Ontology term
-    key: {columns: [id], check: full}
+    key: {columns: [id], check: full}   # 25.09: 2,611 terms, ids SO:0000000..SO:3000000 (see so_term)
     coverage: {statement: "Sequence Ontology terms of OT 25.09 (existence only).", absence_means: absent, applies_to: entity}
     columns:
       id:    {role: identifier, id_type: so_term, self: true}

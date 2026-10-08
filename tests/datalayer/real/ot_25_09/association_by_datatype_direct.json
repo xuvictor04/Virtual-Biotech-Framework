@@ -1,0 +1,105 @@
+{
+ "bytes": 32355246,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "d68ce2a5f68a6f34c8c817a178bad29af84d32f30249bd22ea9fd51abcef01b9",
+ "leaves": {
+  "datatypeId": [
+   "string",
+   0,
+   4166902,
+   "affected_pathway",
+   "somatic_mutation"
+  ],
+  "diseaseId": [
+   "string",
+   0,
+   4166902,
+   "DOID_0050890",
+   "UBERON_0000104"
+  ],
+  "evidenceCount": [
+   "int64",
+   0,
+   4166902,
+   1,
+   51346
+  ],
+  "score": [
+   "double",
+   0,
+   4166902,
+   0.006079307976116211,
+   0.9997249064482479
+  ],
+  "targetId": [
+   "string",
+   0,
+   4166902,
+   "ENSG00000000003",
+   "ENSG00000310576"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 20,
+ "rows": 4166902,
+ "schema": [
+  {
+   "name": "diseaseId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "targetId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "datatypeId",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "score",
+   "nullable": true,
+   "type": "double"
+  },
+  {
+   "name": "evidenceCount",
+   "nullable": true,
+   "type": "int64"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  213654,
+  226015,
+  203422,
+  201249,
+  201581,
+  207274,
+  200698,
+  200975,
+  216490,
+  213354,
+  219171,
+  193494,
+  195791,
+  219604,
+  214780,
+  216272,
+  194196,
+  190759,
+  218184,
+  219939
+ ],
+ "shards": 20,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/association_by_datatype_direct/",
+ "table": "association_by_datatype_direct"
+}

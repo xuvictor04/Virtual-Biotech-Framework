@@ -1,0 +1,146 @@
+{
+ "bytes": 197905,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "1123b2fa17b27a1ac8cefb7c4e24138ae376a8f39193c0630f97b46246d011e8",
+ "leaves": {
+  "ancestors.list.element": [
+   "string",
+   29,
+   9706,
+   "R-HSA-109581",
+   "R-HSA-9944971"
+  ],
+  "children.list.element": [
+   "string",
+   1984,
+   4803,
+   "R-HSA-1059683",
+   "R-HSA-997272"
+  ],
+  "descendants.list.element": [
+   "string",
+   1984,
+   11661,
+   "R-HSA-1059683",
+   "R-HSA-997272"
+  ],
+  "id": [
+   "string",
+   0,
+   2803,
+   "R-HSA-1059683",
+   "R-HSA-997272"
+  ],
+  "label": [
+   "string",
+   0,
+   2803,
+   "2-LTR circle formation",
+   "vRNP Assembly"
+  ],
+  "parents.list.element": [
+   "string",
+   29,
+   2848,
+   "R-HSA-109581",
+   "R-HSA-9944971"
+  ],
+  "path.list.element.list.element": [
+   "string",
+   0,
+   13318,
+   "R-HSA-1059683",
+   "R-HSA-997272"
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 1,
+ "rows": 2803,
+ "schema": [
+  {
+   "name": "id",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "label",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "ancestors",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "descendants",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "children",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "parents",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "path",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "list": {
+       "name": "element",
+       "nullable": true,
+       "type": "string"
+      }
+     }
+    }
+   }
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  2803
+ ],
+ "shards": 1,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/reactome/",
+ "table": "reactome"
+}

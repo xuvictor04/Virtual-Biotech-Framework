@@ -1,0 +1,253 @@
+{
+ "bytes": 39426999,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "21282604ae539e1edde65e07bd8fdd06dabaa629b2f34e9932406a5e00427322",
+ "leaves": {
+  "id": [
+   "string",
+   0,
+   43804,
+   "ENSG00000000003",
+   "ENSG00000291316"
+  ],
+  "tissues.list.element.anatomical_systems.list.element": [
+   "string",
+   13464,
+   7924559,
+   "anatomical junction",
+   "sensory system"
+  ],
+  "tissues.list.element.efo_code": [
+   "string",
+   0,
+   4940421,
+   "CL_0000037",
+   "lactating breast"
+  ],
+  "tissues.list.element.label": [
+   "string",
+   0,
+   4940421,
+   "Brodmann (1909) area 24",
+   "zone of skin"
+  ],
+  "tissues.list.element.organs.list.element": [
+   "string",
+   13464,
+   7181995,
+   "bladder organ",
+   "vasculature"
+  ],
+  "tissues.list.element.protein.cell_type.list.element.level": [
+   "int32",
+   4350738,
+   5460724,
+   -1,
+   3
+  ],
+  "tissues.list.element.protein.cell_type.list.element.name": [
+   "string",
+   4350738,
+   5460724,
+   "Bergmann glia - cytoplasm/membrane",
+   "white matter cells - nucleus"
+  ],
+  "tissues.list.element.protein.cell_type.list.element.reliability": [
+   "bool",
+   4350738,
+   5460724,
+   false,
+   true
+  ],
+  "tissues.list.element.protein.level": [
+   "int32",
+   0,
+   4940421,
+   -1,
+   3
+  ],
+  "tissues.list.element.protein.reliability": [
+   "bool",
+   0,
+   4940421,
+   false,
+   true
+  ],
+  "tissues.list.element.rna.level": [
+   "int32",
+   0,
+   4940421,
+   -1,
+   10
+  ],
+  "tissues.list.element.rna.unit": [
+   "string",
+   0,
+   4940421,
+   "",
+   "TPM"
+  ],
+  "tissues.list.element.rna.value": [
+   "double",
+   0,
+   4940421,
+   0.0,
+   297480314.0
+  ],
+  "tissues.list.element.rna.zscore": [
+   "int32",
+   0,
+   4940421,
+   -1,
+   6
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 4,
+ "rows": 43804,
+ "schema": [
+  {
+   "name": "id",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "tissues",
+   "nullable": false,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": false,
+     "type": {
+      "struct": [
+       {
+        "name": "efo_code",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "label",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "organs",
+        "nullable": true,
+        "type": {
+         "list": {
+          "name": "element",
+          "nullable": true,
+          "type": "string"
+         }
+        }
+       },
+       {
+        "name": "anatomical_systems",
+        "nullable": true,
+        "type": {
+         "list": {
+          "name": "element",
+          "nullable": true,
+          "type": "string"
+         }
+        }
+       },
+       {
+        "name": "rna",
+        "nullable": false,
+        "type": {
+         "struct": [
+          {
+           "name": "value",
+           "nullable": true,
+           "type": "double"
+          },
+          {
+           "name": "zscore",
+           "nullable": true,
+           "type": "int32"
+          },
+          {
+           "name": "level",
+           "nullable": true,
+           "type": "int32"
+          },
+          {
+           "name": "unit",
+           "nullable": true,
+           "type": "string"
+          }
+         ]
+        }
+       },
+       {
+        "name": "protein",
+        "nullable": false,
+        "type": {
+         "struct": [
+          {
+           "name": "reliability",
+           "nullable": true,
+           "type": "bool"
+          },
+          {
+           "name": "level",
+           "nullable": true,
+           "type": "int32"
+          },
+          {
+           "name": "cell_type",
+           "nullable": false,
+           "type": {
+            "list": {
+             "name": "element",
+             "nullable": false,
+             "type": {
+              "struct": [
+               {
+                "name": "name",
+                "nullable": true,
+                "type": "string"
+               },
+               {
+                "name": "reliability",
+                "nullable": true,
+                "type": "bool"
+               },
+               {
+                "name": "level",
+                "nullable": true,
+                "type": "int32"
+               }
+              ]
+             }
+            }
+           }
+          }
+         ]
+        }
+       }
+      ]
+     }
+    }
+   }
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  11082,
+  10903,
+  10818,
+  11001
+ ],
+ "shards": 4,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/expression/",
+ "table": "expression"
+}

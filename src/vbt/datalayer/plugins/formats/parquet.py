@@ -29,10 +29,15 @@ Capabilities: ``tabular``, ``pushdown``, ``stats``, ``nested``, ``leaf_projectio
   (``drugs.list.element.drugId``) for whole files or chosen row groups.
 * :meth:`ParquetFormat.to_native` returns plain Python: lists, dicts (maps as ``[{key, value}]``),
   NaN as ``None`` at every level, never numpy.
+* Footers (``logical_schema``, ``stats``, ``metadata``) and ``read_leaves`` also open ``http(s)://``
+  (``http_range``) and ``zip://`` fragments through
+  :func:`~vbt.datalayer.plugins.layouts.zip_member.open_fragment`; :func:`footer_stats` turns one
+  footer into per-leaf statistics for local and remote files alike.
 """
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import os
@@ -60,7 +65,8 @@ from ..layouts import prune_fragments
 from ..registry import register
 from . import conjuncts, storage_typed, top_column
 
-__all__ = ["ParquetFormat", "PATHS_KEY", "PARTITION_TYPES", "leaf_index", "modern_paths", "arrow_type", "type_at"]
+__all__ = ["ParquetFormat", "PATHS_KEY", "PARTITION_TYPES", "leaf_index", "modern_paths", "arrow_type", "type_at",
+           "footer_stats"]
 
 #: Schema metadata key holding the footer's leaf paths (JSON list) in :meth:`ParquetFormat.logical_schema`.
 PATHS_KEY = b"vbt.path_in_schema"
@@ -523,6 +529,65 @@ def _row_group_chunks(piece: Any, wanted: Sequence[int] | None, pushdown: Any, s
 
 
 # ---------------------------------------------------------------------------
+# Footer statistics
+# ---------------------------------------------------------------------------
+
+def _is_text(t: Any) -> bool:
+    pa = _arrow()
+    return pa.types.is_string(t) or pa.types.is_large_string(t) or pa.types.is_binary(t) or \
+        pa.types.is_large_binary(t)
+
+
+def footer_stats(schema: Any, md: Any) -> FragmentStats:
+    """Per-leaf statistics of one file from its footer alone: ``schema`` is the file's Arrow schema and
+    ``md`` its ``FileMetaData`` (a local file or a footer fetched with range requests, so local and
+    remote fragments report the same storage types, null counts and min/max)."""
+    physical = [md.schema.column(i).path for i in range(md.num_columns)]
+    types = {leaf: t for leaf, _ends, t in leaf_index(schema, physical).values()}
+    cols: dict[str, ColumnStats] = {}
+    for i, leaf in enumerate(physical):
+        col = md.schema.column(i)
+        unc = nv = 0
+        nulls: int | None = 0
+        mn = mx = None
+        minmax = md.num_row_groups > 0
+        for rg in range(md.num_row_groups):
+            cc = md.row_group(rg).column(i)
+            unc += int(cc.total_uncompressed_size or 0)
+            nv += int(cc.num_values or 0)
+            st = cc.statistics
+            if st is None or not st.has_null_count:
+                nulls = None
+            elif nulls is not None:
+                nulls += int(st.null_count)
+            if st is None or not st.has_min_max:
+                minmax = False
+            elif minmax:
+                try:
+                    mn = st.min if mn is None or st.min < mn else mn
+                    mx = st.max if mx is None or st.max > mx else mx
+                except TypeError:
+                    minmax = False
+        t = types.get(leaf)
+        storage = str(t) if t is not None else str(col.physical_type).lower()
+        if col.max_repetition_level > 0:
+            kind = "nested"
+        elif t is not None and _is_text(t):
+            kind = "string"
+        else:
+            kind = "flat"
+        if isinstance(mn, bytes) or isinstance(mx, bytes):
+            mn = mn.decode("utf-8", "replace") if isinstance(mn, bytes) else mn
+            mx = mx.decode("utf-8", "replace") if isinstance(mx, bytes) else mx
+        cols[leaf] = ColumnStats(uncompressed_bytes=unc, null_count=nulls, num_values=nv,
+                                 max_rep_level=int(col.max_repetition_level),
+                                 max_def_level=int(col.max_definition_level),
+                                 min=mn if minmax else None, max=mx if minmax else None,
+                                 storage_type=storage, kind=kind)  # type: ignore[arg-type]
+    return FragmentStats(rows=int(md.num_rows), row_groups=int(md.num_row_groups), columns=cols, method="footer")
+
+
+# ---------------------------------------------------------------------------
 # The plugin
 # ---------------------------------------------------------------------------
 
@@ -536,27 +601,44 @@ class ParquetFormat(PluginBase):
 
     # -- footers ----------------------------------------------------------------
 
-    def _open(self, frag: Fragment) -> Any:
+    @contextlib.contextmanager
+    def _open(self, frag: Fragment) -> Iterator[Any]:
+        """The fragment as a ``ParquetFile``, closed on exit. A local path is opened by name; an
+        ``http(s)://`` URL (``http_range``) or a ``zip://`` member is read through
+        :func:`~vbt.datalayer.plugins.layouts.zip_member.open_fragment`, so a footer read transfers
+        only the footer."""
         pa = _arrow()
         import pyarrow.parquet as pq
 
-        try:
-            return pq.ParquetFile(_path(frag))
-        except (pa.ArrowException, OSError, ValueError) as exc:
-            raise _unreadable(frag, exc) from exc
+        from ..layouts.zip_member import local_path, open_fragment
 
-    def _footer(self, frag: Fragment) -> tuple[Any, Any]:
-        """``(arrow schema, FileMetaData)`` of one fragment (FormatError when unreadable)."""
-        pa = _arrow()
-        pf = self._open(frag)
+        path = local_path(frag)
+        raw = None
         try:
-            return pf.schema_arrow, pf.metadata
+            if path is None:
+                raw = open_fragment(frag)
+            pf = pq.ParquetFile(raw if raw is not None else path)
         except (pa.ArrowException, OSError, ValueError) as exc:
+            if raw is not None:
+                raw.close()
             raise _unreadable(frag, exc) from exc
+        try:
+            yield pf
         finally:
             close = getattr(pf, "close", None)
             if callable(close):
                 close()
+            if raw is not None:
+                raw.close()
+
+    def _footer(self, frag: Fragment) -> tuple[Any, Any]:
+        """``(arrow schema, FileMetaData)`` of one fragment (FormatError when unreadable)."""
+        pa = _arrow()
+        with self._open(frag) as pf:
+            try:
+                return pf.schema_arrow, pf.metadata
+            except (pa.ArrowException, OSError, ValueError) as exc:
+                raise _unreadable(frag, exc) from exc
 
     def logical_schema(self, frag: Fragment) -> Any:
         pa = _arrow()
@@ -588,55 +670,11 @@ class ParquetFormat(PluginBase):
 
     def stats(self, frag: Fragment) -> FragmentStats:
         schema, md = self._footer(frag)
-        physical = [md.schema.column(i).path for i in range(md.num_columns)]
-        types = {leaf: t for leaf, _ends, t in leaf_index(schema, physical).values()}
-        cols: dict[str, ColumnStats] = {}
-        for i, leaf in enumerate(physical):
-            col = md.schema.column(i)
-            unc = nv = 0
-            nulls: int | None = 0
-            mn = mx = None
-            minmax = md.num_row_groups > 0
-            for rg in range(md.num_row_groups):
-                cc = md.row_group(rg).column(i)
-                unc += int(cc.total_uncompressed_size or 0)
-                nv += int(cc.num_values or 0)
-                st = cc.statistics
-                if st is None or not st.has_null_count:
-                    nulls = None
-                elif nulls is not None:
-                    nulls += int(st.null_count)
-                if st is None or not st.has_min_max:
-                    minmax = False
-                elif minmax:
-                    try:
-                        mn = st.min if mn is None or st.min < mn else mn
-                        mx = st.max if mx is None or st.max > mx else mx
-                    except TypeError:
-                        minmax = False
-            t = types.get(leaf)
-            storage = str(t) if t is not None else str(col.physical_type).lower()
-            if col.max_repetition_level > 0:
-                kind = "nested"
-            elif t is not None and self._is_text(t):
-                kind = "string"
-            else:
-                kind = "flat"
-            if isinstance(mn, bytes) or isinstance(mx, bytes):
-                mn = mn.decode("utf-8", "replace") if isinstance(mn, bytes) else mn
-                mx = mx.decode("utf-8", "replace") if isinstance(mx, bytes) else mx
-            cols[leaf] = ColumnStats(uncompressed_bytes=unc, null_count=nulls, num_values=nv,
-                                     max_rep_level=int(col.max_repetition_level),
-                                     max_def_level=int(col.max_definition_level),
-                                     min=mn if minmax else None, max=mx if minmax else None,
-                                     storage_type=storage, kind=kind)  # type: ignore[arg-type]
-        return FragmentStats(rows=int(md.num_rows), row_groups=int(md.num_row_groups), columns=cols, method="footer")
+        return footer_stats(schema, md)
 
     @staticmethod
     def _is_text(t: Any) -> bool:
-        pa = _arrow()
-        return pa.types.is_string(t) or pa.types.is_large_string(t) or pa.types.is_binary(t) or \
-            pa.types.is_large_binary(t)
+        return _is_text(t)
 
     def metadata(self, frag: Fragment) -> Mapping[str, str]:
         schema, md = self._footer(frag)
@@ -794,17 +832,13 @@ class ParquetFormat(PluginBase):
                 physical.append(self.leaf_path(leaf, schema))
             else:
                 physical.append(leaf)
-        pf = self._open(frag)
-        try:
-            if row_groups is None:
-                return pf.read(columns=physical)
-            return pf.read_row_groups(list(row_groups), columns=physical)
-        except (pa.ArrowException, OSError) as exc:
-            raise _unreadable(frag, exc) from exc
-        finally:
-            close = getattr(pf, "close", None)
-            if callable(close):
-                close()
+        with self._open(frag) as pf:
+            try:
+                if row_groups is None:
+                    return pf.read(columns=physical)
+                return pf.read_row_groups(list(row_groups), columns=physical)
+            except (pa.ArrowException, OSError) as exc:
+                raise _unreadable(frag, exc) from exc
 
     def to_native(self, table: Any) -> list[dict[str, Any]]:
         rows = table.to_pylist()

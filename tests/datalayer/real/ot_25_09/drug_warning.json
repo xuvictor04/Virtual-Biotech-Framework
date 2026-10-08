@@ -1,0 +1,202 @@
+{
+ "bytes": 203238,
+ "created_by": [
+  "parquet-mr version 1.13.1-dataproc-1.0.5"
+ ],
+ "file_names_sha256": "df316370ceca25817d2a90e758b5e49ec4a17d0fafc61bc8db9e71ae14bddc8a",
+ "leaves": {
+  "chemblIds.list.element": [
+   "string",
+   2,
+   2283,
+   "CHEMBL100116",
+   "CHEMBL99946"
+  ],
+  "country": [
+   "string",
+   0,
+   1676,
+   "Armenia",
+   "Worldwide"
+  ],
+  "description": [
+   "string",
+   1139,
+   1676,
+   "Abuse",
+   "when propoxyphene was taken at therapeut"
+  ],
+  "efo_id": [
+   "string",
+   1142,
+   1676,
+   "EFO:0000319",
+   "PATO:0001422"
+  ],
+  "efo_id_for_warning_class": [
+   "string",
+   282,
+   1676,
+   "EFO:0005741",
+   "EFO:1001482"
+  ],
+  "efo_term": [
+   "string",
+   1142,
+   1676,
+   "Abnormality of higher mental function",
+   "ventricular tachycardia"
+  ],
+  "id": [
+   "int64",
+   0,
+   1676,
+   1,
+   3844
+  ],
+  "references.list.element.ref_id": [
+   "string",
+   167,
+   4067,
+   "00139e9f-3fd0-4dcf-a437-fb68a9988cea",
+   "safety-notices/item?t=/withdrawn-all-vio"
+  ],
+  "references.list.element.ref_type": [
+   "string",
+   167,
+   4067,
+   "DOI",
+   "WHO"
+  ],
+  "references.list.element.ref_url": [
+   "string",
+   167,
+   4067,
+   "http://dx.doi.org/10.1136/dtb.1994.32215",
+   "https://www.who.int/publications/i/item/"
+  ],
+  "toxicityClass": [
+   "string",
+   282,
+   1676,
+   "carcinogenicity",
+   "vascular toxicity"
+  ],
+  "warningType": [
+   "string",
+   0,
+   1676,
+   "Black Box Warning",
+   "Withdrawn"
+  ],
+  "year": [
+   "int64",
+   1136,
+   1676,
+   1960,
+   2020
+  ]
+ },
+ "method": "Parquet footer of every shard over HTTP range requests (vbt http_range.read_footer + parquet.footer_stats); no row group transferred",
+ "other_files": [
+  "_SUCCESS"
+ ],
+ "release": "25.09",
+ "retrieved": "2026-10-08",
+ "row_groups": 1,
+ "rows": 1676,
+ "schema": [
+  {
+   "name": "chemblIds",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": "string"
+    }
+   }
+  },
+  {
+   "name": "toxicityClass",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "country",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "description",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "id",
+   "nullable": true,
+   "type": "int64"
+  },
+  {
+   "name": "references",
+   "nullable": true,
+   "type": {
+    "list": {
+     "name": "element",
+     "nullable": true,
+     "type": {
+      "struct": [
+       {
+        "name": "ref_id",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "ref_type",
+        "nullable": true,
+        "type": "string"
+       },
+       {
+        "name": "ref_url",
+        "nullable": true,
+        "type": "string"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "warningType",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "year",
+   "nullable": true,
+   "type": "int64"
+  },
+  {
+   "name": "efo_term",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "efo_id",
+   "nullable": true,
+   "type": "string"
+  },
+  {
+   "name": "efo_id_for_warning_class",
+   "nullable": true,
+   "type": "string"
+  }
+ ],
+ "schema_variants": 1,
+ "shard_rows": [
+  1676
+ ],
+ "shards": 1,
+ "source": "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/drug_warning/",
+ "table": "drug_warning"
+}
