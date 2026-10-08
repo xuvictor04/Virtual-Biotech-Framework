@@ -369,8 +369,8 @@ def _stored_form_rows(ctx: ServiceContext, src: str, id_type: str, spec: Any, pl
             canonical = n.value
             if canonical not in keys:
                 continue
-            if why == "ref" and s == canonical:
-                continue
+            if s == canonical:
+                continue                               # stored as is: no stored-form row (stored_value is None)
             out.append(Entry(lk(s), canonical, "stored_form", stored_table=table, stored_value=s))
     return out
 

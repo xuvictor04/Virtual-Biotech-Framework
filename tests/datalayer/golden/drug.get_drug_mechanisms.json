@@ -25,7 +25,7 @@
    },
    "mechanism": {
     "default": null,
-    "description": "Values of mechanismOfAction (see mcp__data__vocab).",
+    "description": "Values of mechanismOfAction (see mcp__data__vocab). A case-insensitive substring search: every stored value containing the text is pooled into the results and counted in `_vbt.total`.",
     "type": "string",
     "x-vbt-vocabulary": "open_targets.drug_mechanism_of_action.mechanismOfAction"
    }

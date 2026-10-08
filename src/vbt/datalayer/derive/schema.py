@@ -255,10 +255,18 @@ def annotate_schema(contract: Any, schema: Mapping[str, Any] | None, *, catalog:
                 prop["minimum"] = lo
             if hi is not None:
                 prop["maximum"] = hi
+            if scale and prop.get("type") == "integer" and float(scale[1]) - float(scale[0]) <= 1:
+                # an integer parameter over a 0-1 column (maxClinicalTrialPhase: 0.25 per phase) takes fractions
+                prop["type"] = "number"
+                _append(prop, f"{col} is stored on a {scale[0]}-{scale[1]} scale: pass a value on that scale.")
             words = f"Keeps rows with {col} {_OP_WORDS.get(a.op, a.op)} this value"
             if a.op.endswith("_abs"):
                 words += " (compared on the absolute value)"
             _append(prop, words + "; unknown values never pass.")
+        if a.pooled:
+            fold = "case-insensitive " if a.interpreted_as == "casefold_substring" else ""
+            _append(prop, f"A {fold}substring search: every stored value containing the text is pooled into the "
+                          "results and counted in `_vbt.total`.")
         if a.role == "limit":
             prop["minimum"] = max(1, int(a.min) if a.min is not None else 1)
             cap = a.max

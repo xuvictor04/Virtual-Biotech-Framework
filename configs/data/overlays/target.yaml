@@ -103,9 +103,14 @@ tools:
       rows: $.targets
       count_fields: [$.count]
       order_from_arg: sort_by
+      # upstream ranks most constrained first when min_genetic_constraint is set (target_mcp/tools.py:673-679)
+      order_when: {min_genetic_constraint: [{column: geneticConstraint, direction: asc, nulls: last},
+                                            {column: targetId, direction: asc}]}
       order: [{column: targetId, direction: asc}]
     serve: derived
     derived: {verb: find, table: open_targets.target_prioritisation}
+    text:
+      notes: ["min_clinical_phase is on the 0-1 scale of maxClinicalTrialPhase (0.25 per phase: phase 1 = 0.25, phase 3 = 0.75, approved = 1), not 0-4."]
     defects:
       - {id: OT-TARGET-005, what: "no_safety_events keeps hasSafetyEvent NaN (not assessed) and -1 (event recorded) because it filters != 1.0",
          where: "target_mcp/tools.py:668-671", test: test_dl_defect_detectors.py::test_ot_target_005, effect: silent_wrong}

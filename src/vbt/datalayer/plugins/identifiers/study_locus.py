@@ -33,7 +33,9 @@ class StudyLocusId(KeyIdentifier):
         return t.done() if self.matches(t.value) else self.reject(t.value)
 
 
-_STUDY = (r"GCST\d+", r"FINNGEN_R\d+_[A-Za-z0-9_]+", r"UKB_PPP_[A-Za-z0-9_]+")
+#: UKB-PPP pQTL studies name the protein's gene, which may hold a hyphen (UKB_PPP_EUR_HLA-DRA_P01903_OID20520_v1:
+#: 4 of the 2,954 in 25.09)
+_STUDY = (r"GCST\d+", r"FINNGEN_R\d+_[A-Za-z0-9_]+", r"UKB_PPP_[A-Za-z0-9_\-]+")
 
 
 @register
@@ -46,6 +48,8 @@ class GwasStudy(KeyIdentifier):
     cases = (
         {"raw": "GCST004988", "expected": "GCST004988", "steps": []},
         {"raw": "gcst004988", "expected": "GCST004988", "steps": ["upper"]},
+        {"raw": "UKB_PPP_EUR_HLA-DRA_P01903_OID20520_v1", "expected": "UKB_PPP_EUR_HLA-DRA_P01903_OID20520_v1",
+         "steps": []},
         {"raw": "QTS000001_ENSG00000169174", "rejected": True},
         {"raw": "QTS000001_ENSG00000169174", "expected": "QTS000001_ENSG00000169174",
          "options": {"patterns": [r"QTS\d+_\w+"]}, "requires": "options"},

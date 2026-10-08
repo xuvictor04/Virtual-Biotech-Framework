@@ -946,9 +946,11 @@ class TableReader:
                     stats.scanned_bytes += info.bytes(pass1, [rg or 0])
                 # one row group's second pass, read once however many of its slices hold matches
                 second: dict[str, Any] = {}
-                # converted SCAN_CHUNK_ROWS rows at a time: a 25.09 interaction shard is one row group of 1.3 M
-                # rows, and its key and filter columns converted whole ran the data child out of memory
-                for rows, index in self._row_chunks(frag, rg, pass1, info, push, arrow_filter, SCAN_CHUNK_ROWS):
+                # converted a chunk at a time: a 25.09 interaction shard is one row group of 1.3 M rows, and its key
+                # and filter columns converted whole ran the data child out of memory; an expression row group of
+                # 11,082 genes is 1.8 GB in Python with every tissue (chunk_rows sizes the chunk by its values)
+                step = chunk_rows(info.row_groups[rg or 0] if info is not None else None, [*pass1, *pass2])
+                for rows, index in self._row_chunks(frag, rg, pass1, info, push, arrow_filter, step):
                     hits: list[tuple[int, tuple[int, ...]]] = []
                     for i, row in zip(index, rows):
                         if row_filter is not None and not row_filter(row):
@@ -1587,8 +1589,26 @@ class TableReader:
 SAMPLE_WHOLE_GROUP_ROWS = 2048
 SAMPLE_WHOLE_GROUP_BYTES = 16 * 1024 * 1024
 SAMPLE_CHUNK_ROWS = 256
-#: Rows of a row group a scan converts to Python at a time.
+#: Rows of a row group a scan converts to Python at a time, at most.
 SCAN_CHUNK_ROWS = 65_536
+#: Python bytes a scan converts at a time (one chunk of a row group: its first pass and the matches it takes).
+SCAN_CHUNK_BYTES = 128 * 1024 * 1024
+#: Python bytes one stored value costs once converted (25.09: 35-170, median about 100: 101 for expression with
+#: 1,622 values a row, 105 for interaction with 15, 79 for target_essentiality with 8,288).
+PY_BYTES_PER_VALUE = 160
+#: Rows a chunk keeps at least, however wide they are.
+SCAN_MIN_CHUNK_ROWS = 16
+
+
+def chunk_rows(group: Any, leaves: Sequence[str]) -> int:
+    """Rows of ``group`` (a footer's row group) to convert at a time, so one chunk stays near
+    :data:`SCAN_CHUNK_BYTES` in Python: the leaves' stored values per row (list elements counted) times
+    :data:`PY_BYTES_PER_VALUE`. Without a footer the fixed :data:`SCAN_CHUNK_ROWS` applies (RV-OT-06)."""
+    if group is None or not getattr(group, "rows", 0):
+        return SCAN_CHUNK_ROWS
+    values = sum(group.leaf_values(leaf) for leaf in dict.fromkeys(leaves))
+    per_row = max(values / group.rows, 1.0) * PY_BYTES_PER_VALUE
+    return int(max(SCAN_MIN_CHUNK_ROWS, min(SCAN_CHUNK_ROWS, SCAN_CHUNK_BYTES // per_row)))
 
 
 def _masked(tbl: Any, index: list[int], arrow_filter: Callable[[Any], Any]) -> tuple[Any, list[int]]:

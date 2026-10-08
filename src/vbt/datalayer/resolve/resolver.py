@@ -624,6 +624,15 @@ class Resolver:
                     unknown = True
                     continue
                 if index is not None and index.contains(candidate):
+                    copies = self._suffix_copies(index, plugin, candidate) if "strip_suffix" in n.steps else []
+                    if copies:
+                        # ENSG00000182484_PAR_Y names the Y copy, which 25.09 stores as its own gene (ENSG00000292372,
+                        # same symbol): stripping the suffix silently answered for the X copy (RV-OT-11)
+                        cands = [Candidate(c, index.label(c), rule_text, self._attrs(index, spec, c))
+                                 for c in [candidate, *copies]]
+                        return _Hit("ambiguous", kind, kind, rule=rule_text, candidates=cands,
+                                    notes=[f"{ctx.text!r} names a copy of {candidate} that this release stores under "
+                                           f"its own ID ({', '.join(copies)}, same symbol)"])
                     return self._resolved(kind, kind, candidate, rule_text, where, existence="exists", index=index)
                 if rule.head != "raw_member":
                     absent_value = candidate
@@ -897,6 +906,20 @@ class Resolver:
             if chosen:
                 break
         return None
+
+    @staticmethod
+    def _suffix_copies(index: ResolverIndex, plugin: Any, canonical: str) -> list[str]:
+        """Other keys that carry ``canonical``'s primary label: a stripped copy suffix (``_PAR_Y``) whose copy the
+        universe keeps as a separate key with the same symbol."""
+        label = index.label(canonical)
+        if not label or plugin is None:
+            return []
+        try:
+            key = plugin.label_key(label)
+        except Exception:  # noqa: BLE001 - a plugin without label keys has no copies to find
+            return []
+        return _distinct(e.canonical for e in index.lookup(key)
+                         if e.head == "label_exact" and e.canonical != canonical and index.contains(e.canonical))
 
     def _resolved(self, kind: str, matched: str, canonical: str, rule: str, where: "_Where | None", *,
                   existence: str | None, index: ResolverIndex | None = None) -> _Hit:

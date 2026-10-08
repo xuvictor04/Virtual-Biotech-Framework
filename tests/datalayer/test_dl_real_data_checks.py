@@ -424,7 +424,8 @@ def test_live_sources_name_the_release_the_call_observed():
 
 def test_the_data_check_runs_under_the_reaper(monkeypatch: pytest.MonkeyPatch) -> None:
     """``vbt ds check`` and preflight run the data child as the bridge launches it: under the reaper with the data
-    child's limit (a deep check of the literature table reached 10.3 GiB resident when it ran uncontained)."""
+    child's limit (a deep check of the interaction_evidence table, 27.3 M rows, reached 10.3 GiB resident when it ran
+    uncontained)."""
     import subprocess
     import sys
 

@@ -131,7 +131,10 @@ def test_tahoe_metadata_schemas_are_the_declared_ones():
     assert meta["cell_line"]["facts"]["null_depmap_rows"] == 5 and meta["cell_line"]["facts"]["null_effect_rows"] == 25
     targets = meta["drug"]["facts"]
     assert targets["targets_with_pipe"] == 0 and targets["targets_with_comma_space"] > 0
-    assert desc["tables"]["drug_metadata"]["columns"]["targets"]["list_delimiter"] == ", "
+    # ACC-4: one value is 'CYP3A5,CYP3A4' (no space): the delimiter is ',' with elements stripped, not ', '
+    assert targets["targets_with_comma"] == targets["targets_with_comma_space"] + 1
+    assert targets["targets_comma_without_space"] == {"Clobetasol propionate": "CYP3A5,CYP3A4"}
+    assert desc["tables"]["drug_metadata"]["columns"]["targets"]["list_delimiter"] == ","
 
 
 def test_tahoe_doses_and_plates_render_as_stored():
@@ -399,6 +402,22 @@ def test_real_tahoe_metadata_matches_the_record():
         t = pq.read_table(path)
         assert (sha256(path), t.num_rows) == (meta[name]["sha256"], meta[name]["rows"]), name
         assert [[f.name, str(f.type)] for f in t.schema] == meta[name]["schema"], name
+
+
+@needs_real
+def test_real_tahoe_drug_targets_split_on_the_declared_delimiter():
+    """``targets`` split on the declared ``list_delimiter`` with elements stripped: no token keeps a comma."""
+    delim = descriptor("tahoe")["tables"]["drug_metadata"]["columns"]["targets"]["list_delimiter"]
+    rows = pq.read_table(real_path("tahoe", REV, "metadata", "drug_metadata.parquet")).to_pylist()
+    facts = fixture("tahoe", "metadata.json")["drug"]["facts"]
+    values = {r["drug"]: r["targets"] for r in rows if r["targets"] is not None}
+    assert len(rows) - len(values) == facts["targets_null"]
+    assert sum("," in v for v in values.values()) == facts["targets_with_comma"]
+    assert sum(", " in v for v in values.values()) == facts["targets_with_comma_space"]
+    assert {d: v for d, v in values.items() if "," in v and ", " not in v} == facts["targets_comma_without_space"]
+    tokens = {d: [t.strip() for t in v.split(delim)] for d, v in values.items()}
+    assert not [t for ts in tokens.values() for t in ts if not t or "," in t]
+    assert tokens["Clobetasol propionate"] == ["CYP3A5", "CYP3A4"]
 
 
 @needs_real

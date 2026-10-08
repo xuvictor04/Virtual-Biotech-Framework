@@ -68,7 +68,9 @@ def _col(t: Any, name: str) -> Any:
 def _order_text(b: Any) -> str | None:
     order = list(b.result.order)
     if b.result.order_from_arg:
-        return f"ordered by the {b.result.order_from_arg} argument"
+        when = "; ".join(f"without it, with {arg}: by {spec[0].column} {spec[0].direction}"
+                         for arg, spec in b.result.order_when.items() if spec)
+        return f"ordered by the {b.result.order_from_arg} argument" + (f" ({when})" if when else "")
     if not order:
         return None
     first = order[0]

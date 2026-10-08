@@ -55,6 +55,9 @@ class ArgBinding(Strict):
     when_true: dict[str, Any] | None = None            # flag args: a positive predicate ({in: [none_recorded]})
     when_false: dict[str, Any] | None = None
     interpreted_as: Literal["exact", "regex", "substring", "casefold_substring", "engine"] = "exact"
+    # a substring argument that searches: every stored value it matches is pooled into the answer (search_drugs
+    # 'statin'), never refused as a collision that asks for one exact value
+    pooled: bool = False
     engine_doc: str | None = None
     engine_param: str | None = None                    # engine args: the source's request parameter the value
                                                        # fills (query.cond): the remote witness counts that search
@@ -250,6 +253,9 @@ class ResultSpec(Strict):
     echo_set: EchoSet | None = None
     order: list[RankSpec] = []
     order_from_arg: str | None = None
+    # the order when an argument is given and no order_by argument decides (upstream ranks most constrained first
+    # when min_genetic_constraint is set): {argument: [rank spec, ...]}, the first given argument wins
+    order_when: dict[str, list[RankSpec]] = {}
     order_source: Literal["witness", "upstream_full_sort", "source_server_side"] = "witness"
     total: str | TotalSpec | None = None
     as_of: str | None = None

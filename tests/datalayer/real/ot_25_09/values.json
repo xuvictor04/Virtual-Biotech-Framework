@@ -480,7 +480,15 @@
  "samples": {
   "literature": {
    "key_duplicates": 0,
-   "pmids_in_two_sample_shards": 203994,
+   "pmid_shard_pair_cooccurrences": 203994,
+   "pmids": 1563753,
+   "pmids_by_shard_count": {
+    "1": 1402434,
+    "2": 142440,
+    "3": 17240,
+    "4": 1639
+   },
+   "pmids_in_two_or_more_sample_shards": 161319,
    "rows": 1824853,
    "shards": 4
   }

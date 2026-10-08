@@ -1310,6 +1310,12 @@ class _OverlayLinter:
             if r.statistic and self.registry is not None and not self.registry.has("statistic", r.statistic):
                 self.add("error", f"{w}.order[{i}]", f"unknown statistic plugin {r.statistic!r}", "plugin",
                          r.statistic)
+        for arg, specs in res.order_when.items():
+            if arg not in b.args:
+                self.add("error", f"{w}.order_when", f"{arg!r} is not an argument", "binding", arg)
+            for i, r in enumerate(specs):
+                if r.column not in SPECIAL_RANK_COLUMNS and r.column not in computed:
+                    self.column_in(d, t, r.column, f"{w}.order_when.{arg}[{i}]")
         for path, summary in res.summary_fields.items():
             if not isinstance(summary, str) and summary.of:
                 try:

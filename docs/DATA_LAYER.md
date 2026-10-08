@@ -1533,7 +1533,7 @@ disagreed with its own examples; revision 2 defines `ColumnSpec` as a union disc
 | `scope` | `{kind, pooling, pool_ok_for, determined_by}`: the column is also a scope dimension (§6.3) |
 | `unique_within` | the value is unique only within these columns (`donor_id` within `dataset_id`) |
 | `side` | the endpoint side a per-side column belongs to (edge tables) |
-| `list_delimiter` | a string holding a delimited list (`"a|b"`): element semantics as `col[]` |
+| `list_delimiter` | a string holding a delimited list (`"a|b"`): element semantics as `col[]`; elements are stripped of surrounding whitespace (`","` splits `"A, B"` and `"A,B"` alike) |
 | `parse` | `number`, `boolean`, `date`, or a `ParseSpec` producing virtual fields |
 | `stored_as` | physical encoding when it differs from the role's natural type (`float64` integral counts, `iso8601_string` dates); R4 accepts it and R6 confirms integrality |
 | `integrity` | `full` (default) or `partial` for references that may dangle |

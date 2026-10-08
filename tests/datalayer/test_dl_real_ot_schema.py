@@ -509,6 +509,48 @@ def test_every_interaction_evidence_record_has_its_interaction_row(ot, values, s
     assert fact["matched"] == fact["rows"] and not fact["unmatched_by_source"]
 
 
+def test_literature_sample_pmid_counts_are_labelled_as_measured(values) -> None:
+    """The literature comment quotes pmids seen in two or more sampled shards, not shard-pair co-occurrences."""
+    fact = values["samples"]["literature"]
+    by_k = {int(k): n for k, n in fact["pmids_by_shard_count"].items()}
+    assert sum(by_k.values()) == fact["pmids"] and set(by_k) <= set(range(1, fact["shards"] + 1))
+    assert sum(n for k, n in by_k.items() if k >= 2) == fact["pmids_in_two_or_more_sample_shards"]
+    assert sum(n * k * (k - 1) // 2 for k, n in by_k.items()) == fact["pmid_shard_pair_cooccurrences"]
+    text = (REPO / "configs" / "data" / "sources" / "open_targets.yaml").read_text(encoding="utf-8")
+    two = f"{fact['pmids_in_two_or_more_sample_shards']:,} of the {fact['pmids']:,} pmids"
+    assert two in text and f"{fact['pmid_shard_pair_cooccurrences']:,}" not in text
+    assert 'every shard spans "100"' not in text
+
+
+@pytest.mark.skipif(REAL is None, reason="set VBT_DL_REAL_DATA=<dir> to check the real files")
+def test_real_literature_sample_and_footers_hold(values) -> None:
+    import collections
+    import pyarrow.compute as pc
+
+    fact = values["samples"]["literature"]
+    shards = sorted((REAL / "_samples" / "literature").glob("*.parquet"))
+    if len(shards) != fact["shards"]:
+        pytest.skip(f"{REAL / '_samples' / 'literature'} does not hold the {fact['shards']} sampled shards")
+    seen: collections.Counter[str] = collections.Counter()
+    rows = 0
+    for path in shards:
+        col = pq.read_table(path, columns=["pmid"])["pmid"]
+        rows += len(col)
+        seen.update(pc.unique(col).to_pylist())
+    by_k = collections.Counter(seen.values())
+    assert rows == fact["rows"] and len(seen) == fact["pmids"]
+    assert {str(k): n for k, n in sorted(by_k.items())} == fact["pmids_by_shard_count"]
+    footers = REAL / "_footers" / "literature.json"
+    if not footers.exists():
+        pytest.skip(f"{footers} is not there")
+    files = json.loads(footers.read_text(encoding="utf-8"))["files"]
+    bounds = [(f["leaves"]["pmid"]["min"], f["leaves"]["pmid"]["max"]) for f in files]
+    assert len(bounds) == 334
+    # every shard's range holds numeric PMIDs, so statistics on pmid prune no shard
+    assert all(lo <= p <= hi for lo, hi in bounds for p in ("2", "9", "28304224", "39000000"))
+    assert sum(hi.startswith("PPR") for _lo, hi in bounds) == 326 and sum(hi.startswith("c8") for _lo, hi in bounds) == 8
+
+
 # ---------------------------------------------------------------------------- offline: remote footers through the plugins
 
 

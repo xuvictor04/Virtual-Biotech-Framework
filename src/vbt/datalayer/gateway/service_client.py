@@ -44,7 +44,7 @@ from ..ipc import (
     request_payload,
 )
 
-__all__ = ["DATA_SERVER", "ServiceError", "ServiceClient"]
+__all__ = ["DATA_SERVER", "ServiceError", "ServiceMemoryError", "ServiceClient"]
 
 DATA_SERVER = "data"
 
@@ -68,6 +68,18 @@ class ServiceError(GatewayError):
         instruction = {"rejected": _REJECTED_INSTRUCTION, "down": _DOWN_INSTRUCTION}.get(subkind or "")
         super().__init__(ErrorKind.service_unavailable, message, tool=tool, payload={"verb": verb} if verb else None,
                          retryable=retryable, subkind=subkind, instruction=instruction)
+        self.verb = verb
+
+
+class ServiceMemoryError(ServiceError):
+    """The data child ran out of memory answering the call (it exits and restarts with a fresh heap): the call is
+    ``too_large`` (subkind ``data_child_memory``), never retried unchanged and never a partial answer."""
+
+    def __init__(self, message: str, *, verb: str | None = None, tool: str | None = None) -> None:
+        GatewayError.__init__(self, ErrorKind.too_large, message, tool=tool,
+                              payload={"verb": verb, "reason": "data_child_memory",
+                                       "hint": "narrow the query (a more specific filter, a smaller limit)"},
+                              retryable="no", subkind="data_child_memory")
         self.verb = verb
 
 
@@ -117,6 +129,9 @@ class ServiceClient:
         except GatewayError as exc:
             self.failures += 1
             self.last_error = exc.message
+            if exc.kind == ErrorKind.oom:
+                raise ServiceMemoryError(f"the data child ran out of memory on {verb} and restarts: {exc.message}",
+                                         verb=verb) from exc
             raise ServiceError(f"data child failed on {verb}: {exc.message}", verb=verb,
                                subkind=self._failure_kind(exc.message)) from exc
         except Exception as exc:  # noqa: BLE001 - every child failure is service_unavailable

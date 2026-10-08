@@ -1,5 +1,5 @@
 {
- "description": "Multi-factor target prioritization for drug discovery.\nData: Open Targets Platform 25.09 · table target_prioritisation — one record = one gene's target-prioritisation factors.\nKey: targetId.\nResults: ordered by the sort_by argument; `_vbt.total` counts all matches.\nRows with unknown geneticConstraint, maxClinicalTrialPhase are excluded and counted in `_vbt.excluded_unknown`.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Prioritisation factors for genes OT 25.09 scored; a null factor means not assessed, never 0.",
+ "description": "Multi-factor target prioritization for drug discovery.\nData: Open Targets Platform 25.09 · table target_prioritisation — one record = one gene's target-prioritisation factors.\nKey: targetId.\nResults: ordered by the sort_by argument (without it, with min_genetic_constraint: by geneticConstraint asc); `_vbt.total` counts all matches.\nRows with unknown geneticConstraint, maxClinicalTrialPhase are excluded and counted in `_vbt.excluded_unknown`.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Prioritisation factors for genes OT 25.09 scored; a null factor means not assessed, never 0.\nmin_clinical_phase is on the 0-1 scale of maxClinicalTrialPhase (0.25 per phase: phase 1 = 0.25, phase 3 = 0.75, approved = 1), not 0-4.",
  "schema": {
   "properties": {
    "ascending": {
@@ -30,10 +30,10 @@
    },
    "min_clinical_phase": {
     "default": null,
-    "description": "Keeps rows with maxClinicalTrialPhase >= this value; unknown values never pass.",
+    "description": "maxClinicalTrialPhase is stored on a 0.0-1.0 scale: pass a value on that scale. Keeps rows with maxClinicalTrialPhase >= this value; unknown values never pass.",
     "maximum": 1.0,
     "minimum": 0.0,
-    "type": "integer"
+    "type": "number"
    },
    "min_genetic_constraint": {
     "default": null,

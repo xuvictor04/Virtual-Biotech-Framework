@@ -88,7 +88,11 @@ def _path(frag: Fragment | str) -> str:
     return uri[len("file://"):] if uri.startswith("file://") else uri
 
 
-def _unreadable(frag: Fragment, exc: BaseException, what: str = "not a readable Parquet file") -> FormatError:
+def _unreadable(frag: Fragment, exc: BaseException, what: str = "not a readable Parquet file") -> Exception:
+    """The error of a read that failed: a FormatError naming the file, except for an allocation that failed
+    (``ArrowMemoryError`` is a ``MemoryError``): the file is fine, the process is out of memory (RV-OT-06)."""
+    if isinstance(exc, MemoryError):
+        return MemoryError(f"{_path(frag)}: out of memory while reading ({type(exc).__name__}: {exc})")
     return FormatError(f"{_path(frag)}: {what} ({type(exc).__name__}: {exc})", fragment=frag.uri,
                        partition=frag.partition)
 

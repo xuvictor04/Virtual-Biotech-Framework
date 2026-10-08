@@ -20,6 +20,7 @@ from __future__ import annotations
 import ast
 import copy
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -486,3 +487,301 @@ async def test_the_header_states_every_order_key(tmp_path):
     gw = world(tmp_path / "b", overlay=ov)
     plan, res = await call(gw, "drug", "search_known_drugs_derived", {"target_id": "PCSK9", "limit": 3})
     assert hdr(res)["order"] == "phase desc, then drugId asc (verified)"
+
+
+# --------------------------------------------------------------------------- RV-OT-04
+
+
+async def test_rows_stored_under_another_family_member_are_counted(tmp_path):
+    """RV-OT-04: amifampridine resolved to the parent CHEMBL354077, whose 61 adverse-event rows are stored under the
+    salt CHEMBL3301611 only: status empty, total 0. ``family: exact`` now counts them (``_vbt.family_rows``) and
+    the answer is partial."""
+    from test_dl_gateway_flow import KEYS, REGISTRY, TABLES, index_rows
+    from vbt.datalayer.resolve import Entry
+
+    c = REGISTRY.get("identifier", "chembl_molecule").label_key
+    idx = index_rows()
+    idx["open_targets:chembl_molecule"] = [e for e in idx["open_targets:chembl_molecule"]
+                                          if e.canonical != "CHEMBL2"] + [
+        Entry(c("CHEMBL50"), "CHEMBL50", "exact", family="CHEMBL50"),
+        Entry(c("CHEMBL2"), "CHEMBL2", "exact", family="CHEMBL50")]
+    ov = copy.deepcopy(DRUG_OVERLAY)
+    ov["tools"]["drug_rows"] = {
+        "reads": {"open_targets.known_drug": {"access": "full_table"}},
+        "args": {"drug_id": {"binds": "open_targets.known_drug.drugId", "accepts": ["chembl_molecule"]},
+                 "limit": {"role": "limit", "min": 1, "max": 50}},
+        "result": {"rows": "$.rows", "order": [{"column": "phase", "direction": "desc"}]},
+        "serve": "derived", "derived": {"verb": "find", "table": "open_targets.known_drug", "envelope": {"ok": True}}}
+    tables = {**TABLES, "open_targets.drug_molecule": TABLES["open_targets.drug_molecule"] + [{"id": "CHEMBL50"}]}
+    desc = copy.deepcopy(OT)
+    desc["id_types"]["chembl_molecule"]["canonicalize"] = {"parent": "drug_molecule.parentId"}
+    desc["tables"]["drug_molecule"]["columns"]["parentId"] = {"role": "identifier", "id_type": "chembl_molecule"}
+    gw = make_gateway(tmp_path, [desc], [ov], tables, index_rows=idx, keys=KEYS)
+    plan, res = await call(gw, "drug", "drug_rows", {"drug_id": "CHEMBL50", "limit": 5})
+    h = hdr(res)
+    assert h["returned"] == 0 and h["family_rows"] == {"CHEMBL2": 1} and h["status"] == "partial"
+    assert any("CHEMBL2: 1" in n for n in h["notes"])
+    # the member itself: its own row, and the parent has none to add
+    plan, res = await call(gw, "drug", "drug_rows", {"drug_id": "CHEMBL2", "limit": 5})
+    assert hdr(res)["returned"] == 1 and hdr(res).get("family_rows") is None
+    # family: include reads every member and counts nothing apart
+    ov["tools"]["drug_rows"]["args"]["drug_id"]["family"] = "include"
+    gw = make_gateway(tmp_path / "inc", [desc], [ov], tables, index_rows=idx, keys=KEYS)
+    plan, res = await call(gw, "drug", "drug_rows", {"drug_id": "CHEMBL50", "limit": 5})
+    assert hdr(res)["returned"] == 1 and hdr(res).get("family_rows") is None
+
+
+# --------------------------------------------------------------------------- RV-OT-06
+
+
+def test_an_arrow_allocation_failure_is_out_of_memory_not_an_unreadable_file():
+    """RV-OT-06: ArrowMemoryError (a MemoryError) was reported as 'not a readable Parquet file', so a data child at its
+    memory limit failed every later read as a broken file."""
+    pa = pytest.importorskip("pyarrow")
+    from vbt.datalayer.plugins.base import Fragment, FormatError
+    from vbt.datalayer.plugins.formats.parquet import _unreadable
+
+    frag = Fragment(uri="/data/expression/part-00000.parquet", size=1, mtime_ns=None)
+    err = _unreadable(frag, pa.ArrowMemoryError("malloc of size 16777216 failed"))
+    assert isinstance(err, MemoryError) and not isinstance(err, FormatError) and "out of memory" in str(err)
+    assert isinstance(_unreadable(frag, pa.ArrowInvalid("bad magic")), FormatError)
+
+
+def test_a_memory_error_ends_the_data_child_with_a_memory_exit(tmp_path):
+    """RV-OT-06: the child stayed alive at its RLIMIT_DATA after one over-memory scan. A MemoryError in a verb now
+    ends it (exit 70, a last MemoryError line), and the reaper labels the exit memory_error."""
+    import subprocess
+    import sys as _sys
+
+    from vbt.datalayer.launch import REAPER
+    from vbt.datalayer.memory import crash
+
+    code = ("import sys, contextlib\nsys.path.insert(0, sys.argv[1])\n"
+            "from vbt.datalayer.service.server import tool_function\n"
+            "class Ctx:\n    slots = contextlib.nullcontext()\n"
+            "def verb(ctx, payload):\n    raise MemoryError('malloc of size 33554432 failed')\n"
+            "tool_function(lambda: Ctx(), '_serve', verb)({})\nprint('unreachable')\n")
+    proc = subprocess.run([_sys.executable, "-E", str(REAPER), "--limit-mb", "0", "--status", str(tmp_path / "s.json"),
+                           "--server", "data", "--", _sys.executable, "-c", code, str(REPO / "src")],
+                          capture_output=True, text=True, timeout=120)
+    marker = crash.parse_exit_marker(proc.stderr)
+    assert proc.returncode == 70 and "unreachable" not in proc.stdout
+    assert marker["code"] == 70 and marker["cause"] == "memory_error" and marker["reason"] == "memory_limit"
+    assert "MemoryError: data child out of memory in _serve" in proc.stderr
+
+
+async def test_a_data_child_memory_exit_is_too_large_for_the_call():
+    from vbt.datalayer.gateway.service_client import ServiceClient, ServiceError, ServiceMemoryError
+    from vbt.datalayer.ipc import ServeRequest
+
+    class Bridge:
+        async def call_raw(self, server, tool, args):
+            raise GatewayError(ErrorKind.oom, "data._serve: the server ran out of memory (an allocation failed)")
+
+    client = ServiceClient(Bridge())
+    with pytest.raises(ServiceMemoryError) as e:
+        await client.serve(ServeRequest(table="open_targets.expression_tissues", verb="find"))
+    assert isinstance(e.value, ServiceError) and e.value.kind == ErrorKind.too_large
+    assert e.value.subkind == "data_child_memory" and e.value.retryable == "no"
+
+
+def test_scan_chunks_are_sized_by_the_values_a_row_holds():
+    """RV-OT-06: 65,536 rows a chunk converted an expression row group whole (11,082 genes, 1,622 values a row:
+    1.8 GB in Python); the chunk is sized by the footer's value counts."""
+    from vbt.datalayer.service.reader import SCAN_CHUNK_ROWS, chunk_rows
+    from vbt.datalayer.service.sidecar import ChunkInfo, RowGroupInfo
+
+    wide = RowGroupInfo(rows=11082, chunks={"id": ChunkInfo(1, 11082, 0),
+                                            "tissues.list.element.label": ChunkInfo(1, 11082 * 1621, 0)})
+    n = chunk_rows(wide, ["id", "tissues"])
+    assert 400 <= n <= 600 and n * 1622 * 160 <= 128 * 1024 * 1024
+    narrow = RowGroupInfo(rows=1_300_000, chunks={"a": ChunkInfo(1, 1_300_000, 0), "b": ChunkInfo(1, 1_300_000, 0)})
+    assert chunk_rows(narrow, ["a", "b"]) == SCAN_CHUNK_ROWS and chunk_rows(None, ["a"]) == SCAN_CHUNK_ROWS
+
+
+# --------------------------------------------------------------------------- RV-OT-08
+
+
+async def test_an_argument_can_set_the_default_order_upstream_uses(tmp_path):
+    """RV-OT-08: prioritize_targets(min_genetic_constraint=-0.5) ranks most constrained first upstream; the derived
+    tool cut the 4,496 matches by targetId. ``result.order_when`` gives that argument its order."""
+    ov = copy.deepcopy(DRUG_OVERLAY)
+    ov["tools"]["ranked"] = {
+        "reads": {"open_targets.known_drug": {"access": "full_table"}},
+        "args": {"max_phase": {"binds": "open_targets.known_drug.phase", "op": "le"},
+                 "sort_by": {"role": "order_by", "values": {"phase": {"column": "phase", "direction": "desc"}}},
+                 "limit": {"role": "limit", "min": 1, "max": 50}},
+        "result": {"rows": "$.rows", "order_from_arg": "sort_by",
+                   "order_when": {"max_phase": [{"column": "phase", "direction": "asc", "nulls": "last"},
+                                                {"column": "drugId", "direction": "asc"}]},
+                   "order": [{"column": "drugId", "direction": "asc"}]},
+        "serve": "derived", "derived": {"verb": "find", "table": "open_targets.known_drug", "envelope": {"ok": True}}}
+    gw = world(tmp_path, overlay=ov)
+    plan, res = await call(gw, "drug", "ranked", {"max_phase": 3, "limit": 3})
+    assert [r["phase"] for r in res.obj["rows"]] == [1, 2, 2] and hdr(res)["order"].startswith("phase asc")
+    plan, res = await call(gw, "drug", "ranked", {"limit": 3})
+    assert [r["drugId"] for r in res.obj["rows"]] == ["CHEMBL1", "CHEMBL2", "CHEMBL3"]
+    plan, res = await call(gw, "drug", "ranked", {"max_phase": 3, "sort_by": "phase", "limit": 2})
+    assert [r["drugId"] for r in res.obj["rows"]] == ["CHEMBL3", "CHEMBL8"]     # sort_by decides
+
+
+def test_prioritize_targets_lists_the_phase_scale_as_a_number():
+    golden = json.loads((REPO / "tests" / "datalayer" / "golden" / "target.prioritize_targets.json").read_text())
+    prop = golden["schema"]["properties"]["min_clinical_phase"]
+    assert prop["type"] == "number" and prop["maximum"] == 1.0 and "0-1 scale" in golden["description"]
+    assert "with min_genetic_constraint: by geneticConstraint asc" in golden["description"]
+
+
+# --------------------------------------------------------------------------- RV-OT-09
+
+
+async def test_a_pooled_search_argument_is_never_a_substring_collision(tmp_path):
+    """RV-OT-09: search_drugs('statin'), search_pathways('cholesterol') and get_drug_mechanisms(mechanism='inhibitor')
+    were refused 'matches several values as a substring; pass the exact value' (the exact 'ATORVASTATIN' too, inside
+    'ATORVASTATIN CALCIUM'). A ``pooled`` argument searches: every match is in the answer and the total."""
+    ov = copy.deepcopy(DRUG_OVERLAY)
+    ov["tools"]["find_genes"] = {
+        "reads": {"open_targets.target": {"access": "full_table"}},
+        "args": {"query": {"role": "free_text", "interpreted_as": "casefold_substring",
+                           "binds": "open_targets.target.approvedSymbol"},
+                 "limit": {"role": "limit", "min": 1, "max": 50}},
+        "result": {"rows": "$.rows", "order": [{"column": "id", "direction": "asc"}]},
+        "serve": "derived", "derived": {"verb": "find", "table": "open_targets.target", "envelope": {"ok": True}}}
+    desc = copy.deepcopy(OT)
+    desc["tables"]["target"]["columns"]["approvedSymbol"] = {"role": "category", "vocab": "data"}
+    from test_dl_gateway_flow import KEYS, TABLES, index_rows
+    gw = make_gateway(tmp_path, [desc], [ov], TABLES, index_rows=index_rows(), keys=KEYS)
+    with pytest.raises(GatewayError) as e:
+        await call(gw, "drug", "find_genes", {"query": "p", "limit": 5})
+    assert e.value.kind == ErrorKind.invalid_argument and e.value.payload["reason"] == "substring_collision"
+    ov["tools"]["find_genes"]["args"]["query"]["pooled"] = True
+    gw = make_gateway(tmp_path / "pooled", [desc], [ov], TABLES, index_rows=index_rows(), keys=KEYS)
+    plan, res = await call(gw, "drug", "find_genes", {"query": "p", "limit": 5})
+    assert sorted(r["approvedSymbol"] for r in res.obj["rows"]) == ["PCSK9", "TP53"] and hdr(res)["total"] == 2
+
+
+def test_the_shipped_search_arguments_are_pooled():
+    drug = yaml.safe_load((OVERLAYS / "drug.yaml").read_text())["tools"]
+    pathway = yaml.safe_load((OVERLAYS / "pathway.yaml").read_text())["tools"]
+    assert drug["search_drugs"]["args"]["query"]["pooled"] and drug["get_drug_mechanisms"]["args"]["mechanism"]["pooled"]
+    assert pathway["search_pathways"]["args"]["query"]["pooled"] and pathway["search_go_terms"]["args"]["query"]["pooled"]
+
+
+# --------------------------------------------------------------------------- RV-OT-11
+
+
+async def test_a_par_y_id_whose_copy_has_its_own_id_is_ambiguous(tmp_path):
+    """RV-OT-11: ENSG00000182484_PAR_Y was stripped to the X-chromosome WASH6P while 25.09 stores the Y copy as
+    ENSG00000292372 (same symbol)."""
+    from test_dl_gateway_flow import KEYS, TABLES, gene_key, index_rows
+    from vbt.datalayer.resolve import Entry
+
+    x, y = "ENSG00000182484", "ENSG00000292372"
+    idx = index_rows()
+    idx["open_targets:ensembl_gene"] += [Entry(gene_key(x), x, "exact", "WASH6P"),
+                                         Entry(gene_key("WASH6P"), x, "label_exact:approvedSymbol", "WASH6P"),
+                                         Entry(gene_key(y), y, "exact", "WASH6P"),
+                                         Entry(gene_key("WASH6P"), y, "label_exact:approvedSymbol", "WASH6P")]
+    tables = {**TABLES, "open_targets.target": TABLES["open_targets.target"] + [
+        {"id": x, "approvedSymbol": "WASH6P"}, {"id": y, "approvedSymbol": "WASH6P"}]}
+    gw = make_gateway(tmp_path, [OT], [DRUG_OVERLAY], tables, index_rows=idx, keys=KEYS)
+    with pytest.raises(GatewayError) as e:
+        await call(gw, "drug", "get_target", {"target_id": f"{x}_PAR_Y"}, lambda a: {"id": a["target_id"]})
+    assert e.value.kind == ErrorKind.ambiguous
+    assert {c["id"] for c in e.value.payload["candidates"]} == {x, y}
+    # the plain ID and a PAR_Y suffix on a gene without a separate copy still resolve
+    plan, res = await call(gw, "drug", "get_target", {"target_id": x}, lambda a: {"id": a["target_id"]})
+    assert plan.args_sent["target_id"] == x
+    plan, res = await call(gw, "drug", "get_target", {"target_id": f"{PCSK9_ID}_PAR_Y"},
+                           lambda a: {"id": a["target_id"]})
+    assert plan.args_sent["target_id"] == PCSK9_ID
+
+
+PCSK9_ID = "ENSG00000169174"
+
+
+# --------------------------------------------------------------------------- ACC-1
+
+
+def test_versioned_endpoint_ids_are_read_under_their_stored_spelling(tmp_path):
+    """ACC-1: 61 target genes (MIRLET7E, SNORA57, ...) are stored in interaction only as ENSG00000198972.3: the
+    canonical ENSG00000198972 matched 0 rows. A declared stored form maps the canonical key to the stored spelling."""
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    from test_dl_service_reader import make_ctx, source
+    from vbt.datalayer.resolve import IndexStore
+    from vbt.datalayer.service.verbs import load_verbs
+
+    root = tmp_path / "s"
+    for name, rows in {"target": [{"id": "ENSG00000198972", "approvedSymbol": "MIRLET7E"},
+                                  {"id": "ENSG00000141510", "approvedSymbol": "TP53"}],
+                       "interaction": [{"targetA": "ENSG00000198972.3", "targetB": "ENSG00000141510"},
+                                       {"targetA": "ENSG00000141510", "targetB": "ENSG00000198972.3"}]}.items():
+        (root / name).mkdir(parents=True)
+        pq.write_table(pa.Table.from_pylist(rows), root / name / "part-0.parquet")
+    tables = {"target": {"kind": "entity", "path": "target", "grain": "one gene", "key": {"columns": ["id"]},
+                         "columns": {"id": {"role": "identifier", "id_type": "ensembl_gene", "self": True},
+                                     "approvedSymbol": {"role": "label", "of": "id"}}},
+              "interaction": {"kind": "edges", "path": "interaction", "grain": "one edge",
+                              "key": {"columns": ["targetA", "targetB"]},
+                              "columns": {"targetA": {"role": "endpoint", "side": "a", "id_type": "ensembl_gene"},
+                                          "targetB": {"role": "endpoint", "side": "b", "id_type": "ensembl_gene"}}}}
+    id_types = {"ensembl_gene": {"plugin": "ensembl_gene", "universe": "target.id",
+                                 "resolve_via": ["target.approvedSymbol"],
+                                 "stored_forms": {"interaction.targetA": "as_stored",
+                                                  "interaction.targetB": "as_stored"}}}
+    ctx = make_ctx(tmp_path, source("s", root, tables, id_types=id_types))
+    out = load_verbs()["_build_index"](ctx, {"source": "s", "id_type": "ensembl_gene"})
+    index = IndexStore(ctx.settings.cache_dir).load("s", out["fingerprint"], "ensembl_gene")
+    assert index.stored_value("ENSG00000198972", "s.interaction") == "ENSG00000198972.3"
+    assert index.stored_value("ENSG00000141510", "s.interaction") is None      # stored as is
+
+
+def test_the_shipped_gene_type_declares_the_versioned_endpoints():
+    from vbt.datalayer.descriptor.load import load_descriptors
+
+    ot = load_descriptors(REPO / "configs" / "data" / "sources", {"project_root": str(REPO)})["open_targets"]
+    assert set(ot.id_types["ensembl_gene"].stored_forms) == {
+        "interaction.targetA", "interaction.targetB", "interaction_evidence.targetA", "interaction_evidence.targetB"}
+
+
+# --------------------------------------------------------------------------- ACC-2
+
+
+HYPHENATED_UKB_PPP = ("UKB_PPP_EUR_HLA-DRA_P01903_OID20520_v1", "UKB_PPP_EUR_HLA-A_P04439_OID31048_v1",
+                      "UKB_PPP_EUR_HLA-E_P13747_OID20532_v1", "UKB_PPP_EUR_ERVV-1_B6SEH8_OID30094_v1")
+
+
+def _gwas_study_plugin():
+    from vbt.datalayer.descriptor.load import load_descriptors
+    from vbt.datalayer.plugins.identifiers.study_locus import GwasStudy
+
+    ot = load_descriptors(REPO / "configs" / "data" / "sources", {"project_root": str(REPO)})["open_targets"]
+    return GwasStudy().configure(ot.id_types["gwas_study"].options, None)
+
+
+def test_ukb_ppp_study_ids_with_a_hyphen_normalize():
+    """ACC-2: the four 25.09 UKB-PPP pQTL studies whose gene part holds a hyphen were rejected."""
+    from vbt.datalayer.plugins.base import Normalized
+
+    p = _gwas_study_plugin()
+    for sid in (*HYPHENATED_UKB_PPP, "GCST004988", "GCST000337_7", "FINNGEN_R12_I9_HYPTENS",
+                "gtex_ge_brain_cerebellar_hemisphere_ensg00000067445"):
+        n = p.normalize(sid)
+        assert isinstance(n, Normalized) and n.value == sid, sid
+        assert isinstance(p.normalize(f" {sid} "), Normalized)
+
+
+@pytest.mark.skipif(not os.environ.get("VBT_DL_REAL_DATA"), reason="VBT_DL_REAL_DATA=<dir> with OT 25.09 study")
+def test_every_real_study_id_normalizes():
+    pq = pytest.importorskip("pyarrow.parquet")
+    from dl_upstream import real_ot_dir
+    from vbt.datalayer.plugins.base import Normalized
+
+    d = real_ot_dir() / "study"
+    if not d.is_dir():
+        pytest.skip(f"{d} is not there")
+    ids = pq.read_table(d, columns=["studyId"])["studyId"].to_pylist()
+    p = _gwas_study_plugin()
+    bad = [i for i in ids if not isinstance(p.normalize(i), Normalized)]
+    assert len(ids) == 1_964_234 and bad == []

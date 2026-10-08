@@ -33,7 +33,12 @@ id_types:
                      resolve_via: [target.approvedSymbol, target.symbolSynonyms, target.obsoleteSymbols],
                      rules: [exact, normalized, "label_exact:approvedSymbol", "label_casefold:approvedSymbol",
                              "synonym:previous", "synonym:alias"],
-                     disambiguate_with: [biotype, genomicLocation.chromosome]}
+                     disambiguate_with: [biotype, genomicLocation.chromosome],
+                     stored_forms: {interaction.targetA: as_stored, interaction.targetB: as_stored,
+                                    interaction_evidence.targetA: as_stored, interaction_evidence.targetB: as_stored}}
+                     # 25.09: 65 interaction endpoints are human gene IDs stored with a version (ENSG00000198972.3); 61
+                     # of them are target genes (24 miRNA, 32 snoRNA, 4 lncRNA, 1 Mt_rRNA: MIRLET7E, SNORA57, ...) that
+                     # occur nowhere unversioned (684 interaction rows): their rows are read under the stored spelling
   hgnc_symbol:      {plugin: hgnc_symbol, label_of: ensembl_gene}       # 1,613 duplicate symbols in 25.09: label, not key
                                                                           # (25.09: 1,613 rows repeat one of 482 symbols)
   ensembl_gene_any: {plugin: ensembl_gene_any, resolvable: false}       # homologue IDs: syntax only
@@ -87,9 +92,10 @@ id_types:
                      # uberon/core#channels_into, PR_P01732-1), none with whitespace
   gwas_study:       {plugin: gwas_study, universe: study.studyId,
                      options: {patterns: ["GCST\\d+_\\d+", "[a-z][a-z0-9\\-]*_[a-z0-9_\\-]+"]}}
-                     # 25.09 study: 98,582 GWAS (GCST, FINNGEN_R12_, UKB_PPP_; 934 GCST sub-studies GCST000337_7) and
-                     # 1,865,652 QTL studies with eQTL Catalogue IDs (gtex_ge_brain_cerebellar_hemisphere_ensg00000067445,
-                     # cap_leafcutter_lcl_naive_3_158650061_158652096_clu_41901_-)
+                     # 25.09 study (1,964,234 IDs): 98,582 GWAS (GCST 96,261, of them 930 sub-studies GCST000337_7;
+                     # FINNGEN_R12_ 2,321) and 1,865,652 QTL studies: 2,954 UKB_PPP_ pQTL (4 with a hyphen in the
+                     # gene part, UKB_PPP_EUR_HLA-DRA_P01903_OID20520_v1) and eQTL Catalogue IDs
+                     # (gtex_ge_brain_cerebellar_hemisphere_ensg00000067445, cap_leafcutter_lcl_naive_3_..._clu_41901_-)
   gwas_project:     {plugin: local_key, options: {canonical: "^[A-Za-z0-9_\\-]+$", normalize: [strip]}, universe: study.projectId}
   ot_datasource:    {plugin: local_key, options: {canonical: "^[a-z0-9_]+$", normalize: [strip, lower]},
                      universe: association_by_datasource_direct.datasourceId}
@@ -1180,15 +1186,17 @@ tables:
     size_class: huge
     grain: one (publication, entity) co-mention from Europe PMC text mining
     # 25.09: 151,961,320 rows in 334 single-row-group shards (2.27 GB). A pmid's rows are spread over many
-    # shards (of the pmids of 4 sampled shards, 203,994 occur in two of them) and every shard spans
-    # pmid "100".."PPR..."/"c83..", so row-group statistics on pmid prune nothing. (pmid, keywordId) is unique
+    # shards (161,319 of the 1,563,753 pmids of 4 sampled shards occur in two or more of them) and every
+    # shard's pmid range spans the numeric PMIDs (min "100".."1002..." in the 334 footers, max "PPR..." in
+    # 326 and "c8..." in 8), so row-group statistics on pmid prune nothing. (pmid, keywordId) is unique
     # over all 151,961,320 rows (the pmid and keywordId column chunks of every shard read remotely, 1.42 GB);
     # 2,349,085 rows (759,406 ids) carry a non-numeric Europe PMC id in pmid (PPR 1,659,430 rows, IND 388,537,
     # PMC 301,096, CAIN 12, c 8, FNI 2): the column's id type is europepmc_id.
     key: {columns: [pmid, keywordId], check: sampled, verified: true}
     access_paths:
       - {columns: [keywordId], via: sidecar_index, build: on_demand}    # built by index_huge (phase 4, F19)
-      # row-group statistics on pmid prune nothing in 25.09 (every shard spans "100".."c8345"): a sidecar index
+      # row-group statistics on pmid prune nothing in 25.09 (every shard's range spans the numeric PMIDs;
+      # the union over shards is "100".."c8345"): a sidecar index
       - {columns: [pmid], via: sidecar_index, build: on_demand}
     coverage: {statement: "Europe PMC text-mined entity mentions integrated by OT 25.09; absence means not text-mined, not that the paper is irrelevant.",
                absence_means: unknown}
@@ -1655,8 +1663,10 @@ tables:
       per_scope: {signor: "causal (directed) edges only", reactome: "pathway-reaction co-membership"}
     columns:
       sourceDatabase: {role: category, vocab: [intact, reactome, signor, string], scope: {kind: stratum, pooling: group}}
-      # 25.09: about 700 endpoints are Ensembl genes of other species (ENSAMEG00000026011.1, MGP_SPRETEiJ_G0036647.1),
-      # absent from target (readiness R9 found 543 of 20,363 sampled targetA values dangling)
+      # 25.09: 543 distinct endpoints are not a target.id (every distinct value: 543 of the 20,363 targetA values;
+      # targetB adds none). 478 are Ensembl genes of other species or other namespaces (ENSAMEG00000026011.1,
+      # MGP_SPRETEiJ_G0036647.1); 65 are versioned human ENSG IDs, 61 of them target genes whose rows are read
+      # under that stored spelling (ensembl_gene.stored_forms), 4 are not in target (ENSG00000280889.1, ...)
       targetA: {role: endpoint, side: a, id_type: ensembl_gene, ref: target.id, integrity: partial}
       targetB: {role: endpoint, side: b, id_type: ensembl_gene, ref: target.id, integrity: partial, missing: non_entity}
       intA: {role: identifier, side: a, id_type_from: {field: intASource, map: {uniprotkb: uniprot_accession}}}
@@ -1707,8 +1717,9 @@ tables:
                absence_means: unknown}
     columns:
       interactionIdentifier: {role: identifier}
-      # 25.09: as in interaction, some endpoints are Ensembl genes of other species (ENSAMEG00000026011.1) that are
-      # not in target (readiness R9: 543 of 20,363 sampled targetA and 383 of 20,180 targetB values dangle)
+      # 25.09: as in interaction, 543 distinct endpoints are not a target.id (543 of 20,363 targetA and 383 of
+      # 20,180 targetB values, every distinct value): genes of other species, and 65 versioned human ENSG IDs, 61
+      # of them target genes read under their stored spelling (ensembl_gene.stored_forms; 694 evidence rows)
       targetA: {role: endpoint, side: a, id_type: ensembl_gene, ref: target.id, integrity: partial, missing: non_entity}
       targetB: {role: endpoint, side: b, id_type: ensembl_gene, ref: target.id, integrity: partial, missing: non_entity}
       # each evidence record belongs to one aggregated interaction row (composite reference); 25.09: all

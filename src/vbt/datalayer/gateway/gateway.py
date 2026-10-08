@@ -137,6 +137,8 @@ _INCLUDE_DUPLICATES = "include_duplicates"
 _SERVICE_SCRIPT = ("src", "vbt", "datalayer", "service", "server.py")
 #: Seconds before a resolver index build that failed on an outage (not a rejection) is tried again.
 INDEX_RETRY_S = 60.0
+#: Family members whose rows a ``family: exact`` call counts (``_vbt.family_rows``) at most.
+MAX_FAMILY_COUNTS = 10
 #: Seconds a failed readiness check of the same tables answers False without asking the child again.
 CHECK_FAILURE_TTL_S = 5.0
 #: Set while an observe-mode call is prepared: the resolver's remote questions are not asked in its path.
@@ -217,6 +219,7 @@ class _CallState:
     serve_excluded_unknown: dict[str, int] = field(default_factory=dict)
     serve_negated: int = 0                                          # groups the data child dropped as negated
     materialized: list[dict[str, Any]] = field(default_factory=list)
+    family_rows: dict[str, int] = field(default_factory=dict)     # rows stored under other family members
 
 
 def _state(plan: CallPlan) -> _CallState:
@@ -741,7 +744,7 @@ class DataGateway:
         if st.undefined:
             plan.route = "none"
             return
-        st.order = self._effective_order(contract, prepared)
+        st.order = self._effective_order(contract, prepared, plan.args_raw)
         st.requested_limit = self._requested_limit(plan, contract, schema)
         # 6. witness pre-scan
         await self._witness(plan, st, contract, selected, derived=derived)
@@ -759,6 +762,7 @@ class DataGateway:
             vocab_values=self._dim_values(vocab, contract, selected, every=True))
         plan.scope.update(st.decision.disclosure())
         st.notes.extend(st.decision.notes)
+        await self._family_rows(plan, st, contract, selected)
         # 8. leakage
         st.leakage = prepare_leakage(contract, plan.args_sent, self._ceiling, tool=name)
         st.notes.extend(st.leakage.notes)
@@ -927,7 +931,7 @@ class DataGateway:
             if a.accepts or role in ("identifier", "endpoint"):
                 continue
             if role in ("category", "scope") or getattr(spec, "scope", None) is not None or \
-                    a.interpreted_as in ("substring", "casefold_substring"):
+                    (a.interpreted_as in ("substring", "casefold_substring") and not a.pooled):
                 if isinstance(getattr(spec, "vocab", None), list) and a.role != "free_text":
                     continue
                 wanted.append((table, column))
@@ -1238,6 +1242,38 @@ class DataGateway:
             if a.op == "eq" and column and a.role != "anchor":
                 st.resolved_columns[req.arg] = column
 
+    async def _family_rows(self, plan: CallPlan, st: _CallState, contract: ToolContract,
+                           selected: str | None) -> None:
+        """``family: exact`` (§11.5): the call reads the resolved ID only, so rows stored under its other family
+        members (a salt's 61 adverse-event rows when the name resolved to the parent) are counted under the same
+        filters and reported as ``_vbt.family_rows`` (status partial), never left behind an empty answer."""
+        if st.mode != "enforce" or st.lenient or not st.predicate:
+            return
+        table = selected or contract.bound_table
+        for arg, res in st.results.items():
+            a = contract.args.get(arg)
+            members = [m for m in (getattr(res, "family", None) or ()) if m != res.canonical]
+            if a is None or a.family == "include" or not members or arg not in st.per_arg or not table:
+                continue
+            tb, column = bound_column(contract, arg, a, selected)
+            spec = column_spec(contract, tb, column)
+            if getattr(spec, "self", False):
+                continue                               # the entity table itself: its other members are other rows
+            for member in members[:MAX_FAMILY_COUNTS]:
+                _p, per = build_predicate(contract, {arg: member}, selected=selected, registry=self.registry,
+                                          confirmed=self._confirmed(selected))
+                if arg not in per:
+                    continue
+                parts = [per[arg] if k == arg else p for k, p in st.per_arg.items()]
+                parts += [Not(Eq(c, v)) for c, v in st.anchors.values()]
+                n = await self._count(table, parts[0] if len(parts) == 1 else And(tuple(parts)), st)
+                if n:
+                    st.family_rows[str(member)] = int(n)
+            if st.family_rows:
+                st.notes.append(f"{arg}: {sum(st.family_rows.values())} matching row(s) are stored under other family "
+                                f"members of {res.canonical} ({', '.join(f'{m}: {n}' for m, n in st.family_rows.items())}); "
+                                "call again with that ID for them")
+
     def _stored(self, res: Any, table: str | None) -> Any:
         """The bound table's own spelling of a resolved key (predicates read the table as stored)."""
         if not table:
@@ -1261,12 +1297,18 @@ class DataGateway:
 
     # ---------------------------------------------------------------- order, limits, witness
 
-    def _effective_order(self, contract: ToolContract, prepared: PreparedArgs) -> list[Any]:
+    def _effective_order(self, contract: ToolContract, prepared: PreparedArgs,
+                         args: Mapping[str, Any] | None = None) -> list[Any]:
         b = contract.binding
         if prepared.order and prepared.order.get("column"):
             return [{"column": prepared.order["column"], "direction": prepared.order.get("direction", "desc"),
                      "nulls": "last"}]
-        return list(b.result.order) if b is not None else []
+        if b is None:
+            return []
+        for arg, order in b.result.order_when.items():
+            if is_present((args or {}).get(arg)):
+                return list(order)                     # upstream's own ranking for this argument (RV-OT-08)
+        return list(b.result.order)
 
     def _requested_limit(self, plan: CallPlan, contract: ToolContract, schema: Mapping[str, Any] | None) -> int | None:
         name = contract.limit_arg
@@ -2647,6 +2689,8 @@ class DataGateway:
                 text_rows: bool = False) -> DataResult:
         contract: ToolContract = plan.contract
         b = contract.binding
+        if st.family_rows and status in ("ok", "empty", "empty_unverified"):
+            status = "partial"                         # rows elsewhere in the family: never a complete or empty answer
         t = self._rows_table(plan, contract)
         cols = list(cols if cols is not None else self._key_columns(contract, t))
         types = [st.storage_types.get(c) for c in cols]
@@ -2779,7 +2823,8 @@ class DataGateway:
             resolution_summary=st.resolution_summary or None, excluded_unknown=excluded_unknown or None,
             excluded_not_applicable=excluded_na or None, excluded_negated=counters.excluded_negated or None,
             excluded=dict(counters.excluded) or None, withheld=withheld or None,
-            not_found_items=st.not_found_items, pooled_over=list(pooled) or None,
+            family_rows=dict(st.family_rows) or None, not_found_items=st.not_found_items,
+            pooled_over=list(pooled) or None,
             removed_fields=dict(counters.removed_fields) or None, trimmed=dict(counters.trimmed) or None,
             undefined=(next(iter(st.undefined.values())) if st.undefined else None),
             coverage=coverage,  # type: ignore[arg-type]

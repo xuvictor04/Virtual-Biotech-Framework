@@ -579,7 +579,11 @@
   ],
   "facts": {
    "targets_null": 115,
+   "targets_with_comma": 123,
    "targets_with_comma_space": 122,
+   "targets_comma_without_space": {
+    "Clobetasol propionate": "CYP3A5,CYP3A4"
+   },
    "targets_with_pipe": 0
   },
   "excerpt": [

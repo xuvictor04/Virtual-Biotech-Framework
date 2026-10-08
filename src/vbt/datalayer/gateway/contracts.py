@@ -378,7 +378,7 @@ def _free_text(contract: Any, name: str, binding: Any, value: Any, snap: Any, re
     if binding.pattern and not re.fullmatch(binding.pattern, value):
         raise _invalid(contract, name, value, f"{name} does not match {binding.pattern}", reason="pattern")
     out = value
-    if not _derived_search(contract):
+    if not _derived_search(contract) and not binding.pooled:
         substring_hits(contract, name, binding, value, snap)
     if binding.interpreted_as == "regex":
         out = re.escape(out)

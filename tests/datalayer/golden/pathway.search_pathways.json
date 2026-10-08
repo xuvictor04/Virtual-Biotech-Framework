@@ -10,6 +10,7 @@
    },
    "query": {
     "default": null,
+    "description": "A case-insensitive substring search: every stored value containing the text is pooled into the results and counted in `_vbt.total`.",
     "type": "string"
    },
    "top_level_term": {

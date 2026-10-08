@@ -34,7 +34,7 @@ tools:
     reads: {open_targets.target: {access: projection, columns: [id, pathways]}}
     args:
       query:          {role: free_text, binds_any: ["open_targets.target.pathways[].pathway", "open_targets.target.pathways[].pathwayId"],
-                       interpreted_as: casefold_substring}
+                       interpreted_as: casefold_substring, pooled: true}   # 'cholesterol' lists 9 pathways
       top_level_term: {binds: "open_targets.target.pathways[].topLevelTerm", item_filter: true}
       limit:          {role: limit, min: 1, max: 5000}
     result:
@@ -87,7 +87,7 @@ tools:
   search_go_terms:
     reads: {open_targets.target: {access: projection, columns: [id, go]}, open_targets.go: {access: full_table}}
     args:
-      query:  {role: free_text, binds_any: ["open_targets.target.go[].id"], interpreted_as: casefold_substring}
+      query:  {role: free_text, binds_any: ["open_targets.target.go[].id"], interpreted_as: casefold_substring, pooled: true}
       aspect: {binds: "open_targets.target.go[].aspect", item_filter: true}
       limit:  {role: limit, min: 1, max: 5000}
     result:

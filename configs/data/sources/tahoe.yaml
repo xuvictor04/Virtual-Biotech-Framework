@@ -153,7 +153,9 @@ tables:
     coverage: {statement: "The 379 Tahoe-100M drugs (existence only).", absence_means: absent, applies_to: entity}
     columns:
       drug:               {role: identifier, id_type: tahoe_drug, self: true}
-      targets:            {role: category, vocab: data, list_delimiter: ", "}   # 'PSMB1, PSMB2, PSMB5'; 115 null (VERIFIED)
+      # 'PSMB1, PSMB2, PSMB5': of 264 non-null values 122 hold ', ' and one ',' alone (Clobetasol propionate
+      # 'CYP3A5,CYP3A4'); elements are split on ',' and stripped; 115 null (VERIFIED)
+      targets:            {role: category, vocab: data, list_delimiter: ","}
       moa-broad:          {role: category, vocab: data}
       moa-fine:           {role: category, vocab: data}
       human-approved:     {role: category, vocab: data}

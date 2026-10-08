@@ -64,6 +64,13 @@ class RowGroupInfo:
         prefix = leaf + "."
         return sum(c.bytes for p, c in self.chunks.items() if p.startswith(prefix))
 
+    def leaf_values(self, leaf: str) -> int:
+        """Stored values (list elements included) of a leaf or of every leaf under a group prefix."""
+        if leaf in self.chunks:
+            return self.chunks[leaf].num_values
+        prefix = leaf + "."
+        return sum(c.num_values for p, c in self.chunks.items() if p.startswith(prefix))
+
 
 @dataclass(frozen=True)
 class FooterInfo:
@@ -98,6 +105,8 @@ def read_footer(frag: Fragment) -> FooterInfo:
         if path is None:
             raw = open_fragment(frag)                  # http(s):// or zip://: only the footer is transferred
         md = pq.ParquetFile(raw if raw is not None else path).metadata
+    except MemoryError:
+        raise                                          # out of memory, not an unreadable file
     except (pa.ArrowException, OSError, ValueError) as exc:
         raise FormatError(f"{path or frag.uri}: not a readable data file ({type(exc).__name__}: {exc})",
                           fragment=frag.uri, partition=frag.partition) from exc

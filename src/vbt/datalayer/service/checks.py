@@ -986,6 +986,8 @@ def _arrow_key_duplicates(reader: TableReader, key: Sequence[str], types: Sequen
                      for idx, d in zip(indices, dictionaries)]
             examples.extend([canonical(parts, types)] * (n - 1))   # one per repeat, as a scan lists
         examples = examples[:5]
+    except MemoryError:
+        raise                                          # out of memory, not an unanswerable check
     except (ServiceError, FormatError, ValueError, TypeError, NotImplementedError, pa.ArrowException):
         return None
     return dups, examples, rows
@@ -1298,6 +1300,8 @@ def _arrow_container_counts(reader: TableReader, lvls: Sequence[Any], leaf: str 
                     counts.nonempty += int(pc.sum(pc.greater(lengths, 0)).as_py() or 0)
                     counts.null_items += values.null_count
                     counts.items += len(values) - values.null_count
+    except MemoryError:
+        raise                                          # out of memory, not an unanswerable check
     except (pa.ArrowException, KeyError, IndexError, TypeError):
         return None
     return counts
@@ -1682,6 +1686,8 @@ def _found_in_column(treader: TableReader, column: str, values: Sequence[Any]) -
                 return None
             hits = pc.filter(arr, pc.is_in(pc.cast(arr, as_type), value_set=wanted))
             found.update(render_value(v) for v in pc.unique(hits).to_pylist() if v is not None)
+    except MemoryError:
+        raise                                          # out of memory, not an unanswerable check
     except (ServiceError, FormatError, ValueError, TypeError, NotImplementedError, pa.ArrowException):
         return None
     return found

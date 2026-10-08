@@ -34,6 +34,7 @@ if _SRC not in sys.path:
 
 import argparse  # noqa: E402
 import json  # noqa: E402
+import os  # noqa: E402
 from typing import Any, Callable, Mapping  # noqa: E402
 
 from vbt.datalayer.ipc import VERB_CHECK  # noqa: E402
@@ -58,14 +59,34 @@ def _payload(request: Any) -> dict[str, Any]:
     return dict(request)
 
 
+#: Exit code of a data child that ran out of memory (the reaper labels the exit from the MemoryError line).
+MEMORY_EXIT = 70
+
+
+def out_of_memory(where: str, exc: BaseException) -> None:
+    """A failed allocation is fatal for the data child: the process exits, so the bridge restarts it with a fresh
+    heap (one over-memory scan left a child at its RLIMIT_DATA, failing every later read as an unreadable file).
+    The last stderr line names the memory error: the reaper labels the exit ``memory_error`` and the call that
+    ran into it gets an ``oom`` error, never a partial answer."""
+    try:
+        sys.stderr.write(f"MemoryError: data child out of memory in {where}: {exc}\n")
+        sys.stderr.flush()
+    finally:
+        os._exit(MEMORY_EXIT)
+
+
 def tool_function(ctx_ref: Callable[[], ServiceContext], name: str,
                   verb: Callable[[ServiceContext, Mapping[str, Any]], dict[str, Any]]) -> Callable[..., dict[str, Any]]:
     """The FastMCP tool of one verb: one ``request`` parameter, the context built on first use."""
 
     def tool(request: dict[str, Any] | str | None = None) -> dict[str, Any]:
         ctx = ctx_ref()
-        with ctx.slots:
-            return verb(ctx, _payload(request))
+        try:
+            with ctx.slots:
+                return verb(ctx, _payload(request))
+        except MemoryError as exc:
+            out_of_memory(name, exc)
+            raise                                      # pragma: no cover - out_of_memory never returns
 
     tool.__name__ = name.lstrip("_") or "verb"
     tool.__doc__ = (verb.__module__.rsplit(".", 1)[-1] + ": internal data-layer verb " + name +
@@ -103,8 +124,12 @@ def _public_tool(ctx_ref: Callable[[], ServiceContext], name: str,
 
             def call() -> dict[str, Any]:
                 ctx = ctx_ref()
-                with ctx.slots:
-                    return verb(ctx, payload)
+                try:
+                    with ctx.slots:
+                        return verb(ctx, payload)
+                except MemoryError as exc:
+                    out_of_memory(name, exc)
+                    raise                              # pragma: no cover - out_of_memory never returns
 
             return self.convert_result(await anyio.to_thread.run_sync(call))
 
