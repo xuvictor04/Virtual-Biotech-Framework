@@ -16,14 +16,22 @@ contradiction is repaired from the data child when the binding declares ``derive
 
 Modes: ``observe`` never raises and returns upstream results unchanged, tracing
 ``data_observe`` events with the decision it would have taken; ``enforce`` applies everything.
-Profile ``fidelity`` serves derived tools ``pass`` behind the witness and refuses only on a
-contradiction (repairs become errors).
+Observe mode adds no call to the data child, the source or the watched server in the call path (no
+index build, vocabulary or SOMA vocabulary fetch, witness or existence count, remote resolution) and
+renames no file. Profile ``fidelity`` serves derived tools ``pass`` behind the witness and refuses only
+on a contradiction (repairs become errors).
+
+A tool that depends on a quarantined catalog file (R8: an overlay or descriptor that does not load,
+``ToolContract.quarantined``) is refused ``quarantined`` (subkind ``catalog_file``, naming the file and
+its error) under ``when_service_down: strict``; ``lenient`` runs it unguarded. Every other tool is
+served as usual.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import hashlib
 import json
 import logging
@@ -128,6 +136,24 @@ _SERVICE_SCRIPT = ("src", "vbt", "datalayer", "service", "server.py")
 INDEX_RETRY_S = 60.0
 #: Seconds a failed readiness check of the same tables answers False without asking the child again.
 CHECK_FAILURE_TTL_S = 5.0
+#: Set while an observe-mode call is prepared: the resolver's remote questions are not asked in its path.
+_OBSERVING: contextvars.ContextVar[bool] = contextvars.ContextVar("vbt_gateway_observing", default=False)
+QUARANTINE_INSTRUCTION = ("This tool is unavailable: a data-layer configuration file it depends on does not load and "
+                          "is quarantined until it is fixed (`vbt ds lint` names the file and the error). This call "
+                          "did not produce evidence; report the outage and do not treat it as a negative result.")
+
+
+def quarantine_error(contract: ToolContract, tool: str | None = None) -> GatewayError:
+    """The ``quarantined`` error of a tool that depends on a catalog file that does not load (R8)."""
+    files = [q.to_json() for q in contract.quarantined]
+    first = contract.quarantined[0]
+    what = "its server's overlay" if first.kind == "overlay" else f"the {first.kind} {first.name or first.file}"
+    return GatewayError(ErrorKind.quarantined,
+                        f"{contract.name} is quarantined: {what} ({first.path}) does not load: {first.summary}",
+                        tool=tool or f"mcp__{contract.server}__{contract.tool}", subkind="catalog_file",
+                        instruction=QUARANTINE_INSTRUCTION,
+                        payload={"reason": f"catalog file does not load: {contract.quarantine_reason}",
+                                 "alternatives": [], "files": files})
 
 
 @dataclass
@@ -337,6 +363,11 @@ class DataGateway:
             contract = self.catalog.contract(server, tool)
         except Exception:  # noqa: BLE001
             return ListingDecision(True, description, input_schema)
+        if contract.quarantined:
+            if self._mode_for(server) == "enforce" and self.settings.gateway.when_service_down == "strict":
+                return ListingDecision(True, f"UNAVAILABLE: quarantined ({contract.quarantine_reason}).\n"
+                                             f"{description}", input_schema)
+            return ListingDecision(True, description, input_schema)
         b = contract.binding
         if b is not None and (b.hidden or (b.block is not None and b.block.hidden and b.serve == "block")):
             return ListingDecision(False, description, input_schema, reason="hidden by the overlay")
@@ -455,7 +486,16 @@ class DataGateway:
         return snap
 
     def degraded_tools(self) -> dict[str, str]:
-        return degraded_tools(self.catalog, self.readiness)
+        """Unready tools ``{mcp__server__tool: reason}``: readiness, and (under ``strict``) the tools that
+        depend on a quarantined catalog file."""
+        out = degraded_tools(self.catalog, self.readiness)
+        if getattr(self.catalog, "quarantined", None) and self.settings.gateway.when_service_down == "strict":
+            for name, files in self.catalog.quarantined_tools().items():
+                server, _, tool = name.partition(".")
+                if self._mode_for(server) == "enforce":
+                    out.setdefault(f"mcp__{server}__{tool}", "quarantined: " + "; ".join(
+                        f"{q.file}: {q.summary}" for q in files))
+        return out
 
     # ================================================================== resolver plumbing
 
@@ -474,6 +514,9 @@ class DataGateway:
         return None
 
     async def _remote(self, source: str, id_type: str, values: Sequence[str]) -> Any:
+        if _OBSERVING.get():
+            # the resolver records existence unknown; the remote question is never asked in an observed call
+            raise RuntimeError("observe mode: remote resolution is not done in the call path")
         resp = await self.service.resolve_remote(source, id_type, values)
         return resp.model_dump()
 
@@ -557,6 +600,7 @@ class DataGateway:
         st.mode = mode
         setattr(plan, "_vbt_ctx", ctx)
         if mode != "enforce":
+            token = _OBSERVING.set(True)
             try:
                 await self._prepare(plan, st)
                 self._observe(plan, "would_route", route=plan.route, args_sent=plan.args_sent,
@@ -565,6 +609,8 @@ class DataGateway:
                 self._observe(plan, f"would_{exc.kind.value}", error=exc.envelope())
             except Exception as exc:  # noqa: BLE001 - observe mode never changes a call
                 self._observe(plan, "observe_failed", error=f"{type(exc).__name__}: {exc}")
+            finally:
+                _OBSERVING.reset(token)
             plan.args_sent = self._with_agent(server, tool, dict(args), ctx)
             plan.route = "upstream"
             plan.cold_lock = None
@@ -597,6 +643,16 @@ class DataGateway:
         contract: ToolContract = plan.contract
         b = contract.binding
         name = st.name
+        if contract.quarantined:
+            # R8: a catalog file this tool depends on does not load. strict refuses (observe traces it);
+            # lenient runs the call unguarded, as a broken catalog did before quarantine
+            err = quarantine_error(contract, name)
+            if st.mode == "enforce" and self.settings.gateway.when_service_down == "lenient":
+                st.generic = st.unguarded = True
+                st.notes.append(f"unguarded: {contract.quarantine_reason}")
+                self._observe(plan, "quarantined_unguarded", error=err.envelope())
+                return
+            raise err
         if b is None or contract.generic:
             st.generic = True
             st.unguarded = self._unguarded(contract)
@@ -952,7 +1008,13 @@ class DataGateway:
                 pred = soma_filter.parse(text) if is_present(text) else None
                 if pred is not None:
                     cols = soma_filter.filter_columns(pred)
-                    vocab = await self._soma_vocab.fetch(cols, lambda c: self._soma_values(plan.server, c))
+                    if st.mode != "enforce":
+                        # observe mode never asks the watched server for a vocabulary in the call path
+                        vocab = {c: self._soma_vocab.get(c) for c in cols}
+                        if any(v is None for v in vocab.values()):
+                            st.notes.append("observe mode: SOMA vocabularies not fetched in the call path")
+                    else:
+                        vocab = await self._soma_vocab.fetch(cols, lambda c: self._soma_values(plan.server, c))
                     pred, notes = soma_filter.resolve_filter(pred, vocab)
                     st.notes.extend(notes)
                 pred, added = soma_filter.enforce_primary(pred, include_dup)
@@ -1164,8 +1226,9 @@ class DataGateway:
         return self.resolver.send_value(res, "stored", table)
 
     async def _count(self, table: str | None, pred: Predicate, st: _CallState) -> int | None:
-        """One witness count (existence ``bound``, anchors, coverage universes); None when unknown."""
-        if not table or st.lenient:
+        """One witness count (existence ``bound``, anchors, coverage universes); None when unknown (and in
+        observe mode, which asks the data child nothing in the call path)."""
+        if not table or st.lenient or st.mode != "enforce":
             return None
         req = WitnessRequest(table=table, predicate=to_json(pred), key_set_max=0,
                              budget_bytes=self.settings.witness.max_scan_bytes)
@@ -2759,6 +2822,8 @@ class DataGateway:
             "memory": {"server_limits_mb": limits, "containment": self.settings.memory.limit_kind},
             "determinism": {"hash_seed": hash_seed, "per_server": seeds, "flags_stripped": sorted(stripped)},
             "leakage": {"ceiling": self._ceiling.isoformat() if self._ceiling else None},
+            **({"quarantined": [q.to_json() for q in self.catalog.quarantined]}
+               if getattr(self.catalog, "quarantined", None) else {}),
         }
 
 

@@ -383,12 +383,16 @@ def check_reference_data(config: dict[str, Any], *, per_turn: bool = False) -> l
     only when no granted tool reading that source is ready. ``per_turn`` reuses the session's
     cached results and re-checks only tables whose stat-only signature moved. Without the data
     layer, or when the data child cannot run, the legacy whole-release checks apply (with a note).
+    A descriptor or overlay file that does not load is quarantined on its own (R8): one required
+    ``data catalog`` result names each file, its error and the servers and tools it refuses, and the
+    rest of the catalog is checked as usual.
     """
     if not _servers(config):
         return []
     if data_layer_active(config):
+        quarantine = _catalog_quarantine(config)
         try:
-            return [*check_data_readiness(config, per_turn=per_turn), *_leakage_ceiling(config)]
+            return [*check_data_readiness(config, per_turn=per_turn), *quarantine, *_leakage_ceiling(config)]
         except DataCatalogError as exc:
             # the catalog itself is broken: the gateway cannot guard any server, which is not a fallback
             fail = CheckResult("data catalog", False, required=True, kind="data",
@@ -401,8 +405,35 @@ def check_reference_data(config: dict[str, Any], *, per_turn: bool = False) -> l
                                       "whole-release checks",
                                hint="check vars.mcp_python has pyarrow and the vbt data-layer dependencies "
                                     "(`vbt doctor` lists the data child's imports)")
-            return [*_legacy_reference_data(config), note]
+            return [*_legacy_reference_data(config), *quarantine, note]
     return _legacy_reference_data(config)
+
+
+def _catalog_quarantine(config: dict[str, Any]) -> list[CheckResult]:
+    """One required ``data catalog`` result when descriptor or overlay files are quarantined (R8): the files
+    and their errors, the enabled servers refused (their overlay) and the tools refused (they read a table or
+    id_type of a quarantined descriptor). Tool-scoped (``scope``), so it blocks no session on its own."""
+    try:
+        _settings, catalog, _registry = data_catalog(config)
+    except Exception:  # noqa: BLE001 - a catalog that cannot be built at all is reported by the caller
+        return []
+    files = list(getattr(catalog, "quarantined", None) or [])
+    if not files:
+        return []
+    names = sorted({str(s.get("name")) for s in _servers(config)})
+    servers = sorted(n for n in names if n in catalog.quarantined_servers())
+    tools = {_tool_name(*name.split(".", 1)): "quarantined: " + "; ".join(f"{q.file}: {q.summary}" for q in qs)
+             for name, qs in catalog.quarantined_tools(names).items()}
+    detail = (f"{len(files)} file(s) do not load and are quarantined (the rest of the catalog is served): "
+              + "; ".join(f"{q.path}: {q.summary}" for q in files))
+    if servers:
+        detail += f" -- servers refused: {', '.join(servers)}"
+    if tools:
+        short = sorted(t.split("__", 2)[-1] for t in tools)
+        detail += f" -- tools refused: {', '.join(short[:8])}" + (f" (+{len(short) - 8})" if len(short) > 8 else "")
+    return [CheckResult("data catalog", False, required=True, kind="data", detail=detail[:1500],
+                        hint="fix the file (`vbt ds lint` names the file and field)",
+                        scope={"quarantined": [q.to_json() for q in files], "servers": servers}, tools=tools)]
 
 
 def _leakage_ceiling(config: dict[str, Any]) -> list[CheckResult]:
@@ -636,6 +667,12 @@ def data_readiness(config: dict[str, Any], cache: Any, catalog: Any, *, errors: 
             name = _tool_name(server, tool)
             out.bound.setdefault(server, []).append(name)
             out.reads[name] = {cache.physical(ref)[0] for ref in contract.tables}
+            if getattr(contract, "quarantined", None):
+                # R8: it reads a table or id_type of a descriptor that does not load
+                q = contract.quarantined[0]
+                out.unready[name] = {"table": q.name or q.file, "check": "quarantined",
+                                     "detail": f"{q.file}: {q.summary}", "status": "quarantined"}
+                continue
             r = call_readiness(contract, cache, bound_table=contract.bound_table)
             always = [x for x in r.hard if "partition" not in x]       # a section table only degrades its section
             if always:
@@ -1096,7 +1133,7 @@ def sentinel_controls(catalog: Any, server: str, schemas: Mapping[str, Mapping[s
             continue
         b = contract.binding
         bound = contract.bound_table
-        if b is None or b.serve == "block" or b.hidden or not bound:
+        if b is None or b.serve == "block" or b.hidden or not bound or getattr(contract, "quarantined", None):
             continue
         try:
             sentinels = catalog.table(bound).spec.sentinels

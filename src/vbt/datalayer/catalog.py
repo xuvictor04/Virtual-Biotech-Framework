@@ -9,19 +9,27 @@
   the tables of another source that declare ``implements`` (rev 2).
 * :meth:`Catalog.id_type` honours qualification: ``source:name`` is exact; a bare name means
   the hint source's own type, else a unique match across loaded sources.
+* R8: :func:`build_catalog` quarantines a descriptor or overlay file that does not load on its own
+  (:class:`~.descriptor.load.Quarantined`, ``Catalog.quarantined``). :meth:`Catalog.contract` marks
+  only the tools that depend on it (``ToolContract.quarantined``): every tool of a server whose overlay
+  is quarantined, a tool whose binding references a table or id_type a quarantined descriptor declares
+  (or may declare, when its YAML does not parse), and a tool on the generic guard while a generic
+  overlay of its server is quarantined. :meth:`Catalog.lint` reports each file as an error.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .descriptor.columns import is_container
 from .descriptor.load import digest as _digest
-from .descriptor.load import load_descriptors, load_overlays, variables_from_config
+from .descriptor.load import Quarantined, load_descriptors, load_overlays, variables_from_config
 from .descriptor.models import IdTypeSpec, SourceDescriptor, TableSpec, id_type_identity, plugin_name
 from .descriptor.overlay import ArgBinding, GenericSpec, Overlay, ToolBinding
 from .errors import ErrorKind, GatewayError, invalid_argument_payload
@@ -34,6 +42,9 @@ __all__ = [
 
 #: Marks a positional item-key part (``identity: position`` without ``max_items: 1``): ``"<container>[]#"``.
 POSITION_MARK = "#"
+
+log = logging.getLogger(__name__)
+_WARNED: set[tuple[str, str]] = set()
 
 
 class CatalogError(LookupError):
@@ -182,6 +193,13 @@ class ToolContract:
     overlay: Overlay | None = None
     alias_of: str | None = None                        # "server.tool" whose binding lists this tool in same_as
     generic_spec: GenericSpec | None = None
+    quarantined: tuple[Quarantined, ...] = ()          # R8: files this tool depends on that do not load
+    missing: tuple[str, ...] = ()                      # table references the loaded catalog cannot resolve
+
+    @property
+    def quarantine_reason(self) -> str:
+        """``<file>: <error>`` of each quarantined file the tool depends on ('' when none)."""
+        return "; ".join(f"{q.file}: {q.summary}" for q in self.quarantined)
 
     @property
     def name(self) -> str:
@@ -347,12 +365,13 @@ class Catalog:
 
     def __init__(self, descriptors: Mapping[str, SourceDescriptor], overlays: Mapping[str, Overlay] | None = None,
                  generic: Sequence[Overlay] = (), *, aliases: Mapping[str, str] | None = None,
-                 registry: Any = None) -> None:
+                 registry: Any = None, quarantined: Sequence[Quarantined] = ()) -> None:
         self._sources = dict(descriptors)
         self._overlays = dict(overlays or {})
         self._generic = list(generic)
         self.aliases = dict(aliases or {})
         self.registry = registry
+        self.quarantined: list[Quarantined] = sorted(quarantined, key=lambda q: (q.path, q.error))
         self._tables: dict[TableRef, CatalogTable] = {}
 
     # -- collections -------------------------------------------------------
@@ -450,6 +469,10 @@ class Catalog:
     # -- contracts -----------------------------------------------------------
 
     def contract(self, server: str, tool: str) -> ToolContract:
+        own = tuple(q for q in self.quarantined if q.kind == "overlay" and q.name == server)
+        if own:
+            # the server's own overlay does not load: no binding of it can be trusted, nor the generic guard
+            return ToolContract(server, tool, None, quarantined=own)
         ov = self._overlays.get(server)
         binding = ov.tools.get(tool) if ov is not None else None
         alias_of = None
@@ -469,22 +492,111 @@ class Catalog:
                     binding, owner = g.tools[tool], g
                     break
             if binding is None:
-                return ToolContract(server, tool, None, generic=True, generic_spec=generic_spec)
+                return ToolContract(server, tool, None, generic=True, generic_spec=generic_spec,
+                                    quarantined=self._generic_quarantine(server))
             generic = True
         else:
             generic = binding.status == "unreviewed"
         tables: dict[str, CatalogTable] = {}
         descriptors: dict[str, SourceDescriptor] = {}
+        missing: list[str] = []
         for ref in _table_refs(binding):
             try:
                 t = self.table(ref)
             except CatalogError:
-                continue                               # lint reports unresolvable references
+                missing.append(ref)                    # lint reports unresolvable references
+                continue
             tables[str(t.ref)] = t
             descriptors[t.descriptor.source] = t.descriptor
             descriptors.setdefault(t.ref.source, self._sources.get(t.ref.source, t.descriptor))
+        quarantined = self._descriptor_quarantine(binding, missing, tables)
+        if generic:
+            quarantined += tuple(q for q in self._generic_quarantine(server) if q not in quarantined)
         return ToolContract(server, tool, binding, tables, descriptors, generic=generic, overlay=owner,
-                            alias_of=alias_of, generic_spec=generic_spec)
+                            alias_of=alias_of, generic_spec=generic_spec, quarantined=quarantined,
+                            missing=tuple(missing))
+
+    # -- quarantine (R8) -----------------------------------------------------
+
+    def _generic_quarantine(self, server: str) -> tuple[Quarantined, ...]:
+        """Quarantined generic overlays that would apply to ``server`` (``*``, its name, or unknown)."""
+        return tuple(q for q in self.quarantined if q.kind == "generic" and q.name in (None, "*", server))
+
+    def _unloaded(self, source: str) -> set[str]:
+        """The sources a reference to ``source`` needs that are not loaded (itself, or its alias target)."""
+        target = self.aliases.get(source)
+        if target:
+            return set() if target in self._sources else {target}
+        return set() if source in self._sources else {source}
+
+    def _descriptor_quarantine(self, binding: ToolBinding, missing: Sequence[str],
+                               tables: Mapping[str, CatalogTable]) -> tuple[Quarantined, ...]:
+        """Quarantined descriptors a binding depends on: one that declares (or, unreadable, may declare) a
+        source its unresolved table references or qualified id_types need, or a bare id_type no loaded
+        source declares."""
+        quarantined = [q for q in self.quarantined if q.kind == "descriptor"]
+        if not quarantined:
+            return ()
+        sources: set[str] = set()
+        bare: set[str] = set()
+        for ref in missing:
+            sources |= self._unloaded(ref.split(".", 1)[0])
+        kinds: list[tuple[str, str | None]] = []
+        for a in binding.args.values():
+            kinds.extend((k, None) for k in a.accepts)
+            for c in a.bound_columns:
+                segs = parse_path(c).segments
+                if len(segs) < 3:
+                    continue
+                t = tables.get(f"{segs[0].name}.{segs[1].name}")
+                spec = t.columns.get(segs[2].name) if t is not None else None
+                if t is not None and getattr(spec, "id_type", None):
+                    kinds.append((str(spec.id_type), t.descriptor.source))
+        for kind, hint in kinds:
+            if ":" in kind:
+                sources |= self._unloaded(kind.partition(":")[0])
+                continue
+            try:
+                self.id_type(kind, hint)
+            except UnknownIdType:
+                bare.add(kind)
+            except CatalogError:
+                continue
+        out = []
+        for q in quarantined:
+            if q.name is None:
+                hit = bool(sources or bare)
+            else:
+                hit = q.name in sources or bool(bare and (q.id_types is None or bare & set(q.id_types)))
+            if hit:
+                out.append(q)
+        return tuple(out)
+
+    def quarantined_servers(self) -> dict[str, list[Quarantined]]:
+        """``{server: [its quarantined overlay files]}``: servers no binding can be read for."""
+        out: dict[str, list[Quarantined]] = {}
+        for q in self.quarantined:
+            if q.kind == "overlay" and q.name:
+                out.setdefault(q.name, []).append(q)
+        return out
+
+    def quarantined_tools(self, servers: Sequence[str] | None = None) -> dict[str, tuple[Quarantined, ...]]:
+        """``{"server.tool": files}`` of the loaded overlays' tools that depend on a quarantined file."""
+        if not self.quarantined:
+            return {}
+        wanted = None if servers is None else set(servers)
+        out: dict[str, tuple[Quarantined, ...]] = {}
+        for server in self.servers():
+            if wanted is not None and server not in wanted:
+                continue
+            for tool in self.tools(server):
+                try:
+                    c = self.contract(server, tool)
+                except Exception:  # noqa: BLE001 - lint reports a broken binding
+                    continue
+                if c.quarantined:
+                    out[f"{server}.{tool}"] = c.quarantined
+        return out
 
     def _generic_spec(self, server: str) -> GenericSpec | None:
         specs = [g.generic for g in self._generic if g.generic is not None and g.server in (server, "*")]
@@ -508,13 +620,16 @@ class Catalog:
         return _digest(ov) if ov is not None else None
 
     def digest(self) -> str:
-        """``sha256:`` over every descriptor, overlay and generic overlay digest and the aliases."""
-        body = {
+        """``sha256:`` over every descriptor, overlay and generic overlay digest and the aliases (and the
+        quarantined files, when there are any)."""
+        body: dict[str, Any] = {
             "descriptors": {s: _digest(d) for s, d in sorted(self._sources.items())},
             "overlays": {s: _digest(o) for s, o in sorted(self._overlays.items())},
             "generic": sorted(_digest(g) for g in self._generic),
             "aliases": dict(sorted(self.aliases.items())),
         }
+        if self.quarantined:
+            body["quarantined"] = [[q.file, q.kind, q.name, q.error] for q in self.quarantined]
         text = json.dumps(body, sort_keys=True, separators=(",", ":"))
         return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -539,32 +654,65 @@ class Catalog:
         return out
 
     def lint(self, registry: Any = None, strict: bool | None = None) -> list[Any]:
-        """Lint every descriptor and overlay (``registry`` defaults to the catalog's)."""
-        from .descriptor.lint import lint_descriptor, lint_overlay
+        """Lint every descriptor and overlay (``registry`` defaults to the catalog's). A quarantined file is
+        an error naming the file and why it does not load; an overlay's unresolved reference to what that
+        file declares is a warning pointing at it (the overlay is not what is broken)."""
+        from .descriptor.lint import Finding, lint_descriptor, lint_overlay
         reg = registry if registry is not None else self.registry
-        findings: list[Any] = []
+        findings: list[Any] = [Finding("error", q.path, f"does not load, quarantined: {q.summary}", rule="quarantined")
+                               for q in self.quarantined]
         for d in self._sources.values():
             findings.extend(lint_descriptor(d, reg, strict, self._sources))
         for ov in list(self._overlays.values()) + self._generic:
-            findings.extend(lint_overlay(ov, self, reg))
+            for f in lint_overlay(ov, self, reg):
+                q = self._consequence_of(f)
+                findings.append(f if q is None else dataclasses.replace(
+                    f, level="warning", message=f"{f.message} (it depends on the quarantined {q.file})"))
         return findings
+
+    def _consequence_of(self, finding: Any) -> Quarantined | None:
+        """The quarantined descriptor an overlay error follows from: an unknown source it declares (or an
+        unreadable one may declare), or an unknown accepted kind it declares."""
+        target = finding.target                        # a lint Finding: the unresolved name, if any
+        if finding.level != "error" or not target:
+            return None
+        source = str(target).split(".", 1)[0].split(":", 1)[0]
+        for q in self.quarantined:
+            if q.kind != "descriptor":
+                continue
+            if finding.rule == "accepts":
+                if q.id_types is None or str(target).rsplit(":", 1)[-1] in q.id_types:
+                    return q
+            elif source not in self._sources and q.name in (None, source):
+                return q
+        return None
 
 
 def build_catalog(settings: Any, registry: Any = None, *, variables: Mapping[str, str] | None = None,
-                  run: Mapping[str, Any] | None = None) -> Catalog:
+                  run: Mapping[str, Any] | None = None, quarantine: bool = True) -> Catalog:
     """Load descriptors and overlays from ``settings.descriptors_dir`` / ``overlays_dir``, with
-    ``data.sources.alias`` for ``implements`` tables."""
+    ``data.sources.alias`` for ``implements`` tables. A file that does not load is quarantined on its
+    own (``Catalog.quarantined``, logged once per process); ``quarantine=False`` raises on it instead."""
     variables = dict(variables or {})
     variables.setdefault("project_root", str(getattr(settings, "project_root", "")))
-    descriptors = load_descriptors(Path(settings.descriptors_dir), variables, run)
-    overlays, generic = load_overlays(Path(settings.overlays_dir), variables)
+    quarantined: list[Quarantined] | None = [] if quarantine else None
+    descriptors = load_descriptors(Path(settings.descriptors_dir), variables, run, quarantine=quarantined)
+    overlays, generic = load_overlays(Path(settings.overlays_dir), variables, quarantine=quarantined)
     aliases = dict(getattr(getattr(settings, "sources", None), "alias", {}) or {})
-    return Catalog(descriptors, overlays, generic, aliases=aliases, registry=registry)
+    catalog = Catalog(descriptors, overlays, generic, aliases=aliases, registry=registry,
+                      quarantined=quarantined or ())
+    for q in catalog.quarantined:
+        if (q.path, q.error) not in _WARNED:
+            _WARNED.add((q.path, q.error))
+            log.warning("data catalog: %s %s quarantined (only the tools that depend on it are refused): %s",
+                        q.kind, q.path, q.summary)
+    return catalog
 
 
 def load_catalog(config: Mapping[str, Any] | None = None, registry: Any = None, *,
-                 run: Mapping[str, Any] | None = None) -> Catalog:
+                 run: Mapping[str, Any] | None = None, quarantine: bool = True) -> Catalog:
     """:func:`build_catalog` from a loaded config (``vbt.config.load_config``)."""
     from .settings import DataSettings
     settings = DataSettings.from_config(config or {})
-    return build_catalog(settings, registry, variables=variables_from_config(config), run=run)
+    return build_catalog(settings, registry, variables=variables_from_config(config), run=run,
+                         quarantine=quarantine)

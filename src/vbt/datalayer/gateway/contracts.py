@@ -616,7 +616,13 @@ def apply_arg_contracts(contract: Any, args: Mapping[str, Any], vocab: Mapping[s
                     raise _invalid(contract, name, value, f"{name} cannot be null; "
                                    + default_note(contract, binding, props.get(name), default).replace(
                                        "Defaults to", "omit it for the default"), reason="null")
-                out.args_sent.pop(name, None)       # derived: null is "no restriction", nothing is sent
+                tool_binding = getattr(contract, "binding", None)
+                if tool_binding is not None and tool_binding.serve == "derived":
+                    out.args_sent.pop(name, None)   # derived: null is "no restriction", nothing is sent
+                else:
+                    # upstream takes None: send it explicitly, or upstream applies the very default the note
+                    # says is lifted (CT.gov country=null counted US trials only: 300 of 705)
+                    out.args_sent[name] = None
                 out.notes.append(f"{name}=null: no restriction (the default {default!r} is not applied)")
         if value is None:
             continue

@@ -3,8 +3,10 @@
 :func:`build_launch_spec` rewrites a server's command so it runs under
 :mod:`vbt.datalayer.launch.reaper` (executed by path with the harness interpreter and ``-E``):
 an ``RLIMIT_DATA`` memory limit, a status file next to the server log, a ``VBT_CHILD_EXIT``
-marker in the server log when the child ends, and for Python children an explicit environment
-in which ``PYTHONHASHSEED=0`` actually takes effect. The gateway's ``launch_spec(cfg)`` calls it
+marker in the server log when the child ends (the reaper tees the child's stderr, so a memory exit
+carries its ``cause``: ``memory_error``, ``cgroup_oom_kill``, ``watchdog``, ``kernel_oom_kill`` or
+``peak_rss``), and for Python children an explicit environment in which ``PYTHONHASHSEED=0`` actually
+takes effect. The gateway's ``launch_spec(cfg)`` calls it
 with the bridge's log directory (``MCPBridge.log_root()``).
 """
 

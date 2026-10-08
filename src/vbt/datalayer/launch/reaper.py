@@ -9,15 +9,28 @@ Usage::
 The reaper forks. The **child** puts itself in its own process group, asks the kernel to
 kill it when the reaper dies, sets ``RLIMIT_DATA`` to N MB when N > 0 (Linux >= 4.7 counts
 brk and private writable mappings, so pandas and Arrow heaps are bounded without the false
-failures ``RLIMIT_AS`` causes) and execs the command, inheriting fds 0 and 2 (and 1 unless the
-relay is on).
+failures ``RLIMIT_AS`` causes) and execs the command, inheriting fd 0 (and 1 unless the relay is
+on); its fd 2 is a pipe to the reaper.
 
 The **parent** points its own fds 0 and 1 at ``/dev/null`` (so pipe EOF reaches the bridge as
 soon as the child dies), forwards SIGTERM, SIGINT and SIGHUP to the child's process group,
+tees the child's stderr to its own (the server log) as it arrives, keeping only the last 64 KiB,
 polls ``/proc/<pid>/status`` every 250 ms, writes the status JSON ``{pid, rss_mb, peak_rss_mb,
 limit_mb, containment, server, hash_seed, flags_stripped, ts}`` atomically every second, and
-after ``waitpid`` writes one line ``VBT_CHILD_EXIT {"pid", "code", "signal", "maxrss_kb",
-"reason"}`` to stderr (the server log), exiting with the child's code or 128 + signal.
+after ``waitpid`` (and draining the stderr pipe for at most a second) writes one line
+``VBT_CHILD_EXIT {"pid", "code", "signal", "maxrss_kb", "reason", "cause"?}`` to stderr, exiting
+with the child's code or 128 + signal.
+
+Memory exits (INV-1): ``reason`` is ``memory_limit`` when the cause is known, and ``cause`` says which:
+``watchdog`` (the RSS watchdog's SIGKILL), ``cgroup_oom_kill`` (the child cgroup's ``oom_kill`` count
+moved), ``memory_error`` (an abnormal exit whose last stderr line carries a memory signature: an
+uncaught ``MemoryError`` or ``std::bad_alloc`` under ``RLIMIT_DATA``, which fails the allocation
+instead of killing, or, under a data limit, a thread that could not be created, since thread stacks count
+against ``RLIMIT_DATA``; ``memory_error`` holds that line), ``kernel_oom_kill`` (a SIGKILL the kernel log
+``/dev/kmsg`` records as an OOM kill of the child, e.g. by an enclosing cgroup; without a readable log,
+a SIGKILL while the host's ``/proc/vmstat`` ``oom_kill`` count moved) or, only when none of these
+applies, ``peak_rss`` (an abnormal exit at 90% of the limit). Any other exit is ``signal`` or
+``exit_code`` with no ``cause``.
 
 Containment (phase 4, F19; ``--containment``, default ``rlimit_data`` or ``$VBT_REAPER_CONTAINMENT``):
 
@@ -27,7 +40,7 @@ Containment (phase 4, F19; ``--containment``, default ``rlimit_data`` or ``$VBT_
   and ``memory.oom.group = 1``, and its ``memory.events`` ``oom_kill`` count tells a memory kill
   apart); a writable cgroup v1 ``memory`` hierarchy (``memory.limit_in_bytes``, ``memory.failcnt``);
   a ``systemd-run --user --scope`` with ``MemoryMax`` (cgroup v2 hosts with a user manager). Without
-  any (this host mounts cgroup v1 on tmpfs), the **RSS watchdog** contains the child.
+  any (no writable memory controller, e.g. an unprivileged user), the **RSS watchdog** contains the child.
 * ``watchdog``: ``RLIMIT_DATA`` plus a watchdog that SIGKILLs the child's process group when the
   group's RSS reaches ``limit - max(512 MB, 5%)`` (at least half the limit), and reports
   ``reason: memory_limit``, which the bridge classifies ``oom`` and never retries.
@@ -54,10 +67,12 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import errno
 import json
 import os
 import re
 import resource
+import select
 import shutil
 import signal
 import sys
@@ -84,6 +99,23 @@ WATCHDOG_MARGIN_MB = 512      # the watchdog kills at limit - max(512 MB, 5%)
 WATCHDOG_MARGIN_FRACTION = 0.05
 RELAY_KEEP = 64 * 1024        # bytes of an oversized message kept to find its id
 RELAY_ERROR_CODE = -32001
+TEE_KEEP = 64 * 1024          # bytes of the child's stderr kept (its tail) to name the cause of an exit
+TEE_DRAIN_S = 1.0             # after the child's exit, the stderr pipe is drained for at most this long
+TEE_IDLE_S = 0.05             # ... and the drain ends once the pipe has been quiet this long
+KMSG_CLOCK_MARGIN_US = 5_000_000   # the kernel log's clock runs within ~0.3 s of CLOCK_MONOTONIC
+
+#: Error text of a failed allocation (Python, numpy, Arrow, C++, Rust, errno ENOMEM). The same patterns as
+#: ``vbt.datalayer.memory.crash.MEMORY_PATTERNS`` (a test keeps them equal; this file never imports vbt).
+MEMORY_PATTERNS: tuple[str, ...] = (
+    r"MemoryError", r"Unable to allocate", r"bad_alloc", r"Cannot allocate memory", r"\bENOMEM\b",
+    r"(?i:\bmemory allocation\b.{0,40}\bfailed\b)", r"\b(?:m|re|c)alloc of size \d+ failed", r"(?i:\bout of memory\b)",
+)
+MEMORY_RE = re.compile("|".join(MEMORY_PATTERNS))
+#: Under a data limit only: thread creation that fails because thread stacks count against RLIMIT_DATA
+#: (Arrow's pool on a real Open Targets load: ``std::system_error`` / ``Resource temporarily unavailable``).
+LIMIT_PATTERNS: tuple[str, ...] = (r"what\(\):\s+Resource temporarily unavailable", r"can't start new thread",
+                                   r"pthread_create")
+LIMIT_RE = re.compile("|".join(LIMIT_PATTERNS))
 
 _VALUE_FLAGS = frozenset("WX")      # -W arg, -X arg (attached or the next argv element)
 _END_FLAGS = frozenset("cm")        # -c cmd, -m mod: option parsing ends here
@@ -192,6 +224,87 @@ def group_rss_mb(pgid: int) -> float | None:
             total += rss
             seen = True
     return total if seen else None
+
+
+def memory_signature(text: str, *, limited: bool = False) -> str | None:
+    """The last non-empty line of ``text`` when it carries a memory signature (the error that ended the
+    process; a memory error a server survived is followed by more output), else None. ``limited`` (a data
+    limit is set) also counts a thread that could not be created (:data:`LIMIT_PATTERNS`)."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return None
+    hit = MEMORY_RE.search(lines[-1]) or (limited and LIMIT_RE.search(lines[-1]))
+    return lines[-1][:300] if hit else None
+
+
+def host_oom_kills() -> int | None:
+    """The host's kernel OOM kills so far (``/proc/vmstat`` ``oom_kill``, Linux >= 4.13), or None."""
+    for line in (_read("/proc/vmstat") or "").splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == "oom_kill":
+            try:
+                return int(parts[1])
+            except ValueError:
+                return None
+    return None
+
+
+def kernel_oom_killed(pid: int, since_us: int = 0, *, path: str = "/dev/kmsg",
+                      max_records: int = 200000) -> bool | None:
+    """True when the kernel log records an OOM kill of ``pid`` (``Killed process <pid> (``) at or after
+    ``since_us`` (microseconds of the log's monotonic clock), False when the log is readable and has none,
+    None when it cannot be read (no permission, no ``/dev/kmsg``)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return None
+    needle = f"Killed process {pid} (".encode()
+    found = False
+    try:
+        for _ in range(max_records):
+            try:
+                rec = os.read(fd, 8192)
+            except BlockingIOError:
+                break
+            except InterruptedError:
+                continue
+            except OSError as exc:
+                if exc.errno == errno.EPIPE:          # a record was overwritten while reading: go on
+                    continue
+                return None
+            if not rec:
+                break
+            if needle not in rec:
+                continue
+            try:                                     # "prio,seq,ts_usec,flags;message"
+                ts = int(rec.split(b";", 1)[0].split(b",")[2])
+            except (IndexError, ValueError):
+                ts = since_us
+            if ts >= since_us:
+                found = True
+    finally:
+        os.close(fd)
+    return found
+
+
+def exit_cause(*, abnormal: bool, signum: int | None, limit_mb: int, peak_mb: float, watchdog: bool = False,
+               cgroup_oom: bool = False, stderr_tail: str = "", kernel_oom: bool = False
+               ) -> tuple[str | None, str | None]:
+    """``(cause, memory_error line)`` of a child's exit; cause None when it was not a memory exit."""
+    if watchdog:
+        return "watchdog", None
+    if cgroup_oom:
+        return "cgroup_oom_kill", None
+    if not abnormal:
+        return None, None
+    line = memory_signature(stderr_tail, limited=limit_mb > 0)
+    if line is not None:
+        return "memory_error", line
+    if signum == signal.SIGKILL and kernel_oom:
+        return "kernel_oom_kill", None
+    if limit_mb > 0 and peak_mb >= MEMORY_LIMIT_FRACTION * limit_mb:
+        return "peak_rss", None
+    return None, None
 
 
 def watchdog_threshold_mb(limit_mb: int) -> float:
@@ -360,6 +473,72 @@ def _safe(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", name or "server")[:64]
 
 
+# --------------------------------------------------------------------------- stderr tee
+
+
+class StderrTee:
+    """Copies the child's stderr (the read end of a pipe) to the reaper's own fd 2 (the server log) as it
+    arrives and keeps only its last ``keep`` bytes, so the exit can be labelled from what the child said
+    last. Memory is bounded (at most twice ``keep``); a log that cannot be written is still drained."""
+
+    def __init__(self, src_fd: int, dst_fd: int = 2, keep: int = TEE_KEEP) -> None:
+        self.src, self.dst, self.keep = src_fd, dst_fd, keep
+        self.tail = bytearray()
+        self.total = 0
+        self.eof = False
+        self._exited = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="vbt-stderr-tee", daemon=True)
+
+    def start(self) -> "StderrTee":
+        self._thread.start()
+        return self
+
+    def _write(self, data: bytes) -> None:
+        view = memoryview(data)
+        while view:
+            try:
+                n = os.write(self.dst, view)
+            except InterruptedError:
+                continue
+            except OSError:
+                return
+            view = view[n:]
+
+    def _run(self) -> None:
+        while True:
+            try:
+                ready, _, _ = select.select([self.src], [], [], TEE_IDLE_S)
+            except InterruptedError:
+                continue
+            except (OSError, ValueError):
+                return
+            if not ready:
+                if self._exited.is_set():
+                    return                         # the child is gone and the pipe is quiet: drained
+                continue
+            try:
+                data = os.read(self.src, 1 << 16)
+            except InterruptedError:
+                continue
+            except OSError:
+                data = b""
+            if not data:
+                self.eof = True
+                return
+            self.total += len(data)
+            self._write(data)
+            self.tail += data
+            if len(self.tail) > 2 * self.keep:
+                del self.tail[:len(self.tail) - self.keep]
+
+    def finish(self, timeout: float = TEE_DRAIN_S) -> str:
+        """Drain what the dead child wrote (a grandchild holding the pipe open ends the wait after
+        ``timeout``) and return the kept tail as text."""
+        self._exited.set()
+        self._thread.join(timeout)
+        return bytes(self.tail[-self.keep:]).decode("utf-8", "replace")
+
+
 # --------------------------------------------------------------------------- relay
 
 
@@ -506,7 +685,8 @@ def _set_pdeathsig(parent: int) -> None:
 
 
 def _exec_child(command: list[str], env: dict[str, str], limit_mb: int, parent: int, *,
-                cgroup: Cgroup | None = None, stdout_fd: int | None = None, close_fds: tuple[int, ...] = ()) -> None:
+                cgroup: Cgroup | None = None, stdout_fd: int | None = None, stderr_fd: int | None = None,
+                close_fds: tuple[int, ...] = ()) -> None:
     """In the forked child: process group, death signal, cgroup, RLIMIT_DATA, exec. Never returns."""
     try:
         os.setpgid(0, 0)
@@ -515,6 +695,8 @@ def _exec_child(command: list[str], env: dict[str, str], limit_mb: int, parent: 
             cgroup.add(os.getpid())
         if stdout_fd is not None:
             os.dup2(stdout_fd, 1)
+        if stderr_fd is not None:
+            os.dup2(stderr_fd, 2)
         for fd in close_fds:
             try:
                 os.close(fd)
@@ -573,12 +755,15 @@ def main(argv: list[str] | None = None) -> int:
     if relay_cap > 0:
         relay_r, relay_w = os.pipe()
     out_fd = os.dup(1) if relay_cap > 0 else None
+    err_r, err_w = os.pipe()                       # the child's stderr, teed to ours (INV-1)
+    oom_host_before = host_oom_kills()
+    started_us = time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000 - KMSG_CLOCK_MARGIN_US
 
     parent = os.getpid()
     pid = os.fork()
     if pid == 0:
-        _exec_child(command, env, limit, parent, cgroup=cgroup, stdout_fd=relay_w,
-                    close_fds=tuple(fd for fd in (relay_r, relay_w, out_fd) if fd is not None))
+        _exec_child(command, env, limit, parent, cgroup=cgroup, stdout_fd=relay_w, stderr_fd=err_w,
+                    close_fds=tuple(fd for fd in (relay_r, relay_w, out_fd, err_r, err_w) if fd is not None))
 
     # ---- parent (the reaper)
     try:
@@ -591,6 +776,8 @@ def main(argv: list[str] | None = None) -> int:
     os.dup2(devnull, 0)
     os.dup2(devnull, 1)
     os.close(devnull)
+    os.close(err_w)
+    tee = StderrTee(err_r).start()
     relay_thread = None
     relay_counts: dict[str, int] = {}
     if relay_cap > 0 and relay_r is not None and relay_w is not None and out_fd is not None:
@@ -688,11 +875,24 @@ def main(argv: list[str] | None = None) -> int:
                 pass
     maxrss_kb = int(getattr(usage, "ru_maxrss", 0) or 0)
     peak = max(peak, maxrss_kb / 1024.0)
-    reason = "signal" if signum is not None else "exit_code"
+    stderr_tail = tee.finish()
     cgroup_oom = cgroup is not None and cgroup.oom_kills() > oom_before
-    if killed_by_watchdog or cgroup_oom or (limit > 0 and rc != 0 and peak >= MEMORY_LIMIT_FRACTION * limit):
-        reason = "memory_limit"
+    kernel_oom = False
+    if signum == signal.SIGKILL and not killed_by_watchdog and not cgroup_oom:
+        logged = kernel_oom_killed(pid, started_us)
+        if logged is None:                         # no kernel log: the host's OOM kill count moved meanwhile
+            after = host_oom_kills()
+            logged = oom_host_before is not None and after is not None and after > oom_host_before
+        kernel_oom = logged
+    cause, memory_line = exit_cause(
+        abnormal=rc != 0, signum=signum, limit_mb=limit, peak_mb=peak, watchdog=killed_by_watchdog,
+        cgroup_oom=cgroup_oom, stderr_tail=stderr_tail, kernel_oom=kernel_oom)
+    reason = "memory_limit" if cause else ("signal" if signum is not None else "exit_code")
     marker: dict[str, Any] = {"pid": pid, "code": code, "signal": signum, "maxrss_kb": maxrss_kb, "reason": reason}
+    if cause:
+        marker["cause"] = cause
+    if memory_line:
+        marker["memory_error"] = memory_line
     if killed_by_watchdog:
         marker["watchdog"] = True
     if cgroup_oom:
