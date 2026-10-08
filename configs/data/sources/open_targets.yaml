@@ -24,7 +24,9 @@ kind: local
 release: {expect: "25.09", from: manifest.release}
 root: ${OPEN_TARGETS_DATA_PATH}
 manifests:
-  - {path: .download-manifest.json, required: false, require: {complete: true}}   # bytes + sha256 per file
+  # bytes + sha256 per file, in the upstream downloader's format; `vbt data ot fetch` writes it (each file's sha1
+  # checked against the release's release_data_integrity), `vbt data ot manifest` for tables already downloaded
+  - {path: .download-manifest.json, required: false, require: {complete: true}}
 defaults: {format: parquet, layout: sharded_dir, missing: unknown}
 strict: true
 
@@ -47,8 +49,8 @@ id_types:
                       universe: {table: target, keys: ["proteinIds[].id"],
                                  where: {in: ["proteinIds[].source", [uniprot_swissprot, uniprot_trembl]]}}}
                      # 25.09: proteinIds holds ensembl_PRO 112,428 (ENSP ids), uniprot_obsolete 71,627, uniprot_trembl
-                     # 63,566 and uniprot_swissprot 19,463 items; every uniprot_* id is a canonical accession. Readiness
-                     # R4b samples the whole column and reports the ENSP ids (same contract request as hpo)
+                     # 63,566 and uniprot_swissprot 19,463 items; every uniprot_* id is a canonical accession. R4b
+                     # samples the universe through its `where` (the deep check of target reports no ENSP id)
   ncbi_taxon:       {plugin: ncbi_taxon, resolvable: false}             # digits; species names are categories
   chemical_probe:   {plugin: local_key, options: {canonical: "^[A-Za-z0-9][A-Za-z0-9_.\\- ]*$"}, resolvable: false}
   ot_disease:       {plugin: ot_disease, options: {prefixes: from_universe}, universe: disease.id,
@@ -66,7 +68,7 @@ id_types:
                      resolve_via: [disease_hpo.name]}
                      # 25.09 disease_hpo holds 19,034 HP_ terms and 12,081 imported terms (UBERON 5,624, GO 2,518,
                      # CHEBI 1,845, CL 1,177, PATO 566, PR 206, MPATH 75, NBO 64, HsapDv 5, RO 1): the universe is
-                     # the HP_ terms (readiness R4b still samples the whole column; contract request filed)
+                     # the HP_ terms (R4b samples it through `where`)
   chembl_molecule:  {plugin: chembl_molecule, universe: drug_molecule.id,
                      resolve_via: [drug_molecule.name, drug_molecule.synonyms, drug_molecule.tradeNames],
                      canonicalize: {parent: drug_molecule.parentId}}
@@ -349,8 +351,8 @@ tables:
     kind: sets
     items_of: {table: target, path: "go[]"}
     grain: one direct GO annotation record of one gene
-    # composed key: (id, go[].id, go[].aspect, go[].evidence, go[].source, go[].geneProduct); REFUTED by 25.09,
-    # see target.go
+    # composed key: (id, go[].id, go[].aspect, go[].evidence, go[].source, go[].geneProduct, go[].ecoId), ecoId
+    # nullable; 25.09: unique over all 821,377 items (deep check, counted in Arrow; see target.go)
     key: {columns: [], check: sampled}
     # /id is the gene: inside the item a bare `id` is the GO item's own id (§6.4, item fields first), which made
     # `gene` count GO terms (63 "genes" for PCSK9's 142 annotations on 25.09)
@@ -1365,8 +1367,8 @@ tables:
     items_of: {table: target_essentiality, path: "geneEssentiality[].depMapEssentiality[].screens[]"}
     grain: one DepMap CRISPR screen result of one gene in one cell line (grouped by tissue)
     # composed: (id, depMapEssentiality[].tissueId, screens[].depmapId); 25.09: unique over all 20,955,265
-    # screens (deep check) with NULLS NOT DISTINCT: tissueId is null for the "other" tissue group (1,593,364
-    # screens), declared by the item key's nullable
+    # screens (deep check, counted in Arrow) with NULLS NOT DISTINCT: tissueId is null for the "other" tissue
+    # group (1,593,364 screens), declared by the item key's nullable
     key: {columns: [], check: sampled}
     grains: {gene: [id], cell_line: ["geneEssentiality[].depMapEssentiality[].screens[].depmapId"]}
     rank: [{column: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect", direction: asc, nulls: last}]
@@ -1464,6 +1466,8 @@ tables:
     kind: fact
     items_of: {table: l2g_prediction, path: "features[]"}
     grain: one feature value (with its SHAP contribution) of one locus-to-gene score
+    # composed key (studyLocusId, geneId, features[].name); 25.09: unique over all 44,578,431 items (deep check,
+    # counted in Arrow: 24 s, where rendering each item in Python had not finished after 15 minutes)
     key: {columns: [], check: sampled}
     coverage: {statement: "L2G model features of OT 25.09.", absence_means: unknown}
 

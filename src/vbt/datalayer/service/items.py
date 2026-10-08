@@ -14,7 +14,10 @@ what makes ``Any(liver AND value >= 10)`` return only an item that satisfies bot
 * :func:`key_values` reads the composed key (parent key + intermediate item keys + item key;
   ``identity: value`` keys the item itself and ``identity: position`` its index, ``<path>[]#``);
 * :func:`item_row` is the item as an output row with its ancestors' key parts injected;
-* :func:`item_key_duplicates` checks that item keys are unique within each parent row.
+* :func:`item_key_duplicates` checks that item keys are unique within each parent row;
+* :func:`arrow_items` reads the items of an Arrow table (one row group) without building a Python row: each
+  list level is flattened with the index of its parent, so a key check counts tens of millions of items
+  (25.09 l2g_prediction features, target_essentiality screens) in Arrow and numpy.
 """
 
 from __future__ import annotations
@@ -30,7 +33,8 @@ from ..rowkey import canonical
 
 __all__ = [
     "Level", "ContainerCounts", "levels", "explode", "view_at", "innermost", "key_values", "item_row", "path_values",
-    "path_value", "item_key_duplicates", "container_counts", "qualify_item_path",
+    "path_value", "item_key_duplicates", "container_counts", "qualify_item_path", "ArrowItems", "ArrowUnsupported",
+    "arrow_items", "part_level",
 ]
 
 
@@ -337,3 +341,124 @@ def _repeated(items: Sequence[Any], item_key: Sequence[str], identity: str) -> l
 
 def deep_copy(row: Mapping[str, Any]) -> dict[str, Any]:
     return copy.deepcopy(dict(row))
+
+
+# ---------------------------------------------------------------------------- items as Arrow arrays
+
+
+class ArrowUnsupported(ValueError):
+    """The Arrow item path cannot read this container or key part; the caller reads rows instead."""
+
+
+@dataclass
+class ArrowItems:
+    """The non-null innermost items of an Arrow table under a container path (:func:`arrow_items`).
+
+    ``rows`` is each item's row in the table and ``parents`` its parent: the enclosing item (its index among the
+    non-null items of the level above) for a list in a list, the row for a list in the row. ``parts`` holds one
+    Arrow array per requested key part, one value per item (positions as int64)."""
+
+    rows: Any
+    parents: Any
+    parts: dict[str, Any]
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+
+def part_level(part: str, lvls: Sequence[Level]) -> tuple[int, str]:
+    """``(level, rest)`` of a key part on the container path: the innermost level whose container is a prefix of
+    ``part``, and the struct path inside that level's item (``""``: the item itself, ``#``: its position)."""
+    for d in range(len(lvls) - 1, -1, -1):
+        text = lvls[d].text
+        if part == text:
+            return d, ""
+        if part == text + POSITION_MARK:
+            return d, POSITION_MARK
+        if part.startswith(text + "."):
+            rest = part[len(text) + 1:]
+            if "[" in rest:
+                raise ArrowUnsupported(f"key part {part!r} crosses a list inside its item")
+            return d, rest
+    raise ArrowUnsupported(f"key part {part!r} is not a field of an item on {lvls[-1].text if lvls else '?'}")
+
+
+def _child(arr: Any, name: str) -> Any:
+    """A struct field with the struct's own nulls applied (``StructArray.field`` would keep the child's values)."""
+    import pyarrow as pa
+
+    if not pa.types.is_struct(arr.type):
+        raise ArrowUnsupported(f"{name!r} is not a field of a struct ({arr.type})")
+    index = arr.type.get_field_index(name)
+    if index < 0:
+        raise ArrowUnsupported(f"field {name!r} is not in the data")
+    return arr.flatten()[index]
+
+
+def _list_values(arr: Any) -> tuple[Any, Any]:
+    """``(values, lengths)`` of a list array: ``flatten()`` skips null lists (length 0 here). ``list_parent_indices``
+    is not used: it also counts the values a null list slot still spans, so it can disagree with ``flatten()``."""
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if not (pa.types.is_list(arr.type) or pa.types.is_large_list(arr.type) or pa.types.is_fixed_size_list(arr.type)):
+        raise ArrowUnsupported(f"not a list ({arr.type})")
+    lengths = np.asarray(pc.fill_null(pc.list_value_length(arr), 0).to_numpy(zero_copy_only=False), dtype=np.int64)
+    values = arr.flatten()
+    if len(values) != int(lengths.sum()):
+        raise ArrowUnsupported("list values do not match the list lengths")
+    return values, lengths
+
+
+def arrow_items(table: Any, lvls: Sequence[Level], parts: Sequence[str], rows: Any = None) -> ArrowItems:
+    """The items under ``lvls`` of an Arrow table (one row group as read), as :func:`explode` yields them (null
+    containers, empty lists and null items skipped), with the key ``parts`` that lie on the container path
+    (``a[].b``, ``a[].b[].c``, ``a[]#``, ``a[]``). ``rows`` (row indices) restricts the items to those rows.
+    Nothing is converted to Python. Raises :class:`ArrowUnsupported` when a step is not a struct or list."""
+    import numpy as np
+    import pyarrow as pa
+
+    if not lvls:
+        raise ArrowUnsupported("no container path")
+    placed = {p: part_level(p, lvls) for p in parts}
+    head = lvls[0].names[0]
+    if head not in table.column_names:
+        raise ArrowUnsupported(f"column {head!r} was not read")
+    arr = table.column(head)
+    arr = arr.combine_chunks() if isinstance(arr, pa.ChunkedArray) else arr
+    row_of = np.arange(len(arr), dtype=np.int64)
+    if rows is not None:
+        row_of = np.asarray(rows, dtype=np.int64)
+        arr = arr.take(pa.array(row_of))
+    parents = row_of
+    carried: dict[str, Any] = {}
+    for depth, lvl in enumerate(lvls):
+        for name in (lvl.names[1:] if depth == 0 else lvl.names):
+            arr = _child(arr, name)
+        values, lengths = _list_values(arr)
+        node = np.repeat(np.arange(len(lengths), dtype=np.int64), lengths)      # the parent of each list value
+        positions = np.arange(len(node), dtype=np.int64) - np.repeat(np.cumsum(lengths) - lengths, lengths)
+        if values.null_count:                                                   # null items are skipped, as rows
+            keep = np.flatnonzero(values.is_valid().to_numpy(zero_copy_only=False))
+            values = values.take(pa.array(keep))
+            node, positions = node[keep], positions[keep]
+        if carried:
+            index = pa.array(node)
+            carried = {p: a.take(index) for p, a in carried.items()}
+        row_of = row_of[node]
+        parents = node if depth else row_of
+        for p, (d, rest) in placed.items():
+            if d != depth:
+                continue
+            if rest == POSITION_MARK:
+                carried[p] = pa.array(positions)
+            elif not rest:
+                carried[p] = values
+            else:
+                a = values
+                for name in rest.split("."):
+                    a = _child(a, name)
+                carried[p] = a
+        arr = values
+    return ArrowItems(rows=row_of, parents=parents, parts=carried)

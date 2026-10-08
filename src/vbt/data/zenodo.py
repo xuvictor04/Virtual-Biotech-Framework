@@ -507,8 +507,12 @@ class ZenodoArchive:
 
 
 def add_data_parsers(sub) -> None:
-    d = sub.add_parser("data", help="fetch external data (the paper's Zenodo case-study archive)")
+    d = sub.add_parser("data", help="fetch external data (the paper's Zenodo case-study archive, Open Targets "
+                                    "release tables)")
     ds = d.add_subparsers(dest="data_source", required=True)
+    from .opentargets import add_ot_parser
+
+    add_ot_parser(ds)                    # vbt data ot list|fetch|manifest
     z = ds.add_parser("zenodo", help=f"Zenodo record {RECORD_ID} ({FILE_KEY}, doi:{DOI})")
     zs = z.add_subparsers(dest="zenodo_action", required=True)
 

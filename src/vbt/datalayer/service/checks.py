@@ -809,6 +809,15 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
             total_rows is not None and total_rows <= SPILL_KEYS * ARROW_KEY_ROWS_PER_SPILL_KEY:
         fast = _arrow_key_duplicates(reader, key, types)
     try:
+        if fast is None and t.is_item_table:
+            # the items are counted in Arrow (whole parent rows sampled by their key values): the scan rendered every
+            # item in Python, 44.6 M for the 25.09 l2g_prediction features
+            counted = dict.fromkeys(nulls, 0)
+            fast = _arrow_item_keys(reader, key, counted, types,
+                                    None if fraction >= 1.0 else (buckets, keep_below))
+            if fast is not None:
+                for k, v in counted.items():
+                    nulls[k] += v
         for m in (reader.scan(None, columns=None if content else [], attribute_unknown=False, row_filter=row_filter,
                               arrow_filter=arrow_filter)
                   if fast is None else ()):
@@ -993,6 +1002,372 @@ def _arrow_key_duplicates(reader: TableReader, key: Sequence[str], types: Sequen
     return dups, examples, rows
 
 
+#: Items of parent rows that share their parent key (a broken parent key) are compared across rows in memory up to
+#: this many; beyond it the item key check scans rows, which spills.
+ARROW_CROSS_ITEMS = 2_000_000
+_PART_HASH_MULT = 0x100000001B3                        # FNV-1a 64-bit prime: mixes the part hashes of a row
+
+
+def _cleaner(reader: TableReader, path: str) -> frozenset[str] | None:
+    """The rendered values cleaning reads as null at a key part (missing values, statistic codes, placeholders),
+    as ``TableReader.clean`` applies them to rows; None when cleaning leaves the part alone. Raises
+    ArrowUnsupported for conditional cleaning (``unknown_when``, ``placeholder_when``) and for a container whose
+    fields are cleaned: those are decided on rows."""
+    spec = reader.column_spec(path)
+    if spec is None:
+        return None
+    tree = reader._clean_tree({"part": spec})
+    if not tree:
+        return None
+    _name, _col, kids, rendered, _holders, conds, of = tree[0]
+    if kids is not None or conds or of is not None:
+        raise _items.ArrowUnsupported(f"{path}: cleaned by a condition or inside its fields")
+    return frozenset(rendered) or None
+
+
+def _cleaned(arr: Any, bad: frozenset[str] | None) -> Any:
+    """``arr`` with the values cleaning reads as null set to null (each distinct value rendered once; a list's
+    elements one by one, as rows are cleaned)."""
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if not bad:
+        return arr
+    arr = arr.combine_chunks() if isinstance(arr, pa.ChunkedArray) else arr
+    if pa.types.is_list(arr.type) or pa.types.is_large_list(arr.type) or pa.types.is_fixed_size_list(arr.type):
+        values, lengths = _items._list_values(arr)
+        offsets = pa.array(np.concatenate([[0], np.cumsum(lengths)]).astype(np.int64))
+        return pa.LargeListArray.from_arrays(offsets, _cleaned(values, bad), mask=arr.is_null())
+    if pa.types.is_nested(arr.type):
+        raise _items.ArrowUnsupported(f"cleaning a {arr.type} key part")
+    enc = pc.dictionary_encode(arr)
+    flags = pa.array([v is not None and render_value(v) in bad for v in enc.dictionary.to_pylist()], pa.bool_())
+    hit = pc.fill_null(pc.take(flags, enc.indices), False)
+    return pc.if_else(hit, pa.scalar(None, arr.type), arr)
+
+
+def _comparable(arr: Any) -> Any:
+    """A key part's values as compared in canonical keys: NaN is null; a struct is its fields (by name) joined into
+    one string; a list is its elements sorted (canonical keys render lists order-insensitively), joined into one
+    string with its length (25.09 chemicalProbes ``origin`` is a list of strings and ``urls`` a list of
+    ``{niceName, url}`` structs; drug_indication ``references`` a list of ``{source, ids[]}``). Raises
+    ArrowUnsupported for maps and dictionaries (the caller reads rows)."""
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    t = arr.type
+    if pa.types.is_floating(t):
+        return pc.if_else(pc.is_nan(arr), pa.scalar(None, t), arr)
+    if pa.types.is_struct(t):
+        return _struct_text(arr)
+    if pa.types.is_list(t) or pa.types.is_large_list(t) or pa.types.is_fixed_size_list(t):
+        values, lengths = _items._list_values(arr)
+        if pa.types.is_nested(values.type):
+            values = _comparable(values)                 # structs and lists inside, compared the same way
+        if not (pa.types.is_string(values.type) or pa.types.is_large_string(values.type)):
+            values = pc.cast(_comparable(values), pa.large_string())
+        values = pc.fill_null(values.cast(pa.large_string()), "\x00")
+        parent = np.repeat(np.arange(len(lengths), dtype=np.int64), lengths)
+        ordered = pa.table({"p": parent, "v": values}).sort_by([("p", "ascending"), ("v", "ascending")])
+        offsets = pa.array(np.concatenate([[0], np.cumsum(lengths)]).astype(np.int64))
+        rebuilt = pa.LargeListArray.from_arrays(offsets, ordered.column("v").combine_chunks(), mask=arr.is_null())
+        count = pc.cast(pc.list_value_length(arr), pa.large_string())
+        joined = pc.binary_join(rebuilt, pa.scalar("\x1f", pa.large_string()))
+        return pc.binary_join_element_wise(count, joined, pa.scalar("\x1e", pa.large_string()))
+    if pa.types.is_nested(t) or pa.types.is_dictionary(t):
+        raise _items.ArrowUnsupported(f"key part of type {t}")
+    return arr
+
+
+def _struct_text(arr: Any) -> Any:
+    """One string per struct value: its fields (sorted by name, as canonical keys render a dict; lists and structs
+    inside as :func:`_comparable` makes them) joined; null where the struct is null."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    names = sorted(f.name for f in arr.type)
+    if not names:
+        raise _items.ArrowUnsupported("a struct without fields")
+    parts = []
+    for name in names:
+        child = _comparable(_items._child(arr, name))
+        parts.append(pc.fill_null(pc.cast(child, pa.large_string()), "\x00"))
+    joined = pc.binary_join_element_wise(*parts, pa.scalar("\x1d", pa.large_string())) if len(parts) > 1 \
+        else parts[0]
+    return pc.if_else(arr.is_valid(), joined, pa.scalar(None, pa.large_string()))
+
+
+def _codes(arr: Any) -> tuple[Any, int]:
+    """``(codes, width)``: dictionary codes of a comparable array, 0 for null and 1.. for its distinct values."""
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    arr = arr.combine_chunks() if isinstance(arr, pa.ChunkedArray) else arr
+    enc = pc.dictionary_encode(arr)
+    codes = np.asarray(pc.fill_null(enc.indices.cast(pa.int64()), -1).to_numpy(zero_copy_only=False), dtype=np.int64)
+    return codes + 1, len(enc.dictionary) + 1
+
+
+def _combine(parts: Sequence[tuple[Any, int]]) -> Any:
+    """One int64 per item from per-part codes (``(codes, width)``), equal exactly when every part is equal. When
+    the product of the widths passes 63 bits the codes combined so far are encoded again (bounded by the items)."""
+    import numpy as np
+
+    combined: Any = None
+    width = 1
+    for codes, w in parts:
+        if combined is None:
+            combined, width = np.asarray(codes, dtype=np.int64), max(int(w), 1)
+            continue
+        if width * w >= 2 ** 63:
+            uniq, inverse = np.unique(combined, return_inverse=True)
+            combined, width = inverse.reshape(-1).astype(np.int64), max(len(uniq), 1)
+            if width * w >= 2 ** 63:
+                raise _items.ArrowUnsupported("key too wide to combine")
+        combined = combined * int(w) + codes
+        width *= int(w)
+    return combined
+
+
+def _repeats(combined: Any) -> tuple[int, Any]:
+    """``(repeats, the index of each repeat)``: the items whose combined code an earlier item already has (a key
+    held by n items repeats n - 1 times, as a scan counts it)."""
+    import numpy as np
+
+    if combined is None or not len(combined):
+        return 0, np.zeros(0, dtype=np.int64)
+    order = np.argsort(combined, kind="stable")
+    ordered = combined[order]
+    same = ordered[1:] == ordered[:-1]
+    return int(np.count_nonzero(same)), order[1:][same]
+
+
+def _arrow_item_keys(reader: TableReader, key: Sequence[str], nulls: dict[str, int],
+                     types: Sequence[str | None], sample: tuple[int, int] | None = None
+                     ) -> tuple[int, list[str], int] | None:
+    """``(repeats, up to five rendered repeated keys, items)`` of an item table's composed key, counted in Arrow
+    and numpy with NULLS NOT DISTINCT; ``nulls`` (non-nullable parts) gets the per-item null counts.
+
+    The composed key is the parent row's key plus the item key parts along the container path. Items of different
+    rows can only share a key when their rows share the parent key, so the parent key is encoded first over every
+    row (its flat columns only). Items of a row whose parent key is unique are compared within their row group,
+    as ``(row, item parts)`` dictionary codes; the items of rows sharing a parent key are compared across rows at
+    the end (up to :data:`ARROW_CROSS_ITEMS`). Memory is one row group's items plus a few integers per row: the
+    rows path rendered each of the 44.6 M items of 25.09 l2g_prediction features in Python and had not finished
+    after 15 minutes. ``sample`` (``(buckets, keep_below)``) keeps whole parent rows by a hash of their key values.
+    In-band codes of a part read as null, as rows are cleaned (25.09 drug_indications ``maxPhaseForIndication``
+    -1). None when a part is a partition, a nested parent column or cleaned by a condition, the files have no
+    footers, or the parent has more rows than a flat key is counted for in Arrow: the caller scans rows (and
+    spills)."""
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    from ..catalog import POSITION_MARK
+
+    lvls = reader.levels
+    parent = [k for k in key if not k.endswith(POSITION_MARK) and not parse_path(k).crosses_list]
+    inner = [k for k in key if k not in parent]
+    if not lvls or not inner or any(k in reader.partitions or "." in k or "[" in k for k in parent):
+        return None
+    if sample is not None and not parent:
+        return None
+    try:
+        cleaning = {k: _cleaner(reader, k) for k in key if not k.endswith(POSITION_MARK)}
+        placed = {k: _items.part_level(k, lvls) for k in inner}
+        item_leaves = []
+        for k, (d, rest) in placed.items():
+            if rest != POSITION_MARK:
+                item_leaves.append(reader.leaf(k))
+        if not any(d == len(lvls) - 1 and rest != POSITION_MARK for d, rest in placed.values()):
+            item_leaves.append(reader.leaf(lvls[-1].text))               # the innermost lists must be read
+        parent_leaves = [reader.leaf(k) for k in parent]
+        if any(x is None for x in [*item_leaves, *parent_leaves]):
+            return None
+        plan, _ = reader.plan(None, sorted({*item_leaves, *parent_leaves}), use_sidecars=False)
+        groups: list[tuple[Any, int, int]] = []
+        for frag, rgs in plan:
+            info = reader.footer(frag)
+            if info is None or rgs is None:
+                return None
+            groups.extend((frag, rg, int(info.row_groups[rg].rows)) for rg in rgs)
+        if sum(n for _f, _r, n in groups) > SPILL_KEYS * ARROW_KEY_ROWS_PER_SPILL_KEY:
+            return None                                # the parent keys of every row are held: as for flat keys
+        # the parent key of every row: its dictionary codes, the group of rows sharing it, the null rows
+        chunks: dict[str, list[Any]] = {k: [] for k in parent}
+        for frag, rg, n in groups:
+            tbl = reader.fmt.read_leaves(frag, parent_leaves, [rg]) if parent_leaves else None
+            for k in parent:
+                col = tbl.column(k)
+                chunks[k].append(col.combine_chunks() if isinstance(col, pa.ChunkedArray) else col)
+        total_rows = sum(n for _f, _r, n in groups)
+        pcodes: dict[str, tuple[Any, int]] = {}
+        dictionaries: dict[str, Any] = {}
+        for k in parent:
+            arr = _comparable(_cleaned(pa.chunked_array(chunks.pop(k)).combine_chunks(), cleaning[k])) if total_rows \
+                else pa.array([])
+            enc = pc.dictionary_encode(arr)
+            dictionaries[k] = enc.dictionary
+            pcodes[k] = (np.asarray(pc.fill_null(enc.indices.cast(pa.int64()), -1).to_numpy(zero_copy_only=False),
+                                    dtype=np.int64) + 1, len(enc.dictionary) + 1)
+        row_code = _combine([pcodes[k] for k in parent]) if parent else np.zeros(total_rows, dtype=np.int64)
+        _u, group_of, sizes = np.unique(row_code, return_inverse=True, return_counts=True)
+        group_of = group_of.reshape(-1)
+        shared = sizes[group_of] > 1
+        del row_code, _u
+        keep_row = None
+        if sample is not None:
+            buckets, keep_below = sample
+            mixed = np.zeros(total_rows, dtype=np.uint64)
+            for k, t in zip(parent, [types[key.index(k)] for k in parent]):
+                hashes = np.array([_hash("null")] + [_hash(render_value(v, t)) for v in dictionaries[k].to_pylist()],
+                                  dtype=np.uint64)
+                mixed = mixed * np.uint64(_PART_HASH_MULT) ^ hashes[pcodes[k][0]]
+            keep_row = (mixed % np.uint64(buckets)) < np.uint64(keep_below)
+            del mixed
+        repeats = 0
+        examples: list[str] = []
+        scanned = 0
+        cross: dict[str, list[Any]] = {"": [], "#rows": [], **{k: [] for k in inner}}
+        cross_items = 0
+        base = 0
+
+        def render(row: int, values: Mapping[str, Any]) -> str:
+            got = []
+            for k in key:
+                if k in values:
+                    got.append(values[k])
+                else:
+                    c = int(pcodes[k][0][row])
+                    got.append(None if c == 0 else dictionaries[k][c - 1].as_py())
+            return canonical(got, types)
+
+        for frag, rg, n in groups:
+            rows = None
+            if keep_row is not None:
+                rows = np.flatnonzero(keep_row[base:base + n])
+                if not len(rows):
+                    base += n
+                    continue
+            tbl = reader.fmt.read_leaves(frag, item_leaves, [rg])
+            items = _items.arrow_items(tbl, lvls, inner, rows=rows)
+            del tbl
+            for k in inner:
+                items.parts[k] = _cleaned(items.parts[k], cleaning.get(k))      # in-band codes read as null
+            at = base + items.rows                                           # each item's row in the table
+            scanned += len(items)
+            for k in parent:
+                if k in nulls:
+                    nulls[k] += int(np.count_nonzero(pcodes[k][0][at] == 0))
+            values = {k: _comparable(items.parts[k]) for k in inner}
+            codes = {k: _codes(values[k]) for k in inner}
+            for k in inner:
+                if k in nulls:
+                    nulls[k] += int(np.count_nonzero(codes[k][0] == 0))
+            across = shared[at]
+            if across.any():
+                idx = pa.array(np.flatnonzero(across))
+                cross[""].append(group_of[at[across]])
+                cross["#rows"].append(at[across])
+                for k in inner:
+                    cross[k].append(items.parts[k].take(idx))
+                cross_items += int(np.count_nonzero(across))
+                if cross_items > ARROW_CROSS_ITEMS:
+                    return None
+            alone = np.flatnonzero(~across)
+            if len(alone):
+                local = items.rows[alone]
+                combined = _combine([(local, int(local.max()) + 1)] + [(codes[k][0][alone], codes[k][1]) for k in inner])
+                found, where = _repeats(combined)
+                repeats += found
+                for i in where[: 5 - len(examples)]:
+                    j = int(alone[i])
+                    examples.append(render(int(at[j]), {k: items.parts[k][j].as_py() for k in inner}))
+            base += n
+        if cross_items:
+            group = np.concatenate(cross[""])
+            at_rows = np.concatenate(cross["#rows"])
+            parts = {k: pa.chunked_array(cross[k]).combine_chunks() for k in inner}
+            combined = _combine([(group, int(group.max()) + 1)] + [_codes(_comparable(parts[k])) for k in inner])
+            found, where = _repeats(combined)
+            repeats += found
+            for i in where[: 5 - len(examples)]:
+                examples.append(render(int(at_rows[int(i)]), {k: parts[k][int(i)].as_py() for k in inner}))
+    except MemoryError:
+        raise                                          # out of memory, not an unanswerable check
+    except (_items.ArrowUnsupported, ValueError, TypeError, KeyError, IndexError, NotImplementedError,
+            pa.ArrowException):
+        return None                                    # unreadable files (FormatError) are the caller's finding
+    return repeats, examples, scanned
+
+
+def _arrow_nested_repeats(reader: TableReader, container: str, columns: Sequence[str], identity: str,
+                          max_rows: int | None = None) -> tuple[int, str, int, int, int] | None:
+    """``(rows that repeat an item key, one repeated key, items, rows read, row groups read)`` of a nested container,
+    in Arrow. An item key is unique under its parent: the row for a list in the row, the enclosing item for a list
+    in a list (one source cited under two indications of a drug is not a repeat), so each row group is counted on
+    its own. Every row group is read, or with ``max_rows`` whole row groups in a fixed pseudo-random order until
+    that many rows are read: the 2,000-row sample converted to Python held 2.3 M screens of the 25.09
+    target_essentiality table (1.97 GB, most of its standard check). None when the container or a key column
+    cannot be read as Arrow lists and scalars (the caller samples rows)."""
+    import numpy as np
+    import pyarrow as pa
+
+    path = container if container.endswith("]") else container + "[]"
+    try:
+        lvls = _items.levels(path)
+        inner = lvls[-1].text
+        parts = [inner] if identity == "value" else [f"{inner}.{c}" for c in columns]
+        if not parts or lvls[0].names[0] in reader.partitions:
+            return None
+        cleaning = {p: _cleaner(reader, p) for p in parts}
+        leaves = [reader.leaf(p) for p in parts]
+        if any(x is None for x in leaves):
+            return None
+        plan, _ = reader.plan(None, sorted(set(leaves)), use_sidecars=False)
+        groups: list[tuple[Any, int, int]] = []
+        for frag, rgs in plan:
+            info = reader.footer(frag)
+            if info is None or rgs is None:
+                return None
+            groups.extend((frag, rg, int(info.row_groups[rg].rows)) for rg in rgs)
+        if max_rows is not None:
+            chosen, rows_read = [], 0
+            for g in sorted(groups, key=lambda g: _hash(f"{reader.fragment_name(g[0])}:{g[1]}")):
+                if rows_read >= max_rows:
+                    break
+                chosen.append(g)
+                rows_read += g[2]
+            groups = chosen
+        bad = 0
+        total = 0
+        example = ""
+        for frag, rg, _n in groups:
+            items = _items.arrow_items(reader.fmt.read_leaves(frag, leaves, [rg]), lvls, parts)
+            items.parts = {p: _cleaned(a, cleaning[p]) for p, a in items.parts.items()}
+            total += len(items)
+            if not len(items):
+                continue
+            values = [_comparable(items.parts[p]) for p in parts]
+            combined = _combine([(items.parents, int(items.parents.max()) + 1)] + [_codes(v) for v in values])
+            found, where = _repeats(combined)
+            if not found:
+                continue
+            bad += len(np.unique(items.rows[where]))
+            if not example:
+                j = int(where[0])
+                example = canonical([items.parts[p][j].as_py() for p in parts])
+    except MemoryError:
+        raise
+    except (_items.ArrowUnsupported, ValueError, TypeError, KeyError, IndexError, NotImplementedError,
+            pa.ArrowException):
+        return None
+    return bad, example, total, sum(n for _f, _r, n in groups), len(groups)
+
+
 def _item_count_hint(ctx: ServiceContext, reader: TableReader) -> int:
     """The items of an item table as its footers count them: the most values of a field directly in the innermost
     list (a null or empty list adds one null value, so this errs high). 0 when the footers do not say."""
@@ -1116,11 +1491,36 @@ def access_indexes(run: CheckRun) -> None:
 
 
 def r5b_item_keys(run: CheckRun) -> None:
-    """Item keys of nested containers (not declared as item tables) are unique within each row (sampled)."""
+    """Item keys of nested containers are unique under their parent (the row, or the enclosing item of a list in a
+    list), counted in Arrow (``_arrow_nested_repeats``): every row at depth deep, whole row groups holding at least
+    as many rows as the relation sample otherwise. A container the Arrow path cannot read is checked on a sample
+    of rows."""
     reader = run.reader
     assert reader is not None
     containers = [(p, c) for p, c in _walk_columns(reader.spec.columns) if is_container(c) and c.item_key is not None
                   and c.item_key.check != "none" and c.item_key.identity != "position"]   # positions never repeat
+    if not containers:
+        return
+    deep = run.depth == "deep"
+    on_rows = []
+    for path, col in containers:
+        try:
+            got = _arrow_nested_repeats(reader, _schema_path(reader, path), col.item_key.columns,
+                                        col.item_key.identity, None if deep else _RELATION_SAMPLE)
+        except (ServiceError, FormatError) as exc:
+            run.add("R5b:items", False, f"{path}: item keys not checked ({exc})", level="warning", container=path)
+            continue
+        if got is None:
+            on_rows.append((path, col))
+            continue
+        bad, example, items, rows, groups = got
+        where = "every row" if deep else f"{rows} rows in {groups} sampled row group(s)"
+        if bad:
+            run.add("R5b:items", False, f"{path}: {bad} row(s) repeat an item key under one parent ({where}, "
+                    f"{items} items; e.g. {example})", status="key_violation", container=path)
+        else:
+            run.containers.setdefault(path, "ready")
+    containers = on_rows
     if not containers:
         return
     paths = [p.split(".")[0] for p, _ in containers]
@@ -1235,15 +1635,21 @@ def _container_counts(run: CheckRun, path: str, schema_path: str) -> None:
     assert reader is not None
     container = schema_path if schema_path.endswith("]") else schema_path + "[]"
     try:
-        lvls = _items.levels(container)
-        leaf = reader.leaf(container)
-        counts = _arrow_container_counts(reader, lvls, leaf)
+        struct = _arrow_struct_counts(reader, schema_path)
+        counts = struct
+        if counts is None:
+            lvls = _items.levels(container)
+            leaf = reader.leaf(container)
+            if leaf is None:
+                # reading no column made every row an empty dict: each container counted as null
+                raise ValueError(f"{container} is not a list in the data")
+            counts = _arrow_container_counts(reader, lvls, leaf)
         if counts is None:
             counts = _items.ContainerCounts()
-            for frag, rgs in reader.plan(None, [leaf] if leaf else [], use_sidecars=False)[0]:
+            for frag, rgs in reader.plan(None, [leaf], use_sidecars=False)[0]:
                 info = reader.footer(frag)
                 for rg in (rgs if rgs is not None else [None]):
-                    for row in reader._read(frag, rg, [leaf] if leaf else [], info):
+                    for row in reader._read(frag, rg, [leaf], info):
                         for _ in _items.explode(row, lvls, counts):
                             pass
     except (ServiceError, FormatError, ValueError) as exc:
@@ -1252,9 +1658,52 @@ def _container_counts(run: CheckRun, path: str, schema_path: str) -> None:
         return
     run.confirmed[f"{path}[]"] = {"null": counts.null, "empty": counts.empty, "nonempty": counts.nonempty,
                                   "items": counts.items, "null_items": counts.null_items}
-    run.add("R6:containers", True, f"{path}: {counts.null} null, {counts.empty} empty, {counts.nonempty} non-empty "
-            f"list(s); {counts.null_items} null item(s)", container=path)
+    if struct is not None:
+        detail = f"{path}: {counts.null} null, {counts.nonempty} present (a struct, not a list)"
+    else:
+        detail = (f"{path}: {counts.null} null, {counts.empty} empty, {counts.nonempty} non-empty list(s); "
+                  f"{counts.null_items} null item(s)")
+    run.add("R6:containers", True, detail, container=path)
     run.containers.setdefault(path, "ready")
+
+
+def _arrow_struct_counts(reader: TableReader, schema_path: str) -> Any:
+    """``ContainerCounts`` of a struct container outside any list (25.09 target ``tep``, ``hallmarks``): a row's
+    struct is null or present (one item). The list path counted ``tep[]`` and read no column for it, so every one of
+    the 78,726 genes read as null, 41 TEPs included. None when the path is not a struct reached without a list."""
+    import pyarrow as pa
+
+    if "[" in schema_path or not schema_path or schema_path.split(".")[0] in reader.partitions:
+        return None
+    t = _arrow_type_of(reader, schema_path)
+    if t is None or t == "partition" or not pa.types.is_struct(t):
+        return None
+    leaf = reader.leaf(schema_path)
+    if leaf is None:
+        return None
+    names = schema_path.split(".")
+    counts = _items.ContainerCounts()
+    try:
+        for frag, rgs in reader.plan(None, [leaf], use_sidecars=False)[0]:
+            if reader.footer(frag) is None:
+                return None
+            for rg in (rgs if rgs is not None else [None]):
+                arr = reader.fmt.read_leaves(frag, [leaf], [rg]).column(names[0]).combine_chunks()
+                for name in names[1:]:
+                    arr = _items._child(arr, name)
+                present = len(arr) - arr.null_count
+                counts.rows += len(arr)
+                counts.null += arr.null_count
+                counts.nonempty += present
+                counts.items += present
+                tally = counts.by_level.setdefault(schema_path, {})
+                tally["rows"] = tally.get("rows", 0) + len(arr)
+                tally["null"] = tally.get("null", 0) + arr.null_count
+    except MemoryError:
+        raise
+    except (_items.ArrowUnsupported, pa.ArrowException, KeyError, IndexError, TypeError):
+        return None
+    return counts
 
 
 def _arrow_container_counts(reader: TableReader, lvls: Sequence[Any], leaf: str | None) -> Any:
