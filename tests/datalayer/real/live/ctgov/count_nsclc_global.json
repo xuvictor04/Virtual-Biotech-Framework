@@ -1,0 +1,22 @@
+{
+ "url": "https://clinicaltrials.gov/api/v2/studies",
+ "params": {
+  "format": "json",
+  "countTotal": "true",
+  "pageSize": "0",
+  "fields": "NCTId",
+  "query.cond": "(non-small cell lung cancer)",
+  "filter.overallStatus": "RECRUITING",
+  "filter.advanced": "AREA[Phase](PHASE2 OR PHASE3) AND AREA[StudyType]INTERVENTIONAL"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:30:04 GMT",
+  "content-type": "application/json"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": "totalCount only",
+ "body": {
+  "totalCount": 705
+ }
+}

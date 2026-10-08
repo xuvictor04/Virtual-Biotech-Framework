@@ -10,17 +10,33 @@ compiled from the bound predicates, §11.6). Options (``layout: {plugin: live_ap
     params:          {format: json}                           static parameters of every request
     rows_path / total_path / next_path / as_of_path           how a page is decoded (rest_json)
     page_size_param: pageSize      page_token_param: pageToken      offset_param: retstart
+    page_number_param: pageNumber                             (a page index from 0, cBioPortal; never an
+                                                              offset: offset_param is for retstart-style APIs)
+    key_endpoint:    "studies/{studyId}"                      a record endpoint used when the predicate fixes
+                                                              every placeholder (one record instead of a
+                                                              listing filtered on the rows; 404 = no record)
     filters / remote_names / essie_param / text_params        how predicates compile (rest_json)
-    count:           {endpoint, params: {countTotal: "true", pageSize: "0"}, total_path: $.totalCount}
+    count:           {endpoint, params: {countTotal: "true", pageSize: "0", fields: NCTId}, total_path: ...}
                      (or header: total-count, for APIs that report the total in a response header)
-    release:         {endpoint: version, path: $.dataTimestamp}   (the source's data release)
+    release:         {endpoint: version, path: $.dataTimestamp}   (the source's data release; ``_live_find``
+                                                                  reports it as the rows' ``as_of``)
 
 Requests honour the descriptor's ``budget`` (:class:`~vbt.datalayer.descriptor.models.RemoteBudget`):
 ``requests_per_min`` spaces requests per base URL, ``max_requests_per_call`` and ``max_pages`` bound one
-call, ``page_size`` sets the page parameter and ``timeout_s`` each request. Nothing here touches the
+call, ``page_size`` sets the page parameter and ``timeout_s`` each request. A 429 or 503 is retried at most
+``RETRIES`` times after the ``Retry-After`` delay (capped), each attempt counted against the budget. A
+4xx/5xx reply raises :class:`RemoteError` with its status and the path placeholders it was sent with
+(``filled``), so a 404 on ``studies/{studyId}/...`` names the unknown ``studyId``. Nothing here touches the
 network at import, in ``signature``, ``fingerprint`` or ``probe``: readiness of a live table is "checked at
 call time" (the probe is an info finding), and ``as_of`` is the release the last request saw, else the
 call time.
+
+Checked against the real APIs (October 2026; ``tests/datalayer/real/live``): ClinicalTrials.gov v2 ignores
+``pageSize=0`` (it answers its default 10 full records, about 140 KB, with the count), so the count request
+asks for one field (``fields=NCTId``: 790 bytes); cBioPortal's ``pageNumber`` is a page index (an offset sent
+there skipped every page after the first: 500 of the 10,336 patients of ``msk_impact_2017`` came back as the
+complete answer); cBioPortal answers ``403`` to the default ``Python-urllib`` user agent, so requests name
+themselves ``vbt-datalayer``.
 
 Also here, for the remote sources' descriptors (§6.1, §13): :func:`release_from_payload` (``release.resolve:
 {result: <JSONPath>}``), :class:`RemoteVocab` (vocabularies with a TTL and drift detection) and
@@ -54,19 +70,26 @@ __all__ = ["LiveApiLayout", "RemoteError", "Budget", "http_get", "release_from_p
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 DEFAULT_TIMEOUT_S = 30.0
 DEFAULT_PAGE_SIZE = 100
+RETRIES = 2                                    # 429/503 retries per request (Retry-After honoured)
+RETRY_MAX_S = 30.0
+RELEASE_TTL_S = 600.0                          # how long a source's release (options.release) is reused
 
 _LOCK = threading.Lock()
 _LAST_REQUEST: dict[str, float] = {}
 _AS_OF: dict[str, str] = {}
+_RELEASES: dict[str, tuple[float, str | None]] = {}
 
 
 class RemoteError(Exception):
-    """A request that failed: ``status`` is the HTTP status (None for a transport error)."""
+    """A request that failed: ``status`` is the HTTP status (None for a transport error); ``filled`` the path
+    placeholders the request was sent with (``{"studyId": "x"}``: a 404 names an unknown ``x``)."""
 
-    def __init__(self, message: str, *, status: int | None = None, url: str | None = None) -> None:
+    def __init__(self, message: str, *, status: int | None = None, url: str | None = None,
+                 filled: Mapping[str, Any] | None = None) -> None:
         super().__init__(message)
         self.status = status
         self.url = url
+        self.filled = dict(filled or {})
 
 
 @dataclass
@@ -95,6 +118,16 @@ class Budget:
         if self.max_requests_per_call is not None and self.used >= int(self.max_requests_per_call):
             raise RemoteError(f"the request budget of {self.max_requests_per_call} request(s) per call is used up")
         self.used += 1
+
+    def pages_of(self, rows: int | None) -> "Budget":
+        """This budget with pages no larger than ``rows`` (a find that wants 2 rows asks for pages of 2)."""
+        if rows is None or rows <= 0:
+            return self
+        size = int(self.page_size) if self.page_size else DEFAULT_PAGE_SIZE
+        out = Budget(requests_per_min=self.requests_per_min, max_pages=self.max_pages, page_size=min(size, int(rows)),
+                     max_requests_per_call=self.max_requests_per_call, timeout_s=self.timeout_s)
+        out.used = self.used
+        return out
 
 
 def _wait_turn(base: str, requests_per_min: int | None) -> None:
@@ -214,43 +247,70 @@ class LiveApiLayout(PluginBase):
         """Fill ``{column}`` placeholders of an endpoint (``studies/{studyId}/samples``) from ``Eq``
         conjuncts of the predicate, which are then removed from it. A placeholder without an ``Eq`` stays
         unfilled (the request is not made)."""
+        ep, pred, _filled = LiveApiLayout._fill(endpoint, predicate)
+        return ep, pred
+
+    @staticmethod
+    def _fill(endpoint: str, predicate: Predicate | None) -> tuple[str, Predicate | None, dict[str, Any]]:
         names = re.findall(r"\{([^{}]+)\}", endpoint)
         if not names or predicate is None:
-            return endpoint, predicate
+            return endpoint, predicate, {}
         parts = list(predicate.preds) if isinstance(predicate, And) else [predicate]
         rest = []
+        filled: dict[str, Any] = {}
         for p in parts:
             if isinstance(p, Eq) and p.column in names and "{" + p.column + "}" in endpoint:
                 endpoint = endpoint.replace("{" + p.column + "}", urllib.parse.quote(str(p.value), safe=""))
+                filled[p.column] = p.value
             else:
                 rest.append(p)
         pred = None if not rest else (rest[0] if len(rest) == 1 else And(tuple(rest)))
-        return endpoint, pred
+        return endpoint, pred, filled
 
     def _target(self, spec: LayoutSpec, predicate: Predicate | None, endpoint: str | None = None
-                ) -> tuple[str | None, dict[str, str], Predicate | None]:
-        """``(url, query parameters of the endpoint, predicate left)`` with path placeholders filled."""
+                ) -> tuple[str | None, dict[str, str], Predicate | None, dict[str, Any]]:
+        """``(url, query parameters of the endpoint, predicate left, placeholders filled)``."""
         opts = self._options(spec)
         ep = str(endpoint if endpoint is not None else (opts.get("endpoint") or spec.path or ""))
-        ep, predicate = self.fill_path(ep, predicate)
+        ep, predicate, filled = self._fill(ep, predicate)
         if "{" in ep:
             missing = re.findall(r"\{([^{}]+)\}", ep)
             raise RemoteError(f"{spec.table}: the request needs {missing} fixed by the filter")
         path, _, query = ep.partition("?")
-        return self._url(spec, path), dict(urllib.parse.parse_qsl(query)), predicate
+        return self._url(spec, path), dict(urllib.parse.parse_qsl(query)), predicate, filled
 
-    def _get(self, url: str, params: Mapping[str, Any], budget: Budget) -> tuple[Any, dict[str, str]]:
-        budget.spend()
+    def _key_target(self, spec: LayoutSpec, predicate: Predicate | None
+                    ) -> tuple[str, dict[str, str], Predicate | None, dict[str, Any], str] | None:
+        """The record endpoint (``key_endpoint``) when the predicate fixes every one of its placeholders."""
+        key = self._options(spec).get("key_endpoint")
+        if not key or predicate is None:
+            return None
+        ep, rows_path = (key, "$") if isinstance(key, str) else (str(key.get("endpoint")), key.get("rows_path", "$"))
+        filled_ep, rest, filled = self._fill(ep, predicate)
+        if "{" in filled_ep or not filled:
+            return None
+        path, _, query = filled_ep.partition("?")
+        url = self._url(spec, path)
+        return (url, dict(urllib.parse.parse_qsl(query)), rest, filled, str(rows_path)) if url else None
+
+    def _get(self, url: str, params: Mapping[str, Any], budget: Budget, filled: Mapping[str, Any] | None = None
+             ) -> tuple[Any, dict[str, str]]:
         base = urllib.parse.urlparse(url)
-        _wait_turn(f"{base.scheme}://{base.netloc}", budget.requests_per_min)
-        status, headers, body = self.transport(url, params, timeout=float(budget.timeout_s or DEFAULT_TIMEOUT_S))
+        for attempt in range(RETRIES + 1):
+            budget.spend()
+            _wait_turn(f"{base.scheme}://{base.netloc}", budget.requests_per_min)
+            status, headers, body = self.transport(url, params, timeout=float(budget.timeout_s or DEFAULT_TIMEOUT_S))
+            if status in (429, 503) and attempt < RETRIES:
+                time.sleep(_retry_after(headers, attempt))       # the source asked us to slow down
+                continue
+            break
         if status >= 400:
             text = body.decode("utf-8", "replace")[:500] if body else ""
-            raise RemoteError(f"HTTP {status} from {url}: {text}", status=status, url=url)
+            raise RemoteError(f"HTTP {status} from {url}: {text}", status=status, url=url, filled=filled)
         try:
             return json.loads(body.decode("utf-8") or "null"), headers
         except ValueError as exc:
-            raise RemoteError(f"{url} did not return JSON: {exc}", status=status, url=url) from exc
+            raise RemoteError(f"{url} did not return JSON: {exc}", status=status, url=url, filled=filled) from exc
 
     def request(self, spec: LayoutSpec, *, predicate: Predicate | None, projection: list[str],
                 page_token: str | None, budget: Any, remote_names: Mapping[str, str] | None = None) -> Page:
@@ -258,23 +318,30 @@ class LiveApiLayout(PluginBase):
         the page's ``total`` is None: the source's total counts the pushed-down part only)."""
         b = Budget.of(budget)
         opts = self._options(spec)
-        url, query, predicate = self._target(spec, predicate)
+        keyed = self._key_target(spec, predicate) if not page_token else None
+        if keyed is not None:
+            return self._record(spec, keyed, projection, b)
+        url, query, predicate, filled = self._target(spec, predicate)
         if not url:
             raise RemoteError(f"{spec.table}: live_api needs options.base_url")
         params, residual = self.fmt.compile(predicate, self.request_map(spec, remote_names))
         params = {**dict(opts.get("params") or {}), **query, **params}
         size = int(b.page_size or opts.get("page_size") or DEFAULT_PAGE_SIZE)
         offset = 0
+        number = None
         if opts.get("page_size_param"):
             params[str(opts["page_size_param"])] = str(size)
         if page_token:
             if opts.get("page_token_param"):
                 params[str(opts["page_token_param"])] = page_token
+            elif opts.get("page_number_param"):
+                number = int(page_token)
+                params[str(opts["page_number_param"])] = page_token
             elif opts.get("offset_param"):
                 offset = int(page_token)
                 params[str(opts["offset_param"])] = page_token
-        payload, headers = self._get(url, params, b)
-        page = self.fmt.decode_page(payload, opts, headers, offset=offset, page_size=size)
+        payload, headers = self._get(url, params, b, filled)
+        page = self.fmt.decode_page(payload, opts, headers, offset=offset, page_size=size, page_number=number)
         rows = list(page.rows)
         if residual is not None:
             rows = [r for r in rows if evaluate(residual, r) is True]
@@ -284,6 +351,28 @@ class LiveApiLayout(PluginBase):
             _AS_OF[url] = page.as_of
         return Page(rows=rows, total=None if residual is not None else page.total, next=page.next, as_of=page.as_of)
 
+    def _record(self, spec: LayoutSpec, keyed: tuple[str, dict[str, str], Predicate | None, dict[str, Any], str],
+                projection: list[str], budget: Budget) -> Page:
+        """One record read from ``key_endpoint`` (the rest of the filter is applied to it): a 404 is no record
+        (an empty page), never an error."""
+        url, query, predicate, filled, rows_path = keyed
+        opts = self._options(spec)
+        params = {**dict(opts.get("params") or {}), **query}
+        try:
+            payload, headers = self._get(url, params, budget, filled)
+        except RemoteError as exc:
+            if exc.status != 404:
+                raise
+            return Page(rows=[], total=0, next=None, as_of=self.as_of("", spec))
+        page = self.fmt.decode_page(payload, {**opts, "rows_path": None if rows_path == "$" else rows_path,
+                                              "next_path": None, "total_path": None}, headers)
+        rows = [r for r in page.rows if isinstance(r, Mapping)]
+        if predicate is not None:
+            rows = [r for r in rows if evaluate(predicate, r) is True]    # the rest of the filter, on the record
+        if projection:
+            rows = [{k: v for k, v in r.items() if k in projection} for r in rows]
+        return Page(rows=rows, total=len(rows), next=None, as_of=page.as_of)
+
     def count(self, spec: LayoutSpec, *, predicate: Predicate | None, budget: Any,
               remote_names: Mapping[str, str] | None = None) -> int | None:
         """An independent count request (the remote witness): None when the predicate does not compile
@@ -292,13 +381,13 @@ class LiveApiLayout(PluginBase):
         count = dict(opts.get("count") or {})
         if not count:
             return None
-        url, query, predicate = self._target(spec, predicate, count.get("endpoint"))
+        url, query, predicate, filled = self._target(spec, predicate, count.get("endpoint"))
         params, residual = self.fmt.compile(predicate, self.request_map(spec, remote_names))
         if residual is not None or not url:
             return None
         params = {**dict(opts.get("params") or {}), **query, **params,
                   **{str(k): str(v) for k, v in (count.get("params") or {}).items()}}
-        payload, headers = self._get(url, params, Budget.of(budget))
+        payload, headers = self._get(url, params, Budget.of(budget), filled)
         if count.get("header"):
             hdr = {str(k).lower(): v for k, v in headers.items()}
             value = hdr.get(str(count["header"]).lower())
@@ -309,17 +398,24 @@ class LiveApiLayout(PluginBase):
             _AS_OF[self._url(spec) or url] = page.as_of
         return page.total
 
-    def release(self, spec: LayoutSpec, budget: Any = None) -> str | None:
-        """The source's data release (``options.release: {endpoint, path}``), e.g. CT.gov ``dataTimestamp``."""
+    def release(self, spec: LayoutSpec, budget: Any = None, *, max_age_s: float | None = None) -> str | None:
+        """The source's data release (``options.release: {endpoint, path}``), e.g. CT.gov ``dataTimestamp``.
+        With ``max_age_s`` a release read less than that many seconds ago is reused (no request)."""
         rel = dict(self._options(spec).get("release") or {})
         if not rel.get("path"):
             return None
         url = self._url(spec, rel.get("endpoint"))
         if not url:
             return None
+        if max_age_s is not None:
+            hit = _RELEASES.get(url)
+            if hit is not None and time.monotonic() - hit[0] <= max_age_s:
+                return hit[1]
         payload, _headers = self._get(url, dict(rel.get("params") or {}), Budget.of(budget))
         got = [v for v in jp_values(payload, str(rel["path"])) if v not in (None, "")]
-        return str(got[0]) if got else None
+        value = str(got[0]) if got else None
+        _RELEASES[url] = (time.monotonic(), value)
+        return value
 
     @classmethod
     def conformance_cases(cls) -> Any:
@@ -330,8 +426,10 @@ class LiveApiLayout(PluginBase):
 
 
 def fetch_all(layout: LiveApiLayout, spec: LayoutSpec, predicate: Predicate | None, budget: Any, *,
-              projection: list[str] | None = None, remote_names: Mapping[str, str] | None = None) -> dict[str, Any]:
-    """Every page within the budget's ``max_pages``: ``{rows, total, as_of, truncated, pages}``."""
+              projection: list[str] | None = None, remote_names: Mapping[str, str] | None = None,
+              max_rows: int | None = None) -> dict[str, Any]:
+    """Every page within the budget's ``max_pages``: ``{rows, total, as_of, truncated, pages}``. With
+    ``max_rows`` the reading stops once that many rows are in hand (more pages left: ``truncated``)."""
     b = Budget.of(budget)
     rows: list[Any] = []
     token = None
@@ -349,8 +447,18 @@ def fetch_all(layout: LiveApiLayout, spec: LayoutSpec, predicate: Predicate | No
         token = page.next
         if not token:
             return {"rows": rows, "total": total, "as_of": as_of, "truncated": False, "pages": pages}
-        if b.max_pages is not None and pages >= int(b.max_pages):
+        if (b.max_pages is not None and pages >= int(b.max_pages)) or (max_rows is not None and len(rows) >= max_rows):
             return {"rows": rows, "total": total, "as_of": as_of, "truncated": True, "pages": pages}
+
+
+def _retry_after(headers: Mapping[str, str], attempt: int) -> float:
+    """Seconds to wait after a 429/503: the ``Retry-After`` header (seconds), else 1, 2, 4 ... (capped)."""
+    value = {str(k).lower(): v for k, v in (headers or {}).items()}.get("retry-after")
+    try:
+        wait = float(str(value).strip()) if value is not None else float(2 ** attempt)
+    except ValueError:
+        wait = float(2 ** attempt)
+    return max(0.0, min(RETRY_MAX_S, wait))
 
 
 # --------------------------------------------------------------------------- vocabularies and versions

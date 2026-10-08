@@ -1,0 +1,61 @@
+{
+ "source": "CELLxGENE Census, census_version 'stable'",
+ "retrieved": "2026-10-08",
+ "description": {
+  "release_build": "2025-11-08",
+  "release_date": null,
+  "alias": null
+ },
+ "count": {
+  "filter": "dataset_id == '59632ec0-6f10-48c6-af79-81024e84843e' and is_primary_data == True",
+  "n_cells": 7750,
+  "donors": {
+   "RG1237": 7750
+  },
+  "dataset": {
+   "dataset_id": "59632ec0-6f10-48c6-af79-81024e84843e",
+   "collection_name": "Comparative Analysis of Commercial Single-Cell RNA Sequencing Technologies",
+   "dataset_title": "BD-rep2",
+   "dataset_total_cell_count": 7750
+  }
+ },
+ "var": [
+  {
+   "feature_id": "ENSG00000145623",
+   "feature_name": "OSMR",
+   "soma_joinid": 3397
+  },
+  {
+   "feature_id": "ENSG00000103855",
+   "feature_name": "CD276",
+   "soma_joinid": 9232
+  },
+  {
+   "feature_id": "ENSG00000141510",
+   "feature_name": "TP53",
+   "soma_joinid": 10063
+  }
+ ],
+ "x_raw_slice": {
+  "cells": 200,
+  "genes": 3,
+  "stored_values": 65,
+  "non_integer": 0,
+  "min": 1.0,
+  "max": 4.0,
+  "stored_zeros": 0
+ },
+ "sample": {
+  "filter": "tissue_general == 'spleen' and dataset_id in ['1b350d0a-4535-4879-beb6-1142f3f94947', '1b9d8702-5af8-4142-85ed-020eb06ec4f6'] and is_primary_data == True",
+  "n_cells": 251892,
+  "max_cells": 600,
+  "seed": 0,
+  "per_dataset": {
+   "1b350d0a-4535-4879-beb6-1142f3f94947": 300,
+   "1b9d8702-5af8-4142-85ed-020eb06ec4f6": 300
+  },
+  "n_sampled": 600,
+  "n_donors": 34,
+  "n_datasets": 2
+ }
+}

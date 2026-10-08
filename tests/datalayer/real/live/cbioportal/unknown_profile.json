@@ -1,0 +1,18 @@
+{
+ "url": "https://www.cbioportal.org/api/molecular-profiles/no_such_profile/molecular-data",
+ "params": {
+  "projection": "SUMMARY",
+  "sampleListId": "acc_tcga_pan_can_atlas_2018_all",
+  "entrezGeneId": "80381"
+ },
+ "status": 404,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:30:21 GMT",
+  "content-type": "application/json"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": null,
+ "body": {
+  "message": "Molecular profile not found: no_such_profile"
+ }
+}

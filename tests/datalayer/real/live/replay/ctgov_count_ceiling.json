@@ -1,0 +1,99 @@
+{
+ "scenario": "ctgov_count_ceiling",
+ "retrieved": "2026-10-08T02:45:48Z",
+ "seconds": 0.46,
+ "exchanges": [
+  {
+   "url": "https://clinicaltrials.gov/api/v2/studies",
+   "params": {
+    "format": "json",
+    "filter.overallStatus": "COMPLETED",
+    "filter.advanced": "AREA[Phase]PHASE3 AND AREA[LocationCountry]Germany AND AREA[StudyFirstPostDate]RANGE[MIN,2017-12-31]",
+    "countTotal": "true",
+    "pageSize": "0",
+    "fields": "NCTId"
+   },
+   "status": 200,
+   "headers": {
+    "date": "Thu, 08 Oct 2026 02:45:49 GMT",
+    "content-type": "application/json"
+   },
+   "body": {
+    "totalCount": 3846,
+    "studies": [
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT03158220"
+       }
+      }
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT01289782"
+       }
+      }
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT03068780"
+       }
+      }
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT01385696"
+       }
+      }
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02007629"
+       }
+      }
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT00095082"
+       }
+      }
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT00056446"
+       }
+      }
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02982161"
+       }
+      }
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT00373256"
+       }
+      }
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT00728351"
+       }
+      }
+     }
+    ],
+    "nextPageToken": "ZVNj7o2Elu8o3lpwRM-l47L2mpOQJJxmZvSt0A"
+   }
+  }
+ ]
+}

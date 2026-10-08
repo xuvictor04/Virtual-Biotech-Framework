@@ -112,6 +112,10 @@ tools:
         phases:             {column: protocolSection.designModule.phases}
         enrollmentCount:    {column: protocolSection.designModule.enrollmentInfo.count}
         hasResults:         {column: hasResults}
+        # upstream flattens contactsLocationsModule.locations to `locations` (country per site): without this
+        # map the country filter could not be evaluated on the rows and every row was excluded as unknown
+        # (a real Iceland search: total_count 3, 0 trials returned; tests/datalayer/real/live/ctgov)
+        locations:          {column: protocolSection.contactsLocationsModule.locations}
       total: {path: $.total_count, method: upstream, partial_when: ["$.warning"]}
       count_fields: {"$.trials_returned": "len($.trials)"}
       order_from_arg: sort
@@ -168,11 +172,26 @@ tools:
       row_key: [sampleId]
       key_from_args: {studyId: study_id}
       exists_when: "$.patientId != null"          # phantom samples come back with patientId null (VERIFIED)
-      levels: {patient: [OS_MONTHS, OS_STATUS, DFS_MONTHS, DFS_STATUS, PFS_MONTHS, PFS_STATUS, AGE, SEX]}
+      # Attributes that are patient-level in every one of the 550 public studies that defines them
+      # (GET /api/clinical-attributes, 19,459 definitions, 2026-10-08): moved into the `patients` section,
+      # one row per patient, so a patient value is never counted once per sample. An attribute that is
+      # sample-level in any study (AJCC_PATHOLOGIC_TUMOR_STAGE in 1 of 65, SUBTYPE, STAGE) stays on the rows.
+      levels: {patient: [OS_MONTHS, OS_STATUS, DFS_MONTHS, DFS_STATUS, PFS_MONTHS, PFS_STATUS, DSS_MONTHS, DSS_STATUS,
+                         AGE, SEX, GENDER, RACE, ETHNICITY, PATH_T_STAGE, PATH_N_STAGE, PATH_M_STAGE, AJCC_STAGING_EDITION,
+                         DAYS_LAST_FOLLOWUP, DAYS_TO_BIRTH, DAYS_TO_DEATH, DAYS_TO_INITIAL_PATHOLOGIC_DIAGNOSIS,
+                         VITAL_STATUS, HISTORY_NEOADJUVANT_TRTYN, ICD_O_3_HISTOLOGY, ICD_O_3_SITE, PRIMARY_SITE_PATIENT,
+                         INFORMED_CONSENT_VERIFIED, FORM_COMPLETION_DATE, OTHER_PATIENT_ID, SAMPLE_COUNT]}
       count_fields: [$.sample_count]
       not_found_when: ["$.error =~ '(?i)status code: 404'"]
     text:
       notes: ["Patient-level values repeat on every sample row; for one row per patient use mcp__data__find on cbioportal.patient_clinical (where: {studyId: ...})."]
+    # Kept `pass` (F20): a derived get_clinical_data would read three live tables (sample, sample_clinical,
+    # patient_clinical), but the data child's derived serving (_serve) reads scannable tables only, and its
+    # sample-grain rows must keep upstream's shape. The guards above make the upstream answer safe instead:
+    # unknown sample IDs are not_found (exists_when; a real phantom TCGA-OR-A5ZZ-01 was refused), patient
+    # attributes are counted per patient (`patients` section: 92 patients for the 92 samples of
+    # acc_tcga_pan_can_atlas_2018), and mcp__data__find on cbioportal.patient_clinical serves the
+    # patient-level table derived.
     serve: pass
     defects:
       - {id: CT-CBIO-001, what: "unknown sample_ids come back as {sampleId, patientId: null} rows and count in sample_count",

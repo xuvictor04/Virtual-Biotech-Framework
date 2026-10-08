@@ -1,0 +1,59 @@
+{
+ "url": "https://www.cbioportal.org/api/studies/acc_tcga_pan_can_atlas_2018",
+ "params": {
+  "projection": "DETAILED"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:30:08 GMT",
+  "content-type": "application/json"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": "description removed",
+ "body": {
+  "studyId": "acc_tcga_pan_can_atlas_2018",
+  "cancerTypeId": "acc",
+  "name": "Adrenocortical Carcinoma (TCGA, PanCancer Atlas)",
+  "publicStudy": true,
+  "pmid": "29625048,29596782,29622463,29617662,29625055,29625050,29617662,32214244,29625049,29850653,36334560",
+  "citation": "TCGA, Cell 2018",
+  "groups": "PUBLIC;PANCAN",
+  "status": 0,
+  "importDate": "2026-06-05 15:19:54",
+  "allSampleCount": 92,
+  "sequencedSampleCount": 91,
+  "cnaSampleCount": 89,
+  "mrnaRnaSeqSampleCount": 0,
+  "mrnaRnaSeqV2SampleCount": 78,
+  "mrnaMicroarraySampleCount": 0,
+  "miRnaSampleCount": 0,
+  "methylationHm27SampleCount": 0,
+  "rppaSampleCount": 45,
+  "massSpectrometrySampleCount": 0,
+  "completeSampleCount": 76,
+  "referenceGenome": "hg19",
+  "treatmentCount": 16,
+  "structuralVariantCount": 55,
+  "cancerType": {
+   "id": "acc",
+   "name": "Adrenocortical Carcinoma",
+   "dedicatedColor": "Purple",
+   "shortName": "ACC",
+   "parent": "adrenal_gland"
+  },
+  "readPermission": true,
+  "resourceCounts": [
+   {
+    "resourceId": "IDC_SLIM",
+    "displayName": "Slide Microscopy",
+    "description": "Slide Microscopy",
+    "resourceType": "PATIENT",
+    "priority": "1",
+    "openByDefault": true,
+    "cancerStudyIdentifier": "acc_tcga_pan_can_atlas_2018",
+    "sampleCount": 91,
+    "patientCount": 91
+   }
+  ]
+ }
+}

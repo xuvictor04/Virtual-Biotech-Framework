@@ -1,0 +1,42 @@
+{
+ "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+ "params": {
+  "db": "pubmed",
+  "term": "pcsk9 zzzqqqxyzzy",
+  "retmode": "json",
+  "retmax": "0",
+  "tool": "vbt-datalayer"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:30:27 GMT",
+  "content-type": "application/json; charset=UTF-8"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": null,
+ "body": {
+  "header": {
+   "type": "esearch",
+   "version": "0.3"
+  },
+  "esearchresult": {
+   "count": "8185",
+   "retmax": "0",
+   "retstart": "0",
+   "idlist": [],
+   "translationset": [
+    {
+     "from": "pcsk9",
+     "to": "\"pcsk9 protein, human\"[Supplementary Concept] OR \"pcsk9 protein, human\"[All Fields] OR \"pcsk9\"[All Fields] OR \"pcsk9's\"[All Fields]"
+    }
+   ],
+   "querytranslation": "\"pcsk9 protein human\"[Supplementary Concept] OR \"pcsk9 protein human\"[All Fields] OR \"pcsk9\"[All Fields] OR \"pcsk9 s\"[All Fields]",
+   "errorlist": {
+    "phrasesnotfound": [
+     "zzzqqqxyzzy"
+    ],
+    "fieldsnotfound": []
+   }
+  }
+ }
+}

@@ -1,0 +1,24 @@
+{
+ "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
+ "params": {
+  "db": "pubmed",
+  "id": "PMC6309485",
+  "retmode": "xml",
+  "tool": "vbt-datalayer"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:30:31 GMT",
+  "content-type": "text/xml; charset=UTF-8"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": "the PMIDs and article titles of the XML",
+ "body": {
+  "pmids": [
+   "6309485"
+  ],
+  "titles": [
+   "[Chemodectoma. Report of seven cases]."
+  ]
+ }
+}

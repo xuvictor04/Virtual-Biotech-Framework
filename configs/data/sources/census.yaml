@@ -3,12 +3,20 @@
 # Remote SOMA. The tools are still served upstream; phase 4 gives obs and var the soma layout and
 # format, which the data child uses for count-first admission of Census pulls (_census_count, asked by
 # the gateway for the overlay's `count_first` tools), the remote witness (one value_filter read of
-# soma_joinid) and a donor-balanced sample keyed by (dataset_id, donor_id) (_census_count `sample`;
-# not yet served in place of get_anndata_donor_balanced). The upstream server opens census_version "stable"
-# (single_cell_mcp/tools.py:29,51): the release is resolved from each result ($.census_version) and,
-# in the data child, through cellxgene_census.get_census_version_description, recorded with its
-# release_confidence (exact | inferred | unknown) and drift-checked (a moved alias is reported, never
-# silently mixed into one session's results).
+# soma_joinid) and a donor-balanced sample keyed by (dataset_id, donor_id) (_census_count `sample`, which
+# also returns the value_filter/max_cells that make upstream fetch exactly the sampled cells; the gateway
+# does not route get_anndata_donor_balanced through it yet). The upstream server opens census_version
+# "stable" (single_cell_mcp/tools.py:29,51) and its get_census_info answers census_version "stable" (the
+# alias, not a release): the data child resolves the alias through
+# cellxgene_census.get_census_version_description, records it with its release_confidence
+# (exact | inferred | unknown) and drift-checks it (a moved alias is reported, never silently mixed into
+# one session's results).
+#
+# Checked against the real Census on 2026-10-08 (cellxgene-census 1.18.0, tiledbsoma 2.3.0;
+# tests/datalayer/real/live/census): release.json names stable = 2025-11-08 (latest = 2025-11-17);
+# census_schema_version 2.4.0, 217,768,036 cells (125,463,259 unique), 1,845 datasets. The soma layout
+# opens the Census with 128 MiB read buffers (layout option tiledb_config): the client's default 1 GiB per
+# column fails with std::bad_alloc under the data child's RLIMIT_DATA.
 schema: vbt.datasource/1
 source: cellxgene_census
 title: CZ CELLxGENE Census (human)
@@ -76,6 +84,8 @@ tables:
     path: "${run.mcp_output_dir}"
     layout: single_file
     format: none                                        # the h5ad format plugin arrives in phase 2 (F12)
+    # the real files (2025-11-08) hold the keys as columns: obs.soma_joinid and var.feature_id, with
+    # positional obs and var indexes ('0', '1', ...)
     materialized_by: {tool: single_cell.get_anndata, path_from: "$.output_path",
                       value_from_arg: {layer: {raw: count, normalized: normalized_count}}}
     grain: one (cell, gene) Census X value for one cell returned by one tool call
@@ -85,13 +95,15 @@ tables:
       implicit: zero_if_measured
       measured_by: {table: feature_dataset_presence, key: [dataset_id, feature_id]}
       axes:
-        obs: {name: cell, from: index, key: {columns: [soma_joinid]},
+        obs: {name: cell, from: column, column: soma_joinid, key: {columns: [soma_joinid]},
               columns: {soma_joinid: {role: identifier, id_type: census_joinid, self: true},
                         dataset_id: {role: identifier, id_type: census_dataset},
                         donor_id: {role: category, vocab: data, unique_within: [dataset_id]},
                         cell_type: {role: category, vocab: data},
                         tissue: {role: category, vocab: data}}}
-        var: {name: gene, from: index, key: {columns: [feature_id]},
+        var: {name: gene, from: column, column: feature_id, key: {columns: [feature_id]},
               columns: {feature_id: {role: identifier, id_type: census_feature, self: true},   # never positional var_names
                         feature_name: {role: label, of: feature_id, id_type: "open_targets:hgnc_symbol"}}}
-      values: {X: {role: measure, statistic: count, missing: zero, verified: false}}
+      # raw X: UMI/read counts stored as float32, implicit zeros (verified on 2025-11-08: a 200 cells x
+      # 3 genes slice of X["raw"] held 65 stored values, all whole numbers from 1 to 4, none stored as 0)
+      values: {X: {role: measure, statistic: count, missing: zero}}

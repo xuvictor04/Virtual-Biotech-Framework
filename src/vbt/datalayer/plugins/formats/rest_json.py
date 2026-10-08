@@ -20,7 +20,8 @@ The format of ``live_api`` tables (ClinicalTrials.gov v2, E-utilities, cBioPorta
   ``IsNull``, an unmapped column) is returned as the residual, evaluated on the returned rows; a
   residual makes a count request impossible (the remote witness then says ``unknown``).
 * **decode** a page (:meth:`RestJsonFormat.decode_page`): rows, the upstream total, the next page token
-  (``next_path``) or offset, and ``as_of`` from the payload (``as_of_path``) or the ``Date`` header.
+  (``next_path``), page index (``page_number_param``) or offset, and ``as_of`` from the payload
+  (``as_of_path``) or the ``Date`` header.
 
 ``scan`` reads recorded responses saved as ``.json`` files (fixtures, replays): each file is one page.
 """
@@ -224,8 +225,10 @@ class RestJsonFormat(PluginBase):
     # ------------------------------------------------------------------ decode
 
     def decode_page(self, payload: Any, options: Mapping[str, Any], headers: Mapping[str, str] | None = None, *,
-                    offset: int = 0, page_size: int | None = None) -> Page:
-        """One :class:`~vbt.datalayer.plugins.base.Page` of a JSON response (module docstring)."""
+                    offset: int = 0, page_size: int | None = None, page_number: int | None = None) -> Page:
+        """One :class:`~vbt.datalayer.plugins.base.Page` of a JSON response (module docstring). The next page
+        is the payload's token (``next_path``), the next page index (``page_number_param``: a full page means
+        another may follow) or the next offset (``offset_param``)."""
         opts = dict(options or {})
         rows_path = opts.get("rows_path")
         if rows_path:
@@ -247,6 +250,10 @@ class RestJsonFormat(PluginBase):
         if opts.get("next_path"):
             token = next(iter(jp_values(payload, opts.get("next_path"))), None)
             nxt = str(token) if token not in (None, "") else None
+        elif opts.get("page_number_param") and page_size:
+            index = int(page_number or 0)
+            if rows and len(rows) >= page_size and (total is None or (index + 1) * page_size < total):
+                nxt = str(index + 1)
         elif opts.get("offset_param") and page_size:
             after = offset + len(rows)
             if rows and len(rows) >= page_size and (total is None or after < total):

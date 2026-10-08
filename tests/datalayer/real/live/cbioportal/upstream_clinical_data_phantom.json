@@ -1,0 +1,52 @@
+{
+ "tool": "clinicaltrials.get_clinical_data",
+ "args": {
+  "study_id": "acc_tcga_pan_can_atlas_2018",
+  "sample_ids": [
+   "TCGA-OR-A5J1-01",
+   "TCGA-OR-A5J2-01",
+   "TCGA-OR-A5ZZ-01"
+  ]
+ },
+ "retrieved": "2026-10-08T02:47:10Z",
+ "upstream": "third_party/TheVirtualBiotech src/mcp_servers/clinicaltrials_mcp/tools.py",
+ "trimmed": "each row keeps sampleId, patientId, OS_MONTHS, OS_STATUS, DSS_STATUS, AGE, SEX, RACE, SAMPLE_TYPE, CANCER_TYPE, AJCC_PATHOLOGIC_TUMOR_STAGE; clinical_attributes replaced by its count",
+ "result": {
+  "success": true,
+  "study_id": "acc_tcga_pan_can_atlas_2018",
+  "sample_count": 3,
+  "data": [
+   {
+    "sampleId": "TCGA-OR-A5J1-01",
+    "patientId": "TCGA-OR-A5J1",
+    "OS_MONTHS": "44.54745701",
+    "OS_STATUS": "1:DECEASED",
+    "DSS_STATUS": "1:DEAD WITH TUMOR",
+    "AGE": "58",
+    "SEX": "Male",
+    "RACE": "White",
+    "SAMPLE_TYPE": "Primary",
+    "CANCER_TYPE": "Adrenocortical Carcinoma",
+    "AJCC_PATHOLOGIC_TUMOR_STAGE": "STAGE II"
+   },
+   {
+    "sampleId": "TCGA-OR-A5J2-01",
+    "patientId": "TCGA-OR-A5J2",
+    "OS_MONTHS": "55.13364237",
+    "OS_STATUS": "1:DECEASED",
+    "DSS_STATUS": "1:DEAD WITH TUMOR",
+    "AGE": "44",
+    "SEX": "Female",
+    "RACE": "White",
+    "SAMPLE_TYPE": "Primary",
+    "CANCER_TYPE": "Adrenocortical Carcinoma",
+    "AJCC_PATHOLOGIC_TUMOR_STAGE": "STAGE IV"
+   },
+   {
+    "sampleId": "TCGA-OR-A5ZZ-01",
+    "patientId": null
+   }
+  ],
+  "clinical_attributes_count": 57
+ }
+}

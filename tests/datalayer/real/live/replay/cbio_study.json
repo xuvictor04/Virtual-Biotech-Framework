@@ -1,0 +1,45 @@
+{
+ "scenario": "cbio_study",
+ "retrieved": "2026-10-08T02:45:08Z",
+ "seconds": 0.9,
+ "exchanges": [
+  {
+   "url": "https://www.cbioportal.org/api/studies/acc_tcga_pan_can_atlas_2018",
+   "params": {
+    "projection": "DETAILED"
+   },
+   "status": 200,
+   "headers": {
+    "date": "Thu, 08 Oct 2026 02:45:20 GMT",
+    "content-type": "application/json"
+   },
+   "body": {
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "cancerTypeId": "acc",
+    "name": "Adrenocortical Carcinoma (TCGA, PanCancer Atlas)",
+    "publicStudy": true,
+    "pmid": "29625048,29596782,29622463,29617662,29625055,29625050,29617662,32214244,29625049,29850653,36334560",
+    "citation": "TCGA, Cell 2018",
+    "groups": "PUBLIC;PANCAN",
+    "status": 0,
+    "importDate": "2026-06-05 15:19:54",
+    "allSampleCount": 92,
+    "sequencedSampleCount": 91,
+    "cnaSampleCount": 89,
+    "mrnaRnaSeqSampleCount": 0,
+    "mrnaRnaSeqV2SampleCount": 78,
+    "mrnaMicroarraySampleCount": 0,
+    "miRnaSampleCount": 0,
+    "methylationHm27SampleCount": 0,
+    "rppaSampleCount": 45,
+    "massSpectrometrySampleCount": 0,
+    "completeSampleCount": 76,
+    "referenceGenome": "hg19",
+    "treatmentCount": 16,
+    "structuralVariantCount": 55,
+    "readPermission": true
+   },
+   "trimmed": "description, cancerType and resourceCounts removed"
+  }
+ ]
+}

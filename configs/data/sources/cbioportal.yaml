@@ -9,6 +9,13 @@
 # (OS_MONTHS, OS_STATUS, AGE, ...) and sample attributes (SAMPLE_TYPE, ...). Upstream get_clinical_data
 # copies patient values onto every sample of the patient, so they are counted once per patient (I15),
 # and unknown sample IDs come back as phantom rows with patientId null (C24).
+#
+# Checked against https://www.cbioportal.org/api on 2026-10-08 (tests/datalayer/real/live/cbioportal):
+# 550 public studies; pageNumber is a page index from 0 (not an offset); projection=META answers an empty
+# body with the total in the total-count header; an unknown study or molecular profile is HTTP 404 with
+# {"message": "... not found: <id>"}; importDate reads "2026-06-04 18:48:28" (space separated, no zone);
+# the default Python-urllib user agent is refused (403). The molecular profile table (molecular_data)
+# serves vbt.analysis.survival's expression download through vbt.datalayer.client.
 schema: vbt.datasource/1
 source: cbioportal
 title: cBioPortal for Cancer Genomics (public studies)
@@ -25,6 +32,11 @@ id_types:
                      universe_via: {tool: clinicaltrials.search_studies, path: "$.studies[*].studyId", ttl_s: 3600}}
   cbio_sample:      {plugin: cbio_sample, universe: {table: sample, keys: [studyId, sampleId], mode: tuple}, index: remote}
   cbio_patient:     {plugin: cbio_patient, universe: {table: patient, keys: [studyId, patientId], mode: tuple}, index: remote}
+  cbio_molecular_profile: {plugin: local_key, options: {canonical: "^[A-Za-z0-9][A-Za-z0-9_.\\-]*$", normalize: [strip]},
+                           resolvable: false}                # existence: upstream (404 -> not_found)
+  cbio_sample_list: {plugin: local_key, options: {canonical: "^[A-Za-z0-9][A-Za-z0-9_.\\-]*$", normalize: [strip]},
+                     resolvable: false}
+  entrez_gene:      {plugin: ncbi_gene, resolvable: false}  # cBioPortal genes are Entrez (NCBI Gene) IDs
   # No upstream tool lists a study's samples, so sample existence is decided per returned row by the
   # overlay's ResultSpec.exists_when (§8.1) and W6 (§11.6), not before the call.
 
@@ -46,6 +58,7 @@ tables:
     path: studies
     layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}",
                                          endpoint: studies, params: {projection: DETAILED},
+                                         key_endpoint: "studies/{studyId}",     # one study: 1.4 KB, not all 550
                                          count: {params: {projection: META}, header: total-count}}}
     format: rest_json
     grain: one cBioPortal study
@@ -66,13 +79,13 @@ tables:
       mrnaRnaSeqV2SampleCount: {role: count, counts: "samples with RNA-seq data"}
       rppaSampleCount: {role: count, counts: "samples with RPPA data"}
       completeSampleCount: {role: count, counts: "samples with complete profiles"}
-      importDate:     {role: time, precision: second, stored_as: iso8601_string, as_of: true}
+      importDate:     {role: time, precision: second, stored_as: "%Y-%m-%d %H:%M:%S", as_of: true}
 
   patient:
     kind: entity_detail
     path: "studies/{studyId}/patients"
     layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}",
-                                         page_size_param: pageSize, offset_param: pageNumber,
+                                         page_size_param: pageSize, page_number_param: pageNumber,
                                          count: {params: {projection: META}, header: total-count}}}
     format: rest_json
     grain: one patient in one study
@@ -85,6 +98,7 @@ tables:
     kind: entity_detail
     path: "studies/{studyId}/samples"
     layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}",
+                                         page_size_param: pageSize, page_number_param: pageNumber,
                                          count: {params: {projection: META}, header: total-count}}}
     format: rest_json
     grain: one specimen of one patient in one study
@@ -101,6 +115,9 @@ tables:
   clinical_attribute:
     kind: entity_detail
     path: "studies/{studyId}/clinical-attributes"
+    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}",
+                                         count: {params: {projection: META}, header: total-count}}}
+    format: rest_json
     grain: one clinical attribute defined by one study
     key: {columns: [studyId, clinicalAttributeId], check: none}
     columns:
@@ -126,13 +143,27 @@ tables:
     column_patterns:
       "{stem}_MONTHS": {role: time, unit: months, parse: number, level: patient,
                         missing_values: ["[Not Available]", "[Not Applicable]", "[Unknown]", "[Discrepancy]", NA]}
-      "{stem}_STATUS": {role: flag, event_of: "{stem}_MONTHS", level: patient,
-                        encoding: {"1:DECEASED": true, "0:LIVING": false, "DECEASED": true, "LIVING": false,
-                                   "1:Recurred/Progressed": true, "0:DiseaseFree": false},
-                        missing_values: ["[Not Available]"], verified: false}
     columns:
       studyId:   {role: identifier, id_type: cbio_study, ref: study.studyId}
       patientId: {role: identifier, id_type: cbio_patient, unique_within: [studyId]}
+      # The event flags of the four survival endpoints, as the TCGA PanCancer Atlas studies encode them
+      # (verified on acc_tcga_pan_can_atlas_2018, 2026-10-08, tests/datalayer/real/live/cbioportal; the "1:"
+      # prefix is the event). Declared one by one, not as a "{stem}_STATUS" pattern: 185 distinct *_STATUS
+      # attributes exist across the 550 public studies (SOMATIC_STATUS in 426, ER_STATUS, MSI_STATUS,
+      # PERSON_NEOPLASM_CANCER_STATUS "With Tumor"/"Tumor Free", ...) and none of them is a survival event.
+      OS_MONTHS:  &months {role: time, unit: months, parse: number, level: patient, optional: true,
+                           missing_values: ["[Not Available]", "[Not Applicable]", "[Unknown]", "[Discrepancy]", NA]}
+      DFS_MONTHS: *months
+      PFS_MONTHS: *months
+      DSS_MONTHS: *months
+      OS_STATUS:  {role: flag, event_of: OS_MONTHS, level: patient, optional: true, missing_values: ["[Not Available]"],
+                   encoding: {"1:DECEASED": true, "0:LIVING": false, "DECEASED": true, "LIVING": false}}
+      DFS_STATUS: {role: flag, event_of: DFS_MONTHS, level: patient, optional: true, missing_values: ["[Not Available]"],
+                   encoding: {"1:Recurred/Progressed": true, "0:DiseaseFree": false}}
+      PFS_STATUS: {role: flag, event_of: PFS_MONTHS, level: patient, optional: true, missing_values: ["[Not Available]"],
+                   encoding: {"1:PROGRESSION": true, "0:CENSORED": false}}
+      DSS_STATUS: {role: flag, event_of: DSS_MONTHS, level: patient, optional: true, missing_values: ["[Not Available]"],
+                   encoding: {"1:DEAD WITH TUMOR": true, "0:ALIVE OR DEAD TUMOR FREE": false}}
       AGE:       {role: measure, statistic: numeric, unit: years, parse: number, missing: unknown, level: patient,
                   missing_values: ["[Not Available]", "[Unknown]", NA], optional: true}
       SEX:       {role: category, vocab: data, level: patient, missing_values: ["[Not Available]", "[Unknown]"], optional: true}
@@ -140,6 +171,8 @@ tables:
   sample_clinical:
     kind: entity_detail
     path: "studies/{studyId}/clinical-data?clinicalDataType=SAMPLE"
+    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}"}}
+    format: rest_json
     pivot: {index: [studyId, sampleId], name_column: clinicalAttributeId, value_column: value}
     roles_from: {table: clinical_attribute, name: clinicalAttributeId, level_from: patientAttribute, type_from: datatype}
     grain: one sample's sample-level clinical attributes in one study
@@ -152,3 +185,44 @@ tables:
       patientId:   {role: identifier, id_type: cbio_patient, ref: {table: patient, on: {studyId: studyId, patientId: patientId}}}
       SAMPLE_TYPE: {role: category, vocab: data, missing_values: ["[Not Available]"], optional: true}
       CANCER_TYPE: {role: category, vocab: data, optional: true}
+
+  molecular_profile:
+    kind: entity_detail
+    path: "studies/{studyId}/molecular-profiles"
+    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}",
+                                         count: {params: {projection: META}, header: total-count}}}
+    format: rest_json
+    grain: one molecular profile of one study (one data type, such as mutations, CNA or mRNA expression)
+    key: {columns: [molecularProfileId], check: none}
+    columns:
+      molecularProfileId:      {role: identifier, id_type: cbio_molecular_profile, self: true}
+      studyId:                 {role: identifier, id_type: cbio_study, ref: study.studyId}
+      molecularAlterationType: {role: category, vocab: data}      # MRNA_EXPRESSION, MUTATION_EXTENDED, ...
+      datatype:                {role: category, vocab: data}      # CONTINUOUS, Z-SCORE, MAF, DISCRETE, ...
+      name:                    {role: label, of: molecularProfileId}
+      description:             {role: text}
+
+  molecular_data:
+    kind: records
+    path: "molecular-profiles/{molecularProfileId}/molecular-data"
+    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}",
+                                         params: {projection: SUMMARY},
+                                         filters: {sampleListId: {param: sampleListId},
+                                                   entrezGeneId: {param: entrezGeneId}},   # one gene per request
+                                         count: {params: {projection: META}, header: total-count}}}
+    format: rest_json
+    grain: one value of one gene in one sample of one molecular profile
+    key: {columns: [molecularProfileId, sampleId, entrezGeneId], check: none}
+    grains: {patient: [studyId, patientId]}
+    coverage: {statement: "Samples of the sample list the profile measured; a sample without a value was not profiled.",
+               absence_means: unknown}
+    columns:
+      molecularProfileId: {role: identifier, id_type: cbio_molecular_profile, ref: molecular_profile.molecularProfileId}
+      sampleListId:       {role: identifier, id_type: cbio_sample_list, optional: true}  # a request parameter, not in rows
+      entrezGeneId:       {role: identifier, id_type: entrez_gene}
+      studyId:            {role: identifier, id_type: cbio_study, ref: study.studyId}
+      sampleId:           {role: identifier, id_type: cbio_sample, unique_within: [studyId]}
+      patientId:          {role: identifier, id_type: cbio_patient, ref: {table: patient, on: {studyId: studyId, patientId: patientId}}}
+      # RNA-seq V2 profiles hold RSEM values as downloaded (not log-transformed; ACC CD276: 1722.86 ...);
+      # z-score profiles hold z-scores: the profile's datatype says which
+      value:              {role: measure, statistic: numeric, missing: unknown}

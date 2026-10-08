@@ -1,0 +1,26 @@
+{
+ "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+ "params": {
+  "db": "pubmed",
+  "term": "PCSK9 AND evolocumab",
+  "retmode": "json",
+  "rettype": "count",
+  "tool": "vbt-datalayer"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:30:25 GMT",
+  "content-type": "application/json; charset=UTF-8"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": null,
+ "body": {
+  "header": {
+   "type": "esearch",
+   "version": "0.3"
+  },
+  "esearchresult": {
+   "count": "1212"
+  }
+ }
+}

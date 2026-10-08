@@ -1,0 +1,39 @@
+{
+ "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
+ "params": {
+  "db": "pubmed",
+  "id": "28304224,1234,99999999",
+  "retmode": "json",
+  "tool": "vbt-datalayer"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:30:30 GMT",
+  "content-type": "application/json; charset=UTF-8"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": "each summary keeps uid, pubdate, title (or error)",
+ "body": {
+  "result": {
+   "uids": [
+    "28304224",
+    "1234",
+    "99999999"
+   ],
+   "28304224": {
+    "uid": "28304224",
+    "pubdate": "2017 May 4",
+    "title": "Evolocumab and Clinical Outcomes in Patients with Cardiovascular Disease."
+   },
+   "1234": {
+    "uid": "1234",
+    "pubdate": "1975 Nov-Dec",
+    "title": "Change in the kinetics of sulphacetamide tissue distribution in Walker tumor-bearing rats."
+   },
+   "99999999": {
+    "uid": "99999999",
+    "error": "cannot get document summary"
+   }
+  }
+ }
+}

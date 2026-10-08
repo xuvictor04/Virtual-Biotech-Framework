@@ -308,30 +308,45 @@ def fetch_cbioportal_expression_and_clinical(study_id: str = "luad_tcga_pan_can_
     """Download RSEM expression of ``gene`` and patient + sample clinical data for
     a cBioPortal study (Methods, "Survival analysis" data source).
 
-    Uses the public REST API: ``POST /molecular-profiles/{study}_rna_seq_v2_mrna/
-    molecular-data/fetch`` (``entrezGeneIds``, ``sampleListId={study}_all``) and
-    ``GET /studies/{study}/clinical-data?clinicalDataType=PATIENT|SAMPLE``.
+    Reads through the data client (``vbt.datalayer.client.find``): the expression from
+    ``cbioportal.molecular_data`` (profile ``{study}_rna_seq_v2_mrna``, sample list
+    ``{study}_all``, one Entrez gene; ``GET /molecular-profiles/{profile}/molecular-data``) and the
+    clinical attributes from ``cbioportal.patient_clinical`` / ``cbioportal.sample_clinical``
+    (pivoted to one row per patient / sample). Every read has a ``vbt.dataprov/1`` record; their ids
+    are in ``attrs["vbt_prov"]``. When the data layer cannot answer here (no descriptor, a refusal,
+    more rows than one read returns) the public REST API is used directly
+    (``POST .../molecular-data/fetch``, ``GET /studies/{study}/clinical-data``) and
+    ``attrs["vbt_prov_fallback"]`` names what was read unguarded.
     Returns one row per patient with ``expr`` (log2(RSEM+1) if ``log2``), the
     pivoted clinical attributes (e.g. ``OS_MONTHS``, ``OS_STATUS``,
     ``AJCC_PATHOLOGIC_TUMOR_STAGE``, ``SEX``, ``AGE``), ready for
-    :func:`prepare_tcga_clinical`. Requires network access (not unit-tested).
+    :func:`prepare_tcga_clinical`. Requires network access.
     """
     import httpx
 
+    provs: list[str] = []
+    fallback: list[str] = []
+    profile = f"{study_id}_rna_seq_v2_mrna"
     with httpx.Client(base_url=base_url, timeout=timeout,
-                      headers={"Accept": "application/json"}) as client:
+                      headers={"Accept": "application/json", "User-Agent": "vbt-analysis"}) as client:
         if entrez_id is None:
             entrez_id = _ENTREZ.get(gene.upper())
         if entrez_id is None:
             r = client.get(f"/genes/{gene}")
             r.raise_for_status()
             entrez_id = int(r.json()["entrezGeneId"])
-        profile = f"{study_id}_rna_seq_v2_mrna"
-        r = client.post(f"/molecular-profiles/{profile}/molecular-data/fetch",
-                        params={"projection": "SUMMARY"},
-                        json={"entrezGeneIds": [int(entrez_id)], "sampleListId": f"{study_id}_all"})
-        r.raise_for_status()
-        mol = pd.DataFrame(r.json())
+        got = _expression_via_data_client(profile, f"{study_id}_all", int(entrez_id))
+        if got is not None:
+            mol, prov = got
+            provs.extend(prov)
+        else:
+            # fallback: the data child is not available here (no provenance record for this read)
+            r = client.post(f"/molecular-profiles/{profile}/molecular-data/fetch",
+                            params={"projection": "SUMMARY"},
+                            json={"entrezGeneIds": [int(entrez_id)], "sampleListId": f"{study_id}_all"})
+            r.raise_for_status()
+            mol = pd.DataFrame(r.json())
+            fallback.append("molecular_data")
         if mol.empty:
             raise ValueError(f"no expression returned for {gene} in {profile}")
         wide = _clinical_via_data_client(study_id)
@@ -343,6 +358,7 @@ def fetch_cbioportal_expression_and_clinical(study_id: str = "luad_tcga_pan_can_
                                    "pageSize": 10_000_000})
             r.raise_for_status()
             clin[kind] = pd.DataFrame(r.json())
+            fallback.append(f"{kind.lower()}_clinical")
 
     expr = mol[["sampleId", "patientId", "value"]].copy()
     expr["value"] = pd.to_numeric(expr["value"], errors="coerce")
@@ -354,9 +370,9 @@ def fetch_cbioportal_expression_and_clinical(study_id: str = "luad_tcga_pan_can_
     expr = expr.sort_values("sampleId").drop_duplicates("patientId")
     expr["expr"] = np.log2(expr["value"].clip(lower=0) + 1) if log2 else expr["value"]
 
-    provs: list[str] = []
     if wide is not None:
-        pat_w, smp_w, provs = wide
+        pat_w, smp_w, clin_provs = wide
+        provs.extend(clin_provs)
         if not smp_w.empty:
             smp_w = smp_w.loc[smp_w.index.intersection(expr["sampleId"])]
     else:
@@ -379,8 +395,30 @@ def fetch_cbioportal_expression_and_clinical(study_id: str = "luad_tcga_pan_can_
     out.attrs.update({"study_id": study_id, "gene": gene, "entrez_id": int(entrez_id)})
     out = out.reset_index()
     if provs:
-        out.attrs["vbt_prov"] = provs                  # the clinical reads' data provenance ids
+        out.attrs["vbt_prov"] = provs                  # the data provenance ids of the reads
+    if fallback:
+        out.attrs["vbt_prov_fallback"] = fallback      # read from the REST API, unguarded
     return out
+
+
+def _expression_via_data_client(profile: str, sample_list: str, entrez_id: int
+                                ) -> tuple[pd.DataFrame, list[str]] | None:
+    """One gene of a molecular profile through the data client (``cbioportal.molecular_data``), with its
+    ``vbt.dataprov/1`` record; None when the data layer cannot answer here (the caller falls back to the
+    REST API)."""
+    from ..datalayer import client
+
+    try:
+        res = client.find("cbioportal.molecular_data", {"molecularProfileId": profile, "sampleListId": sample_list,
+                                                         "entrezGeneId": int(entrez_id)}, limit=1000)
+    except Exception:  # noqa: BLE001 - no data child, no descriptor, a refusal: the REST fallback applies
+        return None
+    if res.status not in ("ok", "empty") or (res.header or {}).get("truncated"):
+        return None
+    df = pd.DataFrame(res.rows)
+    if df.empty:
+        df = pd.DataFrame(columns=["sampleId", "patientId", "value"])
+    return df, [res.prov] if res.prov else []
 
 
 def _clinical_via_data_client(study_id: str) -> tuple[pd.DataFrame, pd.DataFrame, list[str]] | None:

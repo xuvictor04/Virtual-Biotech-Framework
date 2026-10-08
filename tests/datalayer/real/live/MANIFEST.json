@@ -1,0 +1,377 @@
+{
+ "retrieved": "2026-10-08T02:29:48Z",
+ "files": [
+  {
+   "file": "ctgov/version.json",
+   "url": "https://clinicaltrials.gov/api/v2/version",
+   "params": {},
+   "status": 200,
+   "bytes": 322,
+   "trimmed": null
+  },
+  {
+   "file": "ctgov/count_recruiting_phase2.json",
+   "url": "https://clinicaltrials.gov/api/v2/studies",
+   "params": {
+    "format": "json",
+    "countTotal": "true",
+    "pageSize": "0",
+    "fields": "NCTId",
+    "filter.overallStatus": "RECRUITING",
+    "filter.advanced": "AREA[Phase]PHASE2"
+   },
+   "status": 200,
+   "bytes": 1615,
+   "trimmed": null
+  },
+  {
+   "file": "ctgov/count_page_size_0_without_fields.json",
+   "url": "https://clinicaltrials.gov/api/v2/studies",
+   "params": {
+    "format": "json",
+    "countTotal": "true",
+    "pageSize": "0",
+    "filter.overallStatus": "RECRUITING",
+    "filter.advanced": "AREA[Phase]PHASE2"
+   },
+   "status": 200,
+   "bytes": 621,
+   "trimmed": "body replaced by its shape: totalCount, the number of studies returned and the body size"
+  },
+  {
+   "file": "ctgov/studies_suspended_page1.json",
+   "url": "https://clinicaltrials.gov/api/v2/studies",
+   "params": {
+    "format": "json",
+    "countTotal": "true",
+    "filter.overallStatus": "SUSPENDED",
+    "pageSize": "2"
+   },
+   "status": 200,
+   "bytes": 2402,
+   "trimmed": "each study keeps nctId, briefTitle, status dates, design and up to 3 location countries"
+  },
+  {
+   "file": "ctgov/studies_suspended_page2.json",
+   "url": "https://clinicaltrials.gov/api/v2/studies",
+   "params": {
+    "format": "json",
+    "countTotal": "true",
+    "filter.overallStatus": "SUSPENDED",
+    "pageSize": "2",
+    "pageToken": "ZVNj7o2Elu8o3lpwRM-l47L2mpOQJJxoZvSg0A"
+   },
+   "status": 200,
+   "bytes": 2299,
+   "trimmed": "each study keeps nctId, briefTitle, status dates, design and up to 3 location countries"
+  },
+  {
+   "file": "ctgov/studies_unknown_nct.json",
+   "url": "https://clinicaltrials.gov/api/v2/studies",
+   "params": {
+    "format": "json",
+    "countTotal": "true",
+    "filter.ids": "NCT99999999",
+    "pageSize": "10"
+   },
+   "status": 200,
+   "bytes": 387,
+   "trimmed": null
+  },
+  {
+   "file": "ctgov/study_unknown_nct.json",
+   "url": "https://clinicaltrials.gov/api/v2/studies/NCT99999999",
+   "params": {},
+   "status": 404,
+   "bytes": 307,
+   "trimmed": null
+  },
+  {
+   "file": "ctgov/studies_iceland_phase3.json",
+   "url": "https://clinicaltrials.gov/api/v2/studies",
+   "params": {
+    "format": "json",
+    "countTotal": "true",
+    "pageSize": "100",
+    "filter.overallStatus": "RECRUITING",
+    "filter.advanced": "AREA[Phase](PHASE3) AND AREA[StudyType]INTERVENTIONAL AND AREA[LocationCountry]\"Iceland\""
+   },
+   "status": 200,
+   "bytes": 3704,
+   "trimmed": "each study keeps nctId, briefTitle, status dates, design and up to 3 location countries"
+  },
+  {
+   "file": "ctgov/count_germany_phase3_completed.json",
+   "url": "https://clinicaltrials.gov/api/v2/studies",
+   "params": {
+    "format": "json",
+    "countTotal": "true",
+    "pageSize": "0",
+    "fields": "NCTId",
+    "filter.overallStatus": "COMPLETED",
+    "filter.advanced": "AREA[Phase]PHASE3 AND AREA[LocationCountry]\"Germany\""
+   },
+   "status": 200,
+   "bytes": 493,
+   "trimmed": "totalCount only"
+  },
+  {
+   "file": "ctgov/count_germany_phase3_completed_ceiling_2017.json",
+   "url": "https://clinicaltrials.gov/api/v2/studies",
+   "params": {
+    "format": "json",
+    "countTotal": "true",
+    "pageSize": "0",
+    "fields": "NCTId",
+    "filter.overallStatus": "COMPLETED",
+    "filter.advanced": "AREA[Phase]PHASE3 AND AREA[LocationCountry]\"Germany\" AND AREA[StudyFirstPostDate]RANGE[MIN,2017-12-31]"
+   },
+   "status": 200,
+   "bytes": 543,
+   "trimmed": "totalCount only"
+  },
+  {
+   "file": "ctgov/count_nsclc_global.json",
+   "url": "https://clinicaltrials.gov/api/v2/studies",
+   "params": {
+    "format": "json",
+    "countTotal": "true",
+    "pageSize": "0",
+    "fields": "NCTId",
+    "query.cond": "(non-small cell lung cancer)",
+    "filter.overallStatus": "RECRUITING",
+    "filter.advanced": "AREA[Phase](PHASE2 OR PHASE3) AND AREA[StudyType]INTERVENTIONAL"
+   },
+   "status": 200,
+   "bytes": 550,
+   "trimmed": "totalCount only"
+  },
+  {
+   "file": "ctgov/count_nsclc_us.json",
+   "url": "https://clinicaltrials.gov/api/v2/studies",
+   "params": {
+    "format": "json",
+    "countTotal": "true",
+    "pageSize": "0",
+    "fields": "NCTId",
+    "query.cond": "(non-small cell lung cancer)",
+    "filter.overallStatus": "RECRUITING",
+    "filter.advanced": "AREA[Phase](PHASE2 OR PHASE3) AND AREA[StudyType]INTERVENTIONAL AND AREA[LocationCountry]\"United States\""
+   },
+   "status": 200,
+   "bytes": 593,
+   "trimmed": "totalCount only"
+  },
+  {
+   "file": "cbioportal/studies_meta.json",
+   "url": "https://www.cbioportal.org/api/studies",
+   "params": {
+    "projection": "META"
+   },
+   "status": 200,
+   "bytes": 300,
+   "trimmed": null
+  },
+  {
+   "file": "cbioportal/study_acc.json",
+   "url": "https://www.cbioportal.org/api/studies/acc_tcga_pan_can_atlas_2018",
+   "params": {
+    "projection": "DETAILED"
+   },
+   "status": 200,
+   "bytes": 1635,
+   "trimmed": "description removed"
+  },
+  {
+   "file": "cbioportal/unknown_study_clinical_data.json",
+   "url": "https://www.cbioportal.org/api/studies/no_such_study_xyz/clinical-data",
+   "params": {
+    "clinicalDataType": "PATIENT"
+   },
+   "status": 404,
+   "bytes": 369,
+   "trimmed": null
+  },
+  {
+   "file": "cbioportal/msk_impact_patients_page0.json",
+   "url": "https://www.cbioportal.org/api/studies/msk_impact_2017/patients",
+   "params": {
+    "pageSize": "3",
+    "pageNumber": "0"
+   },
+   "status": 200,
+   "bytes": 550,
+   "trimmed": "uniquePatientKey removed"
+  },
+  {
+   "file": "cbioportal/msk_impact_patients_page1.json",
+   "url": "https://www.cbioportal.org/api/studies/msk_impact_2017/patients",
+   "params": {
+    "pageSize": "3",
+    "pageNumber": "1"
+   },
+   "status": 200,
+   "bytes": 550,
+   "trimmed": "uniquePatientKey removed"
+  },
+  {
+   "file": "cbioportal/msk_impact_patients_meta.json",
+   "url": "https://www.cbioportal.org/api/studies/msk_impact_2017/patients",
+   "params": {
+    "projection": "META"
+   },
+   "status": 200,
+   "bytes": 291,
+   "trimmed": null
+  },
+  {
+   "file": "cbioportal/acc_patient_clinical.json",
+   "url": "https://www.cbioportal.org/api/studies/acc_tcga_pan_can_atlas_2018/clinical-data",
+   "params": {
+    "clinicalDataType": "PATIENT"
+   },
+   "status": 200,
+   "bytes": 10370,
+   "trimmed": "rows of the first 6 patients and 11 attributes; all_rows/all_patients/status_values describe the whole response"
+  },
+  {
+   "file": "cbioportal/acc_cd276_molecular_data.json",
+   "url": "https://www.cbioportal.org/api/molecular-profiles/acc_tcga_pan_can_atlas_2018_rna_seq_v2_mrna/molecular-data",
+   "params": {
+    "projection": "SUMMARY",
+    "sampleListId": "acc_tcga_pan_can_atlas_2018_all",
+    "entrezGeneId": "80381"
+   },
+   "status": 200,
+   "bytes": 1779,
+   "trimmed": "first 5 rows (uniqueSampleKey/uniquePatientKey removed); all_rows is the whole response"
+  },
+  {
+   "file": "cbioportal/acc_cd276_molecular_data_meta.json",
+   "url": "https://www.cbioportal.org/api/molecular-profiles/acc_tcga_pan_can_atlas_2018_rna_seq_v2_mrna/molecular-data",
+   "params": {
+    "projection": "META",
+    "sampleListId": "acc_tcga_pan_can_atlas_2018_all",
+    "entrezGeneId": "80381"
+   },
+   "status": 200,
+   "bytes": 413,
+   "trimmed": null
+  },
+  {
+   "file": "cbioportal/unknown_profile.json",
+   "url": "https://www.cbioportal.org/api/molecular-profiles/no_such_profile/molecular-data",
+   "params": {
+    "projection": "SUMMARY",
+    "sampleListId": "acc_tcga_pan_can_atlas_2018_all",
+    "entrezGeneId": "80381"
+   },
+   "status": 404,
+   "bytes": 463,
+   "trimmed": null
+  },
+  {
+   "file": null,
+   "url": "https://www.cbioportal.org/api/studies/acc_tcga_pan_can_atlas_2018",
+   "user_agent": "Python-urllib/3.11",
+   "status": 403
+  },
+  {
+   "file": null,
+   "url": "https://www.cbioportal.org/api/studies/acc_tcga_pan_can_atlas_2018",
+   "user_agent": "vbt-datalayer",
+   "status": 200
+  },
+  {
+   "file": "eutils/esearch_count.json",
+   "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+   "params": {
+    "db": "pubmed",
+    "term": "PCSK9 AND evolocumab",
+    "retmode": "json",
+    "rettype": "count",
+    "tool": "vbt-datalayer"
+   },
+   "status": 200,
+   "bytes": 516,
+   "trimmed": null
+  },
+  {
+   "file": "eutils/esearch_count_ceiling_2017.json",
+   "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+   "params": {
+    "db": "pubmed",
+    "term": "PCSK9 AND evolocumab",
+    "retmode": "json",
+    "rettype": "count",
+    "datetype": "pdat",
+    "mindate": "1800/01/01",
+    "maxdate": "2017/12/31",
+    "tool": "vbt-datalayer"
+   },
+   "status": 200,
+   "bytes": 591,
+   "trimmed": null
+  },
+  {
+   "file": "eutils/esearch_ignored_phrase.json",
+   "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+   "params": {
+    "db": "pubmed",
+    "term": "pcsk9 zzzqqqxyzzy",
+    "retmode": "json",
+    "retmax": "0",
+    "tool": "vbt-datalayer"
+   },
+   "status": 200,
+   "bytes": 1043,
+   "trimmed": null
+  },
+  {
+   "file": "eutils/esummary_known_and_unknown.json",
+   "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
+   "params": {
+    "db": "pubmed",
+    "id": "28304224,1234,99999999",
+    "retmode": "json",
+    "tool": "vbt-datalayer"
+   },
+   "status": 200,
+   "bytes": 944,
+   "trimmed": "each summary keeps uid, pubdate, title (or error)"
+  },
+  {
+   "file": "eutils/efetch_pmcid_as_pmid.json",
+   "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
+   "params": {
+    "db": "pubmed",
+    "id": "PMC6309485",
+    "retmode": "xml",
+    "tool": "vbt-datalayer"
+   },
+   "status": 200,
+   "bytes": 497,
+   "trimmed": "the PMIDs and article titles of the XML"
+  },
+  {
+   "file": "eutils/pmc_idconv.json",
+   "url": "https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/",
+   "params": {
+    "ids": "PMC6309485",
+    "format": "json",
+    "tool": "vbt-datalayer"
+   },
+   "status": 200,
+   "bytes": 498,
+   "trimmed": "records only"
+  },
+  {
+   "file": "census/release.json",
+   "url": "https://census.cellxgene.cziscience.com/cellxgene-census/v1/release.json",
+   "params": {},
+   "status": 200,
+   "bytes": 843,
+   "trimmed": "aliases, the stable and latest entries (release_build, release_date, flags) and the list of releases"
+  }
+ ]
+}

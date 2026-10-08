@@ -1,0 +1,77 @@
+{
+ "scenario": "cbio_molecular",
+ "retrieved": "2026-10-08T02:45:08Z",
+ "seconds": 2.03,
+ "exchanges": [
+  {
+   "url": "https://www.cbioportal.org/api/molecular-profiles/acc_tcga_pan_can_atlas_2018_rna_seq_v2_mrna/molecular-data",
+   "params": {
+    "projection": "SUMMARY",
+    "sampleListId": "acc_tcga_pan_can_atlas_2018_all",
+    "entrezGeneId": "80381"
+   },
+   "status": 200,
+   "headers": {
+    "date": "Thu, 08 Oct 2026 02:45:21 GMT",
+    "content-type": "application/json"
+   },
+   "body": [
+    {
+     "molecularProfileId": "acc_tcga_pan_can_atlas_2018_rna_seq_v2_mrna",
+     "sampleId": "TCGA-OR-A5J1-01",
+     "patientId": "TCGA-OR-A5J1",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "entrezGeneId": 80381,
+     "value": 1722.86
+    },
+    {
+     "molecularProfileId": "acc_tcga_pan_can_atlas_2018_rna_seq_v2_mrna",
+     "sampleId": "TCGA-OR-A5J2-01",
+     "patientId": "TCGA-OR-A5J2",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "entrezGeneId": 80381,
+     "value": 6878.94
+    },
+    {
+     "molecularProfileId": "acc_tcga_pan_can_atlas_2018_rna_seq_v2_mrna",
+     "sampleId": "TCGA-OR-A5J3-01",
+     "patientId": "TCGA-OR-A5J3",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "entrezGeneId": 80381,
+     "value": 3761.81
+    },
+    {
+     "molecularProfileId": "acc_tcga_pan_can_atlas_2018_rna_seq_v2_mrna",
+     "sampleId": "TCGA-OR-A5J5-01",
+     "patientId": "TCGA-OR-A5J5",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "entrezGeneId": 80381,
+     "value": 2151.05
+    },
+    {
+     "molecularProfileId": "acc_tcga_pan_can_atlas_2018_rna_seq_v2_mrna",
+     "sampleId": "TCGA-OR-A5J6-01",
+     "patientId": "TCGA-OR-A5J6",
+     "studyId": "acc_tcga_pan_can_atlas_2018",
+     "entrezGeneId": 80381,
+     "value": 850.021
+    }
+   ],
+   "trimmed": "first 5 of 78 rows; unique keys removed"
+  },
+  {
+   "url": "https://www.cbioportal.org/api/molecular-profiles/acc_tcga_pan_can_atlas_2018_rna_seq_v2_mrna/molecular-data",
+   "params": {
+    "projection": "META",
+    "sampleListId": "acc_tcga_pan_can_atlas_2018_all",
+    "entrezGeneId": "80381"
+   },
+   "status": 200,
+   "headers": {
+    "date": "Thu, 08 Oct 2026 02:45:22 GMT",
+    "total-count": "78"
+   },
+   "body": null
+  }
+ ]
+}

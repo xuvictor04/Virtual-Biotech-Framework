@@ -1,0 +1,14 @@
+{
+ "url": "https://www.cbioportal.org/api/studies/msk_impact_2017/patients",
+ "params": {
+  "projection": "META"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:30:14 GMT",
+  "total-count": "10336"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": null,
+ "body": null
+}

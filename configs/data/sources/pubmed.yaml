@@ -29,7 +29,7 @@ tables:
       options:
         base_url: "${VBT_EUTILS_BASE:-https://eutils.ncbi.nlm.nih.gov/entrez/eutils}"
         endpoint: esearch.fcgi
-        params: {db: pubmed, retmode: json}
+        params: {db: pubmed, retmode: json, tool: vbt-datalayer}      # NCBI asks callers to name their tool
         rows_path: $.esearchresult.idlist
         total_path: $.esearchresult.count
         text_params: {"*": term}

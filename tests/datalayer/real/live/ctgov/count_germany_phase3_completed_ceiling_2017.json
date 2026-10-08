@@ -1,0 +1,21 @@
+{
+ "url": "https://clinicaltrials.gov/api/v2/studies",
+ "params": {
+  "format": "json",
+  "countTotal": "true",
+  "pageSize": "0",
+  "fields": "NCTId",
+  "filter.overallStatus": "COMPLETED",
+  "filter.advanced": "AREA[Phase]PHASE3 AND AREA[LocationCountry]\"Germany\" AND AREA[StudyFirstPostDate]RANGE[MIN,2017-12-31]"
+ },
+ "status": 200,
+ "headers": {
+  "date": "Thu, 08 Oct 2026 02:30:02 GMT",
+  "content-type": "application/json"
+ },
+ "retrieved": "2026-10-08T02:29:48Z",
+ "trimmed": "totalCount only",
+ "body": {
+  "totalCount": 3846
+ }
+}

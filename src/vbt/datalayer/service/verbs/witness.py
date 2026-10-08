@@ -17,14 +17,22 @@ and the gateway makes no count or ranking claim from it.
 ``soma_joinid``) within the source's request budget (``budget`` of the descriptor). Only the total is
 answered: no top-k, no key set. A predicate that does not compile completely, a request that fails or
 a source without a total is ``unknown`` (never a guess). The method is reported as ``scan`` with the
-reason ``remote count request``.
+reason ``remote count request``. When the descriptor injects the evidence ceiling into counts
+(``leakage.counts: inject_filter``), the ceiling is one more conjunct of the counted predicate
+(``available_at <= ceiling``), so the remote total counts what the find may return: CT.gov
+``AREA[StudyFirstPostDate]RANGE[MIN,2017-12-31]`` under a 2017-12-31 ceiling, not every trial registered since.
 
 ``_live_find`` (phase 4) is the derived ``lookup``/``find`` of live tables: the pages of one request
 within the source's budget (``max_pages`` and ``max_requests_per_call``; more pages are ``truncated``,
 never presented as complete), ``pivot`` tables reshaped to one row per index (cBioPortal patient-level
 clinical data: one row per ``(studyId, patientId)`` with one column per attribute), and record versions
 (``key.version``) observed so that a record the source changed since an earlier call is listed under
-``source_updated`` for provenance.
+``source_updated`` for provenance. A ``limit`` sizes the pages (a find for 2 trials asks for a page of 2,
+not ten pages of 100) and stops at ``limit`` rows; a cut answer without a total makes one count request
+so that the gateway still knows how many rows matched. The source's release (``release`` of the layout,
+cached for ``live_api.RELEASE_TTL_S``) is the ``as_of`` of the answer. A failed request is a typed error
+(:func:`remote_failure`): a key the source does not know (HTTP 404 on a filled path) is ``not_found``, a
+rejected query ``invalid_argument``, an unreachable or busy source a retryable ``source_error``.
 """
 
 from __future__ import annotations
@@ -33,14 +41,15 @@ import inspect
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from ...errors import ErrorKind, GatewayError
 from ...ipc import VERB_WITNESS, WitnessRequest, WitnessResponse
 from ...plugins.base import FormatError
 from ...predicate import from_json
 from .. import ServiceContext, ServiceError, layout_spec
 from ..reader import BudgetExceeded, TableUnavailable, UnboundParameter
 
-__all__ = ["witness", "remote_witness", "remote_names", "is_remote", "live_find", "pivot_rows", "REMOTE_REASON",
-           "LIVE_FIND", "VERBS"]
+__all__ = ["witness", "remote_witness", "remote_names", "is_remote", "live_find", "pivot_rows", "remote_failure",
+           "REMOTE_REASON", "LIVE_FIND", "VERBS"]
 
 REMOTE_REASON = "remote count request"
 LIVE_FIND = "_live_find"
@@ -82,6 +91,15 @@ def remote_witness(ctx: ServiceContext, req: WitnessRequest) -> WitnessResponse:
         predicate = from_json(req.predicate) if req.predicate else None
     except Exception as exc:  # noqa: BLE001
         return WitnessResponse(total_method="unknown", reason=f"predicate: {exc}")
+    reason = REMOTE_REASON
+    ceiling = leakage_conjunct(ctx, t)
+    if ceiling is not None:
+        # the tool's count is asked with the evidence ceiling injected (counts: inject_filter): so is this one
+        from ...predicate import And
+
+        parts = () if predicate is None else (predicate.preds if isinstance(predicate, And) else (predicate,))
+        predicate = And((*parts, ceiling)) if parts else ceiling     # flat: each conjunct compiles on its own
+        reason = f"{REMOTE_REASON} (evidence ceiling {ceiling.value})"
     kwargs: dict[str, Any] = {"predicate": predicate, "budget": t.descriptor.budget}
     names = remote_names(getattr(t.spec, "columns", {}) or {})
     if names and "remote_names" in inspect.signature(layout.count).parameters:
@@ -93,7 +111,22 @@ def remote_witness(ctx: ServiceContext, req: WitnessRequest) -> WitnessResponse:
     if total is None:
         return WitnessResponse(total_method="unknown",
                                reason="the bound predicate cannot be expressed as a count request to the source")
-    return WitnessResponse(total=int(total), total_method="scan", reason=REMOTE_REASON, scanned_bytes=0)
+    return WitnessResponse(total=int(total), total_method="scan", reason=reason, scanned_bytes=0)
+
+
+def leakage_conjunct(ctx: ServiceContext, t: Any) -> Any:
+    """``available_at <= ceiling`` for a source whose ``leakage.counts`` is ``inject_filter`` when the run has
+    an evidence ceiling (``data.leakage.ceiling``), else None. The gateway injects the same bound into the
+    tool's own count (the overlay's ``leakage_filter``): without it here, every count under a ceiling
+    contradicted the witness (a real Germany phase-3 count: 3,846 under a 2017-12-31 ceiling against 4,700)."""
+    spec = getattr(t.descriptor, "leakage", None)
+    if spec is None or getattr(spec, "counts", None) != "inject_filter":
+        return None
+    from ...gateway.leakage import ceiling_of
+    from ...predicate import Cmp
+
+    ceiling = ceiling_of(ctx.settings)                 # a partial ceiling counts as its earliest day, as upstream's
+    return None if ceiling is None else Cmp(str(spec.available_at), "<=", ceiling.isoformat())
 
 
 def witness(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -162,9 +195,34 @@ def pivot_rows(rows: Sequence[Mapping[str, Any]], index: Sequence[str], name_col
     return [out[k] for k in sorted(out, key=lambda k: tuple(str(x) for x in k))]
 
 
+def remote_failure(ref: str, exc: Any) -> GatewayError:
+    """The typed error of a failed live request (``RemoteError``): a 404 on a path the filter filled
+    (``studies/{studyId}/...``) is ``not_found`` naming that column and value; a 400 is the source rejecting
+    the arguments; anything else (429 after the retries, 5xx, a transport error) is ``source_error``."""
+    status = getattr(exc, "status", None)
+    filled = dict(getattr(exc, "filled", None) or {})
+    if status == 404 and filled:
+        column, value = next(iter(filled.items()))
+        return GatewayError(ErrorKind.not_found, f"{ref}: {column} {value!r} is not known to the source (HTTP 404)",
+                            argument=column, value=value, payload={"table": ref, "http_status": 404})
+    if status == 400:
+        return GatewayError(ErrorKind.invalid_argument, f"{ref}: the source rejected the request: {exc}"[:500],
+                            payload={"table": ref, "http_status": 400})
+    return GatewayError(ErrorKind.source_error, f"{ref}: {exc}"[:500], payload={"table": ref, "http_status": status},
+                        retryable="later" if status in (None, 429) or (status or 0) >= 500 else None)
+
+
 def live_find(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
-    """``{table, predicate?, columns?, limit?}`` -> ``{rows, total, as_of, truncated, pages, source_updated}``."""
-    from ...plugins.layouts.live_api import RecordVersions, fetch_all
+    """``{table, predicate?, columns?, limit?}`` -> ``{rows, total, as_of, fetched_at, truncated, pages,
+    source_updated}``.
+
+    A ``limit`` sizes the pages and stops the reading once that many rows are in hand (a find of 2 trials
+    reads one page of 2, not ten pages of 100); a pivoted table is read whole (its long rows cannot be cut).
+    When the rows are cut and the page carries no total, one count request (the layout's ``count``) supplies
+    it. ``as_of`` is the source's data release when the layout declares one (CT.gov ``dataTimestamp``, read
+    at most every ``RELEASE_TTL_S`` seconds), else the page's; ``fetched_at`` is the page's own time. A
+    failed request is a typed error (:func:`remote_failure`), never an empty answer."""
+    from ...plugins.layouts.live_api import RELEASE_TTL_S, Budget, RecordVersions, RemoteError, fetch_all
 
     ref = str(payload["table"])
     t = ctx.table(ref)
@@ -188,7 +246,16 @@ def live_find(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]
         parts = list(predicate.preds) if isinstance(predicate, And) else ([predicate] if predicate else [])
         keep = [p for p in parts if predicate_columns(p) <= set(pivot.index)]
         sent = None if not keep else (keep[0] if len(keep) == 1 else And(tuple(keep)))
-    got = fetch_all(layout, lspec, sent, t.descriptor.budget, projection=[] if pivot else columns, **kwargs)
+    limit = payload.get("limit")
+    cut = int(limit) if limit is not None and pivot is None else None
+    budget = Budget.of(t.descriptor.budget).pages_of(cut)
+    try:
+        got = fetch_all(layout, lspec, sent, budget, projection=[] if pivot else columns, max_rows=cut, **kwargs)
+        release = None
+        if callable(getattr(layout, "release", None)):
+            release = layout.release(lspec, Budget.of(t.descriptor.budget), max_age_s=RELEASE_TTL_S)
+    except RemoteError as exc:
+        raise remote_failure(ref, exc) from None
     rows = list(got["rows"])
     if pivot is not None:
         from ...predicate import evaluate
@@ -204,12 +271,17 @@ def live_find(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]
         store = RecordVersions(Path(ctx.settings.cache_dir) / t.physical.source / "record_versions.json")
         flags = store.observe_rows(str(t.physical), rows, t.spec.key.columns[0], version)
         store.save()
-    limit = payload.get("limit")
     total = got["total"] if got["total"] is not None and pivot is None else (None if got["truncated"] else len(rows))
+    if total is None and got["truncated"] and pivot is None and "count" in (getattr(layout, "capabilities", ()) or ()):
+        try:
+            total = layout.count(lspec, predicate=sent, budget=t.descriptor.budget, **kwargs)
+        except RemoteError:
+            total = None                               # the rows stand; the total stays unknown
     shown = rows[: int(limit)] if limit is not None else rows
     return {"table": ref, "rows": shown, "total": total, "total_method": "unknown" if total is None else "remote",
-            "as_of": got["as_of"], "truncated": bool(got["truncated"]) or len(shown) < len(rows),
-            "pages": got["pages"], "source_updated": flags["source_updated"],
+            "as_of": release or got["as_of"], "fetched_at": got["as_of"],
+            "truncated": bool(got["truncated"]) or len(shown) < len(rows),
+            "pages": got["pages"], "requests": budget.used, "source_updated": flags["source_updated"],
             "record_versions": {str(t.physical): flags["versions"]} if flags["versions"] else {}}
 
 
