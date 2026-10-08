@@ -463,6 +463,8 @@ def _ct2_patients(r: CallResult, root: Path) -> None:
     patients = r.rows("patients")
     assert len(patients) == 2, show(r)
     assert grain(r.header, "patient").get("total") == 2, r.header
+    # derived from the live cBioPortal tables (the REST stub of the same study, conftest `cbioportal`)
+    assert r.header.get("served_by") == "derived", r.header
 
 
 CT2: dict[str, Check] = {

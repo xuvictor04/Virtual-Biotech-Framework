@@ -20,8 +20,8 @@ from .models import SectionSpec
 __all__ = [
     "SCHEMA", "Overlay", "GenericSpec", "ToolBinding", "ReadSpec", "ArgBinding", "ResultSpec", "FieldMap",
     "EchoSpec", "EchoSet", "TotalSpec", "TrimSpec", "RecomputeSpec", "StatisticsSpec", "FileCheckSpec",
-    "LeakageFilter", "DerivedSpec", "BlockSpec", "DefectSpec", "TextSpec", "SectionSpec", "ARG_ROLES", "ARG_OPS",
-    "FILTER_ROLES",
+    "LeakageFilter", "DerivedSpec", "BlockSpec", "DefectSpec", "TextSpec", "SectionSpec", "CountFirst", "SampleSpec",
+    "EstimateSpec", "ARG_ROLES", "ARG_OPS", "FILTER_ROLES",
 ]
 
 SCHEMA = "vbt.overlay/1"
@@ -213,18 +213,62 @@ class LeakageFilter(Strict):
     template: str                                      # a query fragment with "{ceiling}"
 
 
+class SampleSpec(Strict):
+    """``count_first.sample``: the pull is served as the derived donor-balanced sample. The data child draws
+    upstream's own sample (``stratify``: cells allocated over that column first; ``seed``: upstream's generator)
+    with donors keyed by the descriptor grain ``grain`` (or ``key``: a qualifier and a donor column), and the
+    server is asked for exactly the drawn cells. ``columns_arg`` names the argument listing the columns to write
+    (completed with the cell key, the donor key and the stratum); ``total_path`` is the payload's total, restored
+    to the counted one; ``max_read`` caps the cells whose key columns a sample reads; ``max_cells_default`` is
+    the sample size when neither the call nor the tool's schema gives one."""
+
+    grain: str = "donor"
+    key: list[str] | None = None
+    stratify: str | None = None
+    seed: int | None = None
+    columns_arg: str | None = None
+    total_path: str | None = None
+    max_read: int | None = Field(default=None, ge=1)
+    max_cells_default: int | None = Field(default=None, ge=1)
+
+
+class EstimateSpec(Strict):
+    """``count_first.estimate``: the server memory a pull needs, calibrated on real pulls. ``base_mb`` is the
+    footprint of any pull (the client opened, its read buffers); each pulled cell adds ``cell_bytes`` (its obs row
+    and its share of the matrix read) plus ``value_bytes`` per named gene; a pull that names no gene reads every
+    gene of the cell (``all_genes_cell_bytes`` per cell instead); ``read_all_bytes`` per matching cell is a
+    metadata read of every cell the filter selects before the pull (a sample drawn by the server itself)."""
+
+    base_mb: float = Field(default=0.0, ge=0)
+    cell_bytes: int = Field(default=200, ge=0)
+    value_bytes: float = Field(default=4.0, ge=0)
+    all_genes_cell_bytes: int | None = Field(default=None, ge=0)
+    read_all_bytes: int | None = Field(default=None, ge=0)
+
+
 class CountFirst(Strict):
     """Count-first admission of a pull from a remote table (phase 4, F20): before the upstream call the
     data child counts the rows ``filter_arg`` selects (``_census_count``) and the call is refused
-    ``too_large`` when rows x (row bytes + ``genes_arg`` values x value bytes) exceeds the server's limit.
+    ``too_large`` when the pull's estimate (``estimate``, from the counted cells and the genes the ``genes_arg``
+    arguments name; the default is rows x (row bytes + genes x value bytes)) exceeds the server's limit.
     ``recompute_genes``: the written file's ``genes_found``/``genes_not_found`` are recomputed from its
-    ``var.feature_name`` (upstream compares against positional var_names)."""
+    ``var.feature_name`` (upstream compares against positional var_names). ``sample``: served as the derived
+    donor-balanced sample (:class:`SampleSpec`)."""
 
     table: str
     filter_arg: str | None = None
-    genes_arg: str | None = None
+    genes_arg: str | list[str] | None = None           # every argument naming genes (symbols and Ensembl IDs)
     max_cells_arg: str | None = None
     recompute_genes: bool = False
+    sample: SampleSpec | None = None
+    estimate: EstimateSpec | None = None
+
+    @property
+    def genes_args(self) -> list[str]:
+        """The gene arguments, as a list."""
+        if self.genes_arg is None:
+            return []
+        return [self.genes_arg] if isinstance(self.genes_arg, str) else list(self.genes_arg)
 
 
 class RequiresFixed(Strict):
@@ -259,6 +303,9 @@ class ResultSpec(Strict):
     order_source: Literal["witness", "upstream_full_sort", "source_server_side"] = "witness"
     total: str | TotalSpec | None = None
     as_of: str | None = None
+    # the payload field naming the release by the alias the server opened (Census census_version 'stable'): the
+    # gateway writes the dated release the call resolved there (the alias is disclosed in a note)
+    release_alias: str | None = None
     count_fields: list[str] | dict[str, str] = []
     # the reply lists at most this many of the rows it returns or writes (association tools write ``limit`` rows
     # to output_path and list head(10)): a preview is not a short page (W6), so it is never re-called. Per rows

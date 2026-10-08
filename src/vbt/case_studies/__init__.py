@@ -3,6 +3,7 @@
   vbt case1 annotate|phase1|validate|features|stats   Case study 1 (Fig. 2-3)
   vbt case1 replicate|benchmarks                       ... against the authors' Zenodo archive
   vbt data zenodo list|fetch|download|presets          the paper's Zenodo case-study archive
+  vbt data ot list|fetch|manifest                      Open Targets release tables
   vbt scenario list|run|score                          Case studies 2-3 (Fig. 4-5) + agentic Case 1
 """
 

@@ -109,13 +109,14 @@ async def test_essie_wrap_cannot_be_closed_early(tmp_path: Path) -> None:
 
 
 async def test_donor_balanced_needs_one_dataset(tmp_path: Path) -> None:
-    """donor_id is unique only within dataset_id: an unfixed dataset is unsupported_combination naming
-    get_anndata (SC2)."""
+    """donor_id is unique only within dataset_id: the shipped binding is served as the derived (dataset_id,
+    donor_id) sample (test_dl_round3_live.py); without one (here the data child cannot count the cells) an unfixed
+    dataset is unsupported_combination naming get_anndata (SC2), and a fixed one is upstream's own balancing."""
     gw = shipped(tmp_path)
     soma_vocab(gw, {"cell_type": ["T cell", "B cell"], "dataset_id": ["d1", "d2"], "is_primary_data": ["True", "False"]})
     e = await refused(gw, "single_cell", "get_anndata_donor_balanced",
                       {"value_filter": "cell_type == 'T cell'", "output_path": "c.h5ad"})
-    assert e.kind == ErrorKind.unsupported_combination
+    assert e.kind == ErrorKind.unsupported_combination and "no derived sample" in e.message
     assert e.envelope()["alternative"] == "single_cell.get_anndata"
     plan = await gw.prepare("single_cell", "get_anndata_donor_balanced",
                             {"value_filter": "cell_type == 'T cell' and dataset_id == 'd1'", "output_path": "c.h5ad"},
@@ -190,7 +191,7 @@ async def test_position_matching_several_variants_is_ambiguous(tmp_path: Path) -
 
 async def test_clinical_data_is_sized_before_the_download(tmp_path: Path) -> None:
     """get_clinical_data pulls a whole study: its sample count x row bytes over the cap is too_large
-    before the call (size_from, SC6)."""
+    before the call (size_from, SC6), served derived from the live tables as it was upstream."""
     def upstream(tool: str, args: dict[str, Any]) -> Any:
         assert tool == "get_study_details" and args == {"study_id": "big_study"}, (tool, args)
         return {"studyId": "big_study", "sample_counts": {"sequenced": 9000, "cna": 50_000}}
@@ -200,7 +201,7 @@ async def test_clinical_data_is_sized_before_the_download(tmp_path: Path) -> Non
     assert e.kind == ErrorKind.too_large and "50,000 rows" in e.message
     gw.bridge.upstream = lambda tool, args: {"studyId": "small", "sample_counts": {"sequenced": 20}}
     plan = await gw.prepare("clinicaltrials", "get_clinical_data", {"study_id": "small"}, None)
-    assert plan.route == "upstream"
+    assert plan.route == "derived"                     # read from the live tables, sized as an upstream pull
 
 
 async def test_registry_not_found_is_not_found(tmp_path: Path) -> None:

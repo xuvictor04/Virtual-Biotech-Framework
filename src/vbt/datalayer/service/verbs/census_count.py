@@ -4,9 +4,13 @@ Upstream ``get_anndata``, ``get_expression_for_genes`` and ``get_anndata_donor_b
 and check the size after (``single_cell_mcp/tools.py:483-490``). This verb counts first: the obs filter
 (a SOMA ``value_filter`` or the predicate IR) is compiled by the ``soma`` format and counted by the
 ``soma`` layout (one read of ``soma_joinid``), against the release ``stable`` resolves to (recorded with
-its ``release_confidence`` and any drift). The estimate is ``cells x (row_bytes + genes x value_bytes)``
-(a dense upper bound unless the caller passes a measured value size); over ``cap_bytes`` the pull is
-not admissible and the gateway refuses it ``too_large`` before upstream allocates anything.
+its ``release_confidence`` and any drift). The estimate (:func:`estimate_bytes`) is the server's footprint of
+any pull (``base_bytes``) plus, per pulled cell, its row and its genes' values (``row_bytes + genes x
+value_bytes``; every gene of the cell, ``all_genes_cell_bytes``, when the call names none), plus
+``read_all_bytes`` per cell whose metadata the server reads before pulling (every matching cell when the server
+draws its own sample). The overlay's ``count_first.estimate`` carries values calibrated on real pulls; over
+``cap_bytes`` the pull is not admissible and the gateway refuses it ``too_large`` before upstream allocates
+anything.
 
 ``sample: {max_cells, seed, max_read, key, stratify}`` is the derived replacement of
 ``get_anndata_donor_balanced``. Donors are keyed by ``key`` (default ``(dataset_id, donor_id)``: ``donor_id``
@@ -30,9 +34,12 @@ occur in two datasets each: 58 labels, 64 ``(dataset_id, donor_id)`` donors.
 
 :func:`genes_from_h5ad` recomputes ``genes_found``/``genes_not_found`` of a written h5ad from its
 ``var.feature_name`` column (upstream compares against ``var_names``, which Census writes as positional
-digits). ``sample: {file, column}`` answers ``file_cells``, the ``obs[column]`` values of a written h5ad
-(:func:`cells_from_h5ad`): the gateway checks that a pull served as the derived sample wrote exactly the drawn
+digits). ``cells_file`` (with ``cells_column``) answers ``file_cells``, the ``obs[column]`` values of a written
+h5ad (:func:`cells_from_h5ad`): the gateway checks that a pull served as the derived sample wrote exactly the drawn
 cells (``obs.soma_joinid``; the file's ``var`` holds a ``soma_joinid`` column too, the genes').
+
+``_release`` (:func:`release`) answers only what the source says about the data a call reads: the dated release
+a moving alias names, or a live source's release, versions and per-record releases (:func:`remote_release`).
 """
 
 from __future__ import annotations
@@ -41,12 +48,13 @@ import random
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from ...ipc import VERB_CENSUS_COUNT, CensusCountRequest
+from ...ipc import VERB_CENSUS_COUNT, VERB_RELEASE, CensusCountRequest, ReleaseRequest
 from ...predicate import Predicate, from_json
 from .. import ServiceContext, ServiceError, layout_spec
 
-__all__ = ["VERB", "CensusCountRequest", "census_count", "donor_balanced", "donor_balanced_columns", "stratified_sample",
-           "sample_filter", "genes_from_h5ad", "cells_from_h5ad", "DONOR_KEY", "VERBS"]
+__all__ = ["VERB", "CensusCountRequest", "census_count", "release", "estimate_bytes", "donor_balanced",
+           "donor_balanced_columns", "stratified_sample", "sample_filter", "genes_from_h5ad", "cells_from_h5ad",
+           "DONOR_KEY", "VERBS"]
 
 VERB = VERB_CENSUS_COUNT
 DONOR_KEY = ("dataset_id", "donor_id")
@@ -292,6 +300,38 @@ def remote_release(ctx: ServiceContext, t: Any, layout: Any, lspec: Any, predica
     return out or None
 
 
+def _open(ctx: ServiceContext, table: str, value_filter: str | None, predicate: dict[str, Any] | None
+          ) -> tuple[Any, Any, Any, Predicate | None, dict[str, Any], dict[str, Any] | None]:
+    """The table, its layout and layout spec, the request's predicate, what the layout would send for it and the
+    release a moving alias names (None for a layout without one)."""
+    t = ctx.table(table)
+    layout = ctx.plugin("layout", t.layout)
+    predicate_ = _predicate(CensusCountRequest(table=table, value_filter=value_filter, predicate=predicate))
+    lspec = layout_spec(t)
+    if hasattr(layout, "record") and layout.record is None:
+        from ...plugins.layouts.soma import VERSION_RECORD
+
+        layout.record = str(Path(ctx.settings.cache_dir) / t.physical.source / VERSION_RECORD)
+    describe = getattr(layout, "describe_read", None)
+    sent = describe(lspec, predicate_) if callable(describe) else {}
+    release = layout.resolve(lspec) if callable(getattr(layout, "resolve", None)) else None
+    return t, layout, lspec, predicate_, dict(sent or {}), dict(release) if release is not None else None
+
+
+def release(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
+    """``_release``: what a remote table's source says about the data a call reads (no count): the dated release
+    a moving alias names (Census ``stable``), else a live source's release, versions and per-record releases
+    (:func:`remote_release`)."""
+    payload = dict(payload)
+    if "request" in payload and len(payload) == 1:
+        payload = dict(payload["request"])
+    req = ReleaseRequest.model_validate(payload)
+    t, layout, lspec, predicate, sent, rel = _open(ctx, req.table, req.value_filter, req.predicate)
+    if rel is None:
+        rel = remote_release(ctx, t, layout, lspec, predicate)
+    return {"table": req.table, "value_filter": sent.get("value_filter"), "release": rel}
+
+
 def census_count(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     payload = dict(payload)
     if "request" in payload and len(payload) == 1:
@@ -303,32 +343,16 @@ def census_count(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, A
             return {"table": req.table, **genes_from_h5ad(req.genes_file, list(req.genes or []))}
         except (OSError, KeyError, ImportError) as exc:
             return {"table": req.table, "reason": f"genes not checked: {exc}"[:500]}
-    if req.sample and req.sample.get("file"):
+    if req.cells_file:
         # the cells a written file holds: the gateway checks a derived sample's file against the drawn cells
         try:
-            return {"table": req.table, "file_cells": cells_from_h5ad(str(req.sample["file"]),
-                                                                      str(req.sample.get("column") or "soma_joinid"))}
+            return {"table": req.table, "file_cells": cells_from_h5ad(req.cells_file, req.cells_column)}
         except (OSError, KeyError, ImportError, TypeError, ValueError) as exc:
             return {"table": req.table, "reason": f"cells not read: {exc}"[:500]}
-    t = ctx.table(req.table)
-    layout = ctx.plugin("layout", t.layout)
+    t, layout, lspec, predicate, sent, rel = _open(ctx, req.table, req.value_filter, req.predicate)
     if "count" not in (getattr(layout, "capabilities", ()) or ()):
         raise ServiceError(f"{req.table} has no remote count (layout {t.layout!r})")
-    predicate = _predicate(req)
-    lspec = layout_spec(t)
-    if hasattr(layout, "record") and layout.record is None:
-        from ...plugins.layouts.soma import VERSION_RECORD
-
-        layout.record = str(Path(ctx.settings.cache_dir) / t.physical.source / VERSION_RECORD)
-    describe = getattr(layout, "describe_read", None)
-    sent = describe(lspec, predicate) if callable(describe) else {}
-    release = layout.resolve(lspec) if callable(getattr(layout, "resolve", None)) else None
-    if release is None and req.release_only:
-        release = remote_release(ctx, t, layout, lspec, predicate)
-    out: dict[str, Any] = {"table": req.table, "value_filter": sent.get("value_filter"),
-                           "release": dict(release) if release is not None else None}
-    if req.release_only:
-        return out
+    out: dict[str, Any] = {"table": req.table, "value_filter": sent.get("value_filter"), "release": rel}
     try:
         n = layout.count(lspec, predicate=predicate, budget=t.descriptor.budget)
     except Exception as exc:  # noqa: BLE001 - an outage is not a count of zero
@@ -340,17 +364,31 @@ def census_count(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, A
     cells = n if req.max_cells is None else min(n, int(req.max_cells))
     if sample_max is not None:
         cells = min(n, sample_max)
-    genes = int(req.n_genes or 0)
-    row_bytes = int(req.row_bytes or DEFAULT_ROW_BYTES)
-    value_bytes = float(req.value_bytes if req.value_bytes is not None else DEFAULT_VALUE_BYTES)
-    need = int(cells * (row_bytes + genes * value_bytes))
+    sample = _sample(layout, lspec, predicate, t, n, dict(req.sample), sample_max or n) if req.sample else None
+    # the server reads the metadata of every matching cell before it pulls (it draws its own sample), unless it
+    # is asked for exactly the sample's cells
+    read = cells if (sample or {}).get("soma_joinids") else n
+    need = estimate_bytes(req, cells, read)
     cap = req.cap_bytes
-    out.update({"n_cells": int(n), "n_cells_pulled": int(cells), "n_genes": genes, "need_bytes": need,
+    out.update({"n_cells": int(n), "n_cells_pulled": int(cells), "n_genes": req.n_genes, "need_bytes": need,
                 "cap_bytes": cap, "admissible": None if cap is None else need <= int(cap),
                 "truncated_by_max_cells": req.max_cells is not None and n > int(req.max_cells)})
-    if req.sample:
-        out["sample"] = _sample(layout, lspec, predicate, t, n, dict(req.sample), sample_max or n)
+    if sample is not None:
+        out["sample"] = sample
     return out
+
+
+def estimate_bytes(req: CensusCountRequest, cells: int, read: int) -> int:
+    """The memory a pull of ``cells`` cells needs (``CensusCountRequest``): ``base_bytes``, then per pulled cell
+    ``row_bytes`` plus the named genes' values (or ``all_genes_cell_bytes`` when no gene is named), plus
+    ``read_all_bytes`` per cell whose metadata the server reads first (``read``)."""
+    row_bytes = int(req.row_bytes if req.row_bytes is not None else DEFAULT_ROW_BYTES)
+    value_bytes = float(req.value_bytes if req.value_bytes is not None else DEFAULT_VALUE_BYTES)
+    if req.n_genes is None and req.all_genes_cell_bytes is not None:
+        per_cell = row_bytes + int(req.all_genes_cell_bytes)
+    else:
+        per_cell = row_bytes + int(req.n_genes or 0) * value_bytes
+    return int(int(req.base_bytes or 0) + cells * per_cell + read * int(req.read_all_bytes or 0))
 
 
 def _sample(layout: Any, lspec: Any, predicate: Predicate | None, t: Any, n: int, spec: Mapping[str, Any],
@@ -390,4 +428,4 @@ def _sample(layout: Any, lspec: Any, predicate: Predicate | None, t: Any, n: int
     return out
 
 
-VERBS = {VERB: census_count}
+VERBS = {VERB: census_count, VERB_RELEASE: release}

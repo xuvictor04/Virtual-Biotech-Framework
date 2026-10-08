@@ -4,22 +4,30 @@
 #
 # Phase 4: obs and var are soma tables. get_anndata, get_expression_for_genes and get_anndata_donor_balanced
 # are admitted count-first (`count_first`: the gateway asks the data child's _census_count for the cells the
-# value_filter selects, against the release 'stable' resolves to, and refuses too_large when cells x genes
+# value_filter selects, against the release 'stable' resolves to, and refuses too_large when the pull's estimate
+# (`estimate`, calibrated on real pulls; every gene argument counts, and a pull naming no gene reads every gene)
 # exceeds the server's limit, before upstream fetches anything). get_expression_for_genes' genes_found and
 # genes_not_found are recomputed from the written h5ad's var.feature_name (census_count.genes_from_h5ad):
-# upstream compares against positional var_names. Donor balancing stays upstream's, accepted only when the
-# filter fixes one dataset_id (requires_fixed): donors are unique only within (dataset_id, donor_id).
+# upstream compares against positional var_names.
 #
-# The derived donor-balanced sample is implemented end to end (S1, 2026-10-08): with
-#   count_first: {..., sample: {grain: donor, stratify: cell_type, seed: 42, columns_arg: obs_columns,
-#                               total_path: $.n_cells_total}}
-# and no requires_fixed, the data child draws upstream's own cell-type-stratified, donor-balanced sample with donors
-# keyed by (dataset_id, donor_id) and the gateway asks this server for exactly those cells (soma_joinid in [...],
-# max_cells = the sample's size), completes obs_columns, restores n_cells_total, adds derived_sample (the draw:
-# donors, strata, seed) and checks the file holds the sample (sample_cells). On the real Census the sample of one
-# dataset equals upstream's own draw cell for cell (293 of 293), and a 2.1 MB filter of 199,744 ids passes through
-# this server (count_cells answered 199,744, as the witness counted; 22.2 s for the whole call). The `sample` key needs a field the
-# overlay model (descriptor/overlay.py CountFirst) does not have yet, so it is not set here (a contract request).
+# The pull estimates (count_first.estimate) were calibrated on 2026-10-08 against the real Census (2025-11-08), each
+# pull a fresh process calling the unmodified upstream function, peak RSS (VmHWM): get_anndata of one dataset
+# (7,750 cells) took 1,805 MB with 2 genes and 2,878 MB with none named (61,497 genes: about 145 KB more per cell);
+# get_anndata_donor_balanced asked for exactly the drawn spleen cells (soma_joinid in [...], 2 genes) took 3,821 MB
+# for 1,842 cells, 3,199 MB for 19,782, 3,190 MB for 49,783, 3,136 MB for 99,771 and 4,489 MB for 149,759; through
+# the server the 199,744-cell pull was killed at its 4,500 MB limit (S1). The footprint is mostly fixed (the client
+# and its read buffers), so the estimate is a base plus a per-cell slope fitted to the largest pulls: 150,000 drawn
+# cells are refused, 100,000 admitted (before, a 200,000-cell pull naming only Ensembl IDs was estimated at 40,000,000 bytes).
+#
+# get_anndata_donor_balanced is served as the derived donor-balanced sample (count_first.sample; S1 and the Wave A
+# integration, 2026-10-08): the data child draws upstream's own cell-type-stratified, donor-balanced sample with
+# donors keyed by (dataset_id, donor_id) (donor_id is unique only within a dataset) and the gateway asks this server
+# for exactly those cells (soma_joinid in [...], max_cells = the sample's size), completes obs_columns, restores
+# n_cells_total, adds derived_sample (the draw: donors, strata, seed) and checks the file holds the sample
+# (sample_cells). On the real Census the sample of one dataset equals upstream's own draw cell for cell (293 of
+# 293), and a 2.1 MB filter of 199,744 ids passes through this server (count_cells answered 199,744, as the witness
+# counted; 22.2 s for the whole call). Without a sample (the count failed, or more than max_read cells match) the
+# call is served upstream only when the filter fixes one dataset_id, else unsupported_combination.
 #
 # Checked against the real Census (2025-11-08) through the unmodified server on 2026-10-08: an h5ad written
 # by cellxgene_census.get_anndata keeps soma_joinid as an obs column, feature_id as a var column and a
@@ -41,6 +49,7 @@ tools:
       kind: record
       rows: $
       as_of: $.census_version                  # 'stable' resolves to a dated release; recorded, never assumed
+      release_alias: $.census_version          # the body names the dated release ('stable' was 2025-11-08 on 2026-10-08)
     serve: pass
 
   list_metadata_values:
@@ -103,7 +112,8 @@ tools:
       ensembl_ids:  {binds: cellxgene_census.var.feature_id, op: in, each: true, accepts: [census_feature], existence: upstream}
       obs_columns:  {role: family_param}           # passed as given (see the header: not a projection here)
       layer:        {role: selector, values: {raw: cellxgene_census.anndata_outputs, normalized: cellxgene_census.anndata_outputs}}
-    count_first: {table: cellxgene_census.obs, filter_arg: value_filter, genes_arg: gene_symbols}
+    count_first: {table: cellxgene_census.obs, filter_arg: value_filter, genes_arg: [gene_symbols, ensembl_ids],
+                  estimate: {base_mb: 2000, cell_bytes: 4500, value_bytes: 4, all_genes_cell_bytes: 145000}}
     result:
       kind: file
       rows: null
@@ -187,7 +197,8 @@ tools:
     # counted before upstream fetches; genes_found/genes_not_found recomputed from the file's var.feature_name
     # (upstream compares against var_names, which are positional digits in Census AnnData output)
     count_first: {table: cellxgene_census.obs, filter_arg: value_filter, genes_arg: gene_symbols,
-                  max_cells_arg: max_cells, recompute_genes: true}
+                  max_cells_arg: max_cells, recompute_genes: true,
+                  estimate: {base_mb: 2000, cell_bytes: 4500, value_bytes: 4, all_genes_cell_bytes: 145000}}
     result:
       kind: file
       rows: null
@@ -208,18 +219,25 @@ tools:
     args:
       output_path:  {role: output_path}
       value_filter: {role: free_text, interpreted_as: engine, escape: soma,
-                     engine_doc: "SOMA value_filter over obs columns; it must fix one dataset_id (donor_id is unique only within a dataset)"}
+                     engine_doc: "SOMA value_filter over obs columns; the gateway draws the donor-balanced sample with donors keyed by (dataset_id, donor_id)"}
       max_cells:    {role: limit, min: 1, max: 200000}
       gene_symbols: {binds: cellxgene_census.var.feature_name, op: in, each: true, accepts: ["open_targets:hgnc_symbol"],
                      existence: upstream, send_as: label}
       ensembl_ids:  {binds: cellxgene_census.var.feature_id, op: in, each: true, accepts: [census_feature], existence: upstream}
       obs_columns:  {role: family_param}           # passed as given (see the header: not a projection here)
       layer:        {role: selector, values: {raw: cellxgene_census.anndata_outputs, normalized: cellxgene_census.anndata_outputs}}
-    count_first: {table: cellxgene_census.obs, filter_arg: value_filter, genes_arg: gene_symbols,
-                  max_cells_arg: max_cells}
-    requires_fixed:
-      - {arg: value_filter, columns: [dataset_id], alternatives: [single_cell.get_anndata],
-         reason: "donor_id is unique only within dataset_id; donors of different datasets would be balanced as one"}
+    count_first:
+      table: cellxgene_census.obs
+      filter_arg: value_filter
+      genes_arg: [gene_symbols, ensembl_ids]
+      max_cells_arg: max_cells
+      # upstream's draw (cell types first, then donors, RandomState(42)) with donors keyed by the descriptor's donor
+      # grain (dataset_id, donor_id); the server is asked for exactly the drawn cells
+      sample: {grain: donor, stratify: cell_type, seed: 42, columns_arg: obs_columns, total_path: $.n_cells_total,
+               max_cells_default: 20000}             # upstream's default max_cells (tools.py:984)
+      # read_all_bytes: without a sample upstream reads the obs rows of every matching cell first (4,062,980 cells
+      # of one dataset for a 293-cell draw: 3,437 MB in all)
+      estimate: {base_mb: 3900, cell_bytes: 4500, value_bytes: 4, all_genes_cell_bytes: 145000, read_all_bytes: 100}
     result:
       kind: file
       rows: null
@@ -231,7 +249,8 @@ tools:
            write_once: true}
     serve: pass
     text:
-      notes: ["accepted only when value_filter fixes one dataset_id; otherwise unsupported_combination names single_cell.get_anndata",
+      notes: ["served as the derived sample: upstream's cell-type-stratified draw with donors keyed by (dataset_id, donor_id); the server fetches exactly the drawn cells and _vbt names the draw (derived_sample)",
+              "without a sample (the count failed, or too many cells to read) the filter must fix one dataset_id; otherwise unsupported_combination names single_cell.get_anndata",
               "'No cells found' is an unverified empty (the filter may name values absent from this Census release)"]
     defects:
       - {id: SC-001, what: "donor_id is grouped without dataset_id: donors of different datasets that share a label are balanced as one donor",

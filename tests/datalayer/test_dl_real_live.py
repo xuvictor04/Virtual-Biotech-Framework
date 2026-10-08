@@ -330,12 +330,22 @@ def test_cbioportal_molecular_profile_table(tmp_path: Path, replay: Callable[[st
     assert out["witness"]["total"] == 78 and out["witness"]["total_method"] == "scan"
 
 
+def _clinical_served_upstream() -> dict[str, Any]:
+    """The shipped clinicaltrials overlay with get_clinical_data served upstream (``pass``): the shipped binding is
+    derived from the live tables (test_dl_round3_live.py); its guards still apply to an upstream answer."""
+    ov = load_yaml(OVERLAYS / "clinicaltrials.yaml")
+    b = ov["tools"]["get_clinical_data"]
+    b["serve"] = "pass"
+    b.pop("derived", None)
+    return ov
+
+
 async def test_get_clinical_data_guards_on_real_rows(tmp_path: Path) -> None:
     """The upstream answer for two real samples and one that does not exist: the phantom (patientId null)
     is not_found, and patient attributes are counted once per patient in the `patients` section."""
     rec = fixture("cbioportal/upstream_clinical_data_phantom.json")
     descs = [load_yaml(SOURCES / "clinicaltrials.yaml"), load_yaml(SOURCES / "cbioportal.yaml")]
-    gw = make_gateway(tmp_path / "a", descs, [load_yaml(OVERLAYS / "clinicaltrials.yaml")], {},
+    gw = make_gateway(tmp_path / "a", descs, [_clinical_served_upstream()], {},
                       data={"witness": {"enabled": False}})
     with pytest.raises(GatewayError) as e:
         await _call(gw, "clinicaltrials", "get_clinical_data", rec["args"], lambda tool, a: rec["result"])
@@ -343,7 +353,7 @@ async def test_get_clinical_data_guards_on_real_rows(tmp_path: Path) -> None:
     real = copy.deepcopy(rec["result"])
     real["data"] = [r for r in real["data"] if r.get("patientId")]
     real["sample_count"] = len(real["data"])
-    gw = make_gateway(tmp_path / "b", descs, [load_yaml(OVERLAYS / "clinicaltrials.yaml")], {},
+    gw = make_gateway(tmp_path / "b", descs, [_clinical_served_upstream()], {},
                       data={"witness": {"enabled": False}})
     args = {"study_id": ACC, "sample_ids": [r["sampleId"] for r in real["data"]]}
     res = await _call(gw, "clinicaltrials", "get_clinical_data", args, lambda tool, a: real)

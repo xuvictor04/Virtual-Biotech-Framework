@@ -101,10 +101,21 @@ def eutils(tmp_path_factory: pytest.TempPathFactory):
 
 
 @pytest.fixture(scope="session")
-def data_env(ot_root: Path, tahoe_root: Path, eutils: Any, tmp_path_factory: pytest.TempPathFactory) -> Any:
+def cbioportal(tmp_path_factory: pytest.TempPathFactory):
+    """The REST stub of the ``pybioportal`` stub's study: what the data child's live cBioPortal tables read."""
+    from stubs import cbioportal_stub
+
+    stub = cbioportal_stub.start(tmp_path_factory.mktemp("cbioportal") / "requests.jsonl")
+    yield stub
+    stub.stop()
+
+
+@pytest.fixture(scope="session")
+def data_env(ot_root: Path, tahoe_root: Path, eutils: Any, cbioportal: Any,
+             tmp_path_factory: pytest.TempPathFactory) -> Any:
     from dl_upstream import DataEnv
 
-    return DataEnv(ot_root=ot_root, tahoe_root=tahoe_root, eutils_base=eutils.base,
+    return DataEnv(ot_root=ot_root, tahoe_root=tahoe_root, eutils_base=eutils.base, cbioportal_base=cbioportal.base,
                    output_dir=tmp_path_factory.mktemp("mcp-output"))
 
 

@@ -1,5 +1,5 @@
 {
- "description": "Retrieve an AnnData object with donor-balanced, cell-type-stratified sampling.\nData: CZ CELLxGENE Census (human) · table var — one record = one gene (feature) measured in the human Census.\nKey: feature_id.\nArguments: gene_symbols accepts hgnc symbol (resolved; unknown -> error); ensembl_ids accepts census feature (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence.\naccepted only when value_filter fixes one dataset_id; otherwise unsupported_combination names single_cell.get_anndata\n'No cells found' is an unverified empty (the filter may name values absent from this Census release)",
+ "description": "Retrieve an AnnData object with donor-balanced, cell-type-stratified sampling.\nData: CZ CELLxGENE Census (human) · table var — one record = one gene (feature) measured in the human Census.\nKey: feature_id.\nArguments: gene_symbols accepts hgnc symbol (resolved; unknown -> error); ensembl_ids accepts census feature (resolved; unknown -> error).\nResults: `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence.\nserved as the derived sample: upstream's cell-type-stratified draw with donors keyed by (dataset_id, donor_id); the server fetches exactly the drawn cells and _vbt names the draw (derived_sample)\nwithout a sample (the count failed, or too many cells to read) the filter must fix one dataset_id; otherwise unsupported_combination names single_cell.get_anndata\n'No cells found' is an unverified empty (the filter may name values absent from this Census release)",
  "schema": {
   "properties": {
    "ensembl_ids": {
@@ -64,7 +64,7 @@
     "type": "string"
    },
    "value_filter": {
-    "description": "Matched by the source's search engine: SOMA value_filter over obs columns; it must fix one dataset_id (donor_id is unique only within a dataset).",
+    "description": "Matched by the source's search engine: SOMA value_filter over obs columns; the gateway draws the donor-balanced sample with donors keyed by (dataset_id, donor_id).",
     "type": "string"
    }
   },

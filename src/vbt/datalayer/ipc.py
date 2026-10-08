@@ -22,7 +22,8 @@ __all__ = [
     "StatsResponse", "CheckRequest", "CheckItemModel", "KeyCheckModel", "TableCheckModel", "CheckResponse",
     "WitnessRequest", "WitnessResponse", "ServeRequest", "ServeResponse", "BuildIndexRequest", "BuildIndexResponse",
     "ResolveRemoteRequest", "ResolveRemoteResponse", "VocabRequest", "VocabResponse", "VERB_CENSUS_COUNT",
-    "CensusCountRequest", "CensusCountResponse", "VERB_MODELS",
+    "CensusCountRequest", "CensusCountResponse", "VERB_RELEASE", "ReleaseRequest", "ReleaseResponse", "SERVE_ERROR",
+    "VERB_MODELS",
     "request_payload", "parse_response",
 ]
 
@@ -30,6 +31,10 @@ REQUEST_ARG = "request"
 # Per-table failures of _stats and _check go on the wire under this name: the bridge reads a
 # top-level ``errors`` key as a failed call (legacy envelopes), which would hide every other table.
 TABLE_ERRORS = "table_errors"
+# A _serve handler's typed refusal (a §12.1 envelope) goes on the wire under this name, for the same reason: a
+# top-level ``error`` key is a failed call to the bridge, so an unknown cBioPortal study read derived came back
+# service_unavailable instead of not_found (S1, 2026-10-08).
+SERVE_ERROR = "refusal"
 
 VERB_STATS = "_stats"
 VERB_CHECK = "_check"
@@ -213,6 +218,9 @@ class ServeRequest(IpcModel):
 
 
 class ServeResponse(IpcModel):
+    # serialised by alias: ``error`` is always ``refusal`` on the wire (SERVE_ERROR), whoever dumps the model
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
+
     rows: list[dict[str, Any]] | dict[str, list[dict[str, Any]]] = []   # dict when split into lists
     total: int | None = None
     truncated: bool = False
@@ -224,7 +232,8 @@ class ServeResponse(IpcModel):
     sections: dict[str, Any] = {}
     row_keys: list[list[Any]] = []
     reason: str | None = None
-    error: dict[str, Any] | None = None                # a §12.1 envelope: the derived handler refused the request
+    # a §12.1 envelope: the derived handler refused the request (an unknown study is not_found), never an outage
+    error: dict[str, Any] | None = Field(default=None, alias=SERVE_ERROR)
     as_of: str | None = None                           # a live table's release (CT.gov dataTimestamp)
 
 
@@ -290,8 +299,13 @@ VERB_CENSUS_COUNT = "_census_count"
 
 
 class CensusCountRequest(IpcModel):
-    """Count-first admission of a single-cell pull (``service/verbs/census_count.py``), or, with
-    ``genes_file``, the genes found in a written h5ad's ``var.feature_name``."""
+    """Count-first admission of a single-cell pull (``service/verbs/census_count.py``); with ``sample``, the
+    derived donor-balanced sample of the counted cells too. With ``genes_file``, the genes found in a written
+    h5ad's ``var.feature_name``; with ``cells_file``, the cells (``obs[cells_column]``) it holds.
+
+    The estimate (bytes) is ``base_bytes + cells x (row_bytes + genes x value_bytes)``; a pull naming no gene
+    (``n_genes`` None) costs ``row_bytes + all_genes_cell_bytes`` per cell when that is given, and
+    ``read_all_bytes`` per cell read before the pull (every matching cell, or the sample's) is added."""
 
     table: str
     value_filter: str | None = None
@@ -300,11 +314,16 @@ class CensusCountRequest(IpcModel):
     max_cells: int | None = None
     row_bytes: int | None = None
     value_bytes: float | None = None
+    base_bytes: int | None = None
+    all_genes_cell_bytes: int | None = None
+    read_all_bytes: int | None = None
     cap_bytes: int | None = None
-    sample: dict[str, Any] | None = None               # {max_cells, seed}
+    # {max_cells, seed, key, stratify, max_read}: the derived donor-balanced sample of the counted cells
+    sample: dict[str, Any] | None = None
     genes_file: str | None = None
     genes: list[str] | None = None
-    release_only: bool = False                         # only the dated release the alias names (no count)
+    cells_file: str | None = None
+    cells_column: str = "soma_joinid"
 
 
 class CensusCountResponse(IpcModel):
@@ -312,13 +331,48 @@ class CensusCountResponse(IpcModel):
 
     table: str | None = None
     n_cells: int | None = None
+    n_cells_pulled: int | None = None
+    n_genes: int | None = None
     admissible: bool | None = None
     need_bytes: int | None = None
     cap_bytes: int | None = None
+    truncated_by_max_cells: bool | None = None
+    value_filter: str | None = None
     release: dict[str, Any] | None = None
     reason: str | None = None
     genes_found: list[str] | None = None
     genes_not_found: list[str] | None = None
+    #: the derived sample: soma_joinids, value_filter and max_cells for upstream, per donor/dataset/stratum counts
+    sample: dict[str, Any] | None = None
+    file_cells: list[int] | None = None                # cells_file: the obs[cells_column] values of the file
+
+    def counted(self) -> dict[str, Any]:
+        """The count as the gateway records it: without the drawn sample (every sampled cell id, applied to the
+        call instead) and a file's cells."""
+        return self.model_dump(exclude_none=True, exclude={"sample", "file_cells"})
+
+
+# --------------------------------------------------------------------------- _release (phase 4)
+
+VERB_RELEASE = "_release"
+
+
+class ReleaseRequest(IpcModel):
+    """What a remote table's source says about the data a call reads, without counting anything: the dated
+    release a moving alias names (Census ``stable``), or a live source's data release, API and software
+    versions and the per-record releases of the records ``predicate`` names (``census_count.remote_release``)."""
+
+    table: str
+    value_filter: str | None = None
+    predicate: dict[str, Any] | None = None
+
+
+class ReleaseResponse(IpcModel):
+    table: str
+    # {requested, resolved, release_confidence, drift, versions, per, reason}: what the source reported
+    release: dict[str, Any] | None = None
+    value_filter: str | None = None
+    reason: str | None = None
 
 
 VERB_MODELS: dict[str, tuple[type[IpcModel], type[IpcModel]]] = {
@@ -330,6 +384,7 @@ VERB_MODELS: dict[str, tuple[type[IpcModel], type[IpcModel]]] = {
     VERB_RESOLVE_REMOTE: (ResolveRemoteRequest, ResolveRemoteResponse),
     VERB_VOCAB: (VocabRequest, VocabResponse),
     VERB_CENSUS_COUNT: (CensusCountRequest, CensusCountResponse),
+    VERB_RELEASE: (ReleaseRequest, ReleaseResponse),
 }
 
 

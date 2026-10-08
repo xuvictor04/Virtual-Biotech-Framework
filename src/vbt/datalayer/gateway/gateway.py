@@ -38,7 +38,7 @@ Live and remote sources (round 3):
 * ``derived.compose`` joins sub-reads (each on its own table's key) into the derived rows, sections over live
   tables are read here, and keys the call names that a live table's derived rows lack are ``not_found``
   (get_clinical_data served from cBioPortal's live tables). A derived handler's typed error arrives as
-  ``ServeResponse.error`` or ``sections["_error"]`` (MCPBridge reads a top-level ``error`` key as a failure).
+  ``ServeResponse.error`` (on the wire ``refusal``: MCPBridge reads a top-level ``error`` key as a failure).
 * every enforced call of a live source records what the source reported (``_live_release``): the data release,
   the API and software versions (``source.versions``) and the per-record releases (record versions).
 * under the evidence ceiling an upstream count (first posting bounded) also gets the count with the last update
@@ -81,8 +81,10 @@ from ..errors import (
 )
 from ..ipc import (
     VERB_CENSUS_COUNT,
+    VERB_RELEASE,
     CensusCountRequest,
     RankKeyModel,
+    ReleaseRequest,
     ServeRequest,
     ServeResponse,
     WitnessRequest,
@@ -805,6 +807,9 @@ class DataGateway:
                 await self._count_first(plan, st, contract)
             await self._census_release(plan, st, contract)
             await self._admit(plan, st, contract)
+        elif plan.route == "derived" and st.mode == "enforce":
+            # a derived read of a live table pulls what upstream would (a whole cBioPortal study): sized first
+            await self._admit_sized(plan, st, contract)
         if st.mode == "enforce" and not st.lenient and plan.route != "none" and plan.server != DATA_SERVER:
             await self._live_release(plan, st, contract)
         # 10. limit inflation
@@ -814,20 +819,32 @@ class DataGateway:
     async def _count_first(self, plan: CallPlan, st: _CallState, contract: ToolContract) -> None:
         """Count-first admission (``count_first``, F20): the data child counts the cells the filter selects
         (against the release ``stable`` resolves to) and the pull is refused ``too_large`` before upstream
-        fetches anything when cells x genes would exceed the server's memory limit."""
+        fetches anything when its estimate (``count_first.estimate``: the server's footprint plus the cells' rows
+        and genes, calibrated on real pulls) would exceed the server's memory limit."""
         cf = contract.binding.count_first
         args = plan.args_sent
-        genes = args.get(cf.genes_arg) if cf.genes_arg else None
-        n_genes = len(genes) if isinstance(genes, list) else None
+        # the genes the pull reads: every gene argument counts (upstream ORs symbols and Ensembl IDs); none named
+        # reads every gene of the cell
+        named = [args.get(a) for a in cf.genes_args if isinstance(args.get(a), list)]
+        n_genes = sum(len(g) for g in named) if named else None
         max_cells = args.get(cf.max_cells_arg) if cf.max_cells_arg else None
         limit_mb = 0.0
         with contextlib.suppress(Exception):
             limit_mb = float(self.admission.limit_mb(plan.server) or 0)
         facet = _sample_facet(cf)
         sample_req = self._sample_request(plan, contract, cf, facet) if facet is not None else None
+        if facet is not None and sample_req is None:
+            # no sample can be asked for (no sample size, no two-column donor key): upstream would balance donor
+            # labels alone, right only when the filter fixes the donor key's qualifier
+            key = list(facet.get("key") or grain_columns(contract.tables.get(cf.table), str(facet.get("grain")
+                                                                                            or "donor")) or [])
+            if len(key) == 2:
+                self._sample_unavailable(plan, st, contract, {"key": key}, "no sample size or donor key")
+        est = cf.estimate
         req = CensusCountRequest(table=cf.table, value_filter=args.get(cf.filter_arg) if cf.filter_arg else None,
                                  n_genes=n_genes, max_cells=max_cells if isinstance(max_cells, int) else None,
-                                 cap_bytes=int(limit_mb * 1024 * 1024) if limit_mb > 0 else None, sample=sample_req)
+                                 cap_bytes=int(limit_mb * 1024 * 1024) if limit_mb > 0 else None, sample=sample_req,
+                                 **(_estimate_fields(est) if est is not None else {}))
         try:
             resp = await self.service.call(VERB_CENSUS_COUNT, req)
         except ServiceError as exc:
@@ -835,14 +852,9 @@ class DataGateway:
                 self._sample_unavailable(plan, st, contract, sample_req, f"the count failed ({exc.message[:200]})")
             st.notes.append(f"count-first admission unavailable ({exc.message[:200]}); the memory admission applies")
             return
-        # the sample answers the request's own facet (an extra of the response): kept out of the recorded count
-        echoed = set(resp.model_extra or ()) & set(CensusCountRequest.model_fields)
-        info = resp.model_dump(exclude_none=True, exclude=echoed)
-        sample = None
-        if sample_req is not None:
-            with contextlib.suppress(AttributeError):
-                sample = resp.sample
-            sample = sample if isinstance(sample, Mapping) else None
+        # the sample (every drawn cell id) is applied below, not recorded with the count
+        info = resp.counted()
+        sample = resp.sample if sample_req is not None and isinstance(resp.sample, Mapping) else None
         st.count_first = info
         if resp.release:
             st.notes.append(f"{cf.table} release: {resp.release.get('resolved') or resp.release}")
@@ -856,7 +868,8 @@ class DataGateway:
         if resp.n_cells is None:
             st.notes.append(f"count-first admission could not count: {resp.reason}")
         else:
-            st.notes.append(f"count-first: the filter selects {resp.n_cells} cells")
+            need = f", about {resp.need_bytes // (1024 * 1024)} MB to pull" if resp.need_bytes is not None else ""
+            st.notes.append(f"count-first: the filter selects {resp.n_cells} cells{need}")
         if sample_req is not None:
             self._apply_sample(plan, st, contract, cf, facet or {}, sample_req, resp.n_cells, sample)
 
@@ -997,6 +1010,23 @@ class DataGateway:
                                payload=tool_defect_payload("sample_cells", {"total": sm["n_total"]}, None,
                                                            [d.id for d in b.defects]))
 
+    def _resolve_release_alias(self, st: _CallState, contract: ToolContract, obj: Any) -> None:
+        """``result.release_alias``: the payload names the release by the alias the server opened (Census
+        ``stable``); the dated release this call resolved replaces it, so the body cites what the header does."""
+        path = contract.binding.result.release_alias
+        if not path or not isinstance(obj, dict):
+            return
+        cf = (st.count_first or {}).get("release") if isinstance(st.count_first, Mapping) else None
+        resolved = st.census_release or (str(cf["resolved"]) if isinstance(cf, Mapping) and cf.get("resolved")
+                                         else None)
+        before = jp_first(obj, path)
+        if not resolved or before is None or str(before) == resolved:
+            return
+        jp_set(obj, path, resolved)
+        st.transforms.append(f"{_last(path)} {before} -> {resolved}")
+        st.notes.append(f"{_last(path)}: the server opened {before!r}, which named the {resolved} release for this "
+                        "call")
+
     async def _file_cells(self, contract: ToolContract, path: Path, column: Any) -> set[int] | None:
         """The cell keys (``column``) a written file holds, read by the data child; None when it cannot."""
         cf = contract.binding.count_first
@@ -1004,12 +1034,10 @@ class DataGateway:
             return None
         try:
             resp = await self.service.call(VERB_CENSUS_COUNT, CensusCountRequest(
-                table=cf.table, sample={"file": str(path), "column": str(column)}))
+                table=cf.table, cells_file=str(path), cells_column=str(column)))
         except ServiceError:
             return None
-        cells = None
-        with contextlib.suppress(AttributeError):
-            cells = resp.file_cells
+        cells = resp.file_cells
         if not isinstance(cells, list):
             return None
         with contextlib.suppress(TypeError, ValueError):
@@ -1040,7 +1068,7 @@ class DataGateway:
         if not tables:
             return
         try:
-            resp = await self.service.call(VERB_CENSUS_COUNT, CensusCountRequest(table=tables[0], release_only=True))
+            resp = await self.service.call(VERB_RELEASE, ReleaseRequest(table=tables[0]))
         except ServiceError as exc:
             st.notes.append(f"{tables[0]} release not resolved ({exc.message[:200]})")
             return
@@ -1082,8 +1110,8 @@ class DataGateway:
             pred = st.predicate if st.predicate is not None and ref == (plan.bound_table or contract.bound_table) \
                 else None
             try:
-                resp = await self.service.call(VERB_CENSUS_COUNT, CensusCountRequest(
-                    table=ref, predicate=to_json(pred) if pred is not None else None, release_only=True))
+                resp = await self.service.call(VERB_RELEASE, ReleaseRequest(
+                    table=ref, predicate=to_json(pred) if pred is not None else None))
             except ServiceError:
                 continue
             rel = dict(resp.release or {})
@@ -1096,7 +1124,8 @@ class DataGateway:
         cf = contract.binding.count_first
         if cf is None or not cf.recompute_genes or not isinstance(obj, dict):
             return
-        genes = plan.args_sent.get(cf.genes_arg) if cf.genes_arg else None
+        symbols = next(iter(cf.genes_args), None)          # the first gene argument names genes by feature_name
+        genes = plan.args_sent.get(symbols) if symbols else None
         paths = list((st.prepared.output_paths if st.prepared is not None else {}).values())
         resp = None
         if isinstance(genes, list) and paths:
@@ -2226,6 +2255,7 @@ class DataGateway:
         b = contract.binding
         await self._recompute_genes(plan, st, contract, obj)
         await self._sampled_result(plan, st, contract, obj)
+        self._resolve_release_alias(st, contract, obj)
         mapper = self._mapper(contract)
         paths = b.result.row_paths
         record = b.result.kind == "record"
@@ -3696,9 +3726,9 @@ def _preview_cap(preview: Any, obj: Any) -> int | None:
 
 
 def _serve_error(resp: Any) -> dict[str, Any] | None:
-    """The typed error a ``_serve`` reply carries: ``error``, or ``sections["_error"]`` (how a live read's error
-    crosses MCPBridge, which reads a reply with a top-level ``error`` key as a failed call)."""
-    err = getattr(resp, "error", None) or (getattr(resp, "sections", None) or {}).get("_error")
+    """The typed error a ``_serve`` reply carries (``ServeResponse.error``, ``refusal`` on the wire: MCPBridge reads
+    a reply with a top-level ``error`` key as a failed call)."""
+    err = getattr(resp, "error", None)
     return dict(err) if isinstance(err, Mapping) else None
 
 
@@ -3717,6 +3747,13 @@ def _engine_column(a: Any) -> str | None:
             and not a.escape:
         return a.binds
     return None
+
+
+def _estimate_fields(est: Any) -> dict[str, Any]:
+    """``count_first.estimate`` as the count request's estimate fields (bytes)."""
+    return {"base_bytes": int(est.base_mb * 1024 * 1024), "row_bytes": int(est.cell_bytes),
+            "value_bytes": float(est.value_bytes), "all_genes_cell_bytes": est.all_genes_cell_bytes,
+            "read_all_bytes": est.read_all_bytes}
 
 
 def _sample_facet(cf: Any) -> dict[str, Any] | None:

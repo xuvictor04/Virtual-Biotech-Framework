@@ -8,17 +8,17 @@ What is covered (the requests are numbered as in the real-data reports R2/R3):
   generator and order as ``single_cell_mcp/tools.py``) with donors keyed by dataset, and the gateway asks the
   unmodified server for exactly those cells (``soma_joinid in [...]``, ``max_cells`` = the sample's size), completes
   ``obs_columns`` so the file shows its cells, restores the counted total and checks that the file holds the sample.
-  The overlay facet (``count_first.sample``) needs a field the overlay model does not have yet (a contract request),
-  so these tests set it on the parsed binding. With ``VBT_DL_NETWORK=1`` the 200,000-cell path (a 2.1 MB
-  ``soma_joinid`` filter) is drawn and counted again on the real Census.
+  The shipped overlay declares the facet (``count_first.sample``); tests that need another facet set it on the parsed
+  binding. With ``VBT_DL_NETWORK=1`` the 200,000-cell path (a 2.1 MB ``soma_joinid`` filter) is drawn and counted
+  again on the real Census.
 * **CR4** ``clinicaltrials.get_clinical_data`` served derived from the live cBioPortal tables (``derived.compose``:
   the samples, their sample attributes, their patients' attributes; ``clinical_attributes`` from a live section):
   the rows equal upstream's, patient attributes go to the ``patients`` section, a sample the study does not hold is
-  ``not_found``. The overlay variant is built here (the shipped binding stays ``pass`` until its golden snapshot and
-  two tests that pin it are updated: a contract request).
+  ``not_found``. The shipped binding is this derived route; the ``pass`` variant (upstream answering) is built here
+  for the comparison.
 * **CR7** the release a live call observed, in its provenance: the data release (CT.gov ``dataTimestamp``; one
   cBioPortal study's ``importDate``), the API and software versions (``apiVersion``; ``portalVersion``, ``dbVersion``;
-  the PubMed build) and the per-record releases (the study).
+  the PubMed build) and the per-record releases (the study), asked of the data child's ``_release`` verb.
 * **CR8** the evidence ceiling's two totals (an upstream count bounds the first posting only; a native find also the
   last update) are both in the header, and a Census read cut to ``limit`` says it read every matching row.
 * a ``soma_joinid`` filter never asks the server for a vocabulary of the join id (217 M values on the real Census),
@@ -48,7 +48,7 @@ from test_dl_real_live import Replay
 from vbt.datalayer.catalog import Catalog
 from vbt.datalayer.descriptor.load import load_yaml
 from vbt.datalayer.descriptor.models import SourceDescriptor
-from vbt.datalayer.descriptor.overlay import Overlay
+from vbt.datalayer.descriptor.overlay import Overlay, SampleSpec
 from vbt.datalayer.errors import ErrorKind, GatewayError
 from vbt.datalayer.gateway import DataGateway
 from vbt.datalayer.gateway.service_client import ServiceClient, ServiceError
@@ -77,7 +77,7 @@ ST = "protocolSection.statusModule.overallStatus"
 CT = "clinicaltrials_gov.studies"
 CEILING = "2017-12-31"
 
-#: The derived binding of get_clinical_data (the contract request's overlay change).
+#: The derived binding of get_clinical_data (the shipped overlay's, pinned by test_shipped_bindings_are_the_derived_routes).
 DERIVED_CLINICAL = {
     "verb": "find", "table": "cbioportal.sample", "columns": ["studyId", "sampleId", "patientId"],
     "envelope": {"success": True, "study_id": "{study_id}", "sample_count": None},
@@ -87,9 +87,9 @@ DERIVED_CLINICAL = {
                                          "verb": "find", "key_from_args": {"studyId": "study_id"},
                                          "value": "clinicalAttributeId"}},
 }
-#: The sample facet of get_anndata_donor_balanced (the contract request's overlay change).
+#: The sample facet of get_anndata_donor_balanced (the shipped overlay's).
 SAMPLE_FACET = {"grain": "donor", "stratify": "cell_type", "seed": 42, "columns_arg": "obs_columns",
-                "total_path": "$.n_cells_total"}
+                "total_path": "$.n_cells_total", "max_cells_default": 20000}
 
 
 def fixture(name: str) -> dict[str, Any]:
@@ -141,11 +141,12 @@ def _ctx(tmp_path: Path, data: dict[str, Any] | None = None) -> ServiceContext:
 
 
 def clinical_overlay(*, derived: bool) -> dict[str, Any]:
+    """The shipped clinicaltrials overlay (get_clinical_data served derived); ``derived=False``: served upstream."""
     ov = load_yaml(OVERLAYS / "clinicaltrials.yaml")
-    if derived:
-        b = ov["tools"]["get_clinical_data"]
-        b["serve"] = "derived"
-        b["derived"] = copy.deepcopy(DERIVED_CLINICAL)
+    b = ov["tools"]["get_clinical_data"]
+    if not derived:
+        b["serve"] = "pass"
+        b.pop("derived", None)
     return ov
 
 
@@ -219,20 +220,20 @@ async def s_study_details_release(tmp_path: Path) -> dict[str, Any]:
 
 def s_release_ctgov(tmp_path: Path) -> dict[str, Any]:
     """CR7: what CT.gov says about the data a call reads (the version endpoint)."""
-    return load_verbs()["_census_count"](_ctx(tmp_path), {"table": CT, "release_only": True})
+    return load_verbs()["_release"](_ctx(tmp_path), {"table": CT})
 
 
 def s_release_pubmed(tmp_path: Path) -> dict[str, Any]:
     """CR7: the PubMed build (einfo)."""
-    return load_verbs()["_census_count"](_ctx(tmp_path), {"table": "pubmed.records", "release_only": True})
+    return load_verbs()["_release"](_ctx(tmp_path), {"table": "pubmed.records"})
 
 
 def s_release_cbio(tmp_path: Path) -> dict[str, Any]:
     """CR7: cBioPortal's software versions and the importDate of the study the call names."""
     from vbt.datalayer.predicate import Eq, to_json
 
-    return load_verbs()["_census_count"](_ctx(tmp_path), {"table": "cbioportal.sample", "release_only": True,
-                                                          "predicate": to_json(Eq("studyId", ACC))})
+    return load_verbs()["_release"](_ctx(tmp_path), {"table": "cbioportal.sample",
+                                                     "predicate": to_json(Eq("studyId", ACC))})
 
 
 async def s_ceiling_count(tmp_path: Path) -> dict[str, Any]:
@@ -392,8 +393,12 @@ def test_live_serve_answers_an_unknown_study_as_not_found(tmp_path: Path, monkey
 
     out = load_verbs()["_serve"](_ctx(tmp_path), {"table": "cbioportal.patient_clinical", "verb": "find",
                                                   "predicate": to_json(Eq("studyId", "no_such_study_xyz"))})
-    err = out["sections"]["_error"]                       # under sections: MCPBridge reads a top-level error as a failure
-    assert out.get("error") is None and err["kind"] == "not_found" and err["value"] == "no_such_study_xyz"
+    err = out["refusal"]                                   # ipc.SERVE_ERROR: MCPBridge reads a top-level error as a failure
+    assert "error" not in out and err["kind"] == "not_found" and err["value"] == "no_such_study_xyz"
+    from vbt.tools.mcp_bridge import tool_result_error
+
+    assert tool_result_error(out) is None                  # through the bridge: a typed answer, not a failed call
+    assert parse_response("_serve", out).error == err
 
 
 # --------------------------------------------------------------------------- CR7: releases and versions
@@ -577,8 +582,9 @@ def fake_census(rows: list[dict[str, Any]]) -> Any:
 
 def census_gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, Any]], *,
                    facet: dict[str, Any] | None = SAMPLE_FACET) -> tuple[DataGateway, Any, dict[str, Any]]:
-    """The shipped single_cell overlay (with the sample facet set on its parsed binding when ``facet``) over a fake
-    Census; upstream is played by a function that writes the cells its filter selects into the h5ad it reports."""
+    """The shipped single_cell overlay over a fake Census (``facet``: the sample facet of get_anndata_donor_balanced,
+    set on its parsed binding when it differs from the shipped one; None removes it); upstream is played by a
+    function that writes the cells its filter selects into the h5ad it reports."""
     mod = fake_census(rows)
     monkeypatch.setitem(sys.modules, "cellxgene_census", mod)
     monkeypatch.setattr(soma_layout, "_RESOLVED", {})
@@ -593,11 +599,23 @@ def census_gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rows: list[d
         return {}
 
     gw = gateway(tmp_path, [load_yaml(OVERLAYS / "single_cell.yaml")], upstream=upstream)
-    if facet is not None:
-        b = gw.catalog.overlays["single_cell"].tools["get_anndata_donor_balanced"]
-        object.__setattr__(b.count_first, "sample", dict(facet))
-        b.requires_fixed = []
+    b = gw.catalog.overlays["single_cell"].tools["get_anndata_donor_balanced"]
+    if facet != SAMPLE_FACET:
+        b.count_first.sample = SampleSpec.model_validate(facet) if facet is not None else None
     return gw, mod, seen
+
+
+def test_shipped_bindings_are_the_derived_routes() -> None:
+    """The shipped overlays serve both routes this module checks: get_anndata_donor_balanced as the derived sample
+    (no dataset_id has to be fixed) and get_clinical_data derived from the live cBioPortal tables."""
+    sc = Overlay.model_validate(load_yaml(OVERLAYS / "single_cell.yaml")).tools["get_anndata_donor_balanced"]
+    assert sc.count_first.sample.model_dump(exclude_none=True) == SAMPLE_FACET and not sc.requires_fixed
+    assert sc.count_first.genes_args == ["gene_symbols", "ensembl_ids"]
+    ct = Overlay.model_validate(load_yaml(OVERLAYS / "clinicaltrials.yaml")).tools["get_clinical_data"]
+    assert ct.serve == "derived" and ct.derived.model_dump(exclude_none=True, exclude_defaults=True) == \
+        Overlay.model_validate({"schema": "vbt.overlay/1", "server": "x", "tools": {"t": {
+            "serve": "derived", "derived": DERIVED_CLINICAL}}}).tools["t"].derived.model_dump(
+            exclude_none=True, exclude_defaults=True)
 
 
 def _pull(tmp_path: Path, rows: list[dict[str, Any]], *, drop: int = 0) -> Callable[[Any, dict[str, Any]], Any]:
@@ -805,9 +823,87 @@ def test_live_census_200k_id_filter_counts_the_sample(tmp_path: Path, monkeypatc
     assert again["n_cells"] == s["n_sampled"]
 
 
+@needs_network
+async def test_live_spleen_pulls_are_sized_by_the_calibrated_estimate(tmp_path: Path,
+                                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    """Through the gateway on the real Census with the single_cell server at 4,500 MB: the 200,000-cell spleen pull
+    that was admitted and killed in S1 is refused too_large before upstream is called, and a 100,000-cell pull is
+    admitted as the derived sample (upstream is never called here)."""
+    pytest.importorskip("cellxgene_census")
+    monkeypatch.setattr(soma_layout, "_RESOLVED", {})
+    def listing(tool: str, args: dict[str, Any]) -> Any:      # the value_filter's vocabulary check, nothing else
+        assert tool == "list_metadata_values", tool
+        values = {"tissue_general": ["spleen"], "is_primary_data": ["True", "False"]}[args["column_name"]]
+        return {"value_counts": [{"value": v, "count": 1} for v in values]}
+
+    gw = gateway(tmp_path, [load_yaml(OVERLAYS / "single_cell.yaml")], upstream=listing,
+                 data={"memory": {"default_server_mb": 4500}})
+    args = {"value_filter": "tissue_general == 'spleen'", "ensembl_ids": ["ENSG00000198851", "ENSG00000156738"],
+            "output_path": "spleen.h5ad"}
+    with pytest.raises(GatewayError) as e:
+        await gw.prepare("single_cell", "get_anndata_donor_balanced", {**args, "max_cells": 200_000}, None)
+    assert e.value.kind == ErrorKind.too_large and e.value.payload["n_cells"] > 500_000
+    plan = await gw.prepare("single_cell", "get_anndata_donor_balanced", {**args, "max_cells": 100_000}, None)
+    assert plan.args_sent["value_filter"].startswith("soma_joinid in [") and plan.args_sent["max_cells"] <= 100_000
+
+
+#: Peak RSS of real pulls (2026-10-08, Census 2025-11-08, the unmodified upstream function in a fresh process):
+#: (tool, cells, genes named, MB); None: killed at the single_cell server's 4,500 MB limit (S1, through the server).
+REAL_PULLS = [("get_anndata", 7_750, 2, 1_805), ("get_anndata", 7_750, None, 2_878),
+              ("get_anndata_donor_balanced", 1_842, 2, 3_821), ("get_anndata_donor_balanced", 19_782, 2, 3_199),
+              ("get_anndata_donor_balanced", 49_783, 2, 3_190), ("get_anndata_donor_balanced", 99_771, 2, 3_136),
+              ("get_anndata_donor_balanced", 149_759, 2, 4_489), ("get_anndata_donor_balanced", 199_744, 2, None)]
+
+
+@pytest.mark.parametrize("tool,cells,genes,peak_mb", REAL_PULLS)
+def test_count_first_estimates_cover_the_real_pulls(tool: str, cells: int, genes: int | None,
+                                                     peak_mb: int | None) -> None:
+    """The shipped estimates (count_first.estimate) admit the real pulls that fit the server's 4,500 MB and refuse
+    those that did not (the 199,744-cell pull was admitted at 40,000,000 bytes before and killed); every admitted estimate is
+    at least the measured peak. A pull naming no gene reads every gene of each cell."""
+    from vbt.datalayer.gateway.gateway import _estimate_fields
+    from vbt.datalayer.service.verbs.census_count import estimate_bytes
+
+    cf = Overlay.model_validate(load_yaml(OVERLAYS / "single_cell.yaml")).tools[tool].count_first
+    req = CensusCountRequest(table=cf.table, n_genes=genes, **_estimate_fields(cf.estimate))
+    need_mb = estimate_bytes(req, cells, cells) / (1024 * 1024)
+    limit_mb = 4_500
+    if peak_mb is None or peak_mb + 150 > limit_mb:          # the server adds its own footprint to the function's
+        assert need_mb > limit_mb, (tool, cells, need_mb)
+    else:
+        assert peak_mb <= need_mb <= limit_mb, (tool, cells, need_mb)
+
+
+def test_every_gene_argument_counts_toward_the_estimate() -> None:
+    """Upstream ORs gene_symbols and ensembl_ids into one var filter: both count (S1's 200,000-cell call named only
+    Ensembl IDs and was estimated with 0 genes)."""
+    for tool in ("get_anndata", "get_anndata_donor_balanced"):
+        cf = Overlay.model_validate(load_yaml(OVERLAYS / "single_cell.yaml")).tools[tool].count_first
+        assert set(cf.genes_args) == {"gene_symbols", "ensembl_ids"} and cf.estimate.base_mb > 0
+
+
+async def test_count_first_counts_ensembl_ids_and_sends_the_estimate(tmp_path: Path,
+                                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    """A call naming only Ensembl IDs (as S1's 200,000-cell call did) is estimated with those genes, not 0."""
+    gw, _mod, _seen = census_gateway(tmp_path, monkeypatch, TWO_DATASETS)
+    await gw.prepare("single_cell", "get_anndata_donor_balanced",
+                     {"value_filter": "tissue == 'lung'", "max_cells": 20, "output_path": "s.h5ad",
+                      "ensembl_ids": ["ENSG00000198851", "ENSG00000156738"]}, None)
+    req = next(r for r in gw.service.verbs("_census_count") if r.sample is not None)
+    assert req.n_genes == 2 and req.base_bytes == 3900 * 1024 * 1024 and req.read_all_bytes == 100
+
+
 def test_census_count_request_model_carries_the_sample() -> None:
-    """The gateway's sample request travels in CensusCountRequest.sample (a free mapping), no new IPC field."""
+    """The gateway's sample request travels in CensusCountRequest.sample; the drawn sample and a written file's cells
+    come back in typed response fields, and a release lookup is its own verb (``_release``)."""
     req = CensusCountRequest(table="cellxgene_census.obs", value_filter="x == 'y'",
                              sample={"max_cells": 5, "seed": 42, "key": ["dataset_id", "donor_id"],
                                      "stratify": "cell_type"})
     assert req.sample["stratify"] == "cell_type"
+    resp = parse_response("_census_count", {"table": "cellxgene_census.obs", "n_cells": 9,
+                                            "sample": {"soma_joinids": [1, 2]}, "file_cells": [1, 2]})
+    assert resp.sample["soma_joinids"] == [1, 2] and resp.file_cells == [1, 2] and not resp.model_extra
+    with pytest.raises(ValueError):
+        CensusCountRequest(table="cellxgene_census.obs", release_only=True)
+    rel = parse_response("_release", {"table": CT, "release": {"resolved": "2026-10-08T09:00:05"}})
+    assert rel.release["resolved"] == "2026-10-08T09:00:05"

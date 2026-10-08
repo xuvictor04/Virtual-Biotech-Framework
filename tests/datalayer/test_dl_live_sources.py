@@ -271,7 +271,8 @@ async def test_shipped_count_tool_gets_the_remote_witness(stub: Stub, tmp_path: 
 async def test_engine_text_goes_to_its_request_parameter(stub: Stub, tmp_path: Path) -> None:
     """Free text the source's engine matches (``condition``, ``advanced_filter``) is sent to the request parameter
     it fills (``engine_param``), so the realistic CT.gov count gets an independent count of the same search; the
-    advanced filter keeps the caller's text, and the evidence ceiling is the witness's own conjunct."""
+    advanced filter keeps the caller's text, and the evidence ceiling is the witness's own conjunct. Engine text bound
+    to a column (``eligibility_text``) is counted as an exact phrase on that column's field."""
     desc = _source("clinicaltrials", stub)
     ov = load_yaml(SOURCES.parent / "overlays" / "clinicaltrials.yaml", _variables(stub))
     gw = make_gateway(tmp_path, [desc], [ov], {})
@@ -291,12 +292,21 @@ async def test_engine_text_goes_to_its_request_parameter(stub: Stub, tmp_path: P
     assert counts[0]["filter.advanced"] == "(AREA[Phase]PHASE3)", counts[0]
     plan, res = await call(gw, "clinicaltrials", "count_clinical_trials", args, lambda a: {"total_count": 17})
     assert res.header.get("total") == 17 and plan.witness["total"] == 17
-    # without an engine_param the text stays the source's own matching: no count request, no witness
+    # bound to the criteria column without an engine_param: each phrase is counted as the registry matches it on
+    # that field, quoted as upstream quotes it (AREA[EligibilityCriteria]"..."), so this count is witnessed too
     seen = len(stub.requests)
     plan, res = await call(gw, "clinicaltrials", "count_clinical_trials",
-                           {"eligibility_text": ["glioblastoma"], "country": None}, lambda a: {"total_count": 3})
-    assert plan.witness is None and res.header.get("total") == 3
-    assert not [p for p, q in stub.requests[seen:] if q.get("countTotal") == "true"]
+                           {"eligibility_text": ["glioblastoma", "MGMT"], "country": None},
+                           lambda a: {"total_count": 17})
+    counts = [q for p, q in stub.requests[seen:] if p == "/ctgov/studies" and q.get("countTotal") == "true"]
+    assert len(counts) == 1, stub.requests[seen:]
+    advanced = counts[0]["filter.advanced"]
+    assert 'AREA[EligibilityCriteria]"glioblastoma"' in advanced and 'AREA[EligibilityCriteria]"MGMT"' in advanced
+    assert plan.witness["total"] == 17 and res.header.get("total") == 17
+    with pytest.raises(GatewayError) as e:                      # and a count that differs is a contradiction
+        await call(gw, "clinicaltrials", "count_clinical_trials",
+                   {"eligibility_text": ["glioblastoma", "MGMT"], "country": None}, lambda a: {"total_count": 3})
+    assert e.value.kind == ErrorKind.tool_defect
 
 
 async def test_pubmed_query_is_counted_by_esearch(stub: Stub, tmp_path: Path) -> None:
@@ -689,7 +699,7 @@ def test_live_find_returns_the_record_versions(ctx: ServiceContext, stub: Stub) 
 
 
 def _census_gateway(stub: Stub, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, limit_mb: int) -> Any:
-    from vbt.datalayer.ipc import CensusCountResponse
+    from vbt.datalayer.ipc import CensusCountResponse, ReleaseResponse
 
     mod = fake_census(CELLS, ["2025-01-30"] * 20)
     monkeypatch.setattr(soma_layout, "_RESOLVED", {})
@@ -702,6 +712,8 @@ def _census_gateway(stub: Stub, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ctx = ServiceContext(gw.settings, catalog=gw.catalog, registry=REGISTRY)
     gw.service._census_count = lambda req: CensusCountResponse.model_validate(   # type: ignore[attr-defined]
         load_verbs()["_census_count"](ctx, req.model_dump(exclude_none=True)))
+    gw.service._release = lambda req: ReleaseResponse.model_validate(            # type: ignore[attr-defined]
+        load_verbs()["_release"](ctx, req.model_dump(exclude_none=True)))
     return gw
 
 

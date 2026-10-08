@@ -35,6 +35,6 @@
   ],
   "type": "object"
  },
- "serve": "pass",
+ "serve": "derived",
  "tool": "clinicaltrials.get_clinical_data"
 }

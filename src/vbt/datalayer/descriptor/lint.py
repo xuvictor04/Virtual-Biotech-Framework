@@ -1147,6 +1147,19 @@ class _OverlayLinter:
         if b.leakage_filter is not None and b.leakage_filter.arg not in args:
             self.add("error", f"{w}.leakage_filter", f"{b.leakage_filter.arg!r} is not an argument", "binding",
                      b.leakage_filter.arg)
+        if b.count_first is not None:
+            cf = b.count_first
+            named = [cf.filter_arg, *cf.genes_args, cf.max_cells_arg,
+                     cf.sample.columns_arg if cf.sample is not None else None]
+            for a in [n for n in named if n]:
+                if a not in args:
+                    self.add("error", f"{w}.count_first", f"{a!r} is not an argument", "binding", a)
+            hit = self.table_of(cf.table, f"{w}.count_first")
+            if hit is not None and cf.sample is not None and not cf.sample.key:
+                d, t = hit
+                if cf.sample.grain not in d.tables[t].grains:
+                    self.add("error", f"{w}.count_first.sample", f"{cf.table} declares no grain {cf.sample.grain!r} "
+                             "(the donor key of the sample)", "binding", cf.sample.grain)
         self.lint_result(tool, b)
         for i, d in enumerate(b.defects):
             if not d.where or not DEFECT_WHERE.match(d.where):

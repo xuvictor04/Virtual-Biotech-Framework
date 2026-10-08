@@ -200,6 +200,11 @@ class FakeService(ServiceClient):
 
         return CensusCountResponse(table=req.table, reason="no Census in the fake child")
 
+    def _release(self, req: Any) -> Any:
+        from vbt.datalayer.ipc import ReleaseResponse
+
+        return ReleaseResponse(table=req.table, reason="no release in the fake child")
+
     def _build_index(self, req: Any) -> BuildIndexResponse:
         rows = self.index_rows.get(f"{req.source}:{req.id_type}")
         if rows is None:

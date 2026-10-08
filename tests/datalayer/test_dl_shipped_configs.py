@@ -47,7 +47,9 @@ HARNESS_SERVERS = {"pubmed", "data"}             # overlays for harness servers,
 APPENDIX_A = {
     "target": (11, 5, 0), "disease": (2, 4, 0), "drug": (5, 4, 0), "association": (7, 4, 0), "genetics": (8, 2, 0),
     "expression": (3, 3, 0), "interaction": (1, 4, 0), "functional_genomics": (0, 9, 0), "pathway": (3, 7, 0),
-    "single_cell": (11, 0, 0), "clinicaltrials": (7, 0, 1), "pubmed": (2, 0, 0),
+    # clinicaltrials.get_clinical_data is derived from the live cBioPortal tables (Wave A integration, 2026-10-08);
+    # single_cell.get_anndata_donor_balanced stays `pass`: upstream fetches the derived sample's cells
+    "single_cell": (11, 0, 0), "clinicaltrials": (6, 1, 1), "pubmed": (2, 0, 0),
 }
 IDENTIFIER_PARAM = re.compile(r"(_ids?$|^gene|^pmid|^nct|^rs_id$|^variant_id$|^drug_name$|^entity_)")
 ITEM_TABLES = ("target_go", "target_pathways", "target_tractability", "target_homologues", "target_chemical_probes",
@@ -181,7 +183,7 @@ def test_serve_modes_match_appendix_a(catalog) -> None:
         mode = catalog.contract(server, tool).binding.serve
         total[mode] += 1
         by_server.setdefault(server, Counter())[mode] += 1
-    assert dict(total) == {"pass": 60, "derived": 42, "block": 1}
+    assert dict(total) == {"pass": 59, "derived": 43, "block": 1}
     for server, (p, d, b) in APPENDIX_A.items():
         got = by_server[server]
         assert (got["pass"], got["derived"], got["block"]) == (p, d, b), server

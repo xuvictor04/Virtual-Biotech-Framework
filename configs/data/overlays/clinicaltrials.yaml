@@ -60,7 +60,11 @@ tools:
       status:           {binds: clinicaltrials_gov.studies.protocolSection.statusModule.overallStatus, op: in, each: true}
       phase:            {binds: "clinicaltrials_gov.studies.protocolSection.designModule.phases[]", op: overlaps, each: true}
       study_type:       {binds: clinicaltrials_gov.studies.protocolSection.designModule.studyType}
+      # bound to the criteria column without an engine_param: the remote witness counts each phrase as the
+      # registry matches it there (AREA[EligibilityCriteria]"MGMT", quoted as upstream quotes it); never re-checked
+      # on returned rows (the registry's phrase match is not a substring test)
       eligibility_text: {role: free_text, interpreted_as: engine, each: true, forbid: ['"'],
+                         binds: clinicaltrials_gov.studies.protocolSection.eligibilityModule.eligibilityCriteria,
                          engine_doc: "each phrase is quoted into AREA[EligibilityCriteria]\"...\""}
       country:          {binds: "clinicaltrials_gov.studies.protocolSection.contactsLocationsModule.locations[].country",
                          op: contains, interpreted_as: engine, default_disclosed: true, forbid: ['"']}   # default 'United States'
@@ -185,21 +189,25 @@ tools:
       not_found_when: ["$.error =~ '(?i)status code: 404'"]
     text:
       notes: ["Patient-level values repeat on every sample row; for one row per patient use mcp__data__find on cbioportal.patient_clinical (where: {studyId: ...})."]
-    # Kept `pass` for now. The guards above make the upstream answer safe: unknown sample IDs are not_found
-    # (exists_when; a real phantom TCGA-OR-A5ZZ-01 was refused), patient attributes are counted per patient
-    # (`patients` section: 92 patients for the 92 samples of acc_tcga_pan_can_atlas_2018), and mcp__data__find on
-    # cbioportal.patient_clinical serves the patient-level table derived.
-    # Served derived it is implemented and checked (S1, 2026-10-08): serve: derived with
-    #   derived: {verb: find, table: cbioportal.sample, columns: [studyId, sampleId, patientId],
-    #             envelope: {success: true, study_id: "{study_id}", sample_count: null},
-    #             compose: [{verb: find, table: cbioportal.sample_clinical}, {verb: find, table: cbioportal.patient_clinical}],
-    #             sections: {clinical_attributes: {path: $.clinical_attributes, table: cbioportal.clinical_attribute,
-    #                                              verb: find, key_from_args: {studyId: study_id}, value: clinicalAttributeId}}}
-    # answered exactly what upstream answers through the unmodified server (rows, patients section and attribute
-    # list equal for 5 and all 92 ACC samples and the 61 samples of 23 patients of lgg_ucsf_2014), a phantom sample
-    # is not_found before any attribute is read, an unknown study not_found naming study_id. Switching needs this
-    # tool's golden snapshot and two tests that pin the pass route updated (a contract request).
-    serve: pass
+    # Served derived from the live cBioPortal tables (S1 and the Wave A integration, 2026-10-08): the study's
+    # samples, joined with their sample attributes and their patients' attributes on each table's key (later reads
+    # win a shared name, as upstream's data.update), and the study's attribute ids from a live section. Through the
+    # unmodified server upstream answered the same rows, patients section and attribute list for 5 and all 92
+    # samples of acc_tcga_pan_can_atlas_2018 and the 61 samples of 23 patients of lgg_ucsf_2014; a sample the study
+    # does not hold is not_found before any attribute is read (upstream builds a phantom row with patientId null:
+    # exists_when still guards a replayed upstream answer), and an unknown study is the portal's 404, not_found
+    # naming study_id. The guards above apply to the derived rows as to upstream's: patient attributes go to the
+    # `patients` section (92 patients for the 92 ACC samples). A whole study is sized before the read (size_from).
+    serve: derived
+    derived:
+      verb: find
+      table: cbioportal.sample
+      columns: [studyId, sampleId, patientId]
+      envelope: {success: true, study_id: "{study_id}", sample_count: null}
+      compose: [{verb: find, table: cbioportal.sample_clinical}, {verb: find, table: cbioportal.patient_clinical}]
+      sections:
+        clinical_attributes: {path: $.clinical_attributes, table: cbioportal.clinical_attribute, verb: find,
+                              key_from_args: {studyId: study_id}, value: clinicalAttributeId}
     defects:
       - {id: CT-CBIO-001, what: "unknown sample_ids come back as {sampleId, patientId: null} rows and count in sample_count",
          where: "clinicaltrials_mcp/tools.py:1470-1474", test: test_dl_defect_detectors.py::test_ct_cbio_001, effect: silent_wrong}

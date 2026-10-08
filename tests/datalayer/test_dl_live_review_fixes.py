@@ -508,6 +508,9 @@ async def test_count_cells_is_witnessed_and_records_the_release(tmp_path, monkey
     assert res.provenance.source.release == "2025-11-08" and res.header["source"] == "cellxgene_census@2025-11-08"
     info = await _call(gw, "single_cell", "get_census_info", {})
     assert info.provenance.source.release == "2025-11-08"
+    # the body names the dated release too (result.release_alias), not the alias the server opened
+    assert info.obj["census_version"] == "2025-11-08"
+    assert any("opened 'stable'" in n for n in info.header.get("notes", [])), info.header
 
 
 async def test_a_count_that_disagrees_with_the_parsed_filter_is_caught(tmp_path, monkeypatch):

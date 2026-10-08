@@ -37,8 +37,9 @@ budget; a ``pivot`` table reshaped to one row per index), with the source's rele
 are ordered here only when every page was read (an ordered cut of a truncated read is refused); nesting,
 splitting, exploding, grouping and sections are refused on it (the gateway reads a derived binding's live
 sections and ``compose`` sub-tables with one request each). A source's typed answer (an unknown study's 404 is
-``not_found``) is returned under ``sections["_error"]``: through MCPBridge a reply with a top-level ``error`` key
-is read as a failed call, which made an unknown study ``service_unavailable``.
+``not_found``) is the response's ``error``, which goes on the wire as ``refusal`` (``ipc.SERVE_ERROR``): through
+MCPBridge a reply with a top-level ``error`` key is read as a failed call, which made an unknown study
+``service_unavailable``.
 
 ``served_by`` is ``derived``. Over the scan budget the response has no rows, ``total: null`` and a
 ``reason`` starting with ``too_large:`` (never a partial answer presented as complete). Counters that
@@ -454,10 +455,10 @@ def serve_live(ctx: ServiceContext, req: ServeRequest) -> dict[str, Any] | None:
         got = live_find(ctx, {"table": req.table, "predicate": to_json(pred) if pred is not None else None,
                               "columns": list(req.columns), "limit": None if order else req.limit})
     except GatewayError as exc:
-        # the source's typed answer (an unknown study is HTTP 404: not_found naming it), never an outage. It travels
-        # under sections["_error"]: through MCPBridge a reply with a top-level `error` key is read as a failed call
-        # (a real unknown study came back service_unavailable that way, 2026-10-08)
-        return ServeResponse(rows=[], total=None, sections={"_error": exc.envelope()}).model_dump(mode="json")
+        # the source's typed answer (an unknown study is HTTP 404: not_found naming it), never an outage. It goes on
+        # the wire as `refusal`: through MCPBridge a reply with a top-level `error` key is read as a failed call (a
+        # real unknown study came back service_unavailable that way, 2026-10-08)
+        return ServeResponse(rows=[], total=None, error=exc.envelope()).model_dump(mode="json")
     rows = [dict(r) for r in got.get("rows") or []]
     key = [k for k in t.spec.key.columns if not k.endswith("#")]
     truncated = bool(got.get("truncated"))

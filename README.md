@@ -283,6 +283,22 @@ vbt data zenodo fetch --preset case1       # download the Case 1 part of the arc
 vbt case1 replicate                        # re-run the Case 1 statistics on the archive and compare
 ```
 
+### Open Targets release tables
+
+`vbt data ot` downloads tables of an Open Targets Platform release (default 25.09) into the directory the
+upstream servers read (`$OPEN_TARGETS_DATA_PATH`). The file list and checksums come from the release's
+`release_data_integrity` file, itself checked against its `.sha1`; no directory listing is walked. Every
+downloaded file's sha1 is checked, a partial download resumes, and `.download-manifest.json` is written in
+the upstream downloader's format (with sha1 added), which the data layer's readiness check (R2) and the
+upstream `tools/doctor.py` read.
+
+```bash
+vbt data ot list                                   # the release's tables and file counts
+vbt data ot fetch target go reactome --dry-run     # what would be downloaded, and its size
+vbt data ot fetch target go reactome --max-gb 2    # download, verify, write the manifest
+vbt data ot manifest                               # verify tables already on disk and write the manifest
+```
+
 ## Data layer
 
 The upstream MCP servers read Parquet files and live APIs directly. In places they answer wrongly

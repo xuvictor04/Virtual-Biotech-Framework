@@ -226,6 +226,7 @@ class DataEnv:
     ot_root: Path | None = None
     tahoe_root: Path | None = None
     eutils_base: str | None = None
+    cbioportal_base: str | None = None             # the REST stub the data child's live cBioPortal tables read
     output_dir: Path | None = None
     extra: dict[str, str] = field(default_factory=dict)
 
@@ -239,8 +240,11 @@ class DataEnv:
             out["MCP_OUTPUT_DIR"] = str(self.output_dir)
         if os.environ.get("VBT_ZENODO_DIR"):
             out["VBT_ZENODO_DIR"] = os.environ["VBT_ZENODO_DIR"]      # see conftest: never the host's extract
-        if self.eutils_base:
-            out["VBT_EUTILS_BASE"] = self.eutils_base
+        if self.cbioportal_base:
+            out["VBT_CBIOPORTAL_BASE"] = self.cbioportal_base
+        if self.eutils_base or self.cbioportal_base:
+            if self.eutils_base:
+                out["VBT_EUTILS_BASE"] = self.eutils_base
             local = "127.0.0.1,localhost"
             for key in ("NO_PROXY", "no_proxy"):
                 prev = os.environ.get(key, "")
@@ -266,8 +270,10 @@ def data_overrides(*, gateway: bool, tmp_path: Path) -> dict[str, Any]:
 
 
 #: The live sources' base URLs in an offline run: a loopback port nothing listens on, so the data child's live
-#: tables (the cBioPortal sample count of a CT-2 case) fail at once instead of reaching the internet, or hanging
-#: on a proxy that never answers (RR-6). ``VBT_DL_NETWORK=1`` keeps the real bases.
+#: tables fail at once instead of reaching the internet, or hanging on a proxy that never answers (RR-6).
+#: ``VBT_DL_NETWORK=1`` keeps the real bases. A harness with a cBioPortal stub (``DataEnv.cbioportal_base``: the
+#: study the upstream server's ``pybioportal`` stub holds) points the data child at the stub instead, in both cases:
+#: the derived get_clinical_data of a CT-2 case reads the same study upstream would.
 OFFLINE_BASES = {"VBT_CBIOPORTAL_BASE": "http://127.0.0.1:9/cbioportal/api",
                  "VBT_CTGOV_BASE": "http://127.0.0.1:9/ctgov/api/v2",
                  "VBT_EUTILS_BASE": "http://127.0.0.1:9/eutils"}
@@ -291,7 +297,8 @@ def harness_config(*, gateway: bool, tmp_path: Path, env: DataEnv | Mapping[str,
         "mcp_servers_file": "configs/mcp_servers.yaml",
         "vars": {"upstream": str(upstream_root())},
         "tool_env": {**{k: data_env[k] for k in ("OPEN_TARGETS_DATA_PATH", "TAHOE_DATA_PATH", "VBT_ZENODO_DIR")
-                        if k in data_env}, **offline_bases()},
+                        if k in data_env}, **offline_bases(),
+                     **{k: data_env[k] for k in ("VBT_CBIOPORTAL_BASE",) if k in data_env}},
     }
     base = _merge(base, data_overrides(gateway=gateway, tmp_path=tmp_path))
     return load_config(["mock"], overrides=_merge(base, overrides))

@@ -29,6 +29,7 @@ Every number on this page was observed in those runs; nothing is extrapolated un
 5. [Memory and latency](#5-memory-and-latency)
 6. [What still needs data we could not get](#6-what-still-needs-data-we-could-not-get)
 7. [Re-running the checks](#7-re-running-the-checks)
+8. [Round 3: derived live routes, item keys in Arrow, Census admission](#8-round-3-derived-live-routes-item-keys-in-arrow-census-admission)
 
 ## 1. Sources and releases
 
@@ -451,10 +452,10 @@ speed-ups of the real-data fixes:
 | expression | 135.0 | 1,684 | after |
 | interaction | 35.3 (477.1 at 3,939 MB before) | 2,299 | after |
 
-* **Not finished.** The deep check of l2g_prediction was stopped at 900 s: the full key check of its
-  features item table renders every item in Python (35.5 M items when stopped). The deep checks of
-  target_essentiality and interaction_evidence were not run to completion after the fixes. An earlier run
-  took 729.8 s at 3,008 MB for target_essentiality.
+* **Item keys.** The deep check of l2g_prediction was stopped at 900 s here: the full key check of its
+  features item table rendered every item in Python. Item keys are now counted in Arrow (section 8.3): the
+  deep checks of l2g_prediction (44,578,431 feature items) and target_essentiality finish in 23.7-26.5 s and
+  12.1-12.6 s.
 * **10.3 GiB.** An early deep check of interaction_evidence (971.3 s) peaked at 10.3 GiB, because
   `vbt ds check` started the data child without the reaper. It now runs under the reaper
   (`preflight.run_contained`). A composite reference also keeps only the sampled tuples now; it kept all
@@ -546,24 +547,16 @@ Opt-in runs:
   unmodified servers cannot serve them, so the gateway refuses them `too_large` before loading. They are
   served only where an overlay declares a derived answer (the interaction network) or where a `find` stays
   within the scan budget.
-* **Deep key checks of large item tables.** These render every item in Python:
-  * l2g_prediction features: stopped at 900 s after 35.5 M items.
-  * target_essentiality and interaction_evidence: not run to completion after the fixes.
-
-  An Arrow path for item keys (flattened lists with parent indices) would do what the flat-key fixes did.
+* **Item tables under a parent of more than 16 M rows.** Item keys are counted in Arrow (section 8.3), except
+  under a parent table of more than 16 M rows (evidence `mutatedSamples[]`, 30.4 M evidence rows), which
+  keeps the spilled row scan. Evidence is not downloaded here, so that case was not measured.
 * **Tahoe-100M.** Only 13 of 65,218 contrasts were read. A prepared DE file for the whole release
   (83 GiB of source) was not built, and `obs_metadata.parquet` (2.29 GB) was not downloaded. The figure
   of about 1.4e8 permissive rows is an estimate from the 13 contrasts.
 * **DepMap.** Releases newer than 24Q4 are only on the portal, behind its browser check.
-* **Census.**
-  * `get_anndata_donor_balanced` still runs upstream behind `requires_fixed: dataset_id`. Upstream
-    stratifies by cell type, the derived `(dataset_id, donor_id)` sample does not, and a `soma_joinid in
-    [...]` filter of up to 200,000 ids through the unmodified server is untested.
-  * The Census row read keeps the note "N page(s) read within the source's budget" when it cuts a full match
-    to `limit`.
-* **CT.gov under the evidence ceiling.** A native find counts the trials both first posted and last updated
-  by the ceiling: those are the rows it can return under `rows: withhold`. The upstream count tool bounds
-  only the first posting, so the two totals differ: 87 against 2,323 for RECRUITING trials under 2017-12-31.
+* **Census.** The pull estimate (section 8.1) is fitted to spleen pulls of 1,842-149,759 cells with 2 genes
+  and one 7,750-cell pull with every gene. Other filters and gene counts were not measured. A 200,000-cell
+  pull does not fit the `single_cell` server's 4,500 MB limit and is now refused before the call.
 * **Matrix tables.** R6, R7, R9 and R10 (value facts, vocabularies, references, relations) do not run on
   them.
 * **F23 (calibration, soak, graduation).**
@@ -579,8 +572,8 @@ The default suite is offline. The real-data tests are opt-in:
 
 | Variable | Tests | Needs |
 |---|---|---|
-| `VBT_DL_REAL_DATA=<dir>` | `test_dl_real_ot_schema.py` (downloaded files against the snapshots), `test_dl_real_ot_servers.py` (standard checks, the six tests, the wrong answers off), `test_dl_real_tahoe_depmap.py`, `test_dl_review_realdata.py`, `test_dl_hardening.py` (whole-table loads under the reaper) | `<dir>` is the shared root (`data/real`, holding `open_targets/25.09/`, `tahoe/<revision>/`, `depmap/24Q4/`, ...) or the `open_targets/25.09` directory itself. The server tests also need `third_party/TheVirtualBiotech` checked out (or `VBT_UPSTREAM`). |
-| `VBT_DL_NETWORK=1` | `test_dl_real_live.py`, `test_dl_live_review_fixes.py` (live CT.gov, cBioPortal, E-utilities, Census), the live footer reads of `test_dl_real_ot_schema.py` (`full`: every shard) and `test_dl_real_tahoe_depmap.py` | network access; `cellxgene-census` for the Census tests |
+| `VBT_DL_REAL_DATA=<dir>` | `test_dl_real_ot_schema.py` (downloaded files against the snapshots), `test_dl_real_ot_servers.py` (standard checks, the six tests, the wrong answers off), `test_dl_real_tahoe_depmap.py`, `test_dl_review_realdata.py`, `test_dl_hardening.py` (whole-table loads under the reaper), `test_dl_round3_items.py` (item keys of the real tables in Arrow, the download manifest) | `<dir>` is the shared root (`data/real`, holding `open_targets/25.09/`, `tahoe/<revision>/`, `depmap/24Q4/`, ...) or the `open_targets/25.09` directory itself. The server tests also need `third_party/TheVirtualBiotech` checked out (or `VBT_UPSTREAM`). |
+| `VBT_DL_NETWORK=1` | `test_dl_real_live.py`, `test_dl_live_review_fixes.py`, `test_dl_round3_live.py` (live CT.gov, cBioPortal, E-utilities, Census; the derived routes and the calibrated Census admission), the release integrity list of `test_dl_round3_items.py`, the live footer reads of `test_dl_real_ot_schema.py` (`full`: every shard) and `test_dl_real_tahoe_depmap.py` | network access; `cellxgene-census` for the Census tests |
 | `VBT_DL_HOST_LIMITS=1` | the cgroup kill tests of `test_dl_hardening.py` | a writable cgroup v1 hierarchy |
 
 For example:
@@ -594,7 +587,132 @@ The server tests start the unmodified upstream servers and the data child; their
 5.4-5.6 GB here. Do not run them under an address-space limit (`prlimit --as`): the gateway-off servers
 inherit it and fail. To fetch Open Targets 25.09, use the upstream downloader
 (`third_party/TheVirtualBiotech/tools/download_open_targets.py`). Then run `vbt ds check --table
-open_targets.<table>` on what you downloaded.
+open_targets.<table>` on what you downloaded. `vbt data ot fetch <table...>` downloads tables with each
+file's sha1 checked against the release's `release_data_integrity`, and `vbt data ot manifest` writes the
+download manifest for tables already on disk (section 8.4).
 
 **Updating the snapshots.** `VBT_UPDATE_REAL_SNAPSHOT=1` rewrites the Open Targets snapshots from the live
 release. `tests/datalayer/real/live/README.md` explains how to re-record the live responses.
+
+## 8. Round 3: derived live routes, item keys in Arrow, Census admission
+
+Run on 2026-10-08 on the same machine, releases and APIs. The upstream servers were launched unchanged
+(MCPBridge, enforce mode) or, for the Census calibration, their functions were called unchanged in a fresh
+process.
+
+### 8.1 Census (2025-11-08)
+
+**Derived donor-balanced sample.** `get_anndata_donor_balanced` is served as the derived `(dataset_id,
+donor_id)` sample: the data child replays upstream's cell-type-stratified draw (`RandomState(42)`, the same
+order) with donors keyed by dataset, and the unmodified server is asked for exactly the drawn cells.
+
+| Call | Result |
+|---|---|
+| one dataset (`f7c1c579-...`, 4,062,980 matching cells), `max_cells` 300 | the same 293 `soma_joinid`s upstream's own draw picked; 28 donors; the file holds them (`sample_cells`) |
+| two datasets (1,611,261 cells), `max_cells` 2,000 | 1,982 cells over 36 `(dataset_id, donor_id)` donors; the file holds them |
+| spleen (`tissue_general == 'spleen'`, 577,677 primary cells, 7 datasets) | six `donor_id` labels occur in two datasets each: 58 labels, 64 donors. Upstream's own balancing merges them |
+| spleen, `max_cells` 200,000 | 199,744 drawn over all 64 donors and 110 cell types; the `value_filter` is 2,104,665 characters; the soma layout counted it as 199,744 in 4.72 s at 1,345 MB, and `count_cells` through the unmodified server answered 199,744 (22.2 s) |
+| a filter selecting no cell | upstream's "No cells found" was `not_found` on `ensembl_ids`; with a count-first count of 0 it is `empty` |
+
+**Calibrated admission.** Before, the estimate was `cells x (200 + genes x 4)` bytes with only
+`gene_symbols` counted: the 200,000-cell spleen pull (Ensembl IDs only) was estimated at 40,000,000 bytes, admitted,
+and killed at the server's 4,500 MB cgroup limit (maxrss 4,701,844 kB, 79.5 s). Peak RSS (VmHWM) of pulls
+made by calling the unmodified upstream function in a fresh process:
+
+| Pull | Cells | Genes | Seconds | Peak MB |
+|---|---:|---:|---:|---:|
+| `get_anndata`, one dataset (`59632ec0-...`) | 7,750 | 2 | 13.9 | 1,805 |
+| `get_anndata`, the same dataset | 7,750 | all (61,497) | 17.9 | 2,878 |
+| `get_anndata_donor_balanced`, drawn spleen cells (`soma_joinid in [...]`) | 1,842 | 2 | 41.5 | 3,821 |
+| the same | 19,782 | 2 | 90.2 | 3,199 |
+| the same | 49,783 | 2 | 144.2 | 3,190 |
+| the same | 99,771 | 2 | 84.1 | 3,136 |
+| the same | 149,759 | 2 | 67.9 | 4,489 |
+
+The footprint is mostly fixed, so `count_first.estimate` is a base plus a per-cell slope fitted to the
+largest pulls: `get_anndata_donor_balanced` 3,900 MB plus 4,500 bytes per cell (plus 100 bytes per matching
+cell when the server draws its own sample), `get_anndata` and `get_expression_for_genes` 2,000 MB plus 4,500
+bytes per cell, and 145,000 bytes per cell more when no gene is named. Through the gateway with the data
+child on the real Census and the server at 4,500 MB, spleen pulls of 20,000 and 100,000 cells were admitted
+(estimates 3,987 and 4,339 MB; 19,782 and 99,771 cells drawn) and pulls of 150,000 and 200,000 cells were
+refused `too_large` before the call (4,559 and 4,778 MB), each decision in 10.4-11.4 s at a 1,067 MB
+process tree.
+
+**Body release.** `get_census_info` answered `census_version: "stable"`; the body now names 2025-11-08, as
+the header does.
+
+### 8.2 Live sources
+
+**`get_clinical_data` served derived** from the live cBioPortal tables (the samples, their sample
+attributes, their patients' attributes, the study's attribute ids), compared with upstream through the
+unmodified server:
+
+| Call | Upstream | Derived |
+|---|---|---|
+| `acc_tcga_pan_can_atlas_2018`, 5 samples | 5 rows, 4.98 s | equal, 5.34 s |
+| the same study, all 92 samples | 92 rows, 3.63 s | equal, 3.98 s |
+| `lgg_ucsf_2014` (61 samples of 23 patients) | 61 rows, 4.18 s | equal, 4.94 s |
+| a phantom `TCGA-OR-A5ZZ-01` with one real sample | `not_found`, 3.4 s | `not_found` before any attribute is read, 1.09 s |
+| unknown study `no_such_study_xyz` | `not_found`, 1.5 s | `not_found` naming `study_id` (HTTP 404), 2.0 s |
+
+"Equal" covers the rows, the `patients` section and the attribute list. Through MCPBridge the data child's
+answer to an unknown study had come back `service_unavailable`: a reply with a top-level `error` key is a
+failed call to the bridge. The refusal now goes on the wire as `refusal`.
+
+**Release provenance of upstream-served calls.**
+
+| Call | Release | Versions |
+|---|---|---|
+| CT.gov calls, including the unwitnessed `eligibility_text` count (before: no release) | `dataTimestamp` 2026-10-08T09:00:05 | `apiVersion` 2.0.5 |
+| `get_study_details acc_tcga_pan_can_atlas_2018` (before: no release) | the study's `importDate` 2026-06-05 15:19:54 | `portalVersion` v7.1.2, `dbVersion` 3.0.0 |
+| `search_pubmed` | none (PubMed names no data release) | `dbbuild` Build-2026.10.08.12.28 at 20:41 UTC, Build-2026.10.08.12.38 at 20:49 UTC |
+
+**Evidence ceiling 2017-12-31.** RECRUITING trials: 2,323 first posted by the ceiling, 87 also last updated
+by it. Glioblastoma, completed or terminated, phase 3, Germany: 21 and 13 (8 withheld). Both totals are in
+`_vbt.ceiling_totals`. Native finds on cBioPortal (33 rows) and the Census (158 rows) cut to `limit` 3 now
+say every matching row was read.
+
+### 8.3 Item keys in Arrow (Open Targets 25.09)
+
+Every keyed item table and keyed container of the 31 downloaded tables is counted in Arrow; none falls
+back to the row scan. Every composed key is unique over all items: l2g_features 44,578,431,
+target_essentiality_screens 20,955,265 (null `tissueId` grouped), expression_tissues 4,940,421,
+target_homologues 3,820,596, target_go 821,377 (nullable `ecoId`), drug_indications 61,629,
+target_chemical_probes 5,090 (nullable `drugId`), target_safety_liabilities 4,484 (nullable `eventId`,
+`url`).
+
+| `vbt ds check` of | Depth | Before | After |
+|---|---|---|---|
+| target_essentiality | deep | 542.3 s, 1,951 MB | 12.1-12.6 s, 694-729 MB |
+| l2g_prediction | deep | 791.6 s, 1,250 MB | 23.7-26.5 s, 932-994 MB |
+| target | deep | 147.3 s, 1,405 MB | 15.6-16.2 s, 1,376-1,394 MB |
+| interaction_evidence | deep | 36.3 s, 648 MB | 38.3-44.8 s, 650-656 MB (no item tables) |
+| target_essentiality | standard | 35.0 s, 2,077 MB | 7.5 s, 504 MB |
+| target | standard | 38.0 s, 628 MB | 11.8 s, 452 MB |
+| l2g_prediction | standard | 49.8 s, 920 MB | 17.4 s, 670 MB |
+| expression | standard | 21.9 s, 1,051 MB | 7.0 s, 993 MB |
+
+All 31 tables are `ready` at both depths (deep: 299.6 s summed, largest tree 2,217 MB). Measured on the
+real data along the way:
+
+* 25.09 key parts are nested values: chemical probe `origin` is `list<string>`, `urls` is
+  `list<struct<niceName,url>>`, drug indication `references` is `list<struct<source, ids[]>>`, and
+  `maxPhaseForIndication` holds the in-band code -1. Lists compare as multisets, structs field by field,
+  codes as null.
+* pyarrow's `list_parent_indices` does not skip a null list slot that still spans values (parents
+  `[0,0,1,2,2]` against 4 flattened values); parents come from the list value lengths.
+* R6 counted struct containers as lists, so 25.09 `tep` and `hallmarks` read null in all 78,726 genes. They
+  now count 41 and 368 present.
+* Chemical probes: 77,809 genes null, 0 empty, 917 with probes. "None listed" is never an empty list, so the
+  coverage fact stays `verified: false`.
+
+### 8.4 Open Targets release download
+
+`release_data_integrity` of 25.09 lists 22,557 files (sha1 `872decc7ef350306d0843ba6279019662b004a42`, equal to
+its `.sha1`), of which 3,508 are Parquet files in 38 tables, as the footer scan counted. `vbt data ot fetch so
+go reactome drug_warning` downloaded 11 files (1.4 MB) in 4.3 s, every sha1 matching; a rerun downloaded
+nothing (0.1 s). `vbt data ot manifest` on `data/real/open_targets/25.09` downloaded nothing and recorded
+31 tables, 697 files and 1,807,308,195 bytes in 3.5 s; all 697 entries equal the earlier download record. The
+unmodified upstream downloader's `load_manifest` and `metadata_matches` accept all 697 entries, and its doctor
+accepts them when narrowed to the 31 downloaded tables (with the full list it reports the 7 tables not
+downloaded). `R2:manifest_absent` is gone from every table's check.
