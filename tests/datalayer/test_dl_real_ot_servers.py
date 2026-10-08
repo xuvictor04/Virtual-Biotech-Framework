@@ -337,15 +337,18 @@ def _interaction(tmp: Path, n: int) -> ServiceContext:
                         ("targetB", pa.string()), ("intB", pa.string()), ("speciesB", sp), ("count", pa.int64()),
                         ("scoring", pa.float64())])
     rows = [{"sourceDatabase": ("intact", "string", "signor")[i % 3], "targetA": f"ENSG{i % 11:011d}",
-             "intA": f"P{i:05d}", "targetB": f"ENSG{i % 7:011d}", "intB": f"Q{i:05d}",
+             "intA": f"P{i:05d}", "targetB": None if i % 13 == 0 else f"ENSG{i % 7:011d}", "intB": f"Q{i:05d}",
              "speciesB": {"mnemonic": "human", "taxon_id": 9606}, "count": i, "scoring": None if i % 5 else i / 9}
             for i in range(n)]
     write(tmp, "interaction", rows, schema, part="part-00000")
     write(tmp, "interaction", rows[: n // 3], schema, part="part-00001")
     key = ["sourceDatabase", "targetA", "intA", "targetB", "intB"]
     return make_ctx(tmp, {"interaction": {
-        "kind": "edges", "path": "interaction", "grain": "pair", "key": {"columns": key},
-        "columns": {**{k: {"role": "identifier"} for k in key}, "count": {"role": "category"},
+        "kind": "edges", "path": "interaction", "grain": "pair", "key": {"columns": key, "nullable": ["targetB"]},
+        "columns": {**{k: {"role": "identifier"} for k in key},
+                    # as in 25.09: a null endpoint is an interactor that is not a gene
+                    **{k: {"role": "identifier", "missing": "non_entity"} for k in ("targetA", "targetB")},
+                    "count": {"role": "category"},
                     "scoring": {"role": "category"}, "speciesB.mnemonic": {"role": "category"}}}})
 
 
@@ -383,6 +386,35 @@ def test_a_scan_converts_a_large_row_group_in_slices(tmp_path, monkeypatch):
     assert sliced == whole and sorted(c for _, c, _ in whole) == sorted(expected)
     assert all(sp == {"mnemonic": "human", "taxon_id": 9606} for _, _, sp in whole)   # second-pass columns
     assert sliced_totals == whole_totals and whole_totals[0] == len(expected) and whole_totals[2] > 0
+
+
+def test_a_predicate_on_a_column_that_only_says_what_null_means_is_pushed_to_arrow(tmp_path, monkeypatch):
+    """``missing: non_entity`` (25.09 interaction targetA/targetB) says what a null endpoint means and rewrites no
+    value, but it counted as cleaning: every get_interactions predicate stayed out of Arrow and each call converted
+    all 14.5 M interaction rows. Only the matching rows are converted now, with the same matches and totals."""
+    from vbt.datalayer.predicate import Eq
+    from vbt.datalayer.service import reader as _reader
+
+    ictx = _interaction(tmp_path, 500)
+    reader = ictx.reader("s.interaction")
+    assert not reader._unclean("targetA") and not reader._unclean("targetB")
+
+    def run(pushed: bool) -> tuple[list[Any], Any, int]:
+        if not pushed:
+            monkeypatch.setattr(TableReader, "_unclean", lambda self, path: True)
+        sizes: list[int] = []
+        real = reader.fmt.to_native
+        monkeypatch.setattr(reader.fmt, "to_native", lambda tbl: (sizes.append(tbl.num_rows), real(tbl))[1])
+        st = _reader.ScanStats()
+        out = sorted((m.key, m.row.get("count")) for m in reader.scan(Eq("targetB", "ENSG00000000003"), stats=st))
+        total, *_ = reader.count(Eq("targetB", "ENSG00000000003"))
+        monkeypatch.undo()
+        return out, (st.total, total), sum(sizes)
+
+    pushed, pushed_totals, pushed_converted = run(True)
+    scanned, scanned_totals, scanned_converted = run(False)
+    assert pushed == scanned and pushed_totals == scanned_totals and pushed_totals[0] == len(pushed) > 0
+    assert pushed_converted < scanned_converted / 3, (pushed_converted, scanned_converted)
 
 
 # ---------------------------------------------------------------------------- resolver sidecars are reused

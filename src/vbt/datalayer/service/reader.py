@@ -851,11 +851,15 @@ class TableReader:
         return bool(plugin is not None and hasattr(plugin, "missing_codes") and plugin.missing_codes(spec))
 
     def _unclean(self, path: str) -> bool:
+        """Does cleaning rewrite stored values of ``path`` (in-band unknowns: codes, placeholders, conditions)?
+        ``missing`` says what a null means and rewrites nothing: counting it kept every predicate on the 25.09
+        interaction endpoints (``missing: non_entity``) out of Arrow, and each get_interactions call converted all
+        14.5 M interaction rows to Python."""
         spec = self.column_spec(path)
         if spec is None:
             return False
         if any(getattr(spec, f, None) for f in ("missing_values", "unknown_when", "placeholders",
-                                                  "placeholder_when", "missing")):
+                                                  "placeholder_when")):
             return True
         plugin = self.ctx.statistic(getattr(spec, "statistic", None)) if getattr(spec, "role", None) == "measure" \
             else None
