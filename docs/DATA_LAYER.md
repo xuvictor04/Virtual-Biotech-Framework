@@ -3987,8 +3987,9 @@ land, and the six correctness tests are the acceptance gate. Legend: **P1** work
 
 ### 25.3 What remains open
 
-- Facts marked SCHEMA-DEPENDENT (§23) still need the full 25.09 release; readiness confirms them and
-  I9 keeps them disclosure-only meanwhile.
+- Facts marked SCHEMA-DEPENDENT (§23) were checked on the real 25.09 release after implementation (§23;
+  [DATA_LAYER_REAL_DATA.md](DATA_LAYER_REAL_DATA.md)). The three still `verified: false` stay
+  disclosure-only (I9).
 - In-process readers (N8) and remote tools without a witness (until P4) are the two places where a
   silent wrong answer can still pass in phase 1; both are reported by readiness and covered by defect
   detectors where the upstream defect is known.

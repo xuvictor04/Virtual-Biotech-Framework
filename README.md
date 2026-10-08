@@ -57,6 +57,7 @@ part of it is mapped to its module in [docs/PAPER_TO_CODE.md](docs/PAPER_TO_CODE
 | Bulk runner (one agent per item, Pydantic output, resumable) and CSO `BulkDispatch` | `src/vbt/bulk.py`, `src/vbt/bulk_dispatch.py` |
 | Case studies, scenarios, Zenodo archive | `src/vbt/case_studies/` |
 | Reference analyses (single-cell, spatial, survival, TF, Shapley, biomarkers) | `src/vbt/analysis/` |
+| Data layer: source descriptors, tool overlays, gateway, data child, `vbt ds` | `src/vbt/datalayer/`, `configs/data/` |
 
 ## Setup
 
@@ -282,6 +283,56 @@ vbt data zenodo fetch --preset case1       # download the Case 1 part of the arc
 vbt case1 replicate                        # re-run the Case 1 statistics on the archive and compare
 ```
 
+## Data layer
+
+The upstream MCP servers read Parquet files and live APIs directly. In places they answer wrongly
+without saying so: an identifier in another form is "not found", an unknown ID is an empty success, a
+top-k list is cut in file order, an argument is ignored. The harness adds a data layer between the agents
+and those servers ([docs/DATA_LAYER.md](docs/DATA_LAYER.md)), and the servers are not edited.
+
+- **Descriptors and overlays.** `configs/data/sources/*.yaml` describe each source: its tables, keys,
+  coverage and the role of every column. `configs/data/overlays/*.yaml` bind each upstream tool to the
+  tables it reads.
+- **What it guarantees** (gateway in `enforce` mode):
+  - identifiers are resolved or refused, never answered as "not found";
+  - an unknown ID is an error, and an empty result says what it covers;
+  - ranked results are the global top-k, with a total checked by an independent count (the witness);
+  - every argument is honoured or refused.
+
+  Every result starts with a `_vbt` header (status, source and release, total, coverage). It also leaves a
+  provenance record that claims cite by row key. A separate data child process answers these checks under
+  a memory limit, and readiness is checked per tool before a session starts.
+- **Gateway modes** (`data.gateway.mode` in `configs/default.yaml`):
+  - `enforce` (default) guards the servers in `enforce_servers` and observes the rest;
+  - `observe` traces every decision and returns the upstream answers unchanged;
+  - `"off"` turns the gateway off.
+- **Native tools.** `mcp__data__*` (resolve, lookup, find, search, aggregate, neighbors, enrich, ...) read
+  the declared tables directly. Every data agent is granted them.
+
+```bash
+vbt ds lint [--strict]                    # validate descriptors and overlays
+vbt ds check [--table S.T | --tool s.t]   # readiness R1-R10, run in the data child under the reaper
+vbt ds explain target.get_target_info     # binding, serve mode, derived schema and text of a tool
+vbt ds resolve ensembl_gene PCSK9         # resolver rules and candidates
+vbt ds index build                        # resolver and access-path indexes
+vbt ds estimate | calibrate | status      # memory estimates, calibration, per-server memory
+vbt ds replay <RUN> --all                 # re-execute a run's recorded data calls
+vbt verify <RUN> --data                   # fresh fingerprints and replays of the cited data
+```
+
+The layer was run against Open Targets 25.09, Tahoe-100M, DepMap, GO, the Cell Ontology, MSigDB and the
+live ClinicalTrials.gov, cBioPortal, E-utilities and Census APIs. On the real release, the unmodified
+servers fail the six correctness tests: for example, `get_target_info("PCSK9")` answers "not found", and
+the top five known drugs for PCSK9 are phase 3 although 23 phase-4 rows exist. With the gateway, the
+answers match an independent pyarrow oracle, and invalid arguments are refused.
+
+- [docs/DATA_LAYER_REAL_DATA.md](docs/DATA_LAYER_REAL_DATA.md): what was checked, what was corrected,
+  the memory and latency measured, and what is still unchecked.
+- [docs/DATA_LAYER_STATUS.md](docs/DATA_LAYER_STATUS.md): the status of each fix and how to write a
+  descriptor or overlay.
+- [docs/DATA_LAYER_RUNBOOK.md](docs/DATA_LAYER_RUNBOOK.md): from a symptom to the command that
+  diagnoses it.
+
 ## Configuration
 
 - `configs/default.yaml`:
@@ -350,6 +401,10 @@ python -m pytest -q      # offline: scripted provider, fake inference servers, s
 # live probes of the local adapter against a running server (skipped unless the URL is set)
 VBT_LIVE_LOCAL_URL=http://localhost:8000/v1 VBT_LIVE_LOCAL_MODEL=qwen3.8-27b \
   VBT_LIVE_LOCAL_HARNESS=1 python -m pytest -v tests/test_live_local.py
+
+# the data layer on downloaded releases and on the live APIs (skipped unless set; docs/DATA_LAYER_REAL_DATA.md)
+VBT_DL_REAL_DATA=data/real python -m pytest -q tests/datalayer/test_dl_real_ot_servers.py
+VBT_DL_NETWORK=1 python -m pytest -q tests/datalayer/test_dl_real_live.py
 ```
 
 ## Differences from the reference implementation
@@ -446,10 +501,18 @@ VBT_LIVE_LOCAL_URL=http://localhost:8000/v1 VBT_LIVE_LOCAL_MODEL=qwen3.8-27b \
   agent's tool list against the upstream registry and every allowlist entry against the tools the
   servers register. `vbt doctor --smoke` was run against the real servers without Open Targets
   data: they start, and the data tools fail the smoke test as expected.
-- Not yet exercised end to end: live Claude runs, the Open Targets–backed MCP tools, and the
-  wrappers around optional heavy dependencies (PyDESeq2, LIANA, decoupler, lifelines,
-  Cell2Location, CELLxGENE Census, rpy2/lme4/glmmTMB). The build environment had no GPU, no
-  API key and no network access to the data sources.
+- The data layer and the unmodified MCP servers behind it were run on real data, through the
+  bridge but without a model ([docs/DATA_LAYER_REAL_DATA.md](docs/DATA_LAYER_REAL_DATA.md)):
+  - 31 of the 38 Open Targets 25.09 tables, through the Open Targets-backed servers, with the
+    gateway off and on;
+  - the live ClinicalTrials.gov, cBioPortal and PubMed tools;
+  - the CELLxGENE Census tools (`count_cells`, `get_anndata`).
+
+  The evidence, variant, credible-set and colocalisation tables were not downloaded, so the tools
+  that read them were seen only refusing (`not_ready`).
+- Not yet exercised end to end: live Claude runs, agent sessions on real data, and the wrappers
+  around optional heavy dependencies (PyDESeq2, LIANA, decoupler, lifelines, Cell2Location,
+  rpy2/lme4/glmmTMB). The build environment had no GPU and no API key.
 - Case 1 calibration (harness addition): the paper takes the minimum feature value across a
   drug's targets, which makes the trial-level feature depend on the number of targets.
   - With *random* gene features, the null odds ratios are about 1.08–1.20, not 1.0.
