@@ -185,13 +185,20 @@ tools:
       not_found_when: ["$.error =~ '(?i)status code: 404'"]
     text:
       notes: ["Patient-level values repeat on every sample row; for one row per patient use mcp__data__find on cbioportal.patient_clinical (where: {studyId: ...})."]
-    # Kept `pass` (F20): a derived get_clinical_data would read three live tables (sample, sample_clinical,
-    # patient_clinical), but the data child's derived serving (_serve) reads scannable tables only, and its
-    # sample-grain rows must keep upstream's shape. The guards above make the upstream answer safe instead:
-    # unknown sample IDs are not_found (exists_when; a real phantom TCGA-OR-A5ZZ-01 was refused), patient
-    # attributes are counted per patient (`patients` section: 92 patients for the 92 samples of
-    # acc_tcga_pan_can_atlas_2018), and mcp__data__find on cbioportal.patient_clinical serves the
-    # patient-level table derived.
+    # Kept `pass` for now. The guards above make the upstream answer safe: unknown sample IDs are not_found
+    # (exists_when; a real phantom TCGA-OR-A5ZZ-01 was refused), patient attributes are counted per patient
+    # (`patients` section: 92 patients for the 92 samples of acc_tcga_pan_can_atlas_2018), and mcp__data__find on
+    # cbioportal.patient_clinical serves the patient-level table derived.
+    # Served derived it is implemented and checked (S1, 2026-10-08): serve: derived with
+    #   derived: {verb: find, table: cbioportal.sample, columns: [studyId, sampleId, patientId],
+    #             envelope: {success: true, study_id: "{study_id}", sample_count: null},
+    #             compose: [{verb: find, table: cbioportal.sample_clinical}, {verb: find, table: cbioportal.patient_clinical}],
+    #             sections: {clinical_attributes: {path: $.clinical_attributes, table: cbioportal.clinical_attribute,
+    #                                              verb: find, key_from_args: {studyId: study_id}, value: clinicalAttributeId}}}
+    # answered exactly what upstream answers through the unmodified server (rows, patients section and attribute
+    # list equal for 5 and all 92 ACC samples and the 61 samples of 23 patients of lgg_ucsf_2014), a phantom sample
+    # is not_found before any attribute is read, an unknown study not_found naming study_id. Switching needs this
+    # tool's golden snapshot and two tests that pin the pass route updated (a contract request).
     serve: pass
     defects:
       - {id: CT-CBIO-001, what: "unknown sample_ids come back as {sampleId, patientId: null} rows and count in sample_count",

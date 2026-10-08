@@ -36,6 +36,9 @@ class SourceInfo:
     name: str | None = None
     release: str | None = None
     release_verified: bool | None = None
+    # what a live source reported about itself during the call: API and software versions (CT.gov apiVersion,
+    # cBioPortal portalVersion and dbVersion, the PubMed build); empty for files, whose release is the descriptor's
+    versions: dict[str, str] = field(default_factory=dict)
     descriptor_sha256: str | None = None
     overlay_sha256: str | None = None
     manifest_sha256: str | None = None

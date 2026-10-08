@@ -3,9 +3,10 @@
 # Remote SOMA. The tools are still served upstream; phase 4 gives obs and var the soma layout and
 # format, which the data child uses for count-first admission of Census pulls (_census_count, asked by
 # the gateway for the overlay's `count_first` tools), the remote witness (one value_filter read of
-# soma_joinid) and a donor-balanced sample keyed by (dataset_id, donor_id) (_census_count `sample`, which
-# also returns the value_filter/max_cells that make upstream fetch exactly the sampled cells; the gateway
-# does not route get_anndata_donor_balanced through it yet). The upstream server opens census_version
+# soma_joinid) and a donor-balanced sample keyed by the obs grain `donor` (dataset_id, donor_id)
+# (_census_count `sample`, with `stratify: cell_type` upstream's own cell-type-stratified draw; it also returns
+# the value_filter/max_cells that make upstream fetch exactly the sampled cells, which the gateway sends when a
+# binding declares count_first.sample). The upstream server opens census_version
 # "stable" (single_cell_mcp/tools.py:29,51) and its get_census_info answers census_version "stable" (the
 # alias, not a release): the data child resolves the alias through
 # cellxgene_census.get_census_version_description, records it with its release_confidence

@@ -1,0 +1,79 @@
+{
+ "scenario": "clinical_unknown_study",
+ "retrieved": "2026-10-08T20:47:43Z",
+ "seconds": 1.26,
+ "source": "recorded by S1 (scratchpad record_round3.py) through the shipped descriptors",
+ "exchanges": [
+  {
+   "url": "https://www.cbioportal.org/api/info",
+   "params": {},
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:47:44 GMT",
+    "Content-Type": "application/json"
+   },
+   "body": {
+    "portalVersion": "v7.1.2",
+    "dbVersion": "3.0.0",
+    "genesetVersion": "msigdb_v2025.1.Hs",
+    "geneTableVersion": "hgnc_v7_2025.10.7",
+    "gitBranch": "bbba61b2a45b3719187a310dcadaae75b9bef067",
+    "gitCommitId": "bbba61b2a45b3719187a310dcadaae75b9bef067",
+    "gitCommitIdDescribe": "bbba61b-dirty",
+    "gitCommitIdDescribeShort": "bbba61b-dirty",
+    "gitCommitMessageFull": "Frontend v7.1.2\n\nPoints the backend at frontend `v7.1.2`.\n\n- `<version>`: `v7.1.2-SNAPSHOT` -> `v7.1.2`\n- `<frontend.version>`: `v7.1.1` -> `v7.1.2`\n\nCommitted by cbioportal-release-manager.",
+    "gitCommitMessageShort": "Frontend v7.1.2",
+    "gitCommitMessageUserEmail": "cbioportal-release-manager@users.noreply.github.com",
+    "gitCommitMessageUserName": "cbioportal-release-manager",
+    "gitDirty": true
+   },
+   "bytes": 734
+  },
+  {
+   "url": "https://www.cbioportal.org/api/studies/no_such_study_xyz",
+   "params": {
+    "projection": "DETAILED"
+   },
+   "status": 404,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:47:44 GMT",
+    "Content-Type": "application/json"
+   },
+   "body": {
+    "message": "Study not found: no_such_study_xyz"
+   },
+   "bytes": 48
+  },
+  {
+   "url": "https://www.cbioportal.org/api/studies/no_such_study_xyz/samples",
+   "params": {
+    "pageSize": "500"
+   },
+   "status": 404,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:47:45 GMT",
+    "Content-Type": "application/json"
+   },
+   "body": {
+    "message": "Study not found: no_such_study_xyz"
+   },
+   "bytes": 48
+  }
+ ],
+ "result": {
+  "error": {
+   "status": "tool_error",
+   "contract": "vbt.data/1",
+   "kind": "not_found",
+   "tool": "mcp__clinicaltrials__get_clinical_data",
+   "argument": "study_id",
+   "value": "no_such_study_xyz",
+   "message": "cbioportal.sample: studyId 'no_such_study_xyz' is not known to the source (HTTP 404)",
+   "table": "cbioportal.sample",
+   "http_status": 404,
+   "citable": false,
+   "retryable": "after_fixing_input",
+   "instruction": "No record with this identifier exists in this source. This is not evidence about biology and must not be cited."
+  }
+ }
+}

@@ -57,6 +57,9 @@ tables:
     kind: entity
     path: studies
     layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}",
+                                         # the portal's software versions (GET /api/info: portalVersion v7.1.2, dbVersion 3.0.0
+                                         # on 2026-10-08) for provenance; the data release is each study's importDate (release.per)
+                                         release: &cbio_versions {endpoint: info, versions: {portalVersion: $.portalVersion, dbVersion: $.dbVersion}},
                                          endpoint: studies, params: {projection: DETAILED},
                                          key_endpoint: "studies/{studyId}",     # one study: 1.4 KB, not all 550
                                          count: {params: {projection: META}, header: total-count}}}
@@ -84,7 +87,7 @@ tables:
   patient:
     kind: entity_detail
     path: "studies/{studyId}/patients"
-    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}",
+    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}", release: *cbio_versions,
                                          page_size_param: pageSize, page_number_param: pageNumber,
                                          count: {params: {projection: META}, header: total-count}}}
     format: rest_json
@@ -97,7 +100,7 @@ tables:
   sample:
     kind: entity_detail
     path: "studies/{studyId}/samples"
-    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}",
+    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}", release: *cbio_versions,
                                          page_size_param: pageSize, page_number_param: pageNumber,
                                          count: {params: {projection: META}, header: total-count}}}
     format: rest_json
@@ -115,7 +118,7 @@ tables:
   clinical_attribute:
     kind: entity_detail
     path: "studies/{studyId}/clinical-attributes"
-    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}",
+    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}", release: *cbio_versions,
                                          count: {params: {projection: META}, header: total-count}}}
     format: rest_json
     grain: one clinical attribute defined by one study
@@ -132,7 +135,7 @@ tables:
   patient_clinical:
     kind: entity_detail
     path: "studies/{studyId}/clinical-data?clinicalDataType=PATIENT"
-    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}"}}
+    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}", release: *cbio_versions}}
     format: rest_json
     pivot: {index: [studyId, patientId], name_column: clinicalAttributeId, value_column: value}
     roles_from: {table: clinical_attribute, name: clinicalAttributeId, level_from: patientAttribute, type_from: datatype}
@@ -171,7 +174,7 @@ tables:
   sample_clinical:
     kind: entity_detail
     path: "studies/{studyId}/clinical-data?clinicalDataType=SAMPLE"
-    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}"}}
+    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}", release: *cbio_versions}}
     format: rest_json
     pivot: {index: [studyId, sampleId], name_column: clinicalAttributeId, value_column: value}
     roles_from: {table: clinical_attribute, name: clinicalAttributeId, level_from: patientAttribute, type_from: datatype}
@@ -189,7 +192,7 @@ tables:
   molecular_profile:
     kind: entity_detail
     path: "studies/{studyId}/molecular-profiles"
-    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}",
+    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}", release: *cbio_versions,
                                          count: {params: {projection: META}, header: total-count}}}
     format: rest_json
     grain: one molecular profile of one study (one data type, such as mutations, CNA or mRNA expression)
@@ -205,7 +208,7 @@ tables:
   molecular_data:
     kind: records
     path: "molecular-profiles/{molecularProfileId}/molecular-data"
-    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}",
+    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}", release: *cbio_versions,
                                          params: {projection: SUMMARY},
                                          filters: {sampleListId: {param: sampleListId},
                                                    entrezGeneId: {param: entrezGeneId}},   # one gene per request

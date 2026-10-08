@@ -1,0 +1,118 @@
+{
+ "scenario": "study_details_release",
+ "retrieved": "2026-10-08T20:47:43Z",
+ "seconds": 0.59,
+ "source": "recorded by S1 (scratchpad record_round3.py) through the shipped descriptors",
+ "exchanges": [
+  {
+   "url": "https://www.cbioportal.org/api/info",
+   "params": {},
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:47:45 GMT",
+    "Content-Type": "application/json"
+   },
+   "body": {
+    "portalVersion": "v7.1.2",
+    "dbVersion": "3.0.0",
+    "genesetVersion": "msigdb_v2025.1.Hs",
+    "geneTableVersion": "hgnc_v7_2025.10.7",
+    "gitBranch": "bbba61b2a45b3719187a310dcadaae75b9bef067",
+    "gitCommitId": "bbba61b2a45b3719187a310dcadaae75b9bef067",
+    "gitCommitIdDescribe": "bbba61b-dirty",
+    "gitCommitIdDescribeShort": "bbba61b-dirty",
+    "gitCommitMessageFull": "Frontend v7.1.2\n\nPoints the backend at frontend `v7.1.2`.\n\n- `<version>`: `v7.1.2-SNAPSHOT` -> `v7.1.2`\n- `<frontend.version>`: `v7.1.1` -> `v7.1.2`\n\nCommitted by cbioportal-release-manager.",
+    "gitCommitMessageShort": "Frontend v7.1.2",
+    "gitCommitMessageUserEmail": "cbioportal-release-manager@users.noreply.github.com",
+    "gitCommitMessageUserName": "cbioportal-release-manager",
+    "gitDirty": true
+   },
+   "bytes": 734
+  },
+  {
+   "url": "https://www.cbioportal.org/api/studies/acc_tcga_pan_can_atlas_2018",
+   "params": {
+    "projection": "DETAILED"
+   },
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:47:45 GMT",
+    "Content-Type": "application/json"
+   },
+   "body": {
+    "studyId": "acc_tcga_pan_can_atlas_2018",
+    "cancerTypeId": "acc",
+    "name": "Adrenocortical Carcinoma (TCGA, PanCancer Atlas)",
+    "description": "Adrenocortical Carcinoma TCGA PanCancer data. The original data is <a href=\"https://gdc.cancer.gov/about-data/publications/pancanatlas\">here</a>. The publications are <a href=\"https://www.cell.com/pb-assets/consortium/pancanceratlas/pancani3/index.html\">here</a>.",
+    "publicStudy": true,
+    "pmid": "29625048,29596782,29622463,29617662,29625055,29625050,29617662,32214244,29625049,29850653,36334560",
+    "citation": "TCGA, Cell 2018",
+    "groups": "PUBLIC;PANCAN",
+    "status": 0,
+    "importDate": "2026-06-05 15:19:54",
+    "allSampleCount": 92,
+    "sequencedSampleCount": 91,
+    "cnaSampleCount": 89,
+    "mrnaRnaSeqSampleCount": 0,
+    "mrnaRnaSeqV2SampleCount": 78,
+    "mrnaMicroarraySampleCount": 0,
+    "miRnaSampleCount": 0,
+    "methylationHm27SampleCount": 0,
+    "rppaSampleCount": 45,
+    "massSpectrometrySampleCount": 0,
+    "completeSampleCount": 76,
+    "referenceGenome": "hg19",
+    "treatmentCount": 16,
+    "structuralVariantCount": 55,
+    "cancerType": {
+     "id": "acc",
+     "name": "Adrenocortical Carcinoma",
+     "dedicatedColor": "Purple",
+     "shortName": "ACC",
+     "parent": "adrenal_gland"
+    },
+    "readPermission": true,
+    "resourceCounts": [
+     {
+      "resourceId": "IDC_SLIM",
+      "displayName": "Slide Microscopy",
+      "description": "Slide Microscopy",
+      "resourceType": "PATIENT",
+      "priority": "1",
+      "openByDefault": true,
+      "cancerStudyIdentifier": "acc_tcga_pan_can_atlas_2018",
+      "sampleCount": 91,
+      "patientCount": 91
+     }
+    ]
+   },
+   "bytes": 1397
+  }
+ ],
+ "result": {
+  "header": {
+   "v": 1,
+   "status": "ok",
+   "source": "cbioportal@2026-06-05 15:19:54",
+   "tables": [
+    "study"
+   ],
+   "key": [
+    "studyId"
+   ],
+   "returned": 1,
+   "total": 1,
+   "total_method": "record",
+   "truncated": false,
+   "coverage": "covered",
+   "coverage_statement": "Public cBioPortal studies at the time of the call (existence only).",
+   "served_by": "upstream",
+   "notes": [
+    "study_id: existence of 'acc_tcga_pan_can_atlas_2018' could not be decided; an empty result is not citable",
+    "study_id: existence of acc_tcga_pan_can_atlas_2018 in cbioportal:cbio_study could not be decided remotely"
+   ],
+   "cite": "cite rows by key",
+   "prov": "dp_8d034e46c4c8"
+  }
+ }
+}

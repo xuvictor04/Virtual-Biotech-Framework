@@ -1,0 +1,269 @@
+{
+ "scenario": "find_ceiling",
+ "retrieved": "2026-10-08T20:41:03Z",
+ "seconds": 0.66,
+ "source": "recorded by S1 (scratchpad record_round3.py) through the shipped descriptors",
+ "exchanges": [
+  {
+   "url": "https://clinicaltrials.gov/api/v2/studies",
+   "params": {
+    "format": "json",
+    "filter.overallStatus": "RECRUITING",
+    "filter.advanced": "AREA[StudyFirstPostDate]RANGE[MIN,2017-12-31] AND AREA[LastUpdatePostDate]RANGE[MIN,2017-12-31]",
+    "pageSize": "2"
+   },
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:41:09 GMT",
+    "content-type": "application/json"
+   },
+   "body": {
+    "studies": [
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT03125980",
+        "orgStudyIdInfo": {
+         "id": "CapeOXcc"
+        },
+        "organization": {
+         "fullName": "Fudan University",
+         "class": "OTHER"
+        },
+        "briefTitle": "Perioperative Versus Postoperative CapOX Chemotherapy for Locally Advanced Colon Cancer",
+        "officialTitle": "Perioperative CapeOX Chemotherapy Versus Postoperative Chemotherapy for Locally Advanced Resectable Colon Cancer: An Open Label Randomized Controlled Phase III Trial"
+       },
+       "statusModule": {
+        "statusVerifiedDate": "2017-04",
+        "overallStatus": "RECRUITING",
+        "expandedAccessInfo": {
+         "hasExpandedAccess": false
+        },
+        "startDateStruct": {
+         "date": "2017-05",
+         "type": "ESTIMATED"
+        },
+        "primaryCompletionDateStruct": {
+         "date": "2022-05",
+         "type": "ESTIMATED"
+        },
+        "completionDateStruct": {
+         "date": "2027-05",
+         "type": "ESTIMATED"
+        },
+        "studyFirstSubmitDate": "2017-04-14",
+        "studyFirstSubmitQcDate": "2017-04-19",
+        "studyFirstPostDateStruct": {
+         "date": "2017-04-24",
+         "type": "ACTUAL"
+        },
+        "lastUpdateSubmitDate": "2017-04-19",
+        "lastUpdatePostDateStruct": {
+         "date": "2017-04-24",
+         "type": "ACTUAL"
+        }
+       }
+      },
+      "hasResults": false
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02701036",
+        "orgStudyIdInfo": {
+         "id": "SPORTAX 010/05"
+        },
+        "organization": {
+         "fullName": "Ataxia Study Group",
+         "class": "OTHER"
+        },
+        "briefTitle": "Sporadic Degenerative Ataxia With Adult Onset: Natural History Study",
+        "officialTitle": "Sporadic Degenerative Ataxia With Adult Onset: Natural History Study (SPORTAX-NHS)",
+        "acronym": "SPORTAX-NHS"
+       },
+       "statusModule": {
+        "statusVerifiedDate": "2017-06",
+        "overallStatus": "RECRUITING",
+        "expandedAccessInfo": {
+         "hasExpandedAccess": false
+        },
+        "startDateStruct": {
+         "date": "2010-04"
+        },
+        "primaryCompletionDateStruct": {
+         "date": "2030-12",
+         "type": "ESTIMATED"
+        },
+        "completionDateStruct": {
+         "date": "2030-12",
+         "type": "ESTIMATED"
+        },
+        "studyFirstSubmitDate": "2016-01-28",
+        "studyFirstSubmitQcDate": "2016-03-02",
+        "studyFirstPostDateStruct": {
+         "date": "2016-03-08",
+         "type": "ESTIMATED"
+        },
+        "lastUpdateSubmitDate": "2017-06-28",
+        "lastUpdatePostDateStruct": {
+         "date": "2017-06-29",
+         "type": "ACTUAL"
+        }
+       }
+      },
+      "hasResults": false
+     }
+    ],
+    "nextPageToken": "ZVNj7o2Elu8o3lpwRtv5prbumpOQJJxmYPCk2vg"
+   },
+   "bytes": 26183,
+   "trimmed": "each study keeps protocolSection.identificationModule, statusModule and hasResults"
+  },
+  {
+   "url": "https://clinicaltrials.gov/api/v2/version",
+   "params": {},
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:41:09 GMT",
+    "content-type": "application/json"
+   },
+   "body": {
+    "apiVersion": "2.0.5",
+    "dataTimestamp": "2026-10-08T09:00:05"
+   },
+   "bytes": 71
+  },
+  {
+   "url": "https://clinicaltrials.gov/api/v2/studies",
+   "params": {
+    "format": "json",
+    "filter.overallStatus": "RECRUITING",
+    "filter.advanced": "AREA[StudyFirstPostDate]RANGE[MIN,2017-12-31] AND AREA[LastUpdatePostDate]RANGE[MIN,2017-12-31]",
+    "countTotal": "true",
+    "pageSize": "0",
+    "fields": "NCTId"
+   },
+   "status": 200,
+   "headers": {
+    "Date": "Thu, 08 Oct 2026 20:41:10 GMT",
+    "content-type": "application/json"
+   },
+   "body": {
+    "totalCount": 87,
+    "studies": [
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT03125980"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02701036"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02259556"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02137668"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT03222375"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02518542"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT03371121"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02797366"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT03019692"
+       }
+      },
+      "hasResults": null
+     },
+     {
+      "protocolSection": {
+       "identificationModule": {
+        "nctId": "NCT02650453"
+       }
+      },
+      "hasResults": null
+     }
+    ],
+    "nextPageToken": "ZVNj7o2Elu8o3lpwRtv5prbumpOQJJxoY_Ci3PEW"
+   },
+   "bytes": 789,
+   "trimmed": "each study keeps protocolSection.identificationModule, statusModule and hasResults"
+  }
+ ],
+ "result": {
+  "_vbt": {
+   "v": 1,
+   "status": "partial",
+   "source": "clinicaltrials_gov@2026-10-08T09:00:05",
+   "tables": [
+    "clinicaltrials_gov.studies"
+   ],
+   "key": [
+    "protocolSection.identificationModule.nctId"
+   ],
+   "returned": 2,
+   "total": 87,
+   "total_method": "remote",
+   "truncated": true,
+   "served_by": "derived",
+   "leakage": {
+    "ceiling": "2017-12-31",
+    "withheld": 0,
+    "risk": false
+   },
+   "notes": [
+    "1 page(s) read within the source's budget: the rows are a prefix, not all",
+    "evidence ceiling 2017-12-31 applied: sent with the request and the count (records available and last changed by then); 0 row(s) withheld as dated after it",
+    "the total counts records available (studyFirstPostDateStruct) and last changed (lastUpdatePostDateStruct) by 2017-12-31, the rows this find can return; an upstream count under the same ceiling bounds only studyFirstPostDateStruct and also counts the records changed after it (which are withheld from rows), so its total is larger"
+   ]
+  }
+ }
+}

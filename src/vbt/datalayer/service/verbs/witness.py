@@ -370,7 +370,8 @@ def _per_record_releases(ctx: ServiceContext, t: Any, rows: Sequence[Any], predi
     if len(key) != 1:
         return None, {}
     kcol, vcol = key[0], str(per["column"])
-    if str(pt.physical) == str(t.physical):
+    if str(pt.physical) == str(t.physical) and rows:
+        # the rows are the records themselves (without rows, a release request reads the records the predicate names)
         return ref, {str(r.get(kcol)): str(r.get(vcol)) for r in rows
                      if isinstance(r, Mapping) and r.get(kcol) not in (None, "") and r.get(vcol) not in (None, "")}
     ids: list[str] = []
@@ -479,7 +480,9 @@ def live_find(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]
         kept = {tuple(get_path(r, c) for c in key) for r in rows if isinstance(r, Mapping)}
         withheld_keys = [k[0] if len(k) == 1 else dict(zip(key, k)) for k in before if k not in kept]
         leakage = {"ceiling": ceiling.isoformat(), "ceiling_from": spec.ceiling_from,
-                   "sent": bool(bounds), **counts}
+                   "sent": bool(bounds), **counts,
+                   # the dates the request and the count were bounded on (available, and changed under withhold)
+                   "bounded_on": [str(getattr(b, "column", "")) for b in bounds]}
     if columns and pivot is None:
         # what was asked for, with the key and the record version (the dates the ceiling needed are dropped)
         keep = [*columns, *key, *([str(t.spec.key.version)] if t.spec.key.version else [])]
@@ -518,6 +521,9 @@ def live_find(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]
     return {"table": ref, "rows": shown, "total": total, "total_method": "unknown" if total is None else "remote",
             "as_of": release or got["as_of"], "fetched_at": got["as_of"],
             "truncated": bool(got["truncated"]) or len(shown) < len(rows),
+            # every matching row was read and the answer is cut to ``limit`` afterwards (a SOMA read is one
+            # unpaged request): the rows are the first ``limit`` of the whole match, not a page prefix
+            "cut_after_read": not got["truncated"] and len(shown) < len(rows),
             "pages": got["pages"], "requests": budget.used, "source_updated": flags["source_updated"],
             "record_versions": versions, "leakage": leakage, "withheld_keys": withheld_keys,
             "requested_keys": [k[0] if len(k) == 1 else dict(zip(key, k)) for k in asked] if asked is not None

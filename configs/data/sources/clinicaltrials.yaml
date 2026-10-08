@@ -57,7 +57,9 @@ tables:
         # full records); with fields=NCTId the same answer is 790 bytes (verified 2026-10-08,
         # tests/datalayer/real/live/ctgov)
         count: {params: {countTotal: "true", pageSize: "0", fields: NCTId}, total_path: $.totalCount}
-        release: {endpoint: version, path: $.dataTimestamp}
+        # the data release and the API version (one request, reused for 10 minutes; S1, 2026-10-08: apiVersion
+        # 2.0.5, dataTimestamp 2026-10-08T09:00:05), recorded in the provenance of every upstream-served call
+        release: {endpoint: version, path: $.dataTimestamp, versions: {apiVersion: $.apiVersion}}
     format: rest_json
     grain: one registered clinical study (its current registry record)
     key: {columns: [protocolSection.identificationModule.nctId], check: none,

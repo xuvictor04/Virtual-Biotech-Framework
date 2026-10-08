@@ -8,10 +8,18 @@
 # exceeds the server's limit, before upstream fetches anything). get_expression_for_genes' genes_found and
 # genes_not_found are recomputed from the written h5ad's var.feature_name (census_count.genes_from_h5ad):
 # upstream compares against positional var_names. Donor balancing stays upstream's, accepted only when the
-# filter fixes one dataset_id (requires_fixed): donors are unique only within (dataset_id, donor_id). The
-# derived donor-balanced sample (_census_count `sample`: the (dataset_id, donor_id)-balanced soma_joinids and the
-# value_filter/max_cells that make upstream fetch exactly them) is computed by the data child; routing this
-# tool through it needs the gateway (docs/DATA_LAYER_STATUS.md, F20).
+# filter fixes one dataset_id (requires_fixed): donors are unique only within (dataset_id, donor_id).
+#
+# The derived donor-balanced sample is implemented end to end (S1, 2026-10-08): with
+#   count_first: {..., sample: {grain: donor, stratify: cell_type, seed: 42, columns_arg: obs_columns,
+#                               total_path: $.n_cells_total}}
+# and no requires_fixed, the data child draws upstream's own cell-type-stratified, donor-balanced sample with donors
+# keyed by (dataset_id, donor_id) and the gateway asks this server for exactly those cells (soma_joinid in [...],
+# max_cells = the sample's size), completes obs_columns, restores n_cells_total, adds derived_sample (the draw:
+# donors, strata, seed) and checks the file holds the sample (sample_cells). On the real Census the sample of one
+# dataset equals upstream's own draw cell for cell (293 of 293), and a 2.1 MB filter of 199,744 ids passes through
+# this server (count_cells answered 199,744, as the witness counted; 22.2 s for the whole call). The `sample` key needs a field the
+# overlay model (descriptor/overlay.py CountFirst) does not have yet, so it is not set here (a contract request).
 #
 # Checked against the real Census (2025-11-08) through the unmodified server on 2026-10-08: an h5ad written
 # by cellxgene_census.get_anndata keeps soma_joinid as an obs column, feature_id as a var column and a

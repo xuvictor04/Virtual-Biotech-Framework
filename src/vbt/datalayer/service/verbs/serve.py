@@ -35,7 +35,10 @@ A **live table** (layout capability ``live`` without ``scan``: CT.gov, cBioPorta
 ``lookup`` and ``find`` are answered by ``witness.live_find`` (the pages of one request within the source's
 budget; a ``pivot`` table reshaped to one row per index), with the source's release as ``as_of``. Its rows
 are ordered here only when every page was read (an ordered cut of a truncated read is refused); nesting,
-splitting, exploding, grouping and sections are refused on it.
+splitting, exploding, grouping and sections are refused on it (the gateway reads a derived binding's live
+sections and ``compose`` sub-tables with one request each). A source's typed answer (an unknown study's 404 is
+``not_found``) is returned under ``sections["_error"]``: through MCPBridge a reply with a top-level ``error`` key
+is read as a failed call, which made an unknown study ``service_unavailable``.
 
 ``served_by`` is ``derived``. Over the scan budget the response has no rows, ``total: null`` and a
 ``reason`` starting with ``too_large:`` (never a partial answer presented as complete). Counters that
@@ -51,6 +54,7 @@ import unicodedata
 from typing import Any, Mapping, Sequence
 
 from ...descriptor.columns import is_container
+from ...errors import GatewayError
 from ...ipc import VERB_SERVE, ServeRequest, ServeResponse
 from ...predicate import evaluate, from_json
 from .. import ServiceContext, ServiceError
@@ -446,8 +450,14 @@ def serve_live(ctx: ServiceContext, req: ServeRequest) -> dict[str, Any] | None:
     except UnboundParameter as exc:
         raise ServiceError(str(exc)) from None
     order = list(req.order)
-    got = live_find(ctx, {"table": req.table, "predicate": to_json(pred) if pred is not None else None,
-                          "columns": list(req.columns), "limit": None if order else req.limit})
+    try:
+        got = live_find(ctx, {"table": req.table, "predicate": to_json(pred) if pred is not None else None,
+                              "columns": list(req.columns), "limit": None if order else req.limit})
+    except GatewayError as exc:
+        # the source's typed answer (an unknown study is HTTP 404: not_found naming it), never an outage. It travels
+        # under sections["_error"]: through MCPBridge a reply with a top-level `error` key is read as a failed call
+        # (a real unknown study came back service_unavailable that way, 2026-10-08)
+        return ServeResponse(rows=[], total=None, sections={"_error": exc.envelope()}).model_dump(mode="json")
     rows = [dict(r) for r in got.get("rows") or []]
     key = [k for k in t.spec.key.columns if not k.endswith("#")]
     truncated = bool(got.get("truncated"))
