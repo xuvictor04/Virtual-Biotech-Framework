@@ -201,7 +201,11 @@ points the data layer at it.
 
 ## Older commands
 
-* `vbt data ot list|fetch|manifest` is kept. It now goes through the same engine and the `open_targets`
-  acquisition section, with `--dest` as the release directory.
+* `vbt data ot list|fetch|manifest` is kept as an alias of `vbt data acquire open_targets[.<table>]`: it plans
+  the active configuration's `open_targets` descriptor (its release and base URL) through the same engine, and
+  `--dest` is the acquisition root, as for `vbt data acquire`; `manifest` covers the tables already in the
+  home and downloads nothing.
 * `vbt data zenodo list|fetch|download|presets` extracts any part of the paper's case-study archive, beyond the
-  tables the `zenodo_vbt` descriptor declares.
+  tables the `zenodo_vbt` descriptor declares; its record is the one that descriptor pins. The Case 1
+  replication reads the extract it writes (`data/zenodo/virtualbiotech_submission`), not the acquisition home,
+  which holds only the descriptor's tables.

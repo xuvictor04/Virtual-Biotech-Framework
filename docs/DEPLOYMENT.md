@@ -76,34 +76,36 @@ pandas load of the real 25.09 table). Every other figure is the shipped memory e
 factors, 0.70-1.46 of the measured load on the 18 measured tables, median 1.00) applied to the Parquet footers of
 every shard of the release; for the 31 downloaded tables the footer-derived estimate equals `vbt ds estimate` on the
 files exactly. Above about 3 GB no estimate has been checked against a real load: the five tables marked
-"killed" did not fit a 5.9 GB test child.
+"killed" did not fit a 5.9 GB test child. Memory here is in MiB (MB) and GiB (GB), as the limits, admission and
+the reaper count it (`vbt ds estimate` reports the same units); sizes on disk are decimal.
 
 Per server, the tables loaded whole (estimates unless marked "measured"):
 
 | Server | Tables loaded whole | Whole-table loads | On disk |
 |---|---|---:|---:|
-| genetics | l2g_prediction (12,126 MB; killed at 5.9 GB), study (measured 2,556 MB), colocalisation_coloc (25,447 MB), colocalisation_ecaviar (38,940 MB) | ~79.5 GB | 9.5 GB |
-| interaction | interaction (10,327 MB; killed at 5.9 GB) | ~10.3 GB | 0.09 GB |
+| genetics | l2g_prediction (11,564 MB; killed at 5.9 GB), study (measured 2,556 MB), colocalisation_coloc (24,268 MB), colocalisation_ecaviar (37,136 MB) | ~73.8 GB | 9.5 GB |
+| interaction | interaction (9,849 MB; killed at 5.9 GB) | ~9.6 GB | 0.09 GB |
 | association | the six association tables (measured 4,800 MB together), literature_vector (measured 119 MB) | ~4.9 GB | 0.43 GB |
-| expression | expression (5,671 MB; killed at 5.9 GB), biosample (measured 97 MB) | ~5.8 GB | 0.05 GB |
+| expression | expression (5,408 MB; killed at 5.9 GB), biosample (measured 97 MB) | ~5.4 GB | 0.05 GB |
 | target | target (measured 3,031 MB), mouse_phenotype (measured 323 MB), target_prioritisation (measured 51 MB), openfda target reactions (7 MB) | ~3.4 GB | 0.09 GB |
-| drug | known_drug (measured 606 MB), drug_indication (measured 75 MB), drug_molecule (measured 53 MB), mechanism of action, warnings, openfda drug reactions (36 MB) | ~0.8 GB | 0.02 GB |
-| disease | disease (measured 199 MB), disease_phenotype (measured 285 MB), disease_hpo (34 MB) | ~0.5 GB | 0.01 GB |
-| pathway | go, reactome, so (19 MB) | ~0.02 GB | <0.01 GB |
-| **all** | | **~105 GB** | |
+| drug | known_drug (measured 606 MB), drug_indication (measured 75 MB), drug_molecule (measured 53 MB), mechanism of action, warnings, openfda drug reactions (34 MB) | ~0.8 GB | 0.02 GB |
+| disease | disease (measured 199 MB), disease_phenotype (measured 285 MB), disease_hpo (32 MB) | ~0.5 GB | 0.01 GB |
+| pathway | go, reactome, so (18 MB) | ~0.02 GB | <0.01 GB |
+| **all** | | **~98 GB** | |
 
 Other tables are read in bounded scans (filters pushed into pyarrow), but each of them is large when loaded:
-evidence (estimate 192 GB; 30.4 M rows), variant (194 GB), interval (48 GB), literature (47 GB), credible_set
-(43 GB), interaction_evidence (54 GB), target_essentiality (11 GB). If every table a server reads were loaded whole,
-genetics would need ~365 GB and association ~245 GB (estimates): these are upper bounds, not the expected use.
+evidence (estimate 183 GB; 30.4 M rows), variant (185 GB), interval (46 GB), literature (45 GB), credible_set
+(41 GB), interaction_evidence (52 GB). If every table a server reads were loaded whole, genetics would need
+~348 GB and association ~234 GB (estimates): these are upper bounds, not the expected use. functional_genomics
+loads `target_essentiality` whole (10,765 MB; 14,294 MB with the safety factor and the idle baseline).
 
 Recommended RAM for the harness host with the full release:
 
 | Part | RAM |
 |---|---|
-| Upstream servers holding every whole-table load at once (above, x1.3 admission safety) | ~137 GB |
+| Upstream servers holding every whole-table load at once (above, x1.3 admission safety) | ~128 GB |
 | Data child (readiness checks, witnesses, native tools): `vbt setup` gives it 5% of RAM, 3-32 GB | 16-32 GB |
-| Agents' Bash commands (8 in parallel at `data.memory.workspace_mb`, 8-64 GB each) | 64-256 GB |
+| Agents' Bash commands (8 in parallel at `data.memory.workspace_mb`; `auto` gives each what the plan leaves after the host budget, the data child and the reserve: 13,107 MB on 512 GB, 28,672 MB on 1 TB, at least 8,000 MB) | 64-230 GB |
 | `single_cell` server (Census pulls: 1.8-4.5 GB peak measured for 1,842-149,759 cells through the unmodified upstream functions, DATA_LAYER_REAL_DATA.md §8.1; the donor-balanced pull's estimate is 3,900 MB plus 4,500 bytes per cell; a 200,000-cell pull exceeded 4.7 GB) | 16-64 GB |
 | Harness, web UI, model client | ~4 GB |
 | **Total** | **256 GB minimum; 512 GB to 1 TB** for the full configuration with headroom |
@@ -132,8 +134,8 @@ MemTotal and the memory cgroup limit of the process and its ancestors (a contain
 | 128 GB | 91,750 MB | 73,400 MB | 6,553 MB |
 | 512 GB | 367,002 MB | 293,601 MB | 26,214 MB |
 
-On a 512 GB host every server loads the Open Targets tables it reads whole, as upstream does (genetics' ~79.5 GB x1.3
-safety is about 103 GB). On a 16 GB host a load that cannot fit is refused before the call with `too_large`; the
+On a 512 GB host every server loads the Open Targets tables it reads whole, as upstream does (genetics' ~73.8 GB x1.3
+safety is about 96 GB). On a 16 GB host a load that cannot fit is refused before the call with `too_large`; the
 refusal names the host (`host_mb`), whether the limit was `auto` or configured (`limit_source`) and, for `auto`, the
 smallest host that would admit it (`host_mb_needed`). A number anywhere stays as configured, and a server's own
 `mem_limit_mb` in `configs/mcp_servers.yaml` wins over `default_server_mb`.
@@ -243,8 +245,9 @@ apptainer run --bind $HOME_DIR:/srv/vbt $SIF web --host 127.0.0.1
 
 The model server runs as a GPU job, e.g. `apptainer run --nv --bind $HOME_DIR/models:/root/.cache/huggingface
 docker://vllm/vllm-openai:v0.31.0 <arguments of vbt local serve --profile h200 --dry-run>`. Point the harness at it
-with `--llm-url` (written to `host.env`). Login nodes usually forbid memory cgroups: `vbt setup` then keeps
-`RLIMIT_DATA` containment, which it reports.
+with `--llm-url` (written to `host.env`). Login nodes usually forbid memory cgroups: the shipped `rss` containment
+then falls back to the reaper's RSS watchdog (never `RLIMIT_DATA`, under which TileDB's Census reads crash), and
+`vbt setup` reports which one applies.
 
 ## 6. What `vbt setup` does
 
@@ -284,7 +287,9 @@ arguments.
 applies at run time (section 2.2), so `host.yaml` holds the numbers `auto` gives on this host: host budget `0.75 x ram
 - max(2048, 0.05 x ram)`; server limit `0.8 x budget` (at least 2,048), raised by step `size` when the largest
 server's whole-table loads x1.3 need more (at most the budget); data child `clamp(0.05 x ram, 3000, 32768)`, its
-`max_resident_mb` 2/3 of that; agents' Bash `clamp(0.25 x ram / max_parallel_agents, 8000, 65536)`; `limit_kind:
+`max_resident_mb` 2/3 of that; agents' Bash `(ram - budget - data child - reserve) / max_parallel_agents`, within
+8,000-65,536 and at most half of `ram` (the limits share one budget; `vbt validate --only host` prints the sum at
+full load); `limit_kind:
 cgroup` where a memory cgroup can be created (else the shipped `rss`); `bash.sandbox.os: bwrap` where bubblewrap works
 (Docker's default seccomp profile refuses it; `compose.yaml` shows the opt-in). `vbt setup --project NAME` also
 fetches, checks and indexes the sources of that project (docs/PROJECTS.md).

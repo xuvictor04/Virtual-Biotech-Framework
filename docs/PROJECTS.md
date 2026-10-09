@@ -172,12 +172,14 @@ tables) run as `python -I runner.py ...` with:
   read-only except the calling agent's own work directory and the run's `.tmp`/`.home`, `paths.blocked_read`
   hidden — and otherwise falls back to the next two points only; `bwrap` requires it (fails closed); `none`
   never uses it;
-- **memory**: the reaper's `RLIMIT_DATA` limit (`data.memory.workspace_mb`, as for Bash);
+- **memory**: the reaper's limit `data.memory.workspace_mb` under the shipped containment (`rss`: a memory
+  cgroup, else the RSS watchdog), as for Bash;
 - **network**: none for tests and conformance suites (`projects.test_network: false`; bwrap `--unshare-net`, else
   `unshare -rn`); utility calls follow `bash.network_isolation` like Bash;
 - **environment**: the allow-listed child environment (no provider keys) plus `tool_env`;
-- **time**: `projects.test_timeout_s` (600) for tests, `projects.call_timeout_s` (1800, or the utility's own
-  `timeout_s`) per call; the process group is killed on timeout.
+- **time**: `projects.test_timeout_s` (600) for tests, `projects.call_timeout_s` (1800) per call, or the
+  utility's own `timeout_s` when it is lower (it can never raise the owners' limit); the process group is killed
+  on timeout.
 
 The provenance of every test run names the sandbox that applied (`bwrap+netns+8000MB`, `rlimit+netns+8000MB`,
 ...). Production hosts should install bubblewrap; the tests are a quality gate on what the system wrote, not a

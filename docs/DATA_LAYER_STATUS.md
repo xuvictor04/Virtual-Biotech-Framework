@@ -1,14 +1,17 @@
 # Data layer: implementation status
 
 Status of the 24 fixes of [DATA_LAYER.md §18](DATA_LAYER.md#18-the-24-fixes-in-five-phases-140-engineer-weeks)
-after phases 1-5, the phases 2-5 review pass and the real-data pass of 2026-10-08. Each fix is
-**implemented**, **partial** (the core is in place, with named gaps) or **deferred**. Paths are relative to
+after phases 1-5, the phases 2-5 review pass, the real-data pass of 2026-10-08 and the third round of
+2026-10-08/09 (live sources served derived, item keys in Arrow, acquisition, host bring-up, host-scaled memory,
+`vbt validate`, projects, an end-to-end run, and the third review's fixes). Each fix is **implemented**,
+**partial** (the core is in place, with named gaps) or **deferred**. Paths are relative to
 `src/vbt/datalayer/` unless noted.
 The last part of this page explains how to use the layer.
 
 The default suite runs offline on generated fixtures (`tests/datalayer/dl_fixtures.py`), on stubs of the
-live APIs and on recorded responses. On 2026-10-08 the layer was also run against the real releases and the
-live APIs: Open Targets 25.09, Tahoe-100M, DepMap 24Q4, GO, the Cell Ontology, MSigDB, the Zenodo
+live APIs and on recorded responses, and is hermetic: it reads no `.env`, pins the host memory and refuses
+live requests unless `VBT_DL_NETWORK` enables them. On 2026-10-08 and 2026-10-09 the layer was also run against
+the real releases and the live APIs: Open Targets 25.09, Tahoe-100M, DepMap 24Q4, GO, the Cell Ontology, MSigDB, the Zenodo
 case-study-1 subset, ClinicalTrials.gov, cBioPortal, E-utilities and the Census.
 [DATA_LAYER_REAL_DATA.md](DATA_LAYER_REAL_DATA.md) records those runs:
 
@@ -16,10 +19,11 @@ case-study-1 subset, ClinicalTrials.gov, cBioPortal, E-utilities and the Census.
 * which descriptor facts held and which were corrected;
 * the six correctness tests on the real Open Targets release, with the gateway off and on;
 * the measured memory and latency;
-* what still needs data that could not be obtained.
+* what still needs data or model runs that could not be made here.
 
-The real-data checks are opt-in: `VBT_DL_REAL_DATA=<dir>` for downloaded data, `VBT_DL_NETWORK=1` for the
-network. Small snapshots of what they measured (footers, value facts, recorded exchanges, each with its
+The real-data checks are opt-in: `VBT_DL_REAL_DATA=<dir>` for downloaded data (the acquisition root;
+`VBT_DL_REAL_DATA_STRICT=1` fails a run in which no real-data test passed), `VBT_DL_NETWORK=1` for the
+network. On an owner's host, `vbt validate` runs the same checks on that host's data. Small snapshots of what they measured (footers, value facts, recorded exchanges, each with its
 source URL and retrieval date) are under `tests/datalayer/real/`.
 
 ## The 24 fixes
@@ -30,25 +34,25 @@ source URL and retrieval date) are under `tests/datalayer/real/`.
 | F2 Gateway seam | implemented | `gateway/gateway.py`, `src/vbt/tools/mcp_bridge.py` | off/observe/enforce. Observe mode adds no latency and no side effects: no index build or vocabulary fetch in the call path, no write-once rename, and the plain crash policy. A descriptor or overlay file that does not load is quarantined on its own. Only the servers whose own overlay is quarantined, and the tools that depend on the file, are refused (`Runtime.gateway_refused`, typed `quarantined` errors). |
 | F3 Data child and bounded reader | implemented | `service/reader.py`, `service/server.py`, `service/verbs/` | Key-check spill files are removed on every exit and swept when a child starts (`checks.sweep_spills`). |
 | F4 Identifier plugins and resolver | implemented | `plugins/identifiers/`, `resolve/resolver.py` | `CHEMBL:25` normalizes to `CHEMBL25`. An rsID is mapped to the variant it names through the declared `maps_to ... via: variant` (`remote_map` edge, the data child's `_resolve_remote` with `rsid>ot_variant`); several alleles are ambiguous. |
-| F5 Phase-1 descriptors and overlays | implemented | `configs/data/sources/`, `configs/data/overlays/` | `vbt ds lint` is clean. |
+| F5 Phase-1 descriptors and overlays | implemented | `configs/data/sources/`, `configs/data/overlays/` | `vbt ds lint --strict` is clean: 11 sources, 113 bound tools. Every local source also declares how its files are acquired (`acquisition`: transport plugin, release, files per table, checks, preparation, licence); lint checks the transport plugin names. Reads that the unmodified loader makes whole are declared `full_table` (21 former `projection` reads and functional_genomics' `target_essentiality` reads), so admission sizes them. |
 | F6 Not-found contract and witness | implemented | `gateway/classify.py`, `service/verbs/witness.py` | A plain-text success that mentions an HTTP status is not a failure. Count results skip the row-based W1. |
 | F7 Argument contracts and transforms | implemented | `gateway/contracts.py`, `gateway/transforms.py` | Chromosomes bound to a bare-style position column are normalized (`roles.bare_chromosome`: `chr19` becomes `19`; `chrM` is invalid). A region `chrom:start-end` is a chromosome plus a position range. A null on a defaulted filter is refused before the call unless null means "no restriction" (a derived tool, or an upstream signature that takes None). Disclosed defaults reach the data child (`DataGateway._params`). A pair whose every evidence item is negated is withheld and counted (T6). |
-| F8 Memory and process safety | implemented | `launch/reaper.py`, `launch/__init__.py`, `memory/` | The Bash workspace limit honours `data.memory.limit_kind`. `vbt ds` and `vbt verify --data` run data-child code under the reaper (`cli._run_reaped`). |
-| F9 Tool-scoped readiness | implemented | `service/checks.py`, `gateway/readiness.py`, `src/vbt/preflight.py` | Concurrent refreshes share one `_check`. A malformed catalog is a required preflight failure. |
+| F8 Memory and process safety | implemented | `launch/reaper.py`, `launch/__init__.py`, `memory/`, `src/vbt/tools/builtin.py` | The containment is `rss` by default (a memory cgroup, else the RSS watchdog; `RLIMIT_DATA` only on request), for the servers and for agents' Bash commands, notebooks and project utility tests, whose limit `data.memory.workspace_mb` is `auto`. A size that does not parse or an unknown `limit_kind` is an error in `vbt ds lint`, `vbt doctor` and `vbt validate`. `vbt ds` and `vbt verify --data` run data-child code under the reaper (`cli._run_reaped`). |
+| F9 Tool-scoped readiness | implemented | `service/checks.py`, `gateway/readiness.py`, `src/vbt/preflight.py` | Concurrent refreshes share one `_check`. A malformed catalog is a required preflight failure. The session check runs tables of 32 MB or more in data children of their own (on the real release: 14 processes, the largest 1,078 MB, 253.7-294.9 s at standard depth); the R5b key pass is bounded by `data.service.max_resident_mb`; R6, R7, R9 and R10 run on matrix axes; a derived serve's dependencies are required or optional (`derived_dependencies`); a `missing`, `partial` or `stale` reason carries how to acquire the files (`acquire`). Preflight reports one `data source: <id>` line per source the granted tools read. |
 | F10 Claims, provenance, correctness tests | implemented | `tests/datalayer/test_dl_correctness_six.py`, `src/vbt/audit/claims.py` | New CT-1/2/6 cases: `CHEMBL:25`, `chr19`, the null `tep`, negated-only phenotype pairs, and grains. CT-3 compares exact item keys and full row keys. |
 | F11 Strict descriptors | implemented | `configs/data/sources/*.yaml`, `service/checks.py` (`r4_types`) | `column_patterns` count as declared under `strict`, checked against the pattern's role. The Zenodo descriptor matches the real archive: `chembl_clinical_nct` is keyed `(nct_id, drugId, targetId, diseaseId)`. |
 | F12 Format and layout plugins v2 | implemented | `plugins/formats/`, `plugins/layouts/` | |
-| F13 Derivation engine | implemented | `derive/`, `tests/datalayer/golden/` | A record read from a nested column takes that column's coverage in both the text and the header. |
-| F14 Native tools and the client | implemented | `service/verbs/public.py`, `derive/tools.py`, `client.py` | Derived view sections report their own status, total, table and coverage under `_vbt.sections`. `vbt.analysis.survival` reads through the client (`client.open_file`, live `find` on the cBioPortal clinical tables). |
+| F13 Derivation engine | implemented | `derive/`, `plugins/derived/`, `tests/datalayer/golden/` | A record read from a nested column takes that column's coverage in both the text and the header. Computations specific to one upstream tool are plugins of kind `derived` (shipped: `essentiality`, `tissue_specificity`; conformance suite D-1 to D-5), named by the binding and configured by the overlay, so a project can add one; on 25.09 rows the 12 essentiality and tissue-specificity calls answered identically before and after the move. |
+| F14 Native tools and the client | implemented | `service/verbs/public.py`, `derive/tools.py`, `client.py` | Derived view sections report their own status, total, table and coverage under `_vbt.sections`. `vbt.analysis.survival` reads through the client (`client.open_file`, live `find` on the cBioPortal clinical tables). The listing leaves out every table's column map (131,733 characters each for `find` and `aggregate` on 25.09); `describe(source, table)` gives one table's columns and the operators each takes. Keys are named as the rows carry them (`#GeneID`). A misspelled nested `where` path is `invalid_argument` before any request. |
 | F15 Statistic plugins v2 | implemented | `plugins/statistics/` | |
 | F16 Native enrichment and aggregation | implemented | `service/verbs/enrich.py` | `mcp__data__enrich` is public. A gene with no screens is empty, never `found: true`. |
 | F17 Composite-key completion | implemented | `service/verbs/network.py`, `service/verbs/pairs.py` | The listed `neighbors` schema offers `nodes`, `hops` 1-4, `max_nodes` and `score_order`. |
 | F18 Ontology semantics | implemented | `service/verbs/hierarchy.py` | `mcp__data__expand` is public. `drug.search_known_drugs` takes `include_descendants`, served derived through `known_drug.ancestors` (overlay facet `derived_when`). |
-| F19 Memory at scale | implemented | `memory/host.py`, `memory/calibrate.py`, `launch/reaper.py`, `service/verbs/index_huge.py` | The host budget with LRU idle recycle is on by default (`data.memory.host_budget_mb: auto`). The stdout relay is configured by `data.memory.relay_max_message_mb`. `build: readiness` sidecar indexes are built by the check (`checks.access_indexes`); `on_demand` ones are built on first read, and huge ones offline (`vbt ds index build --access-paths --huge`). |
-| F20 Live and remote sources | implemented | `plugins/layouts/live_api.py`, `plugins/layouts/soma.py`, `service/verbs/witness.py`, `service/verbs/census_count.py`, `service/verbs/serve.py` | Done: the remote witness runs for every table whose layout declares `count` (including the shipped `access: upstream` CT.gov and cBioPortal tools). Free text the source's engine matches is sent to the request parameter it fills (`engine_param`: CT.gov `query.cond`/`query.term`/`query.intr`/`filter.advanced`, PubMed `term`), so realistic CT.gov and PubMed calls get an independent count of the same search (several phases compile into one `AREA[Phase](... OR ...)` fragment); a remote count never inflates the page. `mcp__data__find`/`lookup` on live tables go to `_live_find` (cBioPortal patient pivot, record versions; unpaged reads are admitted count-first), and so do `_serve` lookups and finds, so a `serve: derived` binding can read a live table. Census count-first admission for `get_anndata`, `get_expression_for_genes` and `get_anndata_donor_balanced` (overlay facet `count_first`): every gene argument counts (`genes_arg` lists `gene_symbols` and `ensembl_ids`; a pull naming no gene reads every gene), and the estimate (`count_first.estimate`: a base plus a per-cell slope) is calibrated on real pulls, so the 200,000-cell spleen pull that was admitted and killed at 4,500 MB is now `too_large` before upstream is called. `get_anndata_donor_balanced` is served as the derived `(dataset_id, donor_id)` sample (`count_first.sample`): the data child draws upstream's own cell-type-stratified sample (same generator and order) with donors keyed by dataset, the unmodified server is asked for exactly those cells (`soma_joinid in [...]`), the payload's total is the counted one, `derived_sample` describes the draw and the written file must hold the drawn cells (`sample_cells`); without a sample the filter must fix one `dataset_id`. `clinicaltrials.get_clinical_data` is `serve: derived` from the live cBioPortal tables (`derived.compose`: samples, sample attributes, patient attributes; the attribute ids from a live section), sized first like the upstream pull (`size_from`). A derived handler's typed refusal crosses MCPBridge as `ServeResponse.error`, on the wire `refusal` (a top-level `error` is a failed call to the bridge); release lookups have their own verb (`_release`). Results of live sources name the release the call observed (CT.gov `dataTimestamp`; the Census release `stable` names, recorded for every `single_cell` call and written into `get_census_info`'s body through `result.release_alias`; a cBioPortal study's `importDate` through `release.per`, also recorded as that study's version) and the API and software versions (`source.versions`: CT.gov `apiVersion`, cBioPortal `portalVersion`/`dbVersion`, the PubMed build). Under the evidence ceiling an upstream CT.gov count also gets the count of records last updated by the ceiling (`_vbt.ceiling_totals`). `eligibility_text` binds the criteria column, so its phrases reach the remote witness as `AREA[EligibilityCriteria]"..."`. Native finds on live tables apply each source's evidence ceiling (CT.gov `data.leakage.ceiling` in the request and the count, PubMed `VBT_LITERATURE_MAXDATE`, which the remote witness also counts under), the Census `is_primary_data` default filter (disclosed; `where` overrides it), exact strict bounds, `search` for engine-matched text (equality refused), dotted `columns`, and report keys the source does not hold as `not_found_items` (a live `lookup` of one is `not_found`); `count_cells` is witnessed from the gateway-parsed SOMA filter. `genes_found`/`genes_not_found` are recomputed from `var.feature_name`. `vbt.analysis.survival` reads the expression (`cbioportal.molecular_data`, one gene per request) and the clinical tables through the client. It uses the REST API only when the client cannot answer, and names what it read that way in `attrs["vbt_prov_fallback"]`. Limits: a Census pull is admitted on an estimate fitted to spleen pulls of 1,842-149,759 cells with 2 genes and one 7,750-cell pull with every gene; other filters and gene counts are not measured. All of this was run against the live APIs on 2026-10-08 ([DATA_LAYER_REAL_DATA.md](DATA_LAYER_REAL_DATA.md) §2.6, §4.2); the CD276 Cox results in LUAD equal the archived ones. |
+| F19 Memory at scale | implemented | `memory/host.py`, `memory/sizing.py`, `memory/calibrate.py`, `launch/reaper.py`, `service/verbs/index_huge.py` | Every budget is `auto` and scales with the host's plan by one rule (`memory/sizing.py`): on a 16 GB host 8,192 MB per upstream server, on 512 GB 293,601 MB; the data child 5% of the plan (3,000-32,768 MB), and the witness and readiness budgets with it. A refusal names `host_mb`, `limit_source` and, for `auto`, `host_mb_needed`. The host budget with LRU idle recycle is on by default (`data.memory.host_budget_mb: auto`) and never counts the data child (`HARNESS_SERVERS`). `vbt ds estimate` decides with admission's rule (MiB, x1.3 plus the 300 MB baseline). The stdout relay is configured by `data.memory.relay_max_message_mb`. `build: readiness` sidecar indexes are built by the check (`checks.access_indexes`); `on_demand` ones are built on first read, and huge ones offline (`vbt ds index build --access-paths --huge`). |
+| F20 Live and remote sources | implemented | `plugins/layouts/live_api.py`, `plugins/layouts/soma.py`, `service/verbs/witness.py`, `service/verbs/census_count.py`, `service/verbs/serve.py` | Done: the remote witness runs for every table whose layout declares `count` (including the shipped `access: upstream` CT.gov and cBioPortal tools). Free text the source's engine matches is sent to the request parameter it fills (`engine_param`: CT.gov `query.cond`/`query.term`/`query.intr`/`filter.advanced`, PubMed `term`), so realistic CT.gov and PubMed calls get an independent count of the same search (several phases compile into one `AREA[Phase](... OR ...)` fragment); a remote count never inflates the page. `mcp__data__find`/`lookup` on live tables go to `_live_find` (cBioPortal patient pivot, record versions; unpaged reads are admitted count-first), and so do `_serve` lookups and finds, so a `serve: derived` binding can read a live table. Census count-first admission for `get_anndata`, `get_expression_for_genes` and `get_anndata_donor_balanced` (overlay facet `count_first`): every gene argument counts (`genes_arg` lists `gene_symbols` and `ensembl_ids`; a pull naming no gene reads every gene), and the estimate (`count_first.estimate`: a base plus a per-cell slope) is calibrated on real pulls, so the 200,000-cell spleen pull that was admitted and killed at 4,500 MB is now `too_large` before upstream is called. `get_anndata_donor_balanced` is served as the derived `(dataset_id, donor_id)` sample (`count_first.sample`): the data child draws upstream's own cell-type-stratified sample (same generator and order) with donors keyed by dataset, the unmodified server is asked for exactly those cells (`soma_joinid in [...]`), the payload's total is the counted one, `derived_sample` describes the draw and the written file must hold the drawn cells (`sample_cells`); without a sample the filter must fix one `dataset_id`. `clinicaltrials.get_clinical_data` is `serve: derived` from the live cBioPortal tables (`derived.compose`: samples, sample attributes, patient attributes; the attribute ids from a live section), sized first like the upstream pull (`size_from`). A derived handler's typed refusal crosses MCPBridge as `ServeResponse.error`, on the wire `refusal` (a top-level `error` is a failed call to the bridge); release lookups have their own verb (`_release`). Results of live sources name the release the call observed (CT.gov `dataTimestamp`; the Census release `stable` names, recorded for every `single_cell` call and written into `get_census_info`'s body through `result.release_alias`; a cBioPortal study's `importDate` through `release.per`, also recorded as that study's version) and the API and software versions (`source.versions`: CT.gov `apiVersion`, cBioPortal `portalVersion`/`dbVersion`, the PubMed build). Under the evidence ceiling an upstream CT.gov count also gets the count of records last updated by the ceiling (`_vbt.ceiling_totals`). `eligibility_text` binds the criteria column, so its phrases reach the remote witness as `AREA[EligibilityCriteria]"..."`. Native finds on live tables apply each source's evidence ceiling (CT.gov `data.leakage.ceiling` in the request and the count, PubMed `VBT_LITERATURE_MAXDATE`, which the remote witness also counts under), the Census `is_primary_data` default filter (disclosed; `where` overrides it), exact strict bounds, `search` for engine-matched text (equality refused), dotted `columns`, and report keys the source does not hold as `not_found_items` (a live `lookup` of one is `not_found`); `count_cells` is witnessed from the gateway-parsed SOMA filter. `genes_found`/`genes_not_found` are recomputed from `var.feature_name`. `vbt.analysis.survival` reads the expression (`cbioportal.molecular_data`, one gene per request) and the clinical tables through the client. It uses the REST API only when the client cannot answer, and names what it read that way in `attrs["vbt_prov_fallback"]`. Since the third review (each repeated live on 2026-10-09, [DATA_LAYER_REAL_DATA.md](DATA_LAYER_REAL_DATA.md) §4.3): under the evidence ceiling, a CT.gov count that selects on a field the registry holds only as it is today (`overallStatus`, a results date) reports the records also unchanged since the ceiling (`total_method: ceiling_unchanged`, status `partial`), or the risk when that count is unknown; sources whose records carry no date (cBioPortal, the Census) are served with leakage `risk: true`, `reason: "source not dated"`; the PubMed server's own withheld records are counted in `withheld` and the provenance; a redirected NCT alias is kept, and native lookups and finds compare aliases and normal forms (`nct00761280`); an Ensembl id upstream lists as not found is `not_found`, never resolved; `universe_via` id types (cBioPortal cancer types and studies) are decided against the source's own listing; PubMed book records (`PubmedBookArticle`) are records; a PMID lookup compiles to `term=<pmid>[uid]`, and title and abstract searches tag every term (`[ti]`, `[tiab]`), because E-utilities ignores a tag after a parenthesised group (304 records instead of 32); cBioPortal study rows get their `importDate` as record versions, and an empty `molecular_data` find is dated by its profile's study; the native find's ceiling note gives the right reason. A failed release request is not repeated for a minute. Limits: a Census pull is admitted on an estimate fitted to spleen pulls of 1,842-149,759 cells with 2 genes and one 7,750-cell pull with every gene; other filters and gene counts are not measured. All of this was run against the live APIs on 2026-10-08 and 2026-10-09 ([DATA_LAYER_REAL_DATA.md](DATA_LAYER_REAL_DATA.md) §2.6, §4.2, §4.3, §8); the CD276 Cox results in LUAD equal the archived ones. |
 | F21 Third-party servers, envelope kind | implemented | `plugins/envelopes/`, `cli.py` (`overlay init`) | |
-| F22 Replay, drift, row-level citations | implemented | `replay.py`, `src/vbt/verify.py` | Under `--data`, a pinned or cited table that is gone, a failed fingerprint read and a lost provenance record are problems (INCOMPLETE). Replay `auto` uses the guarded bridge; `inprocess` is opt-in. |
-| F23 Calibration, soak, graduation | partial | `memory/calibrate.py`, `memory/estimate.py`, `configs/default.yaml` (`data.memory`), `tests/datalayer/test_dl_soak.py`, `cli.py` (`graduate`) | Tooling and fixture-scale soak are in place. **Calibrated on the real 25.09 tables:** the shipped memory factors are fitted to whole-table pandas loads of 26 tables (6 MB to 3.0 GB). On the 18 tables over 50 MB, estimate/measured is 0.70-1.46 (median 1.00), and 16 of the 18 are within ±30%; study (1.46) and literature_vector (1.32) are overestimated. The seed factors had been 1.44-9.39 times too high. The sample tier (`vbt ds calibrate`) counts the pandas frame and the Arrow table the loader holds together: 0.54-1.40, median 1.06 (pandas alone: 0.34-0.85). **Witness latency:** p95 82.3 ms on warm target-server calls (p50 58.1 ms). **Gaps.** The five tables whose load exceeds 5.4 GB (interaction_evidence, expression, target_essentiality, interaction, l2g_prediction) could not be measured. The witness p95 was not measured across servers after first calls stopped waiting for `_stats`, and a single interaction witness takes 1.5-9.2 s. `profile: fidelity` on the paper scenarios and retro-audit evidence for graduation need model runs of those scenarios. Numbers: [DATA_LAYER_REAL_DATA.md §5](DATA_LAYER_REAL_DATA.md#5-memory-and-latency). |
+| F22 Replay, drift, row-level citations | implemented | `replay.py`, `src/vbt/verify.py` | Under `--data`, a pinned or cited table that is gone, a failed fingerprint read and a lost provenance record are problems (INCOMPLETE). Replay `auto` uses the guarded bridge; `inprocess` is opt-in. `vbt verify`, `vbt ds replay`, `retro-audit`, `graduate` and `status` take `--project`. On the end-to-end run's scripted session (real Open Targets 25.09): 30 tables unchanged, replays 2 of 2 matching. |
+| F23 Calibration, soak, graduation | partial | `memory/calibrate.py`, `memory/estimate.py`, `configs/default.yaml` (`data.memory`), `tests/datalayer/test_dl_soak.py`, `cli.py` (`graduate`), `src/vbt/validate/` | Tooling and fixture-scale soak are in place, and `vbt validate` measures on a host's own data what this fix asks for: the session check, the six correctness tests enforce vs off vs an independent oracle, per-server latency and witness times, and the memory of the largest loads that fit against the estimates. **Calibrated on the real 25.09 tables:** the shipped memory factors are fitted to whole-table pandas loads of 26 tables (6 MB to 3.0 GB). On the 18 tables over 50 MB, estimate/measured is 0.70-1.46 (median 1.00), and 16 of the 18 are within ±30%; study (1.46) and literature_vector (1.32) are overestimated. The seed factors had been 1.44-9.39 times too high. The sample tier (`vbt ds calibrate`) counts the pandas frame and the Arrow table the loader holds together: 0.54-1.40, median 1.06 (pandas alone: 0.34-0.85); measured again by `vbt validate` on the four largest association tables that fit 3,000 MB, the sample tier is 1.09-1.25 and the shipped estimate 0.86-0.99 of the measured load. Census pulls are admitted on a base-plus-slope estimate fitted to real pulls. **Witness latency:** p95 82.3 ms on warm target-server calls (p50 58.1 ms); across 9 servers (212 timed calls) the witness p95 is under 300 ms on disease (18 ms) and pathway (28.5 ms) only, 303-371 ms on target, 322 ms on functional_genomics and 0.56-10.8 s on association, drug, expression, genetics and interaction, whose witnesses scan tables of millions of rows. **Graduation:** `vbt ds graduate` and `retro-audit` ran on one served-model run on the real release (a 2B model on CPU; the six Open Targets servers it used and the data child graduated). **Gaps.** No whole-table load above `target` (3,031 MB) was measured: the five tables over 5.4 GB and the colocalisation tables are admitted or refused on estimates. The witness p95 target is not met on the scan-heavy servers. `profile: fidelity` on the paper scenarios and retro-audit evidence from those scenarios need model runs of them, with the production model; none were made. Numbers: [DATA_LAYER_REAL_DATA.md §5](DATA_LAYER_REAL_DATA.md#5-memory-and-latency), §6.3. |
 | F24 Coverage and drift guards | implemented | `tests/datalayer/test_dl_coverage_guards.py`, `diff_release.py`, `docs/DATA_LAYER_RUNBOOK.md` | |
 
 ## Review findings closed in this pass
@@ -241,6 +245,88 @@ configuration; `Runtime.reload_data_layer` and `DataGateway.reload_catalog` serv
 session; the run pins its project with digests; `vbt data acquire` puts a project's sources under `<project>/data`;
 at the close of a session the run's new agent notes are offered to the project (`projects.notes_at_close`).
 
+### The end-to-end run (wave D)
+
+The first run of the whole harness with a model (a 2B model from the default model's family, served by
+llama.cpp on CPU, on the real Open Targets release, with a project) found nine harness bugs, each fixed with a
+regression test in `tests/test_e2e_stack.py`; [E2E_RUN.md](E2E_RUN.md) §6 lists them. Those touching the data
+layer: the preflight's readiness now reaches the gateway before the data child lists its tools (a second
+session check ran at every start); the native tools are listed without every table's column map; the data
+child is never charged to the upstream host budget (it had turned 11 of 22 calls into `host_busy`); drafts
+quote column references that are not words (`#GeneID`); retro-audit keeps an enforced run's typed refusals and
+counts native calls.
+
+### The third review (round 3)
+
+A third review checked round 3 on the real releases, the live APIs and a fresh host. Its RR and ACC ids are
+the third review's own (the second review's are in the table above). Every finding below is fixed; the
+`OT-RV3`, `LIVE3`, `ASN` and most `RR` regressions are in `tests/datalayer/test_dl_review_round3.py`,
+`tests/datalayer/test_dl_review_live.py` and `tests/datalayer/test_dl_review_regressions.py`, the
+deployment and accuracy ones in `tests/test_review_round3_ops.py`, `tests/test_setup.py` and
+`tests/test_validate.py` (each test names its finding id). The live ones were repeated on 2026-10-09
+([DATA_LAYER_REAL_DATA.md](DATA_LAYER_REAL_DATA.md) §4.3).
+
+| Finding | Fix |
+|---|---|
+| OT-RV3-01 `find_diseases_by_phenotype` with a limit kept the alphabetically first diseases | derived nest outputs take an order (`first_item`, `order`): the best-supported diseases are kept |
+| OT-RV3-02 `prioritize_targets(sort_by="geneticConstraint")` sorted ascending while the header said descending | a disclosed default of an order-direction argument orders the rows and the header |
+| OT-RV3-03 a case-insensitive approved-symbol match beat a case-exact alias of another gene | the exact-case alias makes the match `ambiguous`, never silently the casefold gene |
+| OT-RV3-04 ids the bound list column holds but the entity table lacks were `not_found` (withdrawn-drug warnings, pharmacogenomics) | served under `existence: bound` |
+| OT-RV3-05 family rows that already matched the requested id were counted as left behind | not counted again; complete answers are not `partial` |
+| OT-RV3-06 derived disease envelopes renamed upstream keys (`list_therapeutic_areas` under `diseases`) | upstream's keys are kept |
+| OT-RV3-07 recognisable foreign identifier forms (UniProt, Ensembl transcript and protein, ICD10) were `not_found` | `invalid_argument` with subkind `unsupported_form` |
+| LIVE3-01 CT.gov counts under the ceiling counted today's record (risk false) | counts that select on today's record report the records unchanged since the ceiling, or the risk |
+| LIVE3-02 an alias NCT id was dropped after the redirect was accepted | the redirected record is kept and the header says so |
+| LIVE3-03 native lookup and find reported aliases and lower-case ids they had fetched as missing | aliases and normal forms are compared |
+| LIVE3-04 unknown Ensembl ids counted as resolved | `not_found` (an item, or the call) |
+| LIVE3-05 cBioPortal and Census results under the ceiling had `leakage: null` | leakage `risk: true`, reason `source not dated`, and a header note |
+| LIVE3-06 `universe_via` was never consulted: cancer type and study existence always unknown | decided against the source's own listing |
+| LIVE3-07 a misspelled nested column read 10 pages and answered `empty_unverified` | `invalid_argument` before any request |
+| LIVE3-08 PubMed book records were reported as missing | parsed as records |
+| LIVE3-09 PubMed records withheld by the literature ceiling left no count or leakage record | counted in `withheld` and the provenance |
+| LIVE3-10 a native lookup of one PMID was refused `too_large`; title searches counted every field | `term=<pmid>[uid]`; every term carries its field tag |
+| LIVE3-11 cBioPortal study rows had no record versions; empty finds named the fetch time as release | the study listing's `importDate`; the profile's study |
+| LIVE3-12 the native find's ceiling note gave the wrong reason for its total | the note, and the conditions search, match the registry's |
+| DEP-1 `vbt setup --plan` on a fresh host could not plan the acquire step, and exited 0 | plans with the planned `host.yaml` in a scratch directory; a failing plan command is a non-zero exit |
+| DEP-2 `deploy/full/vbt-host` was committed without the executable bit | executable in the index; CI checks every script |
+| DEP-3 without `VBT_CL_OBO` the Cell Ontology descriptor served the 14-term test fixture as ready | no fallback; the file's `data-version` must be the pinned release (`R2:release`, else `stale`) |
+| DEP-4 the real-data tests ran only on this sandbox's hand-made layout | they find each source at its acquisition home; `VBT_DL_REAL_DATA_STRICT=1` fails a run of skips |
+| DEP-5 `vbt validate` certified PASS on a host lacking the data the enabled agents need | verdict INCOMPLETE (non-zero exit) when the roster's tables are absent or its servers got no case |
+| DEP-6 `VBT_HOST_MEMORY_MB` was ignored by `vbt setup`, whose pinned numbers then overrode it | setup plans from `data.memory.host_mb` or `$VBT_HOST_MEMORY_MB` as the runtime does, and records where the plan came from |
+| DEP-7 bare-metal deployments never read `$VBT_HOME/secrets.env` | `vbt-host` and `vbt` read it as text, without evaluating it, and refuse a file others can read |
+| DEP-8 the README's `.env` made 2 offline tests fail | the suite skips the checkout's `.env` (`VBT_NO_DOTENV`) |
+| DEP-9 setup's fallback root for Tahoe matched no acquisition home | fallback roots come from each descriptor's acquisition home |
+| DEP-10 setup never acquired a derived serve's optional dependencies (GO for `get_go_enrichment`) | acquired and listed in setup's needs, marked optional |
+| DEP-11 the pip-only install made `vbt setup` fail at smoke | a missing R stack without `Rscript` is a warning (`--no-analysis` skips the check) |
+| DEP-12 DEPLOYMENT §3's first commands failed on a fresh machine | the docs create `$VBT_HOME` first; `deploy.sh --plan/--probe/--status` start and change nothing |
+| DEP-13 `vbt local serve --docker` put weights in `~/.cache/huggingface`; data commands ignored `VBT_HOME` before setup | weights under `$HF_HOME`, else `$HF_CACHE`, else `$VBT_HOME/models`; data and runs follow `$VBT_HOME` |
+| DEP-14 the `auto` limits added up to the whole plan, leaving nothing for the harness | they share one budget; `vbt validate` prints the full-load sum and warns when it is over the plan |
+| DEP-15 CI's `bash -n` checked only the first script | every script: `bash -n`, the executable bit, shellcheck |
+| DEP-16 stale and contradictory deployment and data docs | corrected |
+| DEP-17 the production compose used the committed SearxNG secret | `deploy.sh` generates a per-host `SEARXNG_SECRET` into the secrets file; compose requires it |
+| DEP-18 recorded live fixtures could not be re-recorded with a repository command | `tests/datalayer/real/record_live.py` |
+| ASN-1 a plugin was hashed and installed from a writable staging file; the reviewer saw other text | hashed before the sandboxed run and refused if it changed; installed from the reviewed text into a directory no sandbox can write |
+| ASN-2 test and conformance verdicts were read from the stream the candidate code writes to | only a result line carrying a per-run nonce counts; the conformance stamp is computed by the harness |
+| ASN-3 a per-source Open Targets module and CLI duplicated the acquisition engine | `vbt data ot` is an alias of `vbt data acquire open_targets[.<table>]` for the active configuration's descriptor |
+| ASN-4 Census specifics (id column, filter syntax, donor key, seed, alternative tool) were hard-coded in core code | read from the descriptor, the format plugin and the overlay's `count_first.sample` (lint requires the seed) |
+| ASN-5 per-tool derived computations lived in the core, and no plugin kind let a project add one | the `derived` plugin kind (F13); `RegisterPlugin(kind="derived")` |
+| ASN-6 per-source and paper-specific code paths in core commands | partly fixed: the Case 1 replication is a `vbt validate` extension (`validate.extensions`), preflight gives one per-source readiness summary for every source, and a utility's `timeout_s` is capped at `projects.call_timeout_s`. **Open:** `vbt data zenodo fetch` still extracts archive members with its own reader into `data/zenodo/virtualbiotech_submission` instead of `vbt data acquire zenodo_vbt` (its record id now comes from the descriptor). Routing it through the generic engine needs the Case 1 presets as acquisition groups (some filter by file extension or size, which the acquisition spec cannot express) and a replication step that reads the acquisition home |
+| RR-1 agent Bash, notebooks and utility tests ran under `RLIMIT_DATA`; live Census reads crashed there | the shipped `rss` containment (`tests/datalayer/test_dl_client.py`) |
+| RR-2 the default suite failed on hosts under about 9.2 GB and with the env E2E_RUN.md exports | the suite pins the host memory and drops the operator's data-root and model-server variables (`tests/conftest.py`) |
+| RR-3 the default suite called the live cBioPortal API (240 s with a network that never answers) | an autouse guard refuses live requests in the offline suite; a failed release request is not repeated for a minute |
+| RR-4 a `VBT_PROFILES` entry naming a missing `host.yaml` crashed every `vbt` command | skipped with a warning; a missing profile is an error line, not a traceback |
+| RR-5 invalid global memory settings were silently ignored | sizes take units (`"6 GB"`); an unparsable size or unknown `limit_kind` is an error in lint, doctor and validate |
+| RR-6 `VBT_DL_NETWORK=0` turned a live test on; the gate meant three things | one reading for every file (`tests/netgate.py`): `1`, `true`, `yes`, `on`, `full` |
+| RR-7 lint did not check acquisition transport plugins; a quarantined source was "unknown source" | lint checks them; `vbt data acquire` names the quarantined file |
+| RR-8 `vbt validate` certified PASS on a host with almost no data, network or model server | INCOMPLETE (see DEP-5) |
+| RR-9 `vbt doctor --smoke` leaked a temp directory on every run | removed unless a check failed (then it says where the logs are) |
+| ACC-1 `vbt ds estimate` used decimal MB without the safety factor or baseline, so it called refused loads admissible | MiB and admission's rule; setup's size step adds the baseline too |
+| ACC-2 the live-listing test never checked the Open Targets bytes, and compared GO/CL/MSigDB sizes with themselves | every file sized by HEAD (identity encoding); an unknown size fails |
+| ACC-3 a manifest claimed checksums for a file the publisher gives none for | each entry records what it was verified against (`verified_by`: a checksum, or only the size) |
+| ACC-4 the `host_mb_needed` a report quoted was not the refusal's | the payload says the needed host includes the server's idle baseline |
+| ACC-5 DEPLOYMENT summarised the `vbt validate` run without its FAIL; §9 was stale | corrected |
+| ACC-6 the single_cell memory range in DEPLOYMENT contradicted the round-3 measurements | corrected from DATA_LAYER_REAL_DATA.md §8.1 |
+
 ## How to use the layer
 
 ### Gateway modes
@@ -270,8 +356,9 @@ else starts guarded. `lenient` lets those calls run unguarded.
 2. Bind each tool in `configs/data/overlays/<server>.yaml` (§8). Set `reads`, `args` (`binds`,
    `accepts`, `op`, roles) and `result`. Set `serve` to `pass`, `derived` or `block`. Phase-4/5 facets:
    * `derived_when: [arg]` serves a `pass` tool derived when a gateway-only argument is set.
-   * `count_first: {table, filter_arg, genes_arg, max_cells_arg, recompute_genes}` admits remote pulls
-     count-first.
+   * `count_first: {table, filter_arg, genes_arg, max_cells_arg, recompute_genes, estimate, sample}` admits
+     remote pulls count-first (`genes_arg` may list several arguments; `estimate` is the calibrated base and
+     per-cell slope; `sample` serves a derived draw with the seed and donor grain the overlay declares).
    * `engine_param` on a `free_text` argument with `interpreted_as: engine` names the source's request
      parameter the text fills (`query.cond`), so the remote witness counts the same search.
    * A record read from a nested column (`rows: $.tep`) takes that column's coverage. Declare
@@ -280,6 +367,10 @@ else starts guarded. `lenient` lets those calls run unguarded.
    Use `vbt ds explain server.tool` to see the derived schema and text, and regenerate the golden
    snapshots with `VBT_UPDATE_GOLDEN=1 pytest tests/datalayer/test_dl_derive_all_tools.py`.
 4. For a third-party server, start from `vbt ds overlay init <server>`.
+
+In a project the system does this itself: the data engineer drafts a descriptor from the files
+(`InspectDataset`), and the harness lints and checks it on the real files before registering it with the
+project ([PROJECTS.md](PROJECTS.md)). Nothing project-specific is added to `configs/data/`.
 
 ### `vbt ds` commands
 
@@ -292,18 +383,19 @@ else starts guarded. `lenient` lets those calls run unguarded.
 | `vbt ds explain s.t \| --all [--json]` | binding, serve mode, derived schema (from the upstream source, offline) and text |
 | `vbt ds fingerprint [--write]` | table fingerprints (what runs pin) |
 | `vbt ds index build [--id-type T] [--table S.T] [--access-paths [--huge]]` | resolver and access-path sidecars; `--table` alone builds only the id types those tables hold |
-| `vbt ds estimate [--json]`, `calibrate`, `status` | memory estimates, calibration, per-server memory and the host budget |
+| `vbt ds estimate [--json]`, `calibrate`, `status` | memory estimates in MiB with admission's verdict for a tool (x1.3 safety plus the 300 MB baseline against the server's limit in the active profile), calibration, per-server memory and the host budget |
 | `vbt ds conformance [--kind K] [--plugin NAME] [--list]` | the plugin conformance suites of both registries (the data child's kinds and the harness's `acquisition`); a passing `--plugin` run writes its stamp under `data.cache_dir/conformance/` |
 | `vbt ds replay <run> <tool_use_id...> \| --all [--backend bridge\|inprocess]` | re-execute recorded calls (the default `auto` is the guarded bridge) |
 | `vbt ds diff-release`, `graduate`, `retro-audit` | release drift, the observe-to-enforce checklist, offline re-classification |
 | `vbt verify <run> --data` | fresh fingerprints and replays; missing tables, unreadable fingerprints and lost records leave the run INCOMPLETE |
-| `vbt validate [--depth D] [--only/--skip STEPS]` | certify this host on its real data: lint, the session check, the six correctness tests with the gateway enforcing and off, latency, memory, live sources, replication, the model server (DEPLOYMENT.md §7.5) |
-| `vbt project init\|list\|show\|check\|profile\|approve\|reject\|memory` | projects (docs/PROJECTS.md); `--project NAME` on `chat`, `run` and `setup` |
+| `vbt validate [--depth D] [--only/--skip STEPS]` | certify this host on its real data: the host's limits, lint, the session check, the six correctness tests with the gateway enforcing and off, latency, memory, live sources, the extensions (`validate.extensions`: the Case 1 replication), the model server; PASS (exit 0), FAIL, or INCOMPLETE when a step that applies was skipped or the enabled agents read absent tables (DEPLOYMENT.md §7.5) |
+| `vbt project init\|list\|show\|check\|profile\|approve\|reject\|memory` | projects (docs/PROJECTS.md); `--project NAME` on `chat`, `run`, `setup`, the commands that read runs (`verify`, `list`, `show`, `export`, `audit`, `index`) and `vbt ds replay\|retro-audit\|graduate\|status` |
 
-Open Targets release files are fetched with `vbt data ot list|fetch|manifest` (see the README): each file's
-sha1 is checked against the release's `release_data_integrity`, and `.download-manifest.json` (the upstream
-downloader's format, plus sha1) is what readiness R2 reads. `vbt data ot manifest` writes it for tables
-already on disk without downloading anything.
+Open Targets release files are fetched with `vbt data acquire open_targets[.<table>]`, or its alias `vbt data
+ot list|fetch|manifest` (the active configuration's descriptor: its release and base URL): each file's sha1 is
+checked against the release's `release_data_integrity`, and `.download-manifest.json` (the upstream
+downloader's format, plus sha1) is what readiness R2 reads. `vbt data ot manifest` writes it for the tables
+already in the acquisition home without downloading anything.
 
 ### Acquiring data
 
@@ -325,7 +417,10 @@ The download manifests are declared in the descriptors (`manifests:`) of Open Ta
 and the Zenodo archive (whose manifest sits one level above its root; entries are taken relative to the
 root), so R2 compares every file's size with it and requires `complete: true`; DepMap, MSigDB and Zenodo
 also compare its `release` with `release.expect`. The Cell Ontology declares none: its table path is a file
-variable (`VBT_CL_OBO`) with no root to resolve the manifest against.
+variable (`VBT_CL_OBO`) with no root to resolve the manifest against. It checks the file's own `data-version`
+against the pinned release instead (`release.from: format.data-version`): a file of another release, the test
+fixture included, is `stale`. Each manifest entry records what the file was verified against (`verified_by`:
+the publisher's checksum, or only its size where the publisher gives none).
 
 A `not_ready` reason whose status acquiring fixes (`missing`, `partial`, `stale`) carries `acquire` (command,
 bytes, files, preparation steps, licence, login, and the `data.acquisition.auto` decision) in the refusal's
@@ -352,9 +447,12 @@ source's page budget is `partial`.
 
 * `host_mb`, `default_server_mb`, `host_budget_mb` (and the data child's `data.service.mem_limit_mb`,
   `max_resident_mb`, the witness and readiness budgets): `auto` by default, scaled with the host by one rule
-  (DATA_LAYER.md §14.2; `vbt validate`'s `host` step prints every value on the host); a number stays as given.
+  (DATA_LAYER.md §14.2; `vbt validate`'s `host` step prints every value on the host and the sum at full load;
+  DATA_LAYER_RUNBOOK.md, "Host-scaled limits"); a number, or a size with a unit (`"480 GB"`), stays as given.
+  A size that does not parse is an error in `vbt ds lint`, `vbt doctor` and `vbt validate`.
 * `limit_kind`: `rss` (the default), `rlimit_data`, `cgroup`, `watchdog` or `none`. It applies to MCP servers and
-  to the Bash workspace.
+  to agents' Bash commands, notebooks and project utility tests. An unknown value runs under `rss` with a
+  warning and is an error in lint, doctor and validate.
   * A server in `configs/mcp_servers.yaml` may set its own `limit_kind`. `single_cell` uses `rss`: resident
     memory only (a memory cgroup, else the RSS watchdog), with no `RLIMIT_DATA`. The upstream Census
     pulls failed under every `RLIMIT_DATA` tested (4,500 to 40,000 MB), because TileDB reserves read
@@ -365,5 +463,7 @@ source's page budget is `partial`.
 * `relay_max_message_mb`: 0 means off. A server message larger than this is replaced by an error with
   the same id.
 * `workspace_mb`: the memory limit of agent Bash commands (and the notebooks and project utility tests they run).
-  `auto` (the default) is `0.25 x plan / limits.max_parallel_agents` within 8,000-65,536 MB and at most half the
-  plan: 8,000 MB on a 16 GB host, 3,000 MB on a 6,000 MB share (`VBT_HOST_MEMORY_MB=6000`).
+  `auto` (the default) is what the plan leaves after the host budget, the data child and the reserve, divided by
+  `limits.max_parallel_agents`, within 8,000-65,536 MB and at most half the plan: 8,000 MB on a 16 GB host,
+  6,840 MB on this development machine's 13,680 MB plan, 13,107 MB on 512 GB and 28,672 MB on 1 TB with 8
+  agents, 3,000 MB on a 6,000 MB share (`VBT_HOST_MEMORY_MB=6000`).

@@ -1,11 +1,15 @@
 # Data layer runbook: symptom → command
 
 Operator guide for the vbt data layer (design: [DATA_LAYER.md](DATA_LAYER.md)). Each entry starts
-from what you see in an agent's tool result, in `vbt verify`, or in `vbt doctor`, and names the
-command that explains it and the fix. `vbt ds` is short for `vbt datasource`; every command takes
-`--help`. Commands that read data (`check`, `fingerprint`, `index build`, `estimate`, `calibrate`,
-`diff-release`) run the data child's interpreter (`${vars.mcp_python}`), so they need the same
-environment as the MCP servers (`OPEN_TARGETS_DATA_PATH`, `TAHOE_DATA_PATH`, ...).
+from what you see in an agent's tool result, in `vbt verify`, `vbt doctor` or `vbt validate`, and
+names the command that explains it and the fix. `vbt ds` is short for `vbt datasource`; every command
+takes `--help`. Commands that read data (`check`, `fingerprint`, `index build`, `estimate`,
+`calibrate`, `diff-release`) run the data child's interpreter (`${vars.mcp_python}`), so they need the
+same environment as the MCP servers (`OPEN_TARGETS_DATA_PATH`, `TAHOE_DATA_PATH`, ...). On a host
+brought up with `vbt setup`, every `vbt` command loads the host configuration (`host.env`, the
+recorded profiles), which sets them. `vbt data` fetches and verifies the files
+([DATA_SETUP.md](DATA_SETUP.md)); `vbt validate` certifies the whole host
+([DEPLOYMENT.md §7.5](DEPLOYMENT.md#75-certifying-a-host-vbt-validate)).
 
 The error kinds and payloads are those of DATA_LAYER.md §12.1. A model-side kind (`not_found`,
 `ambiguous`, `invalid_argument`, `unsupported_combination`, `incomplete_key`, `unsupported_filter`,
@@ -18,7 +22,13 @@ yours.
 | Symptom | First command |
 |---|---|
 | `not_ready` naming a table, column or partition | `vbt ds check --tool <server>.<tool>` |
-| `too_large` (memory estimate) | `vbt ds estimate --tool <server>.<tool>` |
+| `not_ready`, status `missing` or `partial` (files absent or truncated) | `vbt data acquire <source>.<table>` (the refusal's `acquire` entry names it, with size and licence) |
+| `not_ready`, status `stale` (`R2:release`: another release on disk) | `vbt data acquire <source> --env-file <file>` |
+| `R2:manifest_absent`, files not verified | `vbt data status --check` |
+| `too_large` (memory estimate; `over_limit`) | `vbt ds estimate --tool <server>.<tool>` |
+| `too_large` with `limit_source: auto` | `vbt validate --only host` (the limits this host gets) |
+| `too_large` subkind `host_busy` | `vbt ds status <run>` |
+| `too_large` subkind `scan_budget` | `vbt ds explain <server>.<tool>` |
 | `too_large` subkind `unranked_truncation` | `vbt ds explain <server>.<tool>` |
 | `too_large` subkind `expansion` | `vbt ds describe <source>.<table>` |
 | `oom`, `server_crashed`, recycles | `vbt ds status <run>` |
@@ -32,6 +42,7 @@ yours.
 | sidecar index stale or missing | `vbt ds index build --id-type <source>:<id_type> --force` |
 | adding a third-party server | `vbt ds overlay init <server>` |
 | switching a server from observe to enforce | `vbt ds graduate <server> --run <run>` |
+| is this host fit to run the enabled agents? | `vbt validate` |
 
 ## not_ready: a table, column or partition failed readiness
 
@@ -44,8 +55,16 @@ the tools that read the failing part are refused; every other tool keeps working
    statuses; `--column <source>.<table>.<column>` narrows to one column.
 3. By status:
    - `missing` / `partial` (R1, R2, R3): files absent, truncated, or not in the manifest. A partition
-     listed but unreadable is never skipped (I14). Re-download the affected partition, then rerun the
-     check. A `.part` file left by an interrupted download fails its partition only.
+     listed but unreadable is never skipped (I14). The reason carries `acquire` (command, bytes,
+     files, preparation steps, licence, and the `data.acquisition.auto` decision) and its `hint` says
+     the same in words: run `vbt data acquire <source>.<table>` (next section), then rerun the check;
+     a session re-checks at the next turn. A `.part` file left by an interrupted download fails its
+     partition only, and the next `vbt data acquire` resumes it. Files already on disk elsewhere: point
+     the source's variable at them (`OPEN_TARGETS_DATA_PATH`, ...).
+   - `stale` (`R2:release`): the files are of another release than the descriptor pins: a manifest's
+     `release`, or a file's own header (the Cell Ontology's `data-version`). Fetch the pinned release
+     next to the old one (`vbt data acquire <source> --env-file <file>` also points the variable at it)
+     or move the descriptor to the release you have (DEPLOYMENT.md §7.2).
    - `schema_drift` (R4): a declared column is missing or has an incompatible type, or (strict
      descriptors) an undeclared column appeared. Usually a new release: run
      `vbt ds diff-release --from <old> --to <new>` and update the descriptor.
@@ -60,11 +79,26 @@ the tools that read the failing part are refused; every other tool keeps working
 
 ## too_large
 
-- **Memory estimate over budget** (no subkind). `vbt ds estimate --tool <server>.<tool>` prints the
-  peak estimate per table, its tier (`measured`, `sample`, `seed`) and the server's limit. If the
-  estimate tier is `seed`, `vbt ds calibrate --table <source>.<table>` replaces it with a sampled
-  measurement. Otherwise narrow the call (a filter on the partition column, a smaller limit) or raise
-  `mem_limit_mb` for that server in `configs/mcp_servers.yaml`.
+- **Memory estimate over the server's limit** (subkind `over_limit`). `vbt ds estimate --tool
+  <server>.<tool>` prints the peak estimate per table in MiB, its tier (`measured`, `sample`, `seed`),
+  the server's limit and whether the load is admissible, by admission's own rule (the estimate x
+  `data.memory.estimate_safety` plus the server's 300 MB idle baseline): the command and the gateway
+  give the same answer. If the tier is `seed`, `vbt ds calibrate --table <source>.<table>` replaces it
+  with a sampled measurement. The payload says where the limit came from: `host_mb` (the memory the
+  limits are planned from), `limit_source` and, for `auto`, `host_mb_needed` (the smallest host whose
+  auto limit admits the load with its baseline). With `limit_source: auto` the fix is a larger plan
+  (more host memory, a larger container limit, or `data.memory.host_mb` / `VBT_HOST_MEMORY_MB` where
+  the harness has a known share of a shared host; next section), or a number for that server's
+  `mem_limit_mb` in `configs/mcp_servers.yaml`. With `configured`, raise the number. Otherwise narrow
+  the call (a filter on the partition column, a smaller limit) or use the alternative the payload names.
+- **`host_busy`**: the load fits the server's limit, but the upstream servers together would pass the
+  host budget (`data.memory.host_budget_mb`) and no idle server is left to recycle. `vbt ds status
+  <run>` shows each server's resident memory against the budget; the data child is never counted in
+  it. Retry when a server is idle, or give the budget more memory.
+- **`scan_budget`**: a derived answer or a native `find` would decode more than its scan budget (the
+  table's `max_scan_bytes`, else `data.witness.max_scan_bytes`, which `auto` scales with the data
+  child). The payload names the alternative (usually `mcp__data__find` with a narrower `where`);
+  `vbt ds explain <server>.<tool>` shows what the binding scans.
 - **`unranked_truncation`**: the tool cuts before it ranks and the witness cannot verify the order
   within `data.witness.max_inflate_rows` / `max_inflate_bytes`. `vbt ds explain <server>.<tool>` shows
   the binding's `order` and `limit_mode`. The agent should narrow the query or use the native
@@ -78,13 +112,106 @@ the tools that read the failing part are refused; every other tool keeps working
 ## oom and server_crashed
 
 `vbt ds status <run>` (or `--log-dir <dir>` for a live session) reads the reaper status files: RSS,
-limit, containment (`rlimit_data`, `cgroup_v2`, `watchdog`), OOM kills, recycles and the measured
-feedback the estimator learned. Its first line gives the memory the limits are planned from and where that number
-comes from (`data.memory.host_mb`, `VBT_HOST_MEMORY_MB`, else MemTotal and the cgroup limit), the upstream budget,
-the upstream servers' resident sum it caps, and the data child's own RSS (not in the budget). An `oom` is never retried; the same call is refused with `too_large`
-afterwards. Check the server's log under `<run>/logs/mcp/`. Raise the server's `mem_limit_mb`, enable
-`data.memory.limit_kind: cgroup` where the host delegates cgroups, or calibrate the tables it loads
-(`vbt ds calibrate`). `max_oom_kills` per session stops a server that keeps dying.
+limit, containment (`cgroup_v1`, `cgroup_v2`, `watchdog`, `rlimit_data`), OOM kills, recycles and the
+measured feedback the estimator learned. Its first line gives the memory the limits are planned from and
+where that number comes from (`data.memory.host_mb`, `VBT_HOST_MEMORY_MB`, else MemTotal and the cgroup
+limit), the upstream budget, the upstream servers' resident sum it caps, and the data child's own RSS (not
+in the budget). An `oom` is never retried; the same call is refused with `too_large` afterwards. Check the
+server's log under `<run>/logs/mcp/`; the exit marker's `cause` says what ended the child (`cgroup_oom_kill`,
+`watchdog`, `memory_error`, `kernel_oom_kill`, `possible_kernel_oom`). The shipped containment is `rss`
+(`data.memory.limit_kind`): a memory cgroup when one can be created, else the RSS watchdog, never
+`RLIMIT_DATA` (under which TileDB's Census reads crash with `std::bad_alloc`; it applies only to a server or
+host that asks for `rlimit_data`). A server killed under an `auto` limit needs a larger plan (next section)
+or a number for its `mem_limit_mb`; a load the estimate under-sized needs `vbt ds calibrate` of the tables it
+loads. `max_oom_kills` per session stops a server that keeps dying.
+
+## Host-scaled limits
+
+Every memory budget ships as `auto` and is computed from the **plan**: the smaller of MemTotal and the memory
+cgroup limit of the harness and its ancestors (a container's `--memory`), or `data.memory.host_mb` (a number
+or a size such as `"480 GB"`), or `$VBT_HOST_MEMORY_MB`. One rule (`src/vbt/datalayer/memory/sizing.py`,
+DATA_LAYER.md §14.2) gives:
+
+| Setting | `auto` means |
+|---|---|
+| `data.memory.host_budget_mb` (all upstream servers) | 0.75 x plan - max(`harness_reserve_mb` 2,048, 5% of plan), at least 1,024 |
+| `data.memory.default_server_mb` (one upstream server) | 0.8 x the host budget, at least 2,048 |
+| `data.service.mem_limit_mb` (the data child) | 5% of plan within 3,000-32,768; `max_resident_mb` 2/3 of it |
+| `data.witness.*` budgets, `data.readiness.vocab_budget_bytes` | the shipped value x data child / 3,000 |
+| `data.memory.workspace_mb` (each agent command, notebook, utility test) | (plan - host budget - data child - reserve) / `limits.max_parallel_agents` within 8,000-65,536, at most half the plan |
+
+`vbt validate --only host` prints every configured and effective value and the sum at full load (the host
+budget, the data child and `max_parallel_agents` agent commands at their limit) against the plan. Values it
+printed for simulated plans (`VBT_HOST_MEMORY_MB`):
+
+| Plan | Host budget | One server | Data child | Agent command | Full load | `host` step |
+|---:|---:|---:|---:|---:|---:|---|
+| 13,680 MB | 8,212 | 6,569 | 3,000 | 6,840 | 65,932 | WARN (over the plan) |
+| 16 GB | 10,240 | 8,192 | 3,000 | 8,000 | 77,240 | WARN |
+| 64 GB | 45,875 | 36,700 | 3,276 | 8,000 | 113,151 | WARN |
+| 128 GB | 91,750 | 73,400 | 6,553 | 8,000 | 162,303 | WARN |
+| 512 GB | 367,002 | 293,601 | 26,214 | 13,107 | 498,072 | PASS |
+| 1 TB | 734,003 | 587,202 | 32,768 | 28,672 | 996,147 | PASS |
+
+Below about 512 GB the 8,000 MB floor of an agent command makes eight parallel agents at full load add up to
+more than the plan: the `host` step warns, and `vbt setup --plan` says so. Lower
+`limits.max_parallel_agents` or `data.memory.workspace_mb` there, or accept that the limits are ceilings, not
+reservations. A number anywhere stays as configured, and a server's own `mem_limit_mb` in
+`configs/mcp_servers.yaml` wins over `default_server_mb`. A size that does not parse or an unknown
+`limit_kind` is an error in `vbt ds lint`, `vbt doctor` and `vbt validate` (an unknown `limit_kind` runs under
+`rss` with a warning). `vbt setup` writes the numbers this rule gives into `host.yaml`; its `size` step raises
+the server limit, up to the host budget, when the largest server's whole-table loads (x1.3) need more, and
+records where its plan came from. On a host the harness shares with the model server, set
+`data.memory.host_mb` to the harness's share before `vbt setup`.
+
+## Fetching data and download manifests
+
+[DATA_SETUP.md](DATA_SETUP.md) is the guide; these are the symptoms.
+
+- **What is missing.** `vbt data status [--check]` lists every declared table with its home, whether its
+  files are present and verified, its readiness and the tools it unlocks; `--json` for scripts. `vbt data
+  acquire --for-agents <agent> --plan` (or `--for-tools`, `--all`, `--missing`) prints what a fetch would
+  take (files, bytes, time, licence) and writes nothing.
+- **A fetch refused before any transfer**: the bytes left exceed `--max-gb`, or the free disk minus
+  `data.acquisition.reserve_bytes`, or the home holds another release (`.vbt-acquisition.json`). Free
+  space, raise `--max-gb`, or fetch the new release into its own home (`acquisition.dir` names the release).
+- **A file that will not verify** never takes its name: on a size, checksum or Parquet framing mismatch its
+  partial download is discarded and fetched again, and after four attempts the
+  file is reported failed and its table is left out of the manifest's verified tables. An interrupted
+  transfer keeps its `.part`; the next `vbt data acquire` resumes it with a range request, or starts it
+  again when the server ignores ranges.
+- **`R2:manifest_absent`** (files present, no manifest) or **`R2:manifest`** (a file's size differs from its
+  manifest entry): `vbt data acquire <source>` verifies what is present against the release's checksums,
+  downloads only what is missing and writes `.download-manifest.json` (the upstream downloader's format;
+  each entry records what it was verified against: the publisher's checksum, or only its size where the
+  publisher gives none). For Open Targets tables already on disk, `vbt data ot manifest` writes it without
+  downloading anything. A manifest must say `complete: true`.
+- **Acquired but still `missing`**: the data child reads the directories its descriptors' variables named
+  when it started. Point the variable at the home (`--env-file <file>`, or the `host.env` that `vbt setup`
+  writes) and start a new session; a between-turns acquisition lists those variables as `env_needed` in its
+  `data_acquisition` event.
+- **"unknown source" or "quarantined"** from `vbt data acquire`: the descriptor did not load (`vbt ds lint`
+  names the file and the error, including an acquisition transport plugin that does not exist).
+- **On-demand policy.** `data.acquisition.auto`: `"off"` (default; the refusal says how and an operator runs
+  it), `ask` (queued; `vbt data acquire --pending` fetches the queue), `under_budget` (the session fetches
+  between turns what fits `budget_bytes`). Every acquisition is logged in
+  `<data.acquisition.root>/acquisitions.jsonl`, and during a run in the run's `data_acquisitions.jsonl`.
+
+## Certifying a host: `vbt validate`
+
+`vbt validate` writes `validate.md` and `validate.json` under `<state>/validate/<time>` (`--out` moves
+them) and exits 0 only for **PASS**.
+
+- **FAIL**: a step failed. `correctness` lists each case (enforce vs off vs the oracle). A server
+  `killed` there was admitted and then died at its limit: give it more memory (previous sections) or
+  calibrate the table it loads. `wrong` is an enforce answer that differs from the oracle: report it with
+  the case file `correctness/<server>/cases.json`.
+- **INCOMPLETE**: nothing failed, but the host is not certified. A `correctness`, `live` or `model` step
+  that applies was skipped (no data, no network, no model server), or a step found that the enabled
+  agents' tools read tables absent on this host or servers that got no case. The report lists each
+  reason. `vbt data acquire --for-agents <agent>` fetches what is absent; `--only`/`--skip` leaves out
+  steps on purpose, and those do not count against the verdict.
+- `--check-from <check.json>` reuses an earlier deep check so the later steps can be rerun quickly.
 
 ## tool_defect: the witness contradicts the upstream answer
 

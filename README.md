@@ -6,6 +6,89 @@ a multi-agent AI organization in which a virtual Chief Scientific Officer (CSO)
 coordinates specialist scientist agents across target discovery, safety, modality
 selection and clinical development.
 
+## Run it on your own infrastructure
+
+The harness is deployed and operated by its owners, on their own hardware, independently of
+the environment it was developed in. Nothing depends on a particular machine: memory limits
+scale with the host, data is fetched and verified by commands, and every step below is a
+command in this repository with tests behind it.
+
+1. **Plan the host.** [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) sizes the full paper
+   configuration: one 80-96 GB NVIDIA GPU or more for the local model, 256 GB of RAM at least
+   (512 GB to 1 TB with headroom), 500 GB to 2 TB of NVMe. It covers three bring-ups: the
+   Docker compose stack (`deploy/full/deploy.sh up`, which builds the locked harness image and
+   runs `vbt setup` in it), bare metal from the locked environment (DEPLOYMENT §4), and
+   Apptainer on HPC.
+
+   ```bash
+   git clone --recursive <this repository> vbt && cd vbt
+   export VBT_HOME=/srv/vbt       # data, model weights, runs, projects and the host state live here
+   ```
+
+2. **Bring the host up with `vbt setup`.** It probes the host (CPUs, memory, GPUs, cgroups,
+   network), picks the serving profile and writes the host configuration (`host.yaml`,
+   `host.env`), which every later `vbt` command applies. It then acquires the data that the
+   enabled agents' tools read, sizes the servers' memory, builds the indexes, checks readiness,
+   calibrates and runs a smoke session. It resumes where it stopped.
+
+   ```bash
+   vbt --profile production setup --plan    # steps, download sizes, time estimates, memory sizing; changes nothing
+   vbt --profile production setup           # do it (`vbt setup --status` shows the steps)
+   ```
+
+3. **Acquire data as you need it.** `vbt data acquire` fetches what the descriptors declare. It
+   plans first (files, bytes, time, licence), then downloads with resume, verifies every
+   checksum, runs a source's preparation step and writes the manifest that readiness reads. A
+   call refused `not_ready` names the command that fixes it. With
+   `data.acquisition.auto: under_budget`, the session acquires small tables between turns.
+
+   ```bash
+   vbt data acquire --for-agents genomics-analyst --plan   # the tables an agent's tools read
+   vbt data acquire open_targets tahoe_100m                # whole releases: 31.1 GB; 88.9 GB plus the preparation
+   vbt data status --check                                 # present, verified, ready, and the tools each table unlocks
+   ```
+
+4. **Certify the host with `vbt validate`.** It runs on the host's real data: lint, the
+   readiness check, the six correctness tests with the gateway enforcing and off against an
+   independent oracle, latency, memory, the live sources, the replication extension and the
+   model server. It writes `validate.md` and `validate.json`. The verdict is PASS (exit 0),
+   FAIL, or INCOMPLETE when a step that applies could not run or the enabled agents need data
+   the host lacks.
+
+   ```bash
+   vbt validate
+   ```
+
+5. **Create a project** for your own datasets, notes and helpers:
+
+   ```bash
+   vbt project init oncology --description "In-house oncology screens"
+   ```
+
+6. **First run.**
+
+   ```bash
+   vbt chat --project oncology                       # interactive CSO session (or: vbt web, the browser UI)
+   vbt run --project oncology "Evaluate PCSK9 as a target for lowering LDL cholesterol."
+   vbt verify --project oncology latest --data       # claims, evidence and a replay of the cited data calls
+   ```
+
+**The system creates dataset- and project-specific utilities as needed.** The core ships only
+general mechanisms: source descriptors, plugin kinds, the data gateway, generic acquisition,
+validation, and authoring tools for agents. Nothing specific to one dataset or project is
+hand-written into it. Suppose a session in a project needs a dataset the harness has no
+descriptor for, an unusual file format, or a helper that analyses keep re-implementing. The
+CSO delegates to the data-engineer agent, which drafts a descriptor (`InspectDataset`), an
+acquisition spec, a plugin of an existing kind or a utility. The harness validates each one
+before registering it: lint, the readiness check on the real files, the kind's conformance
+suite, the utility's tests in a sandbox, and review where the owners ask for it. It then
+stores the item with the project, with its provenance. A registered utility becomes a tool
+(`util__<name>`) in the running session and in every later session of the project. Nothing a
+project registers changes the shipped harness or other projects.
+[docs/PROJECTS.md](docs/PROJECTS.md) describes the mechanism.
+
+## What it is
+
 - **Faithful:** the agent system prompts, skills and FastMCP data servers are the
   authors' originals. They are pinned as a git submodule
   ([harrisongzhang/TheVirtualBiotech](https://github.com/harrisongzhang/TheVirtualBiotech), MIT license).
@@ -65,7 +148,9 @@ part of it is mapped to its module in [docs/PAPER_TO_CODE.md](docs/PAPER_TO_CODE
 - **One NVIDIA GPU with 80-96 GB or more**: H100 80GB, H200 141GB, RTX PRO 6000 Blackwell
   96GB, or B200/B300. Linux x86_64, NVIDIA driver 575 or newer (580 or newer for the default
   `vllm/vllm-openai:v0.31.0` image), Docker with the NVIDIA Container Toolkit (or a separate
-  Python environment for vLLM), at least 128 GB of RAM and 500 GB of NVMe.
+  Python environment for vLLM), at least 128 GB of RAM and 500 GB of NVMe for the model
+  server. A host that also runs the harness on the full data releases needs 256 GB of RAM or
+  more ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) §2).
 - A 32 GB card (RTX 5090) runs a reduced development profile (about 3 parallel specialists,
   128K context). Several GPUs run data-parallel replicas or the larger DeepSeek-V4-Flash model.
 - The harness itself needs no GPU. It can run on the GPU host or on any machine that reaches
@@ -76,7 +161,8 @@ part of it is mapped to its module in [docs/PAPER_TO_CODE.md](docs/PAPER_TO_CODE
 [docs/LOCAL_LLM.md](docs/LOCAL_LLM.md) has the per-GPU profiles, their expected capacity and
 the full setup; [deploy/local/README.md](deploy/local/README.md) is the operations reference.
 
-**A whole deployment in one command.** [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) covers the
+**A whole deployment in one command** (steps 1-2 of
+[Run it on your own infrastructure](#run-it-on-your-own-infrastructure)). [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) covers the
 locked harness image, the full compose stack (`deploy/full/deploy.sh up`), Apptainer on HPC
 and bare metal. On any of them `vbt setup` brings the host up from a clean clone or the
 image: it probes the host (CPUs, memory, GPUs, cgroups), picks the serving profile, sizes the
@@ -329,18 +415,20 @@ fits `budget_bytes`, and records it in the run).
 
 ### Open Targets release tables
 
-`vbt data ot` downloads tables of an Open Targets Platform release (default 25.09) into the directory the
-upstream servers read (`$OPEN_TARGETS_DATA_PATH`). The file list and checksums come from the release's
-`release_data_integrity` file, itself checked against its `.sha1`; no directory listing is walked. Every
-downloaded file's sha1 is checked, a partial download resumes, and `.download-manifest.json` is written in
-the upstream downloader's format (with sha1 added), which the data layer's readiness check (R2) and the
-upstream `tools/doctor.py` read.
+`vbt data ot` is an alias of `vbt data acquire open_targets[.<table>]`: it reads the active configuration's
+`open_targets` descriptor (its pinned release, 25.09, and base URL) and puts the tables in the source's
+acquisition home, `<data.acquisition.root>/open_targets/25.09` (`--dest ROOT` moves the root; point
+`OPEN_TARGETS_DATA_PATH` at the home, or let `vbt setup` or `--env-file` do it). The file list and checksums
+come from the release's `release_data_integrity` file, itself checked against its `.sha1`; no directory
+listing is walked. Every downloaded file's sha1 is checked, a partial download resumes, and
+`.download-manifest.json` is written in the upstream downloader's format (with sha1 added), which the data
+layer's readiness check (R2) and the upstream `tools/doctor.py` read.
 
 ```bash
 vbt data ot list                                   # the release's tables and file counts
 vbt data ot fetch target go reactome --dry-run     # what would be downloaded, and its size
 vbt data ot fetch target go reactome --max-gb 2    # download, verify, write the manifest
-vbt data ot manifest                               # verify tables already on disk and write the manifest
+vbt data ot manifest                               # verify the tables already in the home and write the manifest
 ```
 
 ## Data layer
@@ -566,7 +654,7 @@ VBT_DL_NETWORK=1 python -m pytest -q tests/datalayer/test_dl_real_live.py
   servers register. `vbt doctor --smoke` was run against the real servers without Open Targets
   data: they start, and the data tools fail the smoke test as expected.
 - The data layer and the unmodified MCP servers behind it were run on real data, through the
-  bridge but without a model ([docs/DATA_LAYER_REAL_DATA.md](docs/DATA_LAYER_REAL_DATA.md)):
+  bridge, mostly without a model ([docs/DATA_LAYER_REAL_DATA.md](docs/DATA_LAYER_REAL_DATA.md)):
   - 31 of the 38 Open Targets 25.09 tables, through the Open Targets-backed servers, with the
     gateway off and on;
   - the live ClinicalTrials.gov, cBioPortal and PubMed tools;
@@ -574,9 +662,17 @@ VBT_DL_NETWORK=1 python -m pytest -q tests/datalayer/test_dl_real_live.py
 
   The evidence, variant, credible-set and colocalisation tables were not downloaded, so the tools
   that read them were seen only refusing (`not_ready`).
-- Not yet exercised end to end: live Claude runs, agent sessions on real data, and the wrappers
-  around optional heavy dependencies (PyDESeq2, LIANA, decoupler, lifelines, Cell2Location,
-  rpy2/lme4/glmmTMB). The build environment had no GPU and no API key.
+- Agent sessions on real data ran end to end once, with a small model on CPU: Qwen3.5-2B served
+  by llama.cpp, the seven Open Targets servers on the 31 downloaded 25.09 tables, the gateway
+  enforcing, and a project ([docs/E2E_RUN.md](docs/E2E_RUN.md)). The run found and fixed nine
+  harness bugs. The 2B model delegated, used the data tools and went through enforced review,
+  but it filed no claims and could not drive the data engineer's steps; those steps (a
+  descriptor and a utility the system created and a specialist then used) were driven by the
+  scripted model over the same real stack.
+- Not yet exercised end to end: the production model on a GPU, live Claude runs, and the
+  wrappers around optional heavy dependencies (PyDESeq2, LIANA, decoupler, lifelines,
+  Cell2Location, rpy2/lme4/glmmTMB; the harness image imports them and R loads its packages,
+  [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) §9). The build environment had no GPU and no API key.
 - Case 1 calibration (harness addition): the paper takes the minimum feature value across a
   drug's targets, which makes the trial-level feature depend on the number of targets.
   - With *random* gene features, the null odds ratios are about 1.08–1.20, not 1.0.

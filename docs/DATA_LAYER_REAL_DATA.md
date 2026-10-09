@@ -2,21 +2,31 @@
 
 Through phase 5, the data layer ([DATA_LAYER.md](DATA_LAYER.md), status in
 [DATA_LAYER_STATUS.md](DATA_LAYER_STATUS.md)) was tested only on generated fixtures, stubs and recorded
-responses. On 2026-10-08 the descriptors, the data child and the gateway were run against the real
-releases and live APIs listed below. This page records what was checked, which descriptor facts held, which
-were wrong and how they were fixed, the six correctness tests on the real Open Targets release, the memory
-and latency that were measured, and what is still unchecked because the data could not be obtained here.
+responses. On 2026-10-08 and 2026-10-09 the descriptors, the data child and the gateway were run against the
+real releases and live APIs listed below, in three rounds. This page records what was checked, which
+descriptor facts held, which were wrong and how they were fixed, the six correctness tests on the real Open
+Targets release, the memory and latency that were measured, and what is still unchecked because the data or
+a model run could not be obtained here.
+
+The third round (sections 8 and 9, and §4.3) also covered the rest of the path an owner follows on their own
+host: acquisition from the publishers, the host bring-up (`vbt setup`), memory limits that scale with the
+host, host certification (`vbt validate`), projects whose descriptors and utilities the system created on real
+files, and one end-to-end agent run with a small model on CPU.
 
 Every number on this page was observed in those runs; nothing is extrapolated unless it says so.
 
-* **Machine.** 4 CPUs, 16,094 MB RAM, no swap, Linux 6.18. Outbound HTTPS went through a proxy. Other
-  jobs sometimes ran at the same time, so wall-clock times are approximate.
+* **Machine.** 4 CPUs, 16,094 MB RAM (a 13,680 MB memory cgroup limit on the agents' commands, cgroup v1),
+  no swap, no GPU, Linux 6.18. Outbound HTTPS went through a proxy. Other jobs sometimes ran at the same
+  time, so wall-clock times are approximate. This machine is where the harness was built and smoke-tested;
+  the owners run it on their own hosts, whose limits scale with their memory (§5.7).
 * **Upstream code.** The authors' MCP servers were launched unchanged from `third_party/TheVirtualBiotech`
   through `MCPBridge`. "Off" below means `data.gateway.mode: "off"` (the upstream answer as an agent gets it
   today). "Enforce" means the gateway guards the server.
 * **Memory.** Memory figures are peak RSS. They come either from the reaper's status file of one process,
   or from the summed VmRSS of a whole process tree sampled every 0.25-1 s. Runs kept their process tree
-  under a 5,800-6,000 MB cap. The one early check that ran without the reaper is named in section 5.2.
+  under a 5,500-6,000 MB cap. The one early check that ran without the reaper is named in section 5.2.
+  "MB" in memory figures is MiB (2^20 bytes), as in the limits, admission and the reaper; download sizes
+  are decimal (GB = 10^9 bytes).
 * **Oracle.** Expected answers come from pyarrow reads of the same files, written independently of the
   code under test.
 
@@ -27,9 +37,10 @@ Every number on this page was observed in those runs; nothing is extrapolated un
 3. [The six correctness tests on real data](#3-the-six-correctness-tests-on-real-data)
 4. [Wrong answers of the layer itself, found on real data](#4-wrong-answers-of-the-layer-itself-found-on-real-data)
 5. [Memory and latency](#5-memory-and-latency)
-6. [What still needs data we could not get](#6-what-still-needs-data-we-could-not-get)
+6. [What still needs data or model runs](#6-what-still-needs-data-or-model-runs)
 7. [Re-running the checks](#7-re-running-the-checks)
 8. [Round 3: derived live routes, item keys in Arrow, Census admission](#8-round-3-derived-live-routes-item-keys-in-arrow-census-admission)
+9. [Round 3: acquisition, host bring-up, host-scaled memory, projects, an end-to-end run](#9-round-3-acquisition-host-bring-up-host-scaled-memory-projects-an-end-to-end-run)
 
 ## 1. Sources and releases
 
@@ -46,14 +57,19 @@ Every number on this page was observed in those runs; nothing is extrapolated un
 | cBioPortal | public API (550 studies) | `https://www.cbioportal.org/api` | live requests |
 | NCBI E-utilities | esearch, esummary, efetch; the PMC ID converter | `https://eutils.ncbi.nlm.nih.gov/entrez/eutils`, `https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/` | live requests |
 | CELLxGENE Census | `stable` = 2025-11-08 (`latest` 2025-11-17), `census_schema_version` 2.4.0; read with cellxgene-census 1.18.0 and tiledbsoma 2.3.0 | `https://census.cellxgene.cziscience.com/cellxgene-census/v1/release.json`, `s3://cellxgene-census-public-us-west-2/cell-census/2025-11-08/soma/` | counts, obs reads, an `X["raw"]` slice, and `get_anndata` through the upstream server |
+| Open Targets Platform 25.06 (round 3) | `release_data_integrity` of 2,952,307 bytes | `https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.06/` | `drug_warning` (1 shard) and `go` (4 shards), 1,172,632 bytes, fetched by a descriptor the system wrote in a project (§9.4) |
+| HGNC complete set (round 3) | file of 2026-10-06 (`Last-Modified` 13:38:36 GMT, MD5 `af43fd56...`) | `https://storage.googleapis.com/public-download-files/hgnc/tsv/tsv/hgnc_complete_set.txt` | the whole file (16,973,125 bytes; 45,233 rows x 53 columns), registered in a project (§9.4) |
+| ClinVar `gene_condition_source_id` (round 3) | file of 2026-10-07 (`Last-Modified` 14:17:23 GMT), retrieved 2026-10-09 | `https://ftp.ncbi.nlm.nih.gov/pub/clinvar/gene_condition_source_id` | the whole file (1,323,448 bytes; 14,211 rows x 9 columns), a dataset with no shipped descriptor in the end-to-end run (§9.5). The live file had changed by the end of the day (1,323,651 bytes, `Last-Modified` 2026-10-09 14:17:40) |
 
 The DepMap portal's download API (`https://depmap.org/portal/api/download/files`) answered HTTP 200 with a
 4,842-byte Cloudflare "verify you are a person" page, so the newest DepMap release on figshare (24Q4) was
 used. Newer releases exist only on the portal.
 
-**Downloaded files.** They are in the shared, git-ignored directory `data/real/<source>/<release>/`
-(about 2.8 GB) and are not committed. The test suite carries only small snapshots of what was measured,
-each naming its source URL and retrieval date:
+**Downloaded files.** They are in the shared, git-ignored directory `data/real/<source>/<release>/` and are
+not committed: about 3.0 GB of data (Open Targets 1.9 GB, DepMap 0.81 GB, the rest under 0.1 GB each), laid
+out as the acquisition homes `vbt data acquire` writes (`<source>/<release>`), plus 3.8 GB of model weights
+for the end-to-end run. The test suite carries only small snapshots of what was measured, each naming its
+source URL and retrieval date:
 
 | Directory under `tests/datalayer/real/` | Contents |
 |---|---|
@@ -61,7 +77,13 @@ each naming its source URL and retrieval date:
 | `ot_25_09_servers/` | the footer statistics of the 25.09 `target` table, used to test the shipped memory factors |
 | `tahoe/` | DE footer facts, metadata excerpts, 30 prepared DE rows |
 | `depmap/`, `ontology/` | CSV excerpts of the DepMap files; whole OBO stanzas and three GMT lines |
-| `live/` | recorded CT.gov, cBioPortal and E-utilities responses and replayed request sequences; Census read summaries |
+| `live/` | recorded CT.gov, cBioPortal and E-utilities responses and replayed request sequences; Census read summaries; `live/round3/` the round-3 exchanges (9 files, 68 KB) |
+| `acquisition/` | the listings the acquisition transports parse: the Hugging Face tree of the Tahoe metadata, the figshare file list of DepMap 24Q4, the Zenodo record, an S3 listing page of the Census (12.6 KB) |
+| `ot_25_09/_release_data_integrity.excerpt.json` | an excerpt of the release's checksum list (3.9 KB) |
+
+`tests/datalayer/real/record_live.py` re-records the replayed live exchanges through the shipped descriptors
+(`python tests/datalayer/real/record_live.py real_live <scenario>`, or `round3 --all --dry-run` to see what it
+would write).
 
 ## 2. Descriptor facts: confirmed and corrected
 
@@ -180,7 +202,8 @@ the fix, all four tables are `ready` (deep check 378 s, peak 419 MB).
 * **Cell Ontology.** 3,540 terms. Nine obsolete `CP:` ids were moved into CL; they are now accepted.
   `relationship` lines use CURIE predicates, and all 399 targets are CL terms: the descriptor's comment that
   part_of edges point into UBERON was wrong. CL:4023064 asserts the same synonym twice, so synonym items are
-  keyed by position. Now `ready`.
+  keyed by position. Now `ready`. Since round 3 the descriptor reads the pinned 2026-06-08 release only and
+  checks the file's `data-version`; the 14-term test fixture it used to fall back to is `stale` (§9.6).
 * **MSigDB Hallmark.** 50 sets, 7,322 memberships, 4,384 symbols. 4,377 of the symbols (99.84%) are an
   Open Targets 25.09 `approvedSymbol`, and the lowest set resolves 99.1%, so `min_resolved_fraction: 0.95`
   holds. Now `ready`.
@@ -290,6 +313,12 @@ the review fixes of section 4, with one exception. That run put the whole pytest
 **Re-run for this page.** On 2026-10-08, at commit `d4aadfe`, both tests were run once more with
 `VBT_DL_REAL_DATA=data/real` and no address-space limit. Both passed in 182.5 s: the enforce test in
 170.9 s, which includes the session check, and the off test in 11.3 s. The process tree peaked at 5,438 MB.
+After the round-3 fixes (commit `3f2139c`, 2026-10-09) the whole module, with `VBT_DL_REAL_DATA_STRICT=1`,
+gave 26 passed in 213.9 s (tree peak 5,356 MB); the six tests through the unmodified servers took 160.0 s
+of it.
+
+The same six tests now also run as `vbt validate`'s `correctness` step on any host, with cases planned from
+the bindings and an oracle that reads the files with pyarrow alone; its runs here are in §9.3.
 
 ## 4. Wrong answers of the layer itself, found on real data
 
@@ -343,6 +372,41 @@ and `test_dl_hardening.py`.
 | `mcp__data__find`/`lookup` on `cellxgene_census.obs` | `oom` (`std::bad_alloc`) under the 3,000 MB data-child limit | answered in 9.4-13.5 s |
 | the same find (B cells, adrenal gland, one dataset) | 3 of 158 rows, all `is_primary_data: false` | 0, with "is_primary_data == true added"; 158 when both values are asked for |
 | `get_census_info`, `count_cells` | release null; no witness | `cellxgene_census@2025-11-08`; `count_cells(tissue_general == 'adrenal gland')` 555,767, witnessed by a remote count of 555,767 |
+
+### 4.3 Live sources, third review (round 3)
+
+A third review drove the live APIs through MCPBridge with the gateway enforcing (2026-10-09, 14:42-14:51 UTC,
+commit `cab2979`; the unmodified `clinicaltrials` and `single_cell` servers, the harness `pubmed` server and
+the data child). Each finding was fixed with an offline regression test
+(`tests/datalayer/test_dl_review_round3.py`, `test_dl_real_live.py`, `test_dl_round3_live.py`), and the same
+calls were repeated with the same driver on 2026-10-09 between 21:25 and 21:31 UTC at `3f2139c` ("Now"; the
+evidence ceiling, where named, is `data.leakage.ceiling` 2017-12-31 and the literature ceiling 2017/12/31).
+
+| Call | Before | Now | Finding |
+|---|---|---|---|
+| `count_clinical_trials(glioblastoma, TERMINATED, PHASE3, country=null)` under the ceiling | `ok`, total 8, leakage risk false; 3 of the 8 were terminated after the ceiling | `partial`, total 4 (`total_method: ceiling_unchanged`), `ceiling_totals {available: 8, available_and_unchanged: 4}`, and a note that the source holds `overallStatus` only as it is today | LIVE3-01 |
+| `count_clinical_trials(glioblastoma, advanced_filter AREA[ResultsFirstPostDate]RANGE[2018-01-01,MAX])` under the ceiling | `ok`, total 194 (results posted after the ceiling), risk false | `partial`, total 0, `available` 194 | LIVE3-01 |
+| `get_clinical_trial_details("NCT00062153")`, an alias of NCT00060528 | `empty`, body `{}`: the redirect was accepted, then the record removed | `ok`, 1 record; header `resolved: NCT00062153 -> NCT00060528 (alias_redirect)` and a note | LIVE3-02 |
+| native `lookup` of `NCT00062153` and of `nct00761280`; `find` of `[NCT00062153, NCT04368728]` | `not_found`, `not_found`, `partial` naming NCT00062153 | `ok`, `ok`, `ok` total 2 (also under the ceiling) | LIVE3-03 |
+| `search_genes(ensembl_ids=[ENSG00000103855, ENSG00000999999])`; `get_gene_statistics([ENSG00000999999])` | `ok` with both "resolved"; `empty` | `partial`, `not_found_items [ENSG00000999999]`; `not_found` | LIVE3-04 |
+| under the ceiling: `get_study_details(luad_tcga_pan_can_atlas_2018)`, `search_studies(difg)`, Census `count_cells` | served with provenance `leakage: null` | the same answers, with leakage `{risk: true, reason: "source not dated"}` and a header note | LIVE3-05 |
+| `search_studies("gbmx")`, `search_studies("GBM")` | `empty_unverified`: existence "could not be decided remotely" | `not_found`, decided against cBioPortal's cancer-type listing (`GBM` normalizes to `gbm`; `/api/cancer-types/gbm` answers 404 "Cancer type not found: gbm") | LIVE3-06 |
+| native `find` with the misspelled path `protocolSection.statusModule.overalStatus` | `empty_unverified` after reading 10 pages, 11.15 s | `invalid_argument` before any request, 0.02 s | LIVE3-07 |
+| `fetch_abstracts(["20301295", "28304224"])` (20301295 is a GeneReviews `PubmedBookArticle`) | `partial`, 20301295 "returned no record" | `ok`, 2 of 2 | LIVE3-08 |
+| `fetch_abstracts(["30403574"])` under the literature ceiling | `empty_unverified`, no `withheld`, leakage `null` | `empty`, `withheld {leakage: 1}`, leakage `{withheld: 1}` | LIVE3-09 |
+| native `lookup` of PMID 99999999 and 28304224; `find` with `title {search: "PCSK9 AND evolocumab"}` under the ceiling | `too_large` ("narrow where") for both lookups; `invalid_argument` | `not_found` (0.59 s), `ok` (0.71 s); `partial`, total 32 | LIVE3-10 |
+| `search_studies(difg)` (20 studies); a `molecular_data` find of an unknown gene | no record versions; the release was the fetch time | each study's `importDate` in the provenance's `record_versions`; `cbioportal@2026-06-05 15:19:54`, the profile's study | LIVE3-11 |
+| native `find` (conditions search glioblastoma, TERMINATED, PHASE3) under the ceiling | total 2, with a note giving the wrong reason why the upstream count (4) was larger | total 4: the same four records, two of which match only through the engine's keyword search | LIVE3-12 |
+
+The title search of the last rows exposed a fact about E-utilities, checked by `esearch` with `maxdate` 2017/12/31:
+a field tag after a parenthesised group is ignored. `(PCSK9 AND evolocumab)[ti]` counted 304 records, the same as
+the untagged search, while `PCSK9[ti] AND evolocumab[ti]` counted 32 (`[tiab]`: 224). The PubMed descriptor now
+tags every term, and the replay was re-recorded with `record_live.py`.
+
+Timings and memory of the repeat: the five runs without the Census took 12.6-24.6 s each (process trees 236-709 MB);
+the Census runs 50.2 s (686 MB) and 268.2 s (2,962 MB; `single_cell` 2,564 MB, data child 1,336 MB). In the
+second, `count_cells` on the adrenal B cells (679, witnessed) took 236.0 s; repeated alone it took 24.0 s, and the
+review had measured 21.8 s.
 
 ## 5. Memory and latency
 
@@ -423,6 +487,64 @@ cgroup v1 is usable here as root (`--containment cgroup` selects it), and `/dev/
 caused 3). So a SIGKILL is attributed to the kernel OOM killer only from a kernel log record naming the
 child's pid.
 
+**Round 3: every whole-table read is sized.** In the first full `vbt validate` run (§9.3),
+`target.get_chemical_probes` and `target.get_genetic_constraint` were admitted at a 3,000 MB server limit, and
+the unmodified server was killed loading `target` (maxrss 3,137,564 kB). Their overlays had declared the reads
+`projection`, which admission did not size, while upstream's loader reads every column. The 21 `projection`
+reads of the target, pathway, disease and drug overlays, and functional_genomics' five `target_essentiality`
+reads (declared bounded scans; its upstream calls were killed at 4,400 MB), are now `full_table`, so they are
+sized before the call. `vbt ds estimate --tool` on the real 25.09 files now uses admission's rule: MiB, the
+estimate x1.3 plus the server's 300 MB idle baseline. Before the fix it printed decimal MB without either and
+called loads admissible that the gateway refused. Re-run on 2026-10-09 at `3f2139c` with the default profile
+(server limit `auto`: 6,569 MB on this host; 4.6-17.6 s and 376-956 MB per command):
+
+| Tool | Table loaded whole | Upstream peak (estimate) | Needed | Here |
+|---|---|---:|---:|---|
+| `target.get_chemical_probes` | target (measured load: 3,031 MB) | 3,023 MB | 4,230 MB | admissible |
+| `genetics.get_study_metadata` | study | 3,740 MB | 5,162 MB | admissible |
+| `expression.query_expression_by_gene` | expression | 5,408 MB | 7,331 MB | too_large |
+| `functional_genomics.query_gene_essentiality` | target_essentiality | 10,765 MB | 14,294 MB | too_large |
+| `genetics.query_l2g_predictions` | l2g_prediction | 11,564 MB | 15,334 MB | too_large |
+
+A refusal names the plan the limit came from (`host_mb`), whether the limit was `auto` or configured
+(`limit_source`) and, for `auto`, the smallest host whose limit admits the load with its baseline
+(`host_mb_needed`). Under a profile that configures no MCP server (`mock`) the command has no server limit to
+compare with and still printed "admissible" (14,294 MB needed on this 13,680 MB host); run it under the profile
+that serves the tool.
+
+**Sample-tier calibration, measured again.** `vbt validate`'s memory step loaded the four largest tables that
+fit a 3,000 MB server limit with the upstream loader, in a contained process (ratio = estimate / measured):
+
+| Table | Rows | Measured MB | Shipped estimate | Sample tier |
+|---|---:|---:|---|---|
+| association_by_datasource_indirect | 13,242,757 | 1,898 | 1,757 (0.93) | 2,302 (1.21) |
+| association_by_datatype_indirect | 12,850,289 | 1,560 | 1,505 (0.96) | 1,937 (1.24) |
+| association_by_overall_indirect | 10,989,518 | 1,103 | 1,088 (0.99) | 1,376 (1.25) |
+| association_by_datasource_direct | 4,200,235 | 669 | 572 (0.86) | 732 (1.09) |
+
+The sample tier over-estimates by 9-25%, so admission errs on the safe side; the shipped estimate
+under-estimates by 1-14%, which the x1.3 safety covers.
+
+**Containment.** `data.memory.limit_kind` is `rss` by default since round 3: a memory cgroup when one can be
+created, else the RSS watchdog, and `RLIMIT_DATA` only when a server or the host asks for `rlimit_data`. Live
+run through MCPBridge with the gateway enforcing, the unmodified `single_cell` server, Census 2025-11-08,
+dataset `f7c1c579-2dc0-47e2-ba19-8165c5a0e353`, server limit 6,569 MB:
+
+| `limit_kind` | Containment | `count_cells` | `get_anndata_donor_balanced` | Peak MB |
+|---|---|---|---|---:|
+| default (`rss`) | cgroup v1, no `RLIMIT_DATA` | 4,062,980 cells | 293 cells, 72 cell types, `served_by: derived` | 3,192 |
+| `watchdog` (forced) | watchdog, kill at 6,057 MB | 4,062,980 | the same | 3,193 |
+| `rlimit_data` (forced) | `RLIMIT_DATA` 6,569 MB | answered | typed `oom` (`std::bad_alloc`) | |
+
+Which call fails under `rlimit_data` varies from run to run: in another run the count itself failed. Agents'
+Bash commands, notebooks and project utility tests still ran under `RLIMIT_DATA` after that change: a review
+ran `cellxgene_census.get_anndata` of 104 cells x 6 genes the way the Bash tool runs it, and it crashed
+(`std::bad_alloc`, then SIGSEGV at 256 MB maxrss, three times out of three), while the same script under `rss`
+with the same 6,840 MB limit answered in 15.1 s at 1,946 MB maxrss. Those commands now use the shipped `rss`
+containment too.
+
+The Census pulls and their calibrated admission are in §8.1.
+
 ### 5.2 Readiness checks
 
 Each table was checked in its own `vbt ds check --table open_targets.<t> --json` process.
@@ -464,6 +586,34 @@ speed-ups of the real-data fixes:
   and 5.4 s on interaction_evidence, with no reverse missing. Before, it reported 18,827 false
   "without their reverse" warnings.
 
+**The session check, round 3.** This is the check a session's preflight runs on every table at standard depth
+(95 tables: Open Targets, DepMap, the ontologies, the Zenodo archive, Tahoe's prepared sample and the live
+tables), each in a data child under the reaper:
+
+| Code | Data-child processes | Wall | Largest data child | Statuses |
+|---|---:|---:|---:|---|
+| `d6c444b` (before) | 1 | 661.0 s | 2,705 MB | 85 ready, 10 missing |
+| large tables (32 MB or more on disk) in data children of their own | 14 | 289.6 s | 2,293 MB (interaction's key pass) | the same |
+| plus a bounded R5b key pass | 14 | 294.9 s | 1,078 MB (study) | the same |
+| `3f2139c`, re-run for this page with `vbt validate --only host,lint,check --depth standard` | 14 | 253.7 s | 1,078 MB (study); process tree 1,177 MB | 79 ready, 16 absent (the 10, and the six Zenodo tables, because `VBT_ZENODO_DIR` named the wrong directory; with the acquisition home they checked `ready` in 10.6 s, 385 MB) |
+
+The 10 tables that are absent are the 7 Open Targets tables not downloaded (with `credible_set_locus` and
+`evidence_mutated_samples`, their item tables) and `cellxgene_census.anndata_outputs` (files a run writes).
+
+* **Key pass.** The R5b key pass held every key part's values: on 25.09 `interaction` (14,524,000 rows, a
+  7-part key) it took 24.7 s and 2,101 MB. It now hashes each row to 64 bits and counts exactly only the rows
+  whose hash repeats, in passes bounded by `data.service.max_resident_mb`: 12.5 s, 582 MB, 0 duplicates (a
+  review measured 9.1-9.8 s and 591-601 MB). The table's standard check in a data child: 24.6 s, 675 MB.
+* **Wide CSV.** DepMap's `gene_effect` (1,178 rows x 17,917 columns) spent 182.3 s of a session check in its
+  R3 statistics, read in 8 MiB blocks. In a benchmark on the same file, blocks of 8, 16, 32 and 64 MiB took
+  23.2, 13.5, 7.7 and 5.9 s (505-735 MB); 32 MiB is shipped.
+* **Matrix tables.** R6, R7, R9 and R10 now run on each axis's declared columns. On DepMap 24Q4 `gene_effect`
+  and `gene_dependency`, R9 resolves all 1,178 sampled `ModelID`s in `model`; on the Zenodo `ibd_cohorts`, R7
+  counts the values of 11 obs columns (patient_id 222, timepoint 17, cohort 4, drug 4, disease 3,
+  response_remission 0, sex 0). The three tables checked `ready` in 49.0 s, largest child 815 MB.
+* **Deep.** The last deep session check (before the bounded key pass) took 319.2 s, 14 processes, largest
+  2,205 MB; it was not repeated after it.
+
 ### 5.3 Resolver indexes
 
 * **Build.** `vbt ds index build` for every id type with a universe took 263.1 s and peaked at 2,104 MB. It
@@ -471,6 +621,12 @@ speed-ups of the real-data fixes:
   ensembl_gene 465,164 rows, gwas_study 1,964,234 and ot_disease 335,308.
 * **Reuse.** A session used to rebuild the `ensembl_gene` index although the same sidecar was on disk
   (28.2-30.1 s). It now reuses it (3.6-3.8 s).
+* **Only what the tools read.** `vbt setup`'s index step built every id type of the 31 tables: 343 s, 20
+  indexes. `vbt ds index build --table open_targets.go --table open_targets.target` builds only the three id
+  types those tables hold (`ensembl_gene` 465,286 rows, `go_term` 96,330, `uniprot_accession` 264,497): 45.2 s,
+  681 MB.
+* **Cell Ontology.** On the real `cl-basic.obo` (2026-06-08) the index has 11,016 rows; building it and
+  resolving `B cell` (CL:0000236, by `label_exact:name`), `CL:0000236` and `T cell` (CL:0000084) took 5.0 s.
 
 ### 5.4 Sessions through MCPBridge
 
@@ -488,7 +644,10 @@ that a server's first call waits for.
 The same calls with the gateway off peaked at 3,582 MB (target), 1,029 MB (drug), 4,214 MB (disease and
 pathway), 2,963 MB (genetics) and 2,769 MB (association and expression).
 
-During a session check the data child reaches 2.3-2.6 GB of its 3 GB limit.
+In these round-2 sessions the data child reached 2.3-2.6 GB of its 3 GB limit during the session check;
+since round 3 the largest data child of the check peaks at 1,078 MB (§5.2). While serving calls, the data
+child peaked at 2,787 MB (interaction) and 2,723 MB (target) in `vbt validate`'s runs (§9.3); its limit is now
+`auto` (5% of the plan, 3,000-32,768 MB).
 
 **Live sources.**
 
@@ -497,6 +656,20 @@ During a session check the data child reaches 2.3-2.6 GB of its 3 GB limit.
 * **Census.** `get_census_info` 5.0-6.6 s. `count_cells` 9.0-20.4 s. Native obs reads 9.4-14.7 s, with
   the data child at 1,328-1,400 MB. `get_anndata` (4,771 cells x 2 genes) took 38-42 s with the
   `single_cell` server at 2,782 MB; the server peaked at 2,575-2,624 MB in the other Census runs.
+
+**Sessions with a model (round 3).** The end-to-end run (§9.5) gave the harness a 6,000 MB share of this host
+(`VBT_HOST_MEMORY_MB=6000`): data child 3,000 MB, each upstream server 2,048 MB, host budget 2,452 MB.
+
+* **Start.** A second readiness check ran at every session start, with the data child at 81% CPU and
+  1,454 MB; the preflight's check now reaches the gateway before the bridge lists the tools, and the data
+  child stayed at 114 MB through session start.
+* **Served model, session 1** (Qwen3.5-2B on llama.cpp, 7 Open Targets servers): 9,339 s, process tree peak
+  4,056 MB, 80 tool calls (44 to the upstream servers, 10 native). 22 calls were `too_large`: 11 over a
+  server's limit, and 11 `host_busy` because the data child's memory had been charged to the upstream host
+  budget (now it is never counted there). The data child's recorded peak was 2,089 MB under its 3,000 MB
+  limit.
+* **Scripted model over the same stack:** session 1 started in 7.8 s and its turn took 26.7 s (tree peak
+  2,380 MB); session 2 (a dataset with no descriptor; §9.5) started in 8.6 s, turn 12.2 s, 1,778 MB.
 
 ### 5.5 Witness and gateway latency
 
@@ -507,11 +680,33 @@ Measured on the target server, three repeats of the same calls:
 * **First calls.** Over all three repeats the witness p95 was 4,194 ms and the max 14,544 ms. A first call
   waited for the data child's `_stats` of the target tables (14.5 s) only to learn the storage types. The
   session check now reports those types. The `_stats` requests it avoids took 16.5 s for target and 36.0 s
-  for target_go. The p95 was not measured again after this change.
+  for target_go. These three repeats were not run again after this change; the per-server figures of round 3
+  are below.
 * **Resolution.** p50 0.6 ms, p95 77-80 ms. Unknown ids walk the near-match rules.
 * **Single-call witnesses on other tables.** study 2.0-2.2 s; interaction 1.5 s (intact) to 9.2 s (all
   sources). The expression witness for one gene took 128 s; once item tables pushed conjuncts on their parent
   row to Arrow, the same witness took 1.43 s and 338 MB in process (it took 25.07 s and 1,458 MB before).
+
+**Across servers (round 3).** `vbt validate`'s latency step timed 212 calls on 9 servers (2026-10-09, deep run,
+server limits 3,000 MB; times in ms). "Off" is the same call without the gateway; "warm overhead" is enforce
+minus off on warm pairs:
+
+| Server | Enforce p50 / p95 | Off p50 / p95 | Warm overhead p50 / p95 | Witness p50 / p95 |
+|---|---|---|---|---|
+| association | 2,487 / 12,985 | 767 / 1,735 | 25.5 / 4,440 | 1,052 / 1,891 |
+| disease | 52.9 / 2,716 | 12.4 / 585 | 24.3 / 402 | 15.9 / 18 |
+| drug | 170 / 2,482 | 10.4 / 165 | 65.4 / 1,978 | 427 / 1,447 |
+| expression | 218 / 6,868 | 9.4 / 191 | 24.2 / 44.7 | 460 / 564 |
+| functional_genomics | 405 / 3,109 | 15.3 / 34.1 | -3.9 / 562 | 153 / 322 |
+| genetics | 320 / 20,688 | not called | | 518 / 10,752 |
+| interaction | 50 / 24,785 | not called | | 7,942 / 8,680 |
+| pathway | 68.3 / 2,982 | 5.7 / 7.2 | 23.6 / 29.7 | 10.2 / 28.5 |
+| target | 50.8 / 10,626 | (server down) | | 64.1 / 371 |
+
+With the `target` server alone at 4,400 MB, the warm overhead was p50 36 ms and p95 266 ms, and the witness
+p50 50 ms and p95 303 ms. So the soak target (a witness p95 under 300 ms on composite-key tables) holds for
+the disease and pathway servers only: the association, drug, expression, genetics and interaction witnesses
+scan tables of millions of rows, and their p95 is 0.56-10.8 s.
 
 ### 5.6 Test suite
 
@@ -527,10 +722,69 @@ Opt-in runs:
   section 3, and passed without it.
 * `VBT_DL_NETWORK=1` (`test_dl_real_live.py`, `test_dl_live_review_fixes.py`): 61 passed.
 
-## 6. What still needs data we could not get
+**Round 3.** The suite grew with the round's tests; at `3f2139c` (2026-10-09) the full offline run gave
+3,869 passed, 184 skipped, 87 xfailed, 0 failed in 1,378.6 s (largest child RSS 1,206 MB); the run made with
+this page is in §9.7. The offline suite is now hermetic: it reads no `.env`, pins the host memory to 16,384 MB,
+drops the data-root and model-server variables an operator may export, and refuses in-process requests to
+non-loopback hosts unless `VBT_DL_NETWORK` enables them. The whole `tests/datalayer` directory in one pytest
+process went from a 5,018 MB to a 3,866 MB process-tree peak once `off` and `enforce` share one set of upstream
+servers and memory is released after each module.
 
-* **Open Targets tables not downloaded.** They did not fit this machine's download budget, so only their
-  footers were read:
+Opt-in runs at `3f2139c`:
+
+* `VBT_DL_REAL_DATA=data/real VBT_DL_REAL_DATA_STRICT=1`: the OT schema, Tahoe/DepMap and review real-data
+  modules, 77 passed and 4 skipped (the 4 need the network) in 75.5 s, tree 1,106 MB; repeated for this page,
+  77 passed and 4 skipped in 76.3 s, tree 1,049 MB. The OT servers module: 26 passed in 213.9 s, tree
+  5,356 MB. `VBT_DL_REAL_DATA_STRICT=1` fails a run in which no real-data test passed, so a wrong directory is
+  not a green run of skips; the data root is found through the acquisition-home layout
+  (`<root>/<acquisition.dir>`, e.g. `open_targets/25.09`).
+* `VBT_DL_NETWORK=1`: the live scenarios of `test_dl_real_live.py` (11) and `test_dl_round3_live.py` (9)
+  passed in 19.5 s and 8.2 s; repeated for this page, 20 passed in 24.9 s (tree 98 MB). The Census sample
+  tests: 5 passed in 72.2 s, tree 1,503 MB.
+
+### 5.7 Limits that scale with the host
+
+Every memory budget ships as `auto`, computed from the memory the harness may plan with (the smaller of
+MemTotal and the memory cgroup limit, or `data.memory.host_mb`, or `$VBT_HOST_MEMORY_MB`; rules in
+[DATA_LAYER_RUNBOOK.md](DATA_LAYER_RUNBOOK.md#host-scaled-limits)). `vbt validate --only host` printed these
+effective values for simulated plans (2026-10-09, `3f2139c`; MB):
+
+| Plan | Host budget | One upstream server | Data child | Agent command | All at full load (8 agents) |
+|---:|---:|---:|---:|---:|---:|
+| 13,680 (this host) | 8,212 | 6,569 | 3,000 | 6,840 | 65,932 |
+| 16,384 | 10,240 | 8,192 | 3,000 | 8,000 | 77,240 |
+| 65,536 | 45,875 | 36,700 | 3,276 | 8,000 | 113,151 |
+| 131,072 | 91,750 | 73,400 | 6,553 | 8,000 | 162,303 |
+| 524,288 | 367,002 | 293,601 | 26,214 | 13,107 | 498,072 |
+| 1,048,576 | 734,003 | 587,202 | 32,768 | 28,672 | 996,147 |
+
+The witness and readiness budgets scale with the data child (at 512 GB: `max_scan_bytes` 17,476,000,000,
+`max_key_set` 174,760). Below 512 GB the 8,000 MB floor of an agent command makes the full-load sum exceed the
+plan, and the `host` step warns. On a 512 GB host every Open Targets whole-table load estimated in §5.1
+(at most 15,334 MB with safety and baseline) fits one server's 293,601 MB; on this host three of them are
+refused before the call. No host larger than this one was available: the larger rows are the rule's output,
+asserted in tests, not runs.
+
+## 6. What still needs data or model runs
+
+### 6.1 Closed in round 3
+
+| Open after round 2 | What round 3 did | Where |
+|---|---|---|
+| No checked way to fetch a release; `R2:manifest_absent` on every table | `vbt data acquire` fetches any declared source or table from its publisher, verifies every file and writes the manifest R2 reads; the 7 Open Targets tables not downloaded here and the whole Tahoe release are one command each (29.32 GB and 88.86 GB left to fetch into `data/real`, as planned on 2026-10-09) | §9.1 |
+| Matrix tables got no R6, R7, R9 or R10 | they run on each axis's declared columns (DepMap 24Q4 and the Zenodo cohorts) | §5.2 |
+| The witness p95 was measured on one server only | measured on 9 servers: under 300 ms on disease and pathway only; 0.56-10.8 s on the servers whose witnesses scan tables of millions of rows | §5.5 |
+| The session check held 2.3-2.6 GB of the data child's 3 GB | 14 data children, the largest 1,078 MB | §5.2 |
+| Fixed memory limits (12,000 MB per server, a 3,000 MB data child) | every budget `auto`, scaled from the host's plan; `rss` containment by default | §5.7 |
+| Reads declared `projection` or bounded that upstream loads whole were admitted and killed | declared `full_table` and sized before the call | §5.1 |
+| No agent session had run on real data with a model | one end-to-end run with a 2B model on CPU, on the real Open Targets release, with a project | §9.5 |
+| No check of a whole host | `vbt validate`, run here on the real data | §9.3 |
+| Dataset-specific helpers would have needed core code | descriptors, acquisition specs and utilities created by the system in a project, on real files and a live release | §9.4 |
+
+### 6.2 Still needs data
+
+* **Open Targets tables not downloaded.** They did not fit this machine's disk (6.3 GB free on 2026-10-09),
+  so only their footers were read:
   * evidence (8.99 GB)
   * variant (3.18 GB)
   * credible_set (2.59 GB)
@@ -539,60 +793,87 @@ Opt-in runs:
 
   Only footers and samples were read for literature (4 of 334 shards) and interval (2 of 83). Their value
   facts beyond the footer bounds are unchecked, and no deep check ran on them. `query_evidence`,
-  `get_evidence_by_publication` and the colocalisation tools were seen only refusing with `not_ready`. The
-  interval content-identity finding rests on 2 of 83 shards.
-* **CT-5's negation case.** It needs negated `disease_phenotype` evidence, which 25.09 does not hold.
-* **Tables too large for the upstream loader.** expression, interaction, interaction_evidence,
-  l2g_prediction and target_essentiality exceed 5.4 GB when loaded whole. Under a 5 GB server limit the
-  unmodified servers cannot serve them, so the gateway refuses them `too_large` before loading. They are
-  served only where an overlay declares a derived answer (the interaction network) or where a `find` stays
-  within the scan budget.
+  `get_evidence_by_publication`, `query_gwas_associations` and the colocalisation tools were seen only
+  refusing with `not_ready`, and they leave `vbt verify --data` of a run on this host `degraded_run`. The
+  interval content-identity finding rests on 2 of 83 shards. On a host with the disk,
+  `vbt data acquire open_targets` fetches the 2,811 missing files (29.32 GB) and verifies them.
+* **Whole-table loads above about 5.9 GB.** expression, interaction, interaction_evidence, l2g_prediction and
+  target_essentiality did not fit a 5.9 GB test child, and the colocalisation tables were not downloaded, so
+  the largest whole-table load measured is `target` (3,031 MB). The larger ones are admitted or refused on
+  estimates (§5.1: up to 15,334 MB needed for l2g_prediction; DEPLOYMENT.md §2.2 for the whole release). On this host they are refused
+  `too_large`; on a 512 GB host the `auto` limit admits them, but no such host was available.
+* **`vbt validate` end to end after round 3.** Its last full run here (correctness, latency, memory) was
+  before the overlays were changed to `full_table` and used 3,000 MB server limits to stay under this
+  machine's 6 GB cap: FAIL, with 0 wrong answers but 4 calls killed and 13 unanswered on `target` (§9.3).
+  The `target` server alone at 4,400 MB gave 39 cases, 37 correct, 2 refused, 0 wrong. The opt-in
+  `test_real_data_validation` needs one server holding `target`, the data child and pytest at once, which
+  exceeded the 6 GB cap here.
 * **Item tables under a parent of more than 16 M rows.** Item keys are counted in Arrow (section 8.3), except
   under a parent table of more than 16 M rows (evidence `mutatedSamples[]`, 30.4 M evidence rows), which
   keeps the spilled row scan. Evidence is not downloaded here, so that case was not measured.
-* **Tahoe-100M.** Only 13 of 65,218 contrasts were read. A prepared DE file for the whole release
-  (83 GiB of source) was not built, and `obs_metadata.parquet` (2.29 GB) was not downloaded. The figure
-  of about 1.4e8 permissive rows is an estimate from the 13 contrasts.
+* **Tahoe-100M.** 13 of 65,218 contrasts were read, and the unmodified preparation ran on one DE shard
+  (3,986,181 rows; §9.1). The prepared DE files of the whole release (82.76 GiB of source shards) were not
+  built, and `obs_metadata.parquet` (2.29 GB) was not downloaded. The figure of about 1.4e8 permissive rows
+  is an estimate from the 13 contrasts.
+* **CT-5's negation case.** It needs negated `disease_phenotype` evidence, which 25.09 does not hold.
 * **DepMap.** Releases newer than 24Q4 are only on the portal, behind its browser check.
 * **Census.** The pull estimate (section 8.1) is fitted to spleen pulls of 1,842-149,759 cells with 2 genes
   and one 7,750-cell pull with every gene. Other filters and gene counts were not measured. A 200,000-cell
-  pull does not fit the `single_cell` server's 4,500 MB limit and is now refused before the call.
-* **Matrix tables.** R6, R7, R9 and R10 (value facts, vocabularies, references, relations) do not run on
-  them.
-* **F23 (calibration, soak, graduation).**
-  * The witness p95 target (under 300 ms on composite-key tables) holds for warm calls on the target
-    server (82.3 ms). It was not measured across servers after the storage-type change, and a single
-    interaction witness takes 1.5-9.2 s.
-  * Validating `profile: fidelity` on the paper scenarios, and retro-audit evidence for graduation, need
-    model runs of those scenarios. None were made.
+  pull does not fit the `single_cell` server's 4,500 MB limit and is refused before the call.
+* **Descriptor facts still `verified: false`.** Disease `ontology.leaf` (refuted on 16,017 of 20,000 sampled
+  rows; the field is dropped), biosample `ancestors`/`descendants` as exact closures (hierarchy columns have
+  no `on_refute`, and R10 checks ancestor closures only), and chemical-probe coverage (77,809 null lists, 0
+  empty: "none listed" cannot be told from "not covered").
+* **The Case 1 archive through the generic engine.** The acquisition home of the Zenodo record
+  (`<root>/zenodo/22259123`) holds the descriptor's six tables, not the Case 1 inputs: `vbt validate`'s
+  replication step is skipped there ("the archive lacks a Case 1 input"), and passes on the extract that
+  `vbt data zenodo fetch --preset case1` writes.
+
+### 6.3 Still needs model runs
+
+* **The production model.** No GPU was available: Qwen3.8-27B on vLLM has not driven a session. The
+  end-to-end run used Qwen3.5-2B on CPU (§9.5). It delegated, used the data tools and was held to review, but
+  it filed no claims (its CSO was at 13 of 14 turns when the model server was stopped by this sandbox's
+  two-hour limit on background commands), and it could not drive the data engineer's steps, which the scripted
+  model drove over the same real stack. `vbt validate`'s `model` step was skipped (no model server).
+* **F23 (calibration, soak, graduation).** Validating `profile: fidelity` on the paper scenarios needs model
+  runs of those scenarios; none were made. `vbt ds graduate` ran on the one served-model run (the target,
+  pathway, drug, association, genetics and interaction servers and the data child all graduated, 6.6 s), which
+  is evidence from one research question, not from the scenarios.
+* **Throughput.** Bulk annotation (the paper's 37,075 trials) and parallel specialists at full context were
+  not run on any model here.
 
 ## 7. Re-running the checks
 
-The default suite is offline. The real-data tests are opt-in:
+On an owner's host the whole check is one command: `vbt validate` runs lint, the session check, the six
+correctness tests (enforce, off, oracle), latency, memory, the live sources, the replication extension and the
+model server on that host's data, and writes `validate.md` and `validate.json` (DEPLOYMENT.md §7.5,
+DATA_LAYER_RUNBOOK.md). The default test suite is offline; the real-data tests are opt-in:
 
 | Variable | Tests | Needs |
 |---|---|---|
-| `VBT_DL_REAL_DATA=<dir>` | `test_dl_real_ot_schema.py` (downloaded files against the snapshots), `test_dl_real_ot_servers.py` (standard checks, the six tests, the wrong answers off), `test_dl_real_tahoe_depmap.py`, `test_dl_review_realdata.py`, `test_dl_hardening.py` (whole-table loads under the reaper), `test_dl_round3_items.py` (item keys of the real tables in Arrow, the download manifest) | `<dir>` is the shared root (`data/real`, holding `open_targets/25.09/`, `tahoe/<revision>/`, `depmap/24Q4/`, ...) or the `open_targets/25.09` directory itself. The server tests also need `third_party/TheVirtualBiotech` checked out (or `VBT_UPSTREAM`). |
-| `VBT_DL_NETWORK=1` | `test_dl_real_live.py`, `test_dl_live_review_fixes.py`, `test_dl_round3_live.py` (live CT.gov, cBioPortal, E-utilities, Census; the derived routes and the calibrated Census admission), the release integrity list of `test_dl_round3_items.py`, the live footer reads of `test_dl_real_ot_schema.py` (`full`: every shard) and `test_dl_real_tahoe_depmap.py` | network access; `cellxgene-census` for the Census tests |
+| `VBT_DL_REAL_DATA=<dir>` | `test_dl_real_ot_schema.py` (downloaded files against the snapshots), `test_dl_real_ot_servers.py` (standard checks, the six tests, the wrong answers off), `test_dl_real_tahoe_depmap.py`, `test_dl_review_realdata.py`, `test_dl_hardening.py` (whole-table loads under the reaper), `test_dl_round3_items.py` (item keys of the real tables in Arrow, the download manifest), `test_dl_acquisition.py` (the manifests `vbt data acquire` wrote still match the files), `tests/test_utilities.py` (system-drafted descriptors registered on the real files), `tests/test_validate.py` (`vbt validate`'s correctness step) | `<dir>` is the acquisition root that `vbt setup` and `vbt data acquire` fill (`$VBT_HOME/data` or its `sources/`; each source at its `<acquisition.dir>`, e.g. `open_targets/25.09`), or the `open_targets/25.09` directory itself. `VBT_DL_REAL_DATA_STRICT=1` fails the run when no real-data test passed. The server tests also need `third_party/TheVirtualBiotech` checked out (or `VBT_UPSTREAM`). |
+| `VBT_DL_NETWORK=1` (also `true`, `yes`, `on`; `full` reads every shard) | `test_dl_real_live.py`, `test_dl_live_review_fixes.py`, `test_dl_round3_live.py` (live CT.gov, cBioPortal, E-utilities, Census; the derived routes and the calibrated Census admission), `test_dl_round3_memory.py` (the Census under each containment), `test_dl_acquisition.py` (every shipped source listed live against the declared sizes, by HEAD where a listing gives none; two small tables acquired), `tests/test_utilities.py` (the live HGNC set and Open Targets 25.06 from system-authored specs), the release integrity list of `test_dl_round3_items.py`, the live footer reads of `test_dl_real_ot_schema.py` and `test_dl_real_tahoe_depmap.py` | network access; `cellxgene-census` for the Census tests. Any other value, `0` included, keeps them off |
 | `VBT_DL_HOST_LIMITS=1` | the cgroup kill tests of `test_dl_hardening.py` | a writable cgroup v1 hierarchy |
+| `VBT_E2E_MODEL_URL=<url>` | the served-model session of `tests/test_e2e_stack.py` | an OpenAI-compatible model server (docs/E2E_RUN.md) |
 
 For example:
 
 ```bash
-VBT_DL_REAL_DATA=data/real python -m pytest -q tests/datalayer/test_dl_real_ot_servers.py
+VBT_DL_REAL_DATA=$VBT_HOME/data VBT_DL_REAL_DATA_STRICT=1 python -m pytest -q tests/datalayer/test_dl_real_ot_servers.py
 VBT_DL_NETWORK=1 python -m pytest -q tests/datalayer/test_dl_real_live.py
 ```
 
 The server tests start the unmodified upstream servers and the data child; their process tree peaked at
 5.4-5.6 GB here. Do not run them under an address-space limit (`prlimit --as`): the gateway-off servers
-inherit it and fail. To fetch Open Targets 25.09, use the upstream downloader
-(`third_party/TheVirtualBiotech/tools/download_open_targets.py`). Then run `vbt ds check --table
-open_targets.<table>` on what you downloaded. `vbt data ot fetch <table...>` downloads tables with each
-file's sha1 checked against the release's `release_data_integrity`, and `vbt data ot manifest` writes the
-download manifest for tables already on disk (section 8.4).
+inherit it and fail. Data is fetched with `vbt data acquire <source>[.<table>]` (for Open Targets also its alias
+`vbt data ot fetch <table...>`): each file's checksum is checked against the publisher's list and the
+download manifest is written; `vbt data ot manifest` writes the manifest for Open Targets tables already on
+disk (section 8.4). Then `vbt ds check --table <source>.<table>` checks what you fetched.
 
 **Updating the snapshots.** `VBT_UPDATE_REAL_SNAPSHOT=1` rewrites the Open Targets snapshots from the live
-release. `tests/datalayer/real/live/README.md` explains how to re-record the live responses.
+release. `tests/datalayer/real/record_live.py` re-records the live exchanges the offline suite replays
+(`tests/datalayer/real/live/README.md`).
 
 ## 8. Round 3: derived live routes, item keys in Arrow, Census admission
 
@@ -716,3 +997,228 @@ nothing (0.1 s). `vbt data ot manifest` on `data/real/open_targets/25.09` downlo
 unmodified upstream downloader's `load_manifest` and `metadata_matches` accept all 697 entries, and its doctor
 accepts them when narrowed to the 31 downloaded tables (with the full list it reports the 7 tables not
 downloaded). `R2:manifest_absent` is gone from every table's check.
+
+## 9. Round 3: acquisition, host bring-up, host-scaled memory, projects, an end-to-end run
+
+Run on 2026-10-08 and 2026-10-09 on the same machine. These are the steps an owner's host goes through
+(README, "Run it on your own infrastructure"), each run here on the real sources.
+
+### 9.1 Acquisition from the publishers
+
+Each descriptor declares how its files are acquired (transport plugin, release, files per table, checks,
+preparation, licence); one engine, `vbt data acquire`, does the rest ([DATA_SETUP.md](DATA_SETUP.md)).
+
+**What the sources hold, as declared and listed live:**
+
+| Source | Transport | Release | Declared |
+|---|---|---|---|
+| Open Targets | `http`, inventory and sha1 from `release_data_integrity` (22,557 lines, checked against its `.sha1`) | 25.09 | 38 tables, 3,508 files, 31,131,380,890 bytes |
+| Tahoe-100M | `huggingface`, tree API | revision `2dc57900...5a95` | 1,026 DE shards, 88,859,715,303 bytes; 4 metadata files, 1,451,950 bytes |
+| DepMap | `json_index` (figshare article 27993248) | 24Q4 | 4 files, 850,460,784 bytes |
+| Gene Ontology | `http`, sha256 pinned | archive 2026-08-05 | 32,227,785 bytes |
+| Cell Ontology | `http`, sha256 pinned | 2026-06-08 | 3,347,518 bytes (UBERON 2026-10-01, optional, 12,155,980) |
+| MSigDB Hallmark | `http`, sha256 pinned | 2024.1.Hs | 48,690 bytes |
+| Zenodo archive | `zip_member` through the record's JSON | record 22259123 | 30 members, 92,001,168 bytes |
+| Census | `s3`, read live | 2025-11-08 | nothing to download |
+
+A review checked the declared Open Targets bytes against the local files of the 31 downloaded tables and a
+HEAD request for each of the 2,811 shards of the other 7: all 38 tables equal.
+
+**Plans.** `vbt data acquire --all --plan --dest data/real` lists every source live and writes nothing. Re-run
+for this page (2026-10-09, `3f2139c`): 11.1 s, process tree 90 MB. Left to fetch: 118,183,787,997 bytes,
+of which Open Targets 29,324,072,694 (the 2,811 files of the 7 tables not downloaded) and Tahoe 88,859,715,303
+(the DE shards); every other source complete; 2,364 s at the assumed 50 MB/s. `vbt data ot list`: 38 tables,
+3,508 files, 5.1 s, 84 MB.
+
+**Fetches.**
+
+* Five small Open Targets tables (`so`, `go`, `reactome`, `drug_warning`, `disease_hpo`) into a scratch root:
+  12 files, 3,161,205 bytes, 7.2 s, tree 111 MB; a rerun downloaded nothing (2.3 s). The unmodified upstream
+  doctor (narrowed to those tables) and downloader (`load_manifest`, `metadata_matches`) accepted the result.
+* One command into `data/real`: GO (32.23 MB, 1.4 s), the Cell Ontology and UBERON (15.50 MB, 1.1 s), the 30
+  Zenodo members read from the 2.9 GB zip by range requests and checked by CRC-32 (92.00 MB, 11.6 s), and
+  DepMap, MSigDB and the Tahoe metadata already present and verified: 139.73 MB in 18.5 s, tree 273 MB.
+* Tahoe with one DE shard (a scratch copy of the descriptors): 5 files (shard 0 is 91,442,763 bytes) in 4.3 s;
+  the unmodified `prepare_tahoe.py` read 3,986,181 rows and wrote 155,254 permissive, 117,979 significant and
+  82,616 high-quality rows in 2.0 s (365 MB); all 7 Tahoe tables were then `ready` (18.0 s).
+* Manifests: `vbt ds check` of 12 DepMap, GO, MSigDB and Zenodo tables against the manifests the engine wrote:
+  all `ready`, `R2:manifest` ok, each manifest's release equal to the descriptor's (6 min 15 s, 1,083 MB). The
+  Zenodo manifest sits one level above the descriptor's root; its 30 entries are rebased onto it.
+* On demand: with `data.acquisition.auto: under_budget` and a 50 MB budget, a call to
+  `drug.get_drug_warnings` with the table absent was refused `not_ready`; the refusal's `acquire` entry named
+  `vbt data acquire open_targets.drug_warning`, 203,238 bytes, 1 file, the licence and the decision. The
+  between-turns step fetched it (5.1 s, 1.1 s of transfer), and the next check was `ready` (11.6 s for the
+  whole script, 320 MB).
+
+**Facts found on the way.** The GO archive `releases/2026-08-05/go-basic.obo` holds `data-version:
+releases/2026-07-26`, and `release.geneontology.org/2026-07-26` answers 404, so the archive path is the pinned
+release. Zenodo record 22259123 redirects to 22259124; its zip is 2,909,966,318 bytes with 2,866 members
+(4,386,500,704 bytes uncompressed). The figshare article lists 73 files (30,825,074,613 bytes), of which the
+descriptor takes 4. The Census client's `release.json` (stable 2025-11-08) and the bucket's
+`cell-census/release.json` (stable 2025-01-30, latest 2025-11-10) are different files. A HEAD request for the
+MSigDB file reports the gzip length (20,551 bytes) unless it sends `Accept-Encoding: identity` (48,690).
+
+### 9.2 Host bring-up: `vbt setup`
+
+`vbt setup` ran end to end on the 31 Open Targets tables, on this host and in the harness image
+(`docker run --memory 6g`); DEPLOYMENT.md §9 has its numbers (host run 585 s, process tree 2,663 MB; a second
+run skipped every data step in 18 s). Its acquire step plans with `vbt data acquire --for-tools <every tool the
+enabled agents may call>`.
+
+Re-run for this page: `vbt --profile production setup --plan --home <empty directory>` (2026-10-09, `3f2139c`)
+took 12.6 s at 187 MB and wrote nothing under the home. It planned the acquire step on a fresh host (before
+round 3's fix it could not, because it named a `host.yaml` that did not exist yet): 85 tools; sources
+`open_targets` 25.09 and `tahoe_100m` local, `gene_ontology` local (the optional hierarchy of
+`get_go_enrichment`), and cBioPortal, the Census, ClinicalTrials.gov and PubMed remote; 117.71 GB to fetch
+(39 min at an assumed 50 MB/s). Its time estimates for the data steps (size 21 min, index 6.4 h, check 2.7 h,
+calibrate 67 min; 11.2 h in all) extrapolate linearly from rates measured on 1.76 GB of Open Targets, which
+is unverified at that size. It noted that the full-load sum is over this host's plan, that there is no GPU,
+and that 117.71 GB exceed the 6.34 GB free.
+
+### 9.3 `vbt validate` on this host
+
+The first full run (2026-10-09, before the overlays declared the whole-table reads `full_table`): deep check,
+replication quick, a profile with 3,000 MB server limits and a 3,200 MB host budget to keep one agent's
+process tree under this machine's 6 GB cap. 829.1 s, process tree 4,677 MB, exit 1.
+
+| Step | Status | Summary |
+|---|---|---|
+| host | PASS | plan 13,680 MB (MemTotal 16,095, cgroup 13,680); containment cgroup |
+| lint | PASS | 11 sources, 113 bound tools, 0 errors |
+| check | PASS | deep: 85 ready, 10 absent; 14 processes, largest 2,205 MB; 319.2 s |
+| correctness | FAIL | 145 cases on 9 servers: 111 correct, 17 typed refusals, 0 wrong, 4 admitted but killed the server, 13 unanswered (server down); 392.0 s |
+| latency | PASS | 212 timed calls on 9 servers (§5.5) |
+| memory | PASS | 4 tables measured, sample tier 1.09-1.25 of the measured load (§5.1) |
+| live | PASS | 3 of 3 endpoints; 6 of 6 server checks on single_cell, clinicaltrials, pubmed |
+| replication | PASS | 1,441 of 1,441 compared rows match the authors' tables |
+| model | SKIPPED | no model server answered |
+
+All 17 failed cases were on `target`: `get_chemical_probes` and `get_genetic_constraint` were admitted and the
+server was killed at 3,000 MB loading `target`, and after four kills the bridge stopped restarting it (§5.1 has
+the fix). With `target` alone at 4,400 MB: 39 cases, 37 correct, 2 refused, 0 wrong.
+
+| Test | Correct | Refused | Killed | Unavailable | Skipped |
+|---|---:|---:|---:|---:|---:|
+| CT-1 identifier forms | 23 | 7 | 2 | 6 | 2 |
+| CT-2 absent identifiers | 38 | | | | 2 |
+| CT-3 exact counts | 23 | 7 | 2 | 6 | 2 |
+| CT-4 top k | 4 | 2 | | 1 | 4 |
+| CT-5 invalid arguments | 23 | | | | |
+| CT-6 thresholds and nulls | | 1 | | | 5 |
+
+The `off` calls (67 of 145 were made; the others were skipped by the guard that sizes what upstream would
+load, or followed a typed refusal) showed the upstream answers the gateway corrects: 16 absent identifiers
+answered as success (7 with 0 rows), 11 invalid arguments accepted (10 with 0 rows), and 2 of 3 top-k answers
+different from the oracle (`drug.get_drug_adverse_events` returned 146.2, 87.7, 81.8 against the oracle's
+1,974.9, 659.8, 494.8 of 26 rows; `drug.search_known_drugs` 3, 3, 2 against 3, 3, 3 of 61). Enforce mode was
+correct on all three. An earlier
+run reported 33 wrong answers; all were bugs in `validate`'s own case planning and judging, fixed before the
+runs above.
+
+Since then: the replication step is an extension (`validate.extensions`); `--only host,lint,replication
+--replicate quick` passed with 1,441 of 1,441 rows in 78.3 s (81.0 s in all, largest child 1,517 MB). The
+verdict is INCOMPLETE (exit 1) when a correctness, live or model step that applies was skipped or the enabled
+agents read tables the host lacks. The session check re-run for this page is in §5.2. The full run was not
+repeated after the overlay change.
+
+### 9.4 Projects: descriptors and utilities the system created
+
+Project data is described, acquired and served by the same general mechanisms; the data engineer's tools
+(`InspectDataset`, `RegisterDataSpec`, `RegisterUtility`) drafted, validated and registered everything below,
+and no project Python entered the core ([PROJECTS.md](PROJECTS.md)).
+
+**Real files registered as drafted** (each registration: staging, lint, the data child's standard check under
+the reaper, install, provenance):
+
+| File | Rows x columns | Key drafted | Registration |
+|---|---|---|---|
+| DepMap 24Q4 `Model.csv` | 2,105 x 47 | `ModelID` | `ready`, 3.48 s |
+| Tahoe-100M `drug_metadata.parquet` | 379 x 9 | `drug` (pattern `^\S(?:.*\S)?$`) | `ready`, 3.13 s |
+| Tahoe-100M `cell_line_metadata.parquet` | 1,000 x 10 | `cell_name, Driver_Gene_Symbol, Driver_ProtEffect_or_CdnaEffect` (last part nullable, 25 nulls) | `ready`, 3.36 s |
+| HGNC complete set (live) | 45,233 x 53 | `hgnc_id` | `ready`, 4.75 s |
+| Open Targets 25.09 `go`, `target_prioritisation`, `expression`, `target` (shard directories, registered in place) | 48,165 / 78,726 / 43,804 / 78,726 rows | `id` / `targetId` / `id` / `id` | `ready`, 3.86-4.30 s each |
+| Open Targets 25.09 `drug_mechanism_of_action` | 6,332 | `mechanismOfAction, targetName, targetType`, `row_identity: content_hash` | `ready`, 3.82 s |
+| ClinVar `gene_condition_source_id` (§9.5) | 14,211 x 9 | `#GeneID, DiseaseName, SourceID` | `ready`, 4.6 s |
+
+What the real files showed that fixtures had not, each now handled by the drafts: key patterns (124 of 379
+Tahoe drug names, such as "Almonertinib (mesylate)", fail `^[A-Za-z0-9_.:-]+$`); a table unique only with a
+column that has nulls (a nullable composite key); a TSV whose column 39 is empty in the first block and text
+later (`column_types`); a tab-separated `.txt`; a column named `pseudogene.org` (now a literal column name);
+a header `#GeneID` that is not a path; rows that differ only in a nested list (`content_hash`).
+`InspectDataset` profiles untrusted files in the sandbox: on the `expression` and `target` directories the
+harness process stayed at 74.5-75.3 MB while the sandboxed child peaked at 1,015-1,361 MB.
+
+**System-authored acquisition specs.** A project descriptor `hgnc_live` with an `http` acquisition section
+registered `missing`, with the note naming the fetch command; that command, run unchanged, downloaded
+16,973,125 bytes in 1.82 s (sha256 verified) and the table checked `ready` (4.99 s). A project descriptor for a
+release the core does not ship, Open Targets 25.06 (`drug_warning` and `go`, the generic `http` transport with
+25.06's `release_data_integrity` as checksum list), fetched 1,172,632 bytes (1 + 4 shards) in 6.29 s, and both
+tables checked `ready` (3.69 s). Fetched again without `--dest`, the files went to `<project>/data/ot2506` (6.72 s,
+1.41 s of transfer). 25.06 against 25.09: `drug_warning` 1,676 rows in both; `go` 48,030 rows in 4 files
+against 48,165 in 8. A descriptor rooted at `/etc` was refused ("outside permitted roots"), one at the checkout's
+`.git` too ("blocked by policy").
+
+**Queries through the gateway**, each compared with pandas on the same files: `find depmap_models.models where
+OncotreeLineage=Lung` (total 260), `find hgnc_genes.genes where symbol=EGFR` (HGNC:3236), `find
+tahoe_drugs.drugs where targets=EGFR` (6), `aggregate tahoe_cell_lines.lines group_by Organ` (15 groups; Bowel
+426), `aggregate ot2506.drug_warning group_by warningType` (Black Box Warning 1,136, Withdrawn 540), `find
+ot2506.go where id=GO:0005515` (protein binding), `aggregate ...target_prioritisation group_by isInMembrane`
+(null 59,727; 0: 14,885; 1: 4,114). All equal. A utility the engineer registered (`util__lineage_counts`) passed
+its test in the sandbox (`bwrap+netns`) and answered in the next turn.
+
+### 9.5 An end-to-end run with a small model
+
+[E2E_RUN.md](E2E_RUN.md) records it in full. The model was `unsloth/Qwen3.5-2B-GGUF` `Qwen3.5-2B-Q4_K_M.gguf`
+(1,280,835,840 bytes), from the default model's family, served by llama.cpp on the 4 CPUs (one request alone:
+prefill 108.4 tokens/s, decode 11.7 tokens/s; 2 slots of 64K tokens), with the harness's `e2e-cpu` profile, the
+seven unmodified Open Targets servers on the 31 downloaded 25.09 tables, the gateway enforcing, the data
+child, a project, and memory limits `auto` from a 6,000 MB share.
+
+* **Session 1, a research question.** The third served run (9,339 s) ran orientation, a plan and three
+  delegations: 80 tool calls (44 upstream, 10 native), PCSK9 resolved to ENSG00000169174 by
+  `search_targets_by_name` and `mcp__data__search`, 4 Reactome pathways. Review was enforced when the CSO tried
+  to end without it. The model filed no claims: the CSO was at 13 of 14 turns when this sandbox's two-hour
+  limit on background commands stopped the model server.
+* **Session 2, a dataset with no descriptor** (ClinVar `gene_condition_source_id`). The 2B model, as data
+  engineer, never called `InspectDataset` and invented its YAML; the turn was interrupted after 35 minutes. The
+  same steps driven by the scripted model over the real stack: `InspectDataset` profiled the 14,211 rows, the
+  draft registered unchanged and checked `ready`, a utility and its tests registered (2 passed in the
+  sandbox), and the genomics analyst then found the 2 PCSK9 rows (MONDO:0005439, MONDO:0011369) with
+  `mcp__data__find` and summarised them with `util__condition_summary`; one claim was filed, and the answer
+  cites it.
+* **After the run.** `vbt verify --data` of the scripted session 1: INCOMPLETE, 2 problems (the refused
+  `get_target_info`, and `degraded_run` because 7 tables are absent), 2 claims with valid evidence, 30 tables
+  unchanged, replays 2 of 2 matching. `vbt ds retro-audit` (5.2 s) and `vbt ds graduate` (6.6 s) ran on the
+  served run.
+* **Nine harness bugs** surfaced and were fixed with regression tests (`tests/test_e2e_stack.py`): a second
+  readiness check at every session start; the native data tools listing every table's column map (the genomics
+  analyst's tools went from 345,188 to 84,230 characters, its first request from 117,265 to 29,699 tokens); an
+  overflow message that did not name the fixed part; the data child charged to the upstream host budget (11 of
+  22 `too_large`); the llama.cpp provider's hint naming vLLM; `ds retro-audit` without `--project`; drafts that
+  wrote `#GeneID` as a path; and two retro-audit misreadings of refused and native calls.
+
+### 9.6 The third review's other fixes, checked on real data
+
+* **Cell Ontology.** The shipped descriptor no longer falls back to the 14-term test fixture and checks the
+  file's `data-version`. `vbt ds check --table cell_ontology.term --depth deep`: the real 2026-06-08 file
+  `ready` (4.5 s); the fixture `stale` ("data-version mini-cl/test is not the pinned release 2026-06-08",
+  naming the acquire command; 3.4 s); no file `missing` (3.2 s).
+* **Derived computations as plugins.** The DepMap essentiality and tissue-specificity computations left the
+  data child's core and became the shipped `derived` plugins. The same 12 calls through the gateway before and
+  after gave identical answers on a real-row subset (the 25.09 rows of 402 genes; 880-882 MB, 94.5-101.6 s per
+  run of 12). A plain pyarrow read of TP53's `target_essentiality` row (29 tissues, 1,183 screens, not
+  essential) equals the derived record. Running the 12 calls on the whole `target_essentiality` table in one
+  in-process gateway without a data-child limit reached 4.8 GB in 10 minutes without an answer and was stopped
+  (the same path in both versions; not investigated further).
+* **The Census sample's keys from the descriptor.** With the id column, seed and filter syntax read from the
+  descriptor and overlay instead of core code, spleen pulls of 20,000 and 100,000 cells were drawn as 19,782 and
+  99,771 cells (the same draws as §8.1) and 200,000 was refused before the call (577,677 cells match), in
+  11.9-19.0 s at 1,078 MB.
+
+### 9.7 The suite with this page
+
+`ruff check src tests`: clean. `python -m pytest -q -p no:cacheprovider tests` (offline, default settings) on
+the tree with this page: 3,869 passed, 184 skipped, 87 xfailed, 0 failed in 1,359.4 s, process-tree peak
+3,942 MB. The counts equal those at `3f2139c`; the documentation tests (the runbook's commands, the deployment
+files) pass. The baseline at the start of round 3 (`da6ffd7`) was 3,305 passed, 148 skipped and 87 xfailed; the
+added skips are opt-in real-data, network and served-model tests.
