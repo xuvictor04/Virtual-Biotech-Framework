@@ -1399,8 +1399,10 @@ def graduation_checklist(config: Mapping[str, Any], servers: Iterable[str] | Non
     every tool is reviewed, every blocked tool names an alternative, and recorded runs give retro-audit
     evidence (calls observed, calls the gateway would now refuse or qualify, and how many of those a
     claim cited). ``graduated`` is True only when every item passed; ``observe_evidence`` is None (not
-    passed) without recorded runs."""
+    passed) without recorded runs, and not applicable (passed) for the harness's own data child, whose calls
+    retro-audit does not re-classify."""
     from .descriptor.lint import lint_overlay
+    from .gateway.service_client import DATA_SERVER
     from .retro_audit import retro_audit
 
     if catalog is None or registry is None:
@@ -1443,6 +1445,14 @@ def graduation_checklist(config: Mapping[str, Any], servers: Iterable[str] | Non
         cited = [c for c in changed if c.get("cited_by")]
         if not audits:
             items["observe_evidence"] = {"ok": None, "detail": "no recorded runs given (vbt ds graduate --run R)"}
+        elif server == DATA_SERVER:
+            # the harness's own data child answers from the descriptors (the source of truth, data.yaml): retro-audit
+            # has nothing upstream to re-classify, so there is no evidence to wait for
+            native = sum(int(a.get("n_native_calls") or 0) for a in audits)
+            items["observe_evidence"] = {
+                "ok": True, "calls": native, "changed": 0, "cited_changed": 0,
+                "detail": f"not applicable: the harness's own data child, served from the descriptors "
+                          f"({native} recorded call(s))"}
         else:
             items["observe_evidence"] = {
                 "ok": bool(calls), "calls": len(calls), "changed": len(changed), "cited_changed": len(cited),

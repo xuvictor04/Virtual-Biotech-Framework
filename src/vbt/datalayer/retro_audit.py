@@ -27,7 +27,9 @@ from typing import Any, Iterable, Mapping
 
 __all__ = ["CallAudit", "retro_audit", "audit_calls", "format_report", "resolve_run", "OUTCOMES", "CHANGED"]
 
-#: Outcomes a call can have under the gateway (the classify outcomes plus the prepare-time refusals).
+#: Outcomes a call can have under the gateway (the classify outcomes plus the prepare-time refusals). A run recorded
+#: in enforce mode also holds the gateway's own typed refusals (``error_kind`` of the trace's ``tool_end``), kept as
+#: recorded: ``too_large``, ``not_ready``, ``unsupported_combination`` ... are listed after these.
 OUTCOMES = ("ok", "partial", "empty", "empty_unverified", "not_found", "invalid_argument", "ambiguous",
             "quarantined", "tool_defect", "source_error", "oom", "interrupted")
 #: Outcomes that mean a call recorded as a plain success would now be refused or qualified.
@@ -238,6 +240,12 @@ def audit_calls(calls: Iterable[Mapping[str, Any]], catalog: Any, resolver: Any 
         if call.get("interrupted"):
             audit.outcome, audit.reason = "interrupted", "the call was interrupted"
             continue
+        if call.get("is_error") and call.get("error_kind"):
+            # refused by an enforcing gateway when recorded (a typed error): its kind is the outcome, not what the
+            # error text re-classifies as (a too_large refusal read back as plain text was a source_error)
+            audit.outcome = str(call["error_kind"])
+            audit.reason = f"refused by the gateway when recorded ({audit.outcome})"
+            continue
         args = call.get("input") if isinstance(call.get("input"), Mapping) else {}
         try:
             contract = catalog.contract(server, tool)
@@ -277,9 +285,12 @@ def retro_audit(run_dir: str | Path, config: Mapping[str, Any], *, resolver: Any
             catalog = catalog if catalog is not None else c
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"the data layer's catalog could not be loaded: {exc}") from exc
+    from .gateway.service_client import DATA_SERVER
+
     calls = _calls(run_dir)
     citations = _citations(run_dir)
     audits = audit_calls(calls, catalog, resolver, citations)
+    native = [c for c in calls if str(c.get("tool") or "").startswith(f"mcp__{DATA_SERVER}__")]
     outcomes = Counter(a.outcome for a in audits)
     changed = [a for a in audits if a.changed]
     cited = [a for a in changed if a.cited_by]
@@ -294,6 +305,10 @@ def retro_audit(run_dir: str | Path, config: Mapping[str, Any], *, resolver: Any
         "run": str(run_dir),
         "n_calls": len(calls),
         "n_data_calls": len(audits),
+        # the data child's own verbs: served by the harness from the catalog, nothing upstream to re-classify
+        "n_native_calls": len(native),
+        "native_errors": dict(sorted(Counter(str(c.get("error_kind") or "error") for c in native
+                                             if c.get("is_error")).items())),
         "outcomes": dict(sorted(outcomes.items())),
         "changed": dict(sorted(Counter(a.outcome for a in changed).items())),
         "cited": dict(sorted(Counter(a.outcome for a in cited).items())),
@@ -307,8 +322,13 @@ def format_report(report: Mapping[str, Any]) -> list[str]:
     """Text lines of a retro-audit report: per-outcome counts, then the changed calls (cited first)."""
     lines = [f"retro-audit of {report['run']}",
              f"  {report['n_data_calls']} data calls of {report['n_calls']} tool calls"]
+    if report.get("n_native_calls"):
+        errors = ", ".join(f"{k} {n}" for k, n in (report.get("native_errors") or {}).items())
+        lines.append(f"  {report['n_native_calls']} calls of the native data tools (mcp__data__*, served from the "
+                     f"catalog: not re-classified){f'; refused: {errors}' if errors else ''}")
     lines.append(f"  {'outcome':<18} {'calls':>6} {'now changed':>12} {'cited':>6}")
-    for outcome in OUTCOMES:
+    extra = sorted(k for k in report["outcomes"] if k not in OUTCOMES)
+    for outcome in (*OUTCOMES, *extra):
         n = report["outcomes"].get(outcome, 0)
         if not n:
             continue

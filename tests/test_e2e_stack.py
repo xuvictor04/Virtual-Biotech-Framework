@@ -297,6 +297,50 @@ async def test_a_header_that_is_not_a_word_registers_as_drafted(config, tmp_path
         run.close()
 
 
+def test_an_enforced_runs_refusals_and_native_calls_audit_as_recorded(tmp_path):
+    """The real session-1 run under a 6 GB share: the enforcing gateway refused target.get_target_info as too_large
+    (a typed error), and retro-audit re-read the refusal text as a source_error. Its native data calls were not
+    counted at all, so `vbt ds graduate ... data` always failed observe_evidence ("no recorded call of this
+    server"). A recorded typed refusal keeps its kind; the data child's calls are counted, and its observe item is
+    not applicable (it is served from the descriptors, nothing upstream to re-classify)."""
+    from vbt.datalayer.catalog import Catalog
+    from vbt.datalayer.cli import graduation_checklist
+    from vbt.datalayer.descriptor.load import load_descriptors, load_overlays
+    from vbt.datalayer.plugins.registry import discover
+    from vbt.datalayer.retro_audit import format_report, retro_audit
+
+    registry = discover(entry_points=False)
+    variables = {"project_root": str(REPO), "upstream_commit": ""}
+    overlays, generic = load_overlays(REPO / "configs" / "data" / "overlays", variables)
+    catalog = Catalog(load_descriptors(REPO / "configs" / "data" / "sources", variables), overlays, generic,
+                      registry=registry)
+    refusal = {"error": "too_large", "message": "this call would need ~3930 MB; the data child may use 2048 MB"}
+    calls = [("ga_whole", "mcp__target__get_target_info", {"target_id": "PCSK9"}, True, "too_large", refusal),
+             ("ga_target", "mcp__data__find", {"table": "open_targets.target", "where": {"id": "PCSK9"}}, False,
+              None, {"rows": [{"id": "ENSG00000169174"}]}),
+             ("ga_bad", "mcp__data__find", {"table": "open_targets.nosuch"}, True, "invalid_argument",
+              {"error": "invalid_argument"})]
+    events = []
+    for tuid, tool, args, is_error, kind, out in calls:
+        events.append({"type": "tool_start", "tool": tool, "tool_use_id": tuid, "input": args})
+        events.append({"type": "tool_end", "tool": tool, "tool_use_id": tuid, "is_error": is_error,
+                       **({"error_kind": kind} if kind else {}), "output": "Error: " * is_error + json.dumps(out)})
+    run = tmp_path / "run"
+    (run / "logs").mkdir(parents=True)
+    (run / "logs" / "trace.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+
+    report = retro_audit(run, {}, catalog=catalog)
+    assert [(c["tool_use_id"], c["outcome"], c["changed"]) for c in report["calls"]] == [
+        ("ga_whole", "too_large", False)], report["calls"]
+    assert report["n_native_calls"] == 2 and report["native_errors"] == {"invalid_argument": 1}, report
+    text = "\n".join(format_report(report))
+    assert "  too_large " in text and "2 calls of the native data tools" in text, text
+    grad = graduation_checklist({}, ["target", "data"], [run], catalog=catalog, registry=registry)
+    assert grad["target"]["items"]["observe_evidence"]["calls"] == 1, grad["target"]
+    data = grad["data"]["items"]["observe_evidence"]
+    assert data["ok"] is True and data["calls"] == 2 and "not applicable" in data["detail"], data
+
+
 # ---------------------------------------------------------------------------- the stack on fixtures
 
 
