@@ -341,6 +341,48 @@ def test_an_enforced_runs_refusals_and_native_calls_audit_as_recorded(tmp_path):
     assert data["ok"] is True and data["calls"] == 2 and "not applicable" in data["detail"], data
 
 
+async def test_the_data_childs_memory_is_not_charged_to_the_upstream_host_budget(tmp_path):
+    """The served-model session on a 6,000 MB share: after a few native finds the data child held 1,574 MB, and the
+    host budget (2,452 MB, the UPSTREAM servers' share: the data child is inside the harness reserve, sizing.py)
+    summed it with the seven idle upstream servers (2,761 MB). Every later upstream call, even one needing 3 MB, was
+    refused host_busy with no idle server to recycle. The gateway keeps its own child out of the budget it admits
+    upstream calls against."""
+    from vbt.datalayer.catalog import Catalog
+    from vbt.datalayer.errors import GatewayError
+    from vbt.datalayer.gateway.gateway import DataGateway
+    from vbt.datalayer.gateway.service_client import DATA_SERVER
+    from vbt.datalayer.plugins.registry import discover
+    from vbt.datalayer.settings import DataSettings
+    from vbt.tools.mcp_bridge import MCPServerConfig
+
+    class Bridge:
+        log_root = tmp_path / "mcp"
+
+        def status(self):
+            return {DATA_SERVER: {"generation": 1}, "target": {"generation": 1}}
+
+        async def recycle(self, server, wait_s=30.0):
+            return True
+
+    registry = discover(entry_points=False)
+    settings = DataSettings.from_dict({"cache_dir": str(tmp_path / "cache"), "memory": {"host_budget_mb": 2452}},
+                                      project_root=REPO)
+    gw = DataGateway(settings, Catalog({}, {}, [], registry=registry), registry)
+    gw.bind_bridge(Bridge())
+    Bridge.log_root.mkdir()
+    for name, rss in ((DATA_SERVER, 2400.0), ("target", 170.0)):
+        spec = gw.launch_spec(MCPServerConfig(name=name, command=sys.executable, args=["-c", "pass"]))
+        assert spec is not None, name
+        Path(spec.status_path).write_text(json.dumps({"ts": time.time(), "rss_mb": rss, "generation": 1}))
+    host = gw.admission.host
+    assert host is not None and DATA_SERVER not in host.known_servers(), host.known_servers()
+    try:
+        assert await host.reserve("target", 47.0) == []
+    except GatewayError as exc:                                     # the bug: data child counted, nothing to recycle
+        pytest.fail(f"an upstream call was refused for the data child's memory: {exc}")
+    assert host.resident_mb() == {"target": 170.0}, host.resident_mb()
+
+
 # ---------------------------------------------------------------------------- the stack on fixtures
 
 
@@ -702,8 +744,7 @@ async def test_a_served_model_drives_the_stack(stack):
     from vbt.orchestrator import open_session
 
     cfg = _served_config(stack)
-    t0 = time.monotonic()
-    with dl_upstream._no_bytecode():                                    # noqa: SLF001
+    with dl_upstream._no_bytecode():                                   # noqa: SLF001
         session = await open_session(cfg, start_mcp=True, profiles=["e2e-cpu"], interface="run")
     try:
         await session.ask(QUESTION_1)
@@ -718,4 +759,3 @@ async def test_a_served_model_drives_the_stack(stack):
     assert (run_dir / "audit.html").is_file()
     trace = _trace(run_dir)
     assert any(e.get("type") == "model_call" and e.get("agent") == "cso" for e in trace)
-    assert time.monotonic() - t0 > 0

@@ -384,6 +384,14 @@ class DataGateway:
         self.service.bind(bridge)
         with contextlib.suppress(Exception):
             self.admission.bind_bridge(bridge)
+        host = getattr(self.admission, "host", None)
+        listed = getattr(host, "servers", None)
+        if callable(listed):
+            # the host budget is the UPSTREAM servers' share (memory/sizing.py): the data child is the harness's own
+            # process, inside the harness reserve and under its own limit (data.service.mem_limit_mb), and never an
+            # idle server to recycle. Counted, its 1.6 GB after a few finds on a 6,000 MB share filled the 2,452 MB
+            # budget with the idle upstream servers, and every later upstream call was refused host_busy.
+            host.servers = lambda: [s for s in listed() if s != DATA_SERVER]
 
     def _mode_for(self, server: str) -> str:
         if self.mode == "enforce" and not self.settings.gateway.enforces(server):
@@ -425,7 +433,7 @@ class DataGateway:
         except Exception:  # noqa: BLE001 - launch unguarded rather than not at all
             log.warning("launch_spec failed for %s", getattr(cfg, "name", cfg), exc_info=True)
             return None
-        if spec is not None:
+        if spec is not None and str(cfg.name) != DATA_SERVER:     # admission and the host budget are upstream's
             with contextlib.suppress(Exception):
                 self.admission.ledger.set_status_path(str(cfg.name), spec.status_path)
         return spec
