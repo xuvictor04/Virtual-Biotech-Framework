@@ -16,6 +16,7 @@
 #   memory:    project (default; per-run memory/<agent>/MEMORY.md is injected into
 #              the prompt and the UpdateMemory tool is added) | none
 #   workspace: agent (default; work/<agent>/) | run (relative paths resolve to the run dir)
+#   requires:  [project] -- on the roster only while a project is active (docs/PROJECTS.md)
 # Per-run tweaks without editing this file: config `agent_overrides`
 # ({agent: {effort, model, max_turns, tools_add}}).
 
@@ -52,10 +53,18 @@ x-parity-exceptions:
   "*":
     WebFetch: "Removed from every agent when web.enabled is false (no-web leakage control)."
     WebSearch: "Removed from every agent when web.enabled is false (no-web leakage control)."
+  # A role the paper (table S1) and the upstream registry do not have: nothing upstream to match.
+  data-engineer:
+    "*": >-
+      Harness role (docs/PROJECTS.md): creates project-specific data sources, plugins and utilities through
+      the authoring tools (RegisterDataSpec, RegisterPlugin, RegisterUtility). requires: [project], so the
+      paper's roster is unchanged outside a project.
 # Harness additions beyond upstream (not deviations): NotebookEdit for trial-matching,
 # ListTools + PubMed for the Chief of Staff, PubMed for literature-using specialists,
 # association tools for the genomics analyst, BulkDispatch/BulkStatus for the CSO,
 # UpdateMemory (memory: project), and whole-server globs where upstream lists every tool.
+# Project additions (docs/PROJECTS.md), only while a project is active: util__* (the project's
+# utilities) for every agent with Bash, and the data-engineer role (its x-parity-exceptions entry).
 
 cso:
   division: Office of the CSO
@@ -278,3 +287,23 @@ agents:
     # Read-only reviewer: relative paths (e.g. from list_artifacts) resolve to the run dir.
     workspace: run
     tools: [Read]
+
+  # ---------------------------------------------------------- Projects (harness addition, x-harness-agents)
+  data-engineer:
+    division: Office of the CSO
+    role: Data and tooling engineer
+    description: "[Projects] Creates what this project is missing: a data source for an unknown dataset or failed acquisition (descriptor, acquisition spec), a plugin for an unread format, a tested utility for a repeated analysis step; validates and registers them for later turns."
+    prompt: local:data_engineer.md
+    tier: support
+    max_turns: 120
+    requires: [project]
+    tools:
+      - *ws
+      - *data
+      - ProjectInfo
+      - InspectDataset
+      - RegisterDataSpec
+      - RegisterPlugin
+      - RegisterUtility
+      - WebFetch
+      - WebSearch

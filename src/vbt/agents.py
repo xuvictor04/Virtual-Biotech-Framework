@@ -12,6 +12,14 @@ large, unchanging prefix across turns, delegations, bulk items and runs:
 
 ``system_prompt_parts`` returns both; ``system_prompt`` joins them for callers
 that send a single string.
+
+Projects (docs/PROJECTS.md): an agent with ``requires: project`` (the data
+engineer) is on the roster only while a project is active; then every agent
+that can run code (``Bash``) is also granted the project's utilities
+(``util__*``), the CSO's stable part gets ``cso_project_addendum.md`` (when to
+delegate to the engineer), and every volatile part ends with the project block
+(:func:`vbt.projects.prompt.project_block`: registered sources, utilities,
+plugins, skills, and the project notes kept for the agent's role).
 """
 
 from __future__ import annotations
@@ -44,6 +52,12 @@ MEMORY_MODES = ("project", "none")
 WORKSPACE_MODES = ("agent", "run")
 MEMORY_LINES = 200
 REVIEW_POLICIES = ("always", "research", "multi_specialist", "never")
+#: ``requires`` values of an agent definition: ``project`` keeps the agent off the roster without a project.
+REQUIRES = ("project",)
+#: Granted to every agent that can run code while a project is active (the project's utilities).
+PROJECT_UTILITY_GRANT = "util__*"
+#: The tool that marks the role the CSO delegates missing datasets, formats and helpers to.
+ENGINEER_TOOL = "RegisterUtility"
 
 
 @dataclass
@@ -150,8 +164,14 @@ def _int_or_none(v: Any) -> int | None:
     return int(v)
 
 
+def _project_active(config: Mapping[str, Any]) -> bool:
+    spec = config.get("project")
+    return isinstance(spec, Mapping) and bool(spec.get("dir"))
+
+
 def load_roster(config: dict[str, Any]) -> tuple[AgentDefinition, dict[str, AgentDefinition]]:
     spec = config["agents"]
+    project = _project_active(config)
     web_cfg = config.get("web") or {}
     web = web_cfg.get("enabled", True)
     lit_ceiling = web_cfg.get("literature_max_date")
@@ -166,6 +186,8 @@ def load_roster(config: dict[str, Any]) -> tuple[AgentDefinition, dict[str, Agen
         if can_delegate and cso_mode == "upstream":
             tools += list(UPSTREAM_CSO_EXTRA)
         tools += _flatten(ov.get("tools_add", []))
+        if project and not can_delegate and "Bash" in tools and PROJECT_UTILITY_GRANT not in tools:
+            tools.append(PROJECT_UTILITY_GRANT)
         memory = d.get("memory", "project")
         if memory == "project" and MEMORY_TOOL not in tools:
             tools.append(MEMORY_TOOL)
@@ -182,8 +204,17 @@ def load_roster(config: dict[str, Any]) -> tuple[AgentDefinition, dict[str, Agen
             addenda=[load_prompt(r, config) for r in addenda_refs],
         )
 
+    def wanted(d: Mapping[str, Any]) -> bool:
+        if d.get("disabled"):
+            return False
+        requires = _flatten(d.get("requires", []))
+        unknown = [r for r in requires if r not in REQUIRES]
+        if unknown:
+            raise ValueError(f"agent requires {unknown}: known requirements are {list(REQUIRES)}")
+        return project or "project" not in requires
+
     cso = build("cso", {**spec["cso"], "role": "Chief Scientific Officer (CSO)"}, can_delegate=True)
-    agents = {n: build(n, d) for n, d in (spec.get("agents") or {}).items() if not d.get("disabled")}
+    agents = {n: build(n, d) for n, d in (spec.get("agents") or {}).items() if wanted(d)}
     unknown = sorted(set(overrides) - set(agents) - {"cso"})
     if unknown:
         log.warning("agent_overrides for unknown agents ignored: %s", ", ".join(unknown))
@@ -414,6 +445,10 @@ def system_prompt_parts(agent: AgentDefinition, *, run_dir: Path, workspace: Pat
             "review_policy_text": _REVIEW_TEXT[review_policy(config)],
             "cso_tools_text": _CSO_TOOLS_TEXT.get(cso_mode, _CSO_TOOLS_TEXT["restricted"]),
         }).strip())
+        engineers = [n for n, a in roster.items() if a.has_tool(ENGINEER_TOOL)]
+        if engineers and _project_active(config):
+            stable_parts.append(_render((LOCAL_PROMPTS / "cso_project_addendum.md").read_text(),
+                                        {"engineer": engineers[0]}).strip())
     stable = "\n\n".join(p for p in stable_parts if p)
 
     # --------------------------------------------------------- volatile part
@@ -443,6 +478,11 @@ def system_prompt_parts(agent: AgentDefinition, *, run_dir: Path, workspace: Pat
         volatile_parts.append((LOCAL_PROMPTS / "data_layer_addendum.md").read_text().strip())
     if agent.uses_memory:
         volatile_parts.append(_memory_block(agent, run_dir))
+    if _project_active(config):
+        from .projects.prompt import project_block
+        block = project_block(config, agent.name)
+        if block:
+            volatile_parts.append(block)
     if (config.get("provider") or {}).get("name") == "mock":
         # Routing tag for the scripted mock provider only; real prompts never carry it.
         volatile_parts.append(f"<agent-name>{agent.name}</agent-name>")

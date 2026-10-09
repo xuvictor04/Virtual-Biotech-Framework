@@ -12,6 +12,12 @@ unless they are given a ``quarantine`` list. Then a file that does not load (YAM
 or server declared twice) is left out on its own and recorded as a :class:`Quarantined` entry with
 the name it declares (read from the file when it parses, else from a ``source:``/``server:`` line),
 so the catalog refuses only the tools that depend on it.
+
+Projects (docs/PROJECTS.md): the active project's directory is ``$VBT_PROJECT_DIR`` (the harness puts it in
+``tool_env`` when a project is active, so the data child, Bash and the data client see the same project; a
+``env.VBT_PROJECT_DIR`` variable takes precedence). :func:`project_search_dirs` names its ``descriptors/`` and
+``overlays/``, which the catalog searches after the shipped directories, and :func:`project_plugin_files` the
+plugin modules under its ``plugins/<kind>/`` (``data.plugins.paths`` entries).
 """
 
 from __future__ import annotations
@@ -33,10 +39,18 @@ from .overlay import Overlay
 
 __all__ = [
     "DescriptorError", "Quarantined", "expand", "load_yaml", "load_descriptor", "load_descriptors", "load_overlay",
-    "load_overlays", "digest", "variables_from_config", "YAML_SUFFIXES",
+    "load_overlays", "digest", "variables_from_config", "YAML_SUFFIXES", "PROJECT_ENV", "PROJECT_DESCRIPTORS",
+    "PROJECT_OVERLAYS", "PROJECT_PLUGINS", "project_dir", "project_search_dirs", "project_plugin_files",
 ]
 
 YAML_SUFFIXES = (".yaml", ".yml")
+
+#: The active project's directory (an absolute path); unset or empty: no project.
+PROJECT_ENV = "VBT_PROJECT_DIR"
+#: Subdirectories of a project directory the data layer searches.
+PROJECT_DESCRIPTORS = "descriptors"
+PROJECT_OVERLAYS = "overlays"
+PROJECT_PLUGINS = "plugins"
 _VAR = re.compile(r"\$\{([A-Za-z_][\w.]*)(?:(:?-)([^{}]*))?\}")
 
 
@@ -325,3 +339,37 @@ def digest(model: BaseModel | Mapping[str, Any]) -> str:
     data = model.model_dump(mode="json", by_alias=True) if isinstance(model, BaseModel) else model
     text = json.dumps(data, sort_keys=True, default=str, ensure_ascii=False, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------- projects
+
+
+def project_dir(variables: Mapping[str, str] | None = None, environ: Mapping[str, str] | None = None) -> Path | None:
+    """The active project's directory: ``env.VBT_PROJECT_DIR`` of ``variables`` (a config's ``tool_env``), else
+    ``$VBT_PROJECT_DIR``. None when neither names an existing absolute directory."""
+    value = (variables or {}).get(f"env.{PROJECT_ENV}")
+    if value is None:
+        value = (os.environ if environ is None else environ).get(PROJECT_ENV)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    p = Path(text).expanduser()
+    return p if p.is_absolute() and p.is_dir() else None
+
+
+def project_search_dirs(variables: Mapping[str, str] | None = None,
+                        environ: Mapping[str, str] | None = None) -> tuple[Path, Path] | None:
+    """``(descriptors dir, overlays dir)`` of the active project (searched after the shipped ones), or None."""
+    root = project_dir(variables, environ)
+    return None if root is None else (root / PROJECT_DESCRIPTORS, root / PROJECT_OVERLAYS)
+
+
+def project_plugin_files(root: str | Path | None) -> list[str]:
+    """The plugin modules of a project directory, ``plugins/<kind>/<name>.py``, sorted by kind and name: the
+    ``data.plugins.paths`` entries that make a project's plugins discoverable after the shipped ones."""
+    if not root:
+        return []
+    base = Path(root) / PROJECT_PLUGINS
+    if not base.is_dir():
+        return []
+    return [str(p) for p in sorted(base.glob("*/*.py")) if p.is_file() and not p.name.startswith(("_", "."))]

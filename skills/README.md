@@ -19,6 +19,13 @@ How skills reach the agents:
 - The skill roots are read-only roots for every agent (`paths.read_roots`); agents
   cannot edit a skill.
 
+Harness skills:
+
+- `project-utilities` — the data/tooling engineer's procedure (docs/PROJECTS.md): inspect files, draft a
+  descriptor, acquisition spec, plugin or utility, get it validated and registered in the active project, confirm
+  it works, answer the CSO; with a descriptor cheat sheet and utility and plugin templates. Projects add their own
+  skills under `<project>/skills/`, searched after these roots (a project skill never shadows a shipped one).
+
 Local overrides:
 
 - `run-organization` (overrides the upstream skill of the same name) — the upstream
