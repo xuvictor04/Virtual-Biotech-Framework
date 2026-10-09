@@ -341,6 +341,42 @@ def test_an_enforced_runs_refusals_and_native_calls_audit_as_recorded(tmp_path):
     assert data["ok"] is True and data["calls"] == 2 and "not applicable" in data["detail"], data
 
 
+def test_retro_audit_blames_neither_the_source_nor_a_search_text(tmp_path):
+    """The served-model session's retro-audit: four calls the harness refused before they ran (an argument that did
+    not match the tool's schema, recorded with ``model_error``) were reported as ``source_error``, blaming the
+    upstream server; and ``search_go_terms(query='cholesterol')``, which the gateway passed as search text (an empty
+    result), was reported as now refused ``invalid_argument`` ("not a valid go_term"): retro-audit resolved a
+    free-text argument as an identifier, which the gateway never does."""
+    from vbt.datalayer.catalog import Catalog
+    from vbt.datalayer.descriptor.load import load_descriptors, load_overlays
+    from vbt.datalayer.plugins.registry import discover
+    from vbt.datalayer.retro_audit import retro_audit
+
+    registry = discover(entry_points=False)
+    variables = {"project_root": str(REPO), "upstream_commit": ""}
+    overlays, generic = load_overlays(REPO / "configs" / "data" / "overlays", variables)
+    catalog = Catalog(load_descriptors(REPO / "configs" / "data" / "sources", variables), overlays, generic,
+                      registry=registry)
+    schema_msg = ("Your arguments for mcp__association__filter_by_datatype do not match its schema: 'include_indirect' "
+                  "must be boolean, got string. Re-issue the call with a single JSON object matching the schema.")
+    events = [
+        {"type": "tool_start", "tool": "mcp__association__filter_by_datatype", "tool_use_id": "schema",
+         "input": {"target_id": "ENSG00000169174", "datatype": "genetic_association", "include_indirect": "false"}},
+        {"type": "tool_end", "tool": "mcp__association__filter_by_datatype", "tool_use_id": "schema",
+         "is_error": True, "model_error": "schema_mismatch", "output": schema_msg},
+        {"type": "tool_start", "tool": "mcp__pathway__search_go_terms", "tool_use_id": "text",
+         "input": {"query": "cholesterol", "limit": 10}},
+        {"type": "tool_end", "tool": "mcp__pathway__search_go_terms", "tool_use_id": "text", "is_error": False,
+         "result_status": "empty", "output": json.dumps({"_vbt": {"status": "empty"}, "go_terms": []})},
+    ]
+    run = tmp_path / "run"
+    (run / "logs").mkdir(parents=True)
+    (run / "logs" / "trace.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    by_id = {c["tool_use_id"]: c for c in retro_audit(run, {}, catalog=catalog)["calls"]}
+    assert by_id["schema"]["outcome"] == "invalid_argument" and "before the call ran" in by_id["schema"]["reason"]
+    assert by_id["text"]["outcome"] != "invalid_argument" and not by_id["text"]["changed"], by_id["text"]
+
+
 async def test_the_data_childs_memory_is_not_charged_to_the_upstream_host_budget(tmp_path):
     """The served-model session on a 6,000 MB share: after a few native finds the data child held 1,574 MB, and the
     host budget (2,452 MB, the UPSTREAM servers' share: the data child is inside the harness reserve, sizing.py)

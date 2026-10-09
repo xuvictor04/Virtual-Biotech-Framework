@@ -75,10 +75,12 @@ RSS 1,864 MB; sources without data, such as DepMap here, are reported failed and
 (1,186 MB). Both are cached under `$VBT_DATA_DIR/.vbt-datalayer`, so a session starts in seconds. `vbt setup` does
 the same steps on a production host.
 
-Model speed on this host (llama-server timings): prefill 108 tokens/s and decode 11.7 tokens/s for one request; two
-concurrent requests share the four cores (~60 tokens/s prefill each). A specialist's first call carries 8-16K
-tokens of system prompt and tools, so a fresh prefill takes 1.5-4 minutes; follow-up calls of the same agent reuse
-the slot's prompt cache (`cache_read_tokens` in the trace) and cost seconds.
+Model speed on this host (llama-server timings): one request alone prefilled 4,244 tokens at 108 tokens/s and
+decoded at 11.7 tokens/s. With both slots busy the four cores are shared: concurrent prefills ran at 22 to 64
+tokens/s, and a slot decoding while the other prefilled a long prompt slowed to 0.4 to 2 tokens/s (llama.cpp
+processes the other slot's prompt in the same batches). An agent's first request carries 8K to 30K tokens of
+system prompt and tool definitions (section 8), so a fresh prefill takes 2 to 11 minutes here; the same agent's
+later calls reuse the slot's prompt cache (`cache_read_tokens` in the trace) and cost seconds to a minute.
 
 ## 6. Harness bugs the run found
 
@@ -89,6 +91,7 @@ Each was fixed at its root and has a regression test in `tests/test_e2e_stack.py
 | At every session start the data child computed a second readiness check of every table (first session: the data child at 81% CPU and 1,454 MB RSS, still computing after the harness had stopped waiting for it) | the orchestrator handed the preflight's readiness to the gateway only after `start_mcp()` had listed the tools, and listing the data child's tools without readiness asks the child for a check | `Runtime.start_mcp(readiness=...)` sets it on the gateway before the bridge lists; the orchestrator passes the preflight's (after the fix the data child stayed at 114 MB through session start) | `test_the_preflight_check_reaches_the_gateway_before_the_data_child_lists_its_tools` |
 | Every Task to the genomics analyst ended `context_exceeded` with no tool call (three times in one turn) | its 49 granted tools were 345,188 characters of definitions (llama-server counted 117,265 tokens for its first request): `mcp__data__find` and `mcp__data__aggregate` each listed every table's column map (`x-vbt-where`, 131,733 characters each on Open Targets 25.09) | the gateway lists the native verbs without the map (`compact_native_listing`): the `where` description points at `mcp__data__describe(source, table)`, which returns one table's columns, roles, identifier types and operators; the data child still resolves `where` against the catalog. The analyst's tools went from 345,188 to 84,230 characters, the pathways analyst's from 315,988 to 55,030 | `test_the_native_data_tools_are_listed_without_every_tables_column_map` |
 | That failure was reported as "The conversation no longer fits the model's context window" for an agent that had made no call | the overflow text did not distinguish a long conversation from a fixed part (system prompt and tool definitions) that compaction cannot shrink | the report names the system prompt's and the tool definitions' estimated tokens against the window and the two remedies (a larger window, fewer tools), and the trace gets a `context_fixed_part` event | `test_an_agent_whose_tools_fill_the_window_says_so` |
+| Once the data child held 1,574 MB (after a few native finds), every upstream call, even one needing 3 MB, was refused `too_large` / `host_busy` ("servers hold about 2,761 MB ... no idle server is left to recycle") | the host budget (`0.75 x share - harness reserve`, 2,452 MB here) is the upstream servers' share and the reserve already covers the data child, but the gateway registered its own child with the admission ledger and the budget's server list, so the child's memory was charged twice and it can never be recycled as an idle upstream server | the gateway keeps the data child out of the upstream admission ledger and the host budget's server list (it stays under its own limit, `data.service.mem_limit_mb`) | `test_the_data_childs_memory_is_not_charged_to_the_upstream_host_budget` |
 | When the model server was down, the `llamacpp` provider told the user to run `vbt local serve` (which starts vLLM on a GPU) | one hint for every OpenAI-compatible provider | `serve_hint(provider)`: the llama.cpp provider names llama-server and `scripts/dev/cpu_server.sh --engine llamacpp` | `test_a_server_that_is_down_is_named_with_the_command_that_starts_it` |
 | `vbt ds retro-audit <run>` did not find a project's run | the data commands that read a recorded run had no `--project`, so they looked under the default runs directory | `--project` on `ds retro-audit`, `ds replay`, `ds graduate` and `ds status`, activating the project as `vbt run --project` does | `test_the_commands_that_read_a_project_run_take_the_project` |
 | The data engineer's `RegisterDataSpec` of `InspectDataset`'s own draft failed lint: `'#GeneID' is not a valid path: empty segment at 0` (ClinVar's header) | the draft wrote column references bare, and a reference is parsed as a path | references that are not plain words are written backtick-quoted (`_ref`); the column keeps its literal name. The real file then registered as drafted and checked `ready` in 4.6 s | `test_a_header_that_is_not_a_word_registers_as_drafted` |
@@ -123,3 +126,34 @@ python -m pytest -q -p no:cacheprovider tests/test_e2e_stack.py                 
 VBT_E2E_MODEL_URL=http://127.0.0.1:8012/v1 python -m pytest -q -p no:cacheprovider tests/test_e2e_stack.py \
   -k served_model                                                                    # with a model server
 ```
+
+## 8. For a production host
+
+What this run measured that matters when the owners deploy on their GPUs:
+
+* **Context per request.** An agent's first request carries its system prompt and every granted tool's definition
+  before any conversation: on this roster (after the listing fix of section 6) the CSO's was 15,724 tokens, the
+  Chief of Staff's 8,148, the pathways analyst's 21,016 and the genomics analyst's 29,699. Serve every tier with a
+  window of at least 64K (the production profiles' 262K windows hold them easily); a window that cannot hold an
+  agent's fixed part now says so by name instead of failing as an overflow.
+* **Whole-table upstream loads and the memory share.** The unmodified Open Targets servers load whole tables for
+  several tools (`target.get_target_info`, `get_target_tractability`, `interaction.get_interactions`,
+  `genetics.query_l2g_predictions` ...). Under a 6,000 MB share the per-server limit is 2,048 MB and admission
+  refused them `too_large` before they ran ("this call needs about 3,930 MB ... a host with about 10 GB admits it"),
+  which is the designed behaviour: the agents then used the native data tools (`mcp__data__find`, `search`,
+  `describe`), which read with filters. Give the harness its real share with `VBT_HOST_MEMORY_MB` or
+  `data.memory.host_mb` on a host whose model server holds RAM, and leave the limits `auto`.
+* **Readiness on a partial release.** With 7 of the 38 Open Targets tables not downloaded, 11 tools are unready
+  (refused `not_ready` with how to acquire the data) and `vbt verify --data` reports the run `INCOMPLETE`
+  (`degraded_run`). A host with the full release (`vbt data acquire open_targets`) has neither.
+* **Prompt caching.** The Chief of Staff's and each specialist's later calls reuse the server's prompt cache (seconds
+  each here). The CSO's clarification interview is a call without tools, so the CSO's first call of the next turn
+  shares no prefix with it and is prefilled in full (15,724 tokens, about three minutes on this CPU; a fraction of
+  a second on a GPU).
+* **Model server memory.** llama-server's resident memory grew with both 64K slots in use and the prompt cache:
+  it reached 5,017 MB, over the 5,000 MB cap this host's run gave it, and was restarted mid-session; the provider's
+  retries (`provider_retry` events, HTTP 503 "Loading model" while it reloaded) carried the session across the
+  restart without losing a call. Size the model server's memory for `slots x window` plus `--cache-ram`.
+* **llama.cpp specifics.** Start llama-server with `--jinja` (tool calls) and, for the Qwen models' reasoning
+  stream, `--reasoning-format deepseek`; it ignores the per-request thinking budget (only `--reasoning-budget`
+  applies), so the CPU profile turns thinking off.

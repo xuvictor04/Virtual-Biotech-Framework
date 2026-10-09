@@ -175,8 +175,8 @@ def _resolve_args(resolver: Any, contract: Any, args: Mapping[str, Any]) -> tupl
     refusal: tuple[str, str] | None = None
     for name, a in contract.identifier_args.items():
         value = args.get(name)
-        if value is None or a.existence == "off":
-            continue
+        if value is None or a.existence == "off" or a.role == "free_text":
+            continue        # search text is matched as text (contracts._free_text), never resolved
         kinds, src = _accepts(contract, name, a)
         if not kinds:
             continue
@@ -239,6 +239,12 @@ def audit_calls(calls: Iterable[Mapping[str, Any]], catalog: Any, resolver: Any 
         out.append(audit)
         if call.get("interrupted"):
             audit.outcome, audit.reason = "interrupted", "the call was interrupted"
+            continue
+        if call.get("model_error"):
+            # the harness refused the arguments (not valid JSON, not the tool's schema): the call never ran, and its
+            # text is the harness's, not the source's (read as an error text it was a source_error)
+            audit.outcome = "invalid_argument"
+            audit.reason = f"the harness refused the arguments before the call ran ({call['model_error']})"
             continue
         if call.get("is_error") and call.get("error_kind"):
             # refused by an enforcing gateway when recorded (a typed error): its kind is the outcome, not what the
