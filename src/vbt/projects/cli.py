@@ -190,7 +190,7 @@ async def _rerun_tests(project: Project, config: Mapping[str, Any]) -> list[dict
                 continue
             res = await run_sandboxed(runner_argv(None, "test", str(project.utilities_dir / str(rec["name"]))),
                                       policy=policy, cwd=policy.own_dir, config=config,
-                                      label=f"check_{rec['name']}", timeout_s=600, network=False)
+                                      label=f"check_{rec['name']}", timeout_s=600, network=False, verdict=True)
             result = res.result if isinstance(res.result, dict) else {}
             out.append({"utility": rec["name"], "ok": res.ok and not result.get("failed") and
                         int(result.get("passed") or 0) > 0, "passed": result.get("passed"),

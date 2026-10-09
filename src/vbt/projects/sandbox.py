@@ -109,13 +109,16 @@ def _cap(text: str, limit: int = MAX_OUTPUT) -> str:
     return text[:half] + f"\n[... {len(text) - limit:,} chars omitted ...]\n" + text[-half:]
 
 
-def _split_result(text: str) -> tuple[str, Any]:
-    """``(output without the result line, the result object)``: the last ``@@VBT_RESULT@@`` line wins."""
+def _split_result(text: str, nonce: str | None = None) -> tuple[str, Any]:
+    """``(output without the result line, the result object)``: the last ``@@VBT_RESULT@@`` line wins. With
+    ``nonce`` only a line carrying it counts (``@@VBT_RESULT@@ <nonce> <json>``): the code under validation shares
+    the stream and could print a verdict of its own (ASN-2)."""
     lines = text.splitlines()
+    head = MARKER + " " + (f"{nonce} " if nonce else "")
     for i in range(len(lines) - 1, -1, -1):
-        if lines[i].startswith(MARKER + " "):
+        if lines[i].startswith(head):
             try:
-                obj = json.loads(lines[i][len(MARKER) + 1:])
+                obj = json.loads(lines[i][len(head):])
             except ValueError:
                 return text, None
             return "\n".join(lines[:i] + lines[i + 1:]), obj
@@ -124,13 +127,21 @@ def _split_result(text: str) -> tuple[str, Any]:
 
 async def run_sandboxed(argv: list[str], *, policy: PathPolicy, cwd: Path, config: Mapping[str, Any],
                         label: str, timeout_s: float, network: bool, stdin: bytes | None = None,
-                        extra_env: Mapping[str, str] | None = None) -> SandboxResult:
+                        extra_env: Mapping[str, str] | None = None, verdict: bool = False) -> SandboxResult:
     """Run ``argv`` (the harness's own command line) contained as described in the module docstring.
 
     ``policy`` is the calling agent's path policy: under bwrap its own work directory and the run's
     ``.tmp``/``.home`` are the only writable places and its blocked paths are hidden. ``label`` names the call
-    in the reaper's status file."""
+    in the reaper's status file. ``verdict``: the command validates candidate code (a utility's tests, a plugin's
+    conformance suite): the runner gets a per-run nonce on stdin and only a result line carrying it is read."""
+    import secrets as _secrets
+
     from ..tools.builtin import _kill_group, _unshare_available, _workspace_limit, bwrap_argv
+
+    nonce = _secrets.token_hex(16) if verdict else None
+    if nonce is not None:
+        argv = [*argv, "--nonce-stdin"]
+        stdin = (nonce + "\n").encode() + (stdin or b"")
 
     kind, exe, notes = sandbox_plan(config, network=network)
     bash_cfg = dict(config.get("bash") or {})
@@ -167,7 +178,7 @@ async def run_sandboxed(argv: list[str], *, policy: PathPolicy, cwd: Path, confi
     text = out.decode("utf-8", errors="replace")
     secrets = dict(os.environ)
     text = envpolicy.redact(text, secrets)
-    rest, result = _split_result(text)
+    rest, result = _split_result(text, nonce)
     from ..tools.builtin import _strip_exit_marker
 
     rest, reason = _strip_exit_marker(rest)

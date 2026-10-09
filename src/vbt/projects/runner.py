@@ -2,7 +2,10 @@
 """What runs inside the sandbox for project utilities and plugins (docs/PROJECTS.md). Stdlib only.
 
 Executed by path with ``python -I`` (no ``PYTHONPATH``, no user site, the script's directory not on ``sys.path``)
-by :func:`vbt.projects.sandbox.run_sandboxed`; the harness reads the last ``@@VBT_RESULT@@ <json>`` line::
+by :func:`vbt.projects.sandbox.run_sandboxed`; the harness reads the last ``@@VBT_RESULT@@ <json>`` line. With
+``--nonce-stdin`` (the validation commands ``test`` and ``conformance``) the first stdin line is a per-run nonce,
+read before any candidate code is imported, and the result line is ``@@VBT_RESULT@@ <nonce> <json>``: a line the
+code under validation prints without the nonce is not its verdict (ASN-2)::
 
     runner.py test <dir>                     run the test_* functions of <dir>/test_*.py against <dir>/utility.py
     runner.py call <dir> <entry>             call <entry>(**args) of <dir>/utility.py, args as JSON on stdin
@@ -36,9 +39,13 @@ if _SRC not in sys.path:
     sys.path.append(_SRC)
 
 
+_NONCE: list[str] = []          # set by --nonce-stdin before any candidate code runs
+
+
 def _emit(obj: object, code: int = 0) -> int:
     sys.stdout.flush()
-    print("\n" + MARKER + " " + json.dumps(obj, default=str), flush=True)
+    tag = f"{_NONCE[0]} " if _NONCE else ""
+    print("\n" + MARKER + " " + tag + json.dumps(obj, default=str), flush=True)
     return code
 
 
@@ -180,6 +187,11 @@ def cmd_inspect(path: str, sample_rows: int) -> int:
 
 
 def main(argv: list[str]) -> int:
+    if "--nonce-stdin" in argv:
+        argv = [a for a in argv if a != "--nonce-stdin"]
+        line = sys.stdin.readline().strip()
+        if line:
+            _NONCE.append(line)
     if len(argv) >= 2 and argv[0] == "test":
         return cmd_test(Path(argv[1]))
     if len(argv) >= 3 and argv[0] == "call":

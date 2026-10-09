@@ -29,10 +29,12 @@ import ast
 import asyncio
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import re
 import shutil
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -455,11 +457,20 @@ class Author:
                 child = DataSettings.from_config({**self.config, "data": data})
                 settings_file = stage / "settings.json"
                 settings_file.write_text(child.to_json(), encoding="utf-8")
+                # the bytes that are validated are the bytes that are installed (ASN-1): hashed before the
+                # sandboxed run (the staging directory stays writable inside it) and compared after
+                expected = hashlib.sha256(module_text.encode("utf-8")).hexdigest()
+                before = ledger.sha256_file(staged)
                 res = await run_sandboxed(
                     runner_argv(None, "conformance", kind, str(staged), name, str(settings_file)),
                     policy=self.policy, cwd=stage, config=self.config, label=f"conformance_{name}",
-                    timeout_s=self.settings.test_timeout_s, network=self.settings.test_network)
+                    timeout_s=self.settings.test_timeout_s, network=self.settings.test_network, verdict=True)
                 result = res.result if isinstance(res.result, dict) else {}
+                after = ledger.sha256_file(staged) if staged.is_file() else None
+                if after != before or not str(before).endswith(expected):
+                    return self._finish(_refused("plugin", name, "the plugin module changed while its conformance "
+                                                                 "suite ran (the suite must not rewrite the code it "
+                                                                 "checks)"), why)
                 conformance = {"exit_code": result.get("exit_code", res.exit_code), "sandbox": res.sandbox,
                                "duration_s": res.duration_s, "timed_out": res.timed_out, "notes": res.notes,
                                "output_tail": res.output[-6000:]}
@@ -467,18 +478,37 @@ class Author:
                     why_failed = result.get("error") or ("timed out" if res.timed_out else
                                                          f"the {kind} conformance suite failed")
                     return self._finish(_refused("plugin", name, f"{why_failed}", conformance=conformance), why)
-                validation = {"conformance": {**conformance, "stamp": result.get("stamp")}}
-                review = await self._review("plugin", name, why, {f"plugins/{kind}/{name}.py": module_text},
-                                            validation)
-                if review is not None and review.verdict == "reject":
-                    return self._finish(_refused("plugin", name, f"rejected by {review.by}: {review.notes}"), why)
-                status = "pending_review" if review is not None and review.verdict == "pending" else "registered"
-                rel = f"plugins/{kind}/{name}.py"
-                record = self._record("plugin", name, {rel: ledger.sha256_file(staged)}, why, validation, review,
-                                      status, plugin_kind=kind)
-                self._commit("plugin", name, {rel: staged}, record)
+                # the stamp is the harness's own (ASN-2): the plugin key it validated and the digest of the bytes
+                # it installs, never what the runner (which shares a process with the candidate) reports
+                stamp = _harness_stamp(kind, name, module_text, result.get("stamp"))
+                if stamp is None:
+                    return self._finish(_refused("plugin", name, "the conformance run reported a stamp for another "
+                                                                 "plugin than the one validated"), why)
+                validation = {"conformance": {**conformance, "stamp": stamp}}
+                # a copy the harness owns, outside every path the sandbox could write, written from the text the
+                # reviewer is shown: what is installed is what was reviewed and validated (ASN-1)
+                owned_dir = Path(tempfile.mkdtemp(prefix=f"vbt-plugin-{name}-"))
+                owned = owned_dir / f"{name}.py"
+                owned.write_text(module_text, encoding="utf-8")
+                try:
+                    review = await self._review("plugin", name, why, {f"plugins/{kind}/{name}.py": module_text},
+                                                validation)
+                    if review is not None and review.verdict == "reject":
+                        return self._finish(_refused("plugin", name, f"rejected by {review.by}: {review.notes}"),
+                                             why)
+                    status = "pending_review" if review is not None and review.verdict == "pending" else "registered"
+                    rel = f"plugins/{kind}/{name}.py"
+                    digest = ledger.sha256_file(owned)
+                    if not str(digest).endswith(expected):
+                        return self._finish(_refused("plugin", name, "the plugin copy to install does not match "
+                                                                     "the validated module"), why)
+                    record = self._record("plugin", name, {rel: digest}, why, validation, review, status,
+                                          plugin_kind=kind)
+                    self._commit("plugin", name, {rel: owned}, record)
+                finally:
+                    shutil.rmtree(owned_dir, ignore_errors=True)
                 if status == "registered":
-                    _write_stamp(self.config, result.get("stamp"))
+                    _write_stamp(self.config, stamp)
                     write_profile(self.project, self.config)
                 return self._finish(Outcome(True, status, "plugin", name,
                                             f"{kind} plugin {name} {status.replace('_', ' ')} (version "
@@ -525,7 +555,8 @@ class Author:
                 before = {rel: ledger.sha256_file(stage / rel) for rel in written}
                 res = await run_sandboxed(runner_argv(None, "test", str(stage)), policy=self.policy,
                                           cwd=stage / "scratch", config=self.config, label=f"utility_test_{name}",
-                                          timeout_s=self.settings.test_timeout_s, network=self.settings.test_network)
+                                          timeout_s=self.settings.test_timeout_s, network=self.settings.test_network,
+                                          verdict=True)
                 result = res.result if isinstance(res.result, dict) else {}
                 tests = {"passed": int(result.get("passed") or 0), "failed": result.get("failed") or [],
                          "tests": result.get("tests") or [], "sandbox": res.sandbox, "duration_s": res.duration_s,
@@ -859,6 +890,21 @@ def _merge_acquisition(text: str, existing: Mapping[str, Any], spec: Mapping[str
     merged = dict(existing)
     merged["acquisition"] = dict(spec)
     return yaml.safe_dump(merged, sort_keys=False, width=120)
+
+
+def _harness_stamp(kind: str, name: str, module_text: str, reported: Any) -> dict[str, Any] | None:
+    """The conformance stamp from what the harness validated: ``{plugin: kind/name, module_digest: sha256 of the
+    installed bytes, suite_version, version}`` (the version from the runner's report, the rest computed here).
+    None when the runner reported a different plugin key (ASN-2)."""
+    from ..datalayer.plugins.conformance import SUITE_VERSION
+
+    key = f"{kind}/{name}"
+    rep = dict(reported) if isinstance(reported, Mapping) else {}
+    if rep.get("plugin") not in (None, key):
+        return None
+    return {"plugin": key, "version": str(rep.get("version") or ""),
+            "module_digest": "sha256:" + hashlib.sha256(module_text.encode("utf-8")).hexdigest(),
+            "suite_version": SUITE_VERSION}
 
 
 def _write_stamp(config: Mapping[str, Any], stamp: Any) -> None:
