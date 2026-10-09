@@ -89,7 +89,7 @@ DERIVED_CLINICAL = {
 }
 #: The sample facet of get_anndata_donor_balanced (the shipped overlay's).
 SAMPLE_FACET = {"grain": "donor", "stratify": "cell_type", "seed": 42, "columns_arg": "obs_columns",
-                "total_path": "$.n_cells_total", "max_cells_default": 20000}
+                "total_path": "$.n_cells_total", "max_cells_default": 20000, "alternative": "single_cell.get_anndata"}
 
 
 def fixture(name: str) -> dict[str, Any]:
@@ -532,7 +532,7 @@ def test_stratified_sample_is_upstreams_own_draw(tmp_path: Path, monkeypatch: py
     upstream_ids = sorted(next(e for e in log if e["kind"] == "get_anndata")["obs_coords"])
     frame = pd.DataFrame(ONE_DATASET)[["soma_joinid", "dataset_id", "donor_id", "cell_type"]]
     mine = stratified_sample(frame, 30)
-    assert mine["soma_joinids"] == upstream_ids and out["n_cells_sampled"] == len(upstream_ids)
+    assert mine["ids"] == upstream_ids and out["n_cells_sampled"] == len(upstream_ids)
     assert sum(mine["per_stratum"].values()) == len(upstream_ids) and set(mine["per_stratum"]) == {
         "T cell", "B cell", "NK cell"}
 
@@ -676,7 +676,7 @@ async def test_donor_balanced_is_served_as_the_derived_sample(tmp_path: Path, mo
     assert sent["value_filter"].startswith("soma_joinid in [")
     assert {"soma_joinid", "dataset_id", "donor_id", "cell_type"} <= set(sent["obs_columns"])
     ids = sorted(int(x) for x in sent["value_filter"][len("soma_joinid in ["):-1].split(","))
-    assert ids == sorted(stratified_sample(_frame(TWO_DATASETS), 20)["soma_joinids"])
+    assert ids == sorted(stratified_sample(_frame(TWO_DATASETS), 20)["ids"])
     # upstream keeps every cell a filter selects when they are at most max_cells: max_cells is the sample's size
     # (upstream's allocation can draw fewer than max_cells: 19 of 20 here)
     assert sent["max_cells"] == len(ids) <= 20
@@ -814,10 +814,10 @@ def test_live_census_stratified_sample_counts_what_the_filter_selects(tmp_path: 
     filt = "dataset_id == 'f7c1c579-2dc0-47e2-ba19-8165c5a0e353' and tissue_general == 'spleen' and " \
            "is_primary_data == True"
     out = load_verbs()["_census_count"](_ctx(tmp_path), {"value_filter": filt, "sample": {
-        "max_cells": 300, "stratify": "cell_type", "key": ["dataset_id", "donor_id"]}})
+        "max_cells": 300, "stratify": "cell_type", "seed": 42, "key": ["dataset_id", "donor_id"]}})
     s = out["sample"]
     assert out["n_cells"] > 300 and s["n_total"] == out["n_cells"] and 0 < s["n_sampled"] <= 300
-    assert s["value_filter"] == sample_filter(s["soma_joinids"]) and s["donor_key"] == ["dataset_id", "donor_id"]
+    assert s["value_filter"] == sample_filter(s["ids"], "soma_joinid") and s["donor_key"] == ["dataset_id", "donor_id"]
     again = load_verbs()["_census_count"](_ctx(tmp_path), {"value_filter": s["value_filter"]})
     assert again["n_cells"] == s["n_sampled"]
 
@@ -831,7 +831,7 @@ def test_live_census_200k_id_filter_counts_the_sample(tmp_path: Path, monkeypatc
     monkeypatch.setattr(soma_layout, "_RESOLVED", {})
     filt = "tissue_general == 'spleen' and is_primary_data == True"
     out = load_verbs()["_census_count"](_ctx(tmp_path), {"value_filter": filt, "sample": {
-        "max_cells": 200_000, "stratify": "cell_type", "key": ["dataset_id", "donor_id"]}})
+        "max_cells": 200_000, "stratify": "cell_type", "seed": 42, "key": ["dataset_id", "donor_id"]}})
     s = out["sample"]
     assert s["n_total"] == out["n_cells"] > 200_000 and 100_000 < s["n_sampled"] <= 200_000
     assert len(s["value_filter"]) > 1_000_000 and s["n_donors_sampled"] == s["n_donors"]
@@ -917,8 +917,8 @@ def test_census_count_request_model_carries_the_sample() -> None:
                                      "stratify": "cell_type"})
     assert req.sample["stratify"] == "cell_type"
     resp = parse_response("_census_count", {"table": "cellxgene_census.obs", "n_cells": 9,
-                                            "sample": {"soma_joinids": [1, 2]}, "file_cells": [1, 2]})
-    assert resp.sample["soma_joinids"] == [1, 2] and resp.file_cells == [1, 2] and not resp.model_extra
+                                            "sample": {"ids": [1, 2]}, "file_cells": [1, 2]})
+    assert resp.sample["ids"] == [1, 2] and resp.file_cells == [1, 2] and not resp.model_extra
     with pytest.raises(ValueError):
         CensusCountRequest(table="cellxgene_census.obs", release_only=True)
     rel = parse_response("_release", {"table": CT, "release": {"resolved": "2026-10-08T09:00:05"}})

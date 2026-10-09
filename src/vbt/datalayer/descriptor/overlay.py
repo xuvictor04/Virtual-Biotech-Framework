@@ -230,6 +230,9 @@ class SampleSpec(Strict):
     total_path: str | None = None
     max_read: int | None = Field(default=None, ge=1)
     max_cells_default: int | None = Field(default=None, ge=1)
+    # the tool a refusal points to when no sample can be drawn (single_cell.get_anndata): the overlay's, never the
+    # gateway's guess (ASN-4)
+    alternative: str | None = None
 
 
 class EstimateSpec(Strict):

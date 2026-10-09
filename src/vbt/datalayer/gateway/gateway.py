@@ -276,6 +276,13 @@ def _ms(t0: float) -> float:
     return round((time.monotonic() - t0) * 1000.0, 1)
 
 
+
+def _sample_alternative(contract: Any) -> str | None:
+    """The tool the overlay's ``count_first.sample.alternative`` names for a refused sample, else none."""
+    cf = getattr(getattr(contract, "binding", None), "count_first", None)
+    sample = getattr(cf, "sample", None) if cf is not None else None
+    return getattr(sample, "alternative", None) if sample is not None else None
+
 def _last(path: str) -> str:
     return str(path).lstrip("/").split(".")[-1].replace("[]", "")
 
@@ -889,7 +896,7 @@ class DataGateway:
             key = list(facet.get("key") or grain_columns(contract.tables.get(cf.table), str(facet.get("grain")
                                                                                             or "donor")) or [])
             if len(key) == 2:
-                self._sample_unavailable(plan, st, contract, {"key": key}, "no sample size or donor key")
+                self._sample_unavailable(plan, st, contract, {"key": key}, "no sample size, seed or donor key")
         est = cf.estimate
         req = CensusCountRequest(table=cf.table, value_filter=args.get(cf.filter_arg) if cf.filter_arg else None,
                                  n_genes=n_genes, max_cells=max_cells if isinstance(max_cells, int) else None,
@@ -941,7 +948,10 @@ class DataGateway:
         key = list(facet.get("key") or grain_columns(t, str(facet.get("grain") or "donor")) or [])
         if len(key) != 2:
             return None
-        out = {"max_cells": int(want), "seed": int(facet.get("seed", 42)), "key": key}
+        if facet.get("seed") is None:
+            return None                                # the overlay declares the generator's seed (ASN-4)
+        id_column = next((_last(k) for k in (t.key if t is not None else []) if not k.endswith("#")), None)
+        out = {"max_cells": int(want), "seed": int(facet["seed"]), "key": key, "id_column": id_column}
         if facet.get("stratify"):
             out["stratify"] = str(facet["stratify"])
         if facet.get("max_read"):
@@ -963,7 +973,7 @@ class DataGateway:
                            "or narrow it", tool=st.name, argument=contract.binding.count_first.filter_arg,
                            payload=unsupported_combination_payload(
                                [contract.binding.count_first.filter_arg or ""], why,
-                               alternative=f"{plan.server}.get_anndata"))
+                               alternative=_sample_alternative(contract)))
 
     def _apply_sample(self, plan: CallPlan, st: _CallState, contract: ToolContract, cf: Any, facet: Mapping[str, Any],
                       req: Mapping[str, Any], n_cells: int | None, sample: Mapping[str, Any] | None) -> None:
@@ -981,7 +991,7 @@ class DataGateway:
             st.notes.append(f"the filter selects {n_cells} cells, at most max_cells={max_cells}: every cell is "
                             "fetched (nothing is sampled)")
             return
-        ids = list((sample or {}).get("soma_joinids") or [])
+        ids = list((sample or {}).get("ids") or [])
         if not ids or not (sample or {}).get("value_filter"):
             self._sample_unavailable(plan, st, contract, req, str((sample or {}).get("reason") or "no sample returned"))
             return

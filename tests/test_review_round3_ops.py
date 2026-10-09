@@ -357,3 +357,60 @@ def test_the_too_large_payload_says_the_needed_host_includes_the_baseline(monkey
     assert extra["limit_source"] == "auto" and extra["need_with_baseline_mb"] == round(need)
     assert extra["host_mb_needed"] == round(sizing.plan_for_server(need))
     assert "baseline" in where and f"{extra['host_mb_needed']:,}" in where
+
+
+# --------------------------------------------------------------------------- ASN-3
+
+
+def test_vbt_data_ot_is_an_alias_of_the_generic_engine(monkeypatch, capsys) -> None:
+    """`vbt data ot fetch` is `vbt data acquire open_targets.<table>`; `list` plans the active configuration's
+    descriptor (its release and base URL) through the generic engine, never module constants."""
+    from types import SimpleNamespace
+
+    from vbt import cli
+    from vbt.data import acquire as A
+    from vbt.data import cli as data_cli
+
+    seen: dict = {}
+
+    def fake_acquire(ns, config):
+        seen["acquire"] = ns
+        return 0
+
+    monkeypatch.setattr(data_cli, "cmd_acquire", fake_acquire)
+    assert cli.main(["--profile", "mock", "data", "ot", "fetch", "so", "go", "--dry-run"]) == 0
+    ns = seen["acquire"]
+    assert ns.targets == ["open_targets.so", "open_targets.go"] and ns.plan is True
+
+    def fake_plan(catalog, wanted, settings, **kw):
+        seen["wanted"] = dict(wanted)
+        seen["release"] = catalog.source("open_targets").acquisition.release
+        f = SimpleNamespace(groups=["so"])
+        return SimpleNamespace(sources=[SimpleNamespace(listing_error=None, groups=["so"], files=[f, f],
+                                                        release="25.09", listed=[], downloads=None)])
+
+    monkeypatch.setattr(A, "plan_acquisition", fake_plan)
+    assert cli.main(["--profile", "mock", "data", "ot", "list"]) == 0
+    assert "so" in seen["wanted"]["open_targets"] and seen["release"] == "25.09"
+    assert "     2  so" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- ASN-6
+
+
+def test_a_utility_cannot_raise_its_own_timeout_past_the_owners_limit() -> None:
+    from types import SimpleNamespace
+
+    from vbt.projects.utilities import call_timeout
+
+    owners = SimpleNamespace(call_timeout_s=1800)
+    assert call_timeout({"timeout_s": 86400}, owners) == 1800          # the authoring agent asked for a day
+    assert call_timeout({"timeout_s": 60}, owners) == 60
+    assert call_timeout({}, owners) == 1800 and call_timeout({"timeout_s": "x"}, owners) == 1800
+
+
+def test_the_zenodo_command_takes_the_record_the_descriptor_pins() -> None:
+    from vbt.data.zenodo import RECORD_ID, record_from_config
+
+    assert record_from_config(load_config(["mock"])) == RECORD_ID == 22259123
+    assert record_from_config({"data": {"descriptors_dir": "/nonexistent"}}) is None

@@ -1178,6 +1178,10 @@ class _OverlayLinter:
                 if a not in args:
                     self.add("error", f"{w}.count_first", f"{a!r} is not an argument", "binding", a)
             hit = self.table_of(cf.table, f"{w}.count_first")
+            if cf.sample is not None and cf.sample.seed is None:
+                # the data child draws with the overlay's seed, never a default of its own (ASN-4)
+                self.add("error", f"{w}.count_first.sample", "the sample declares no seed (the generator upstream "
+                         "draws its own sample with)", "binding", "seed")
             if hit is not None and cf.sample is not None and not cf.sample.key:
                 d, t = hit
                 if cf.sample.grain not in d.tables[t].grains:

@@ -44,6 +44,7 @@ a moving alias names, or a live source's release, versions and per-record releas
 
 from __future__ import annotations
 
+import contextlib
 import random
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -134,7 +135,7 @@ def donor_balanced_columns(ids: Sequence[Any], datasets: Sequence[Any], donors: 
             taken += n
         per_dataset[str(ds)] = taken
         remaining -= taken
-    return {"soma_joinids": sorted(picked, key=lambda x: (str(type(x)), x)), "per_donor": per_donor,
+    return {"ids": sorted(picked, key=lambda x: (str(type(x)), x)), "per_donor": per_donor,
             "per_dataset": per_dataset, "donor_key": list(key), "n_sampled": len(picked),
             "n_donors": sum(len(v) for v in by_dataset.values()), "n_datasets": len(by_dataset)}
 
@@ -222,7 +223,7 @@ def stratified_sample(frame: Any, max_cells: int, *, seed: int = UPSTREAM_SEED, 
     per_donor = {str(k): int(v) for k, v in pd.Series(donors_all[mask]).value_counts(sort=False).items() if v}
     per_dataset = {str(k): int(v) for k, v in df[key[0]][mask].value_counts(sort=False).items() if v}
     per_stratum = {str(k): int(v) for k, v in df[stratum][mask].value_counts(sort=False).items() if v}
-    return {"soma_joinids": sorted(chosen), "n_sampled": len(chosen), "n_total": n_total,
+    return {"ids": sorted(chosen), "n_sampled": len(chosen), "n_total": n_total,
             "per_donor": per_donor, "per_dataset": per_dataset, "per_stratum": per_stratum,
             "n_donors": int(len(set(donors_all))), "n_donors_sampled": len(per_donor),
             "n_datasets": int(df[key[0]].nunique()), "n_strata": int(df[stratum].nunique()),
@@ -230,9 +231,18 @@ def stratified_sample(frame: Any, max_cells: int, *, seed: int = UPSTREAM_SEED, 
             "method": "donor_balanced_cell_type_stratified (upstream's), donors keyed by (dataset_id, donor_id)"}
 
 
-def sample_filter(joinids: Sequence[Any]) -> str:
-    """The SOMA ``value_filter`` selecting exactly ``joinids`` (``soma_joinid in [...]``)."""
-    return "soma_joinid in [" + ", ".join(str(int(i)) for i in joinids) + "]"
+def sample_filter(ids: Sequence[Any], column: str, fmt: Any = None) -> str:
+    """The native filter selecting exactly the cells ``ids`` of ``column`` (the table's declared key): built by the
+    table's format plugin (``compile`` of ``In(column, ids)``; the SOMA format writes ``<column> in [...]``), never a
+    literal in this verb (ASN-4)."""
+    from ...plugins.formats.soma import SomaFormat
+    from ...predicate import In
+
+    plugin = fmt if fmt is not None and callable(getattr(fmt, "compile", None)) else SomaFormat()
+    native, residual = plugin.compile(In(str(column), tuple(int(i) for i in ids)))
+    if native is None or residual is not None:
+        raise ValueError(f"the format cannot express a filter on {column}")
+    return str(native)
 
 
 def genes_from_h5ad(path: str, requested: Sequence[str], *, column: str = "feature_name") -> dict[str, Any]:
@@ -364,10 +374,13 @@ def census_count(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, A
     cells = n if req.max_cells is None else min(n, int(req.max_cells))
     if sample_max is not None:
         cells = min(n, sample_max)
-    sample = _sample(layout, lspec, predicate, t, n, dict(req.sample), sample_max or n) if req.sample else None
+    fmt = None
+    with contextlib.suppress(Exception):
+        fmt = ctx.plugin("format", t.format) if t.format else None
+    sample = _sample(layout, lspec, predicate, t, n, dict(req.sample), sample_max or n, fmt) if req.sample else None
     # the server reads the metadata of every matching cell before it pulls (it draws its own sample), unless it
     # is asked for exactly the sample's cells
-    read = cells if (sample or {}).get("soma_joinids") else n
+    read = cells if (sample or {}).get("ids") else n
     need = estimate_bytes(req, cells, read)
     cap = req.cap_bytes
     out.update({"n_cells": int(n), "n_cells_pulled": int(cells), "n_genes": req.n_genes, "need_bytes": need,
@@ -392,38 +405,46 @@ def estimate_bytes(req: CensusCountRequest, cells: int, read: int) -> int:
 
 
 def _sample(layout: Any, lspec: Any, predicate: Predicate | None, t: Any, n: int, spec: Mapping[str, Any],
-            max_cells: int) -> dict[str, Any]:
+            max_cells: int, fmt: Any = None) -> dict[str, Any]:
     """The donor-balanced sample of the ``n`` counted cells (module docstring)."""
     max_read = int(spec.get("max_read") or DEFAULT_MAX_READ)
     stratum = spec.get("stratify")
-    seed = int(spec["seed"]) if spec.get("seed") is not None else (UPSTREAM_SEED if stratum else 0)
+    # everything a sample depends on comes from the request (the overlay's count_first.sample and the table's
+    # declared key), never Census defaults in this verb (ASN-4)
+    if spec.get("seed") is None:
+        return {"reason": "count_first.sample declares no seed", "n_sampled": None}
+    seed = int(spec["seed"])
     if n > max_read:
         return {"reason": f"the filter selects {n} cells; a sample reads the key columns of at most {max_read}: "
                           "narrow value_filter", "n_sampled": None}
-    key = tuple(str(k) for k in (spec.get("key") or DONOR_KEY))
+    key = tuple(str(k) for k in (spec.get("key") or ()))
     if len(key) != 2:
         return {"reason": f"a donor key has two columns (the qualifier and the donor), not {list(key)}", "n_sampled": None}
-    cols = ["soma_joinid", *key]
+    id_column = str(spec.get("id_column") or next((c for c in t.spec.key.columns if not str(c).endswith("#")), ""))
+    if not id_column:
+        return {"reason": f"{t.ref} declares no key column to name the sampled cells by", "n_sampled": None}
+    cols = [id_column, *key]
     try:
         if stratum:
             if not callable(getattr(layout, "frame", None)):
                 return {"reason": f"layout {t.layout!r} cannot read a frame for a stratified sample", "n_sampled": None}
             frame = layout.frame(lspec, predicate=predicate, columns=list(dict.fromkeys([*cols, str(stratum)])))
-            out = stratified_sample(frame, max_cells, seed=seed, stratum=str(stratum), key=key)
+            out = stratified_sample(frame, max_cells, seed=seed, stratum=str(stratum), key=key, id_column=id_column)
             if out["n_total"] != n:
                 # the count and the read must see the same cells (a moved alias, a failed residual)
                 return {"reason": f"the sample read {out['n_total']} cells where the count found {n}", "n_sampled": None}
         elif callable(getattr(layout, "columns", None)):
             got = layout.columns(lspec, predicate=predicate, columns=cols)
-            out = donor_balanced_columns(got["soma_joinid"], got[key[0]], got[key[1]], max_cells, seed=seed, key=key)
+            out = donor_balanced_columns(got[id_column], got[key[0]], got[key[1]], max_cells, seed=seed, key=key)
         else:
             page = layout.request(lspec, predicate=predicate, projection=cols, page_token=None,
                                   budget=t.descriptor.budget)
-            out = donor_balanced(page.rows, max_cells, seed=seed, key=key)
+            out = donor_balanced(page.rows, max_cells, seed=seed, key=key, id_column=id_column)
+        out["value_filter"] = sample_filter(out["ids"], id_column, fmt)
     except Exception as exc:  # noqa: BLE001 - a failed read is no sample, never an empty one
         return {"reason": f"sample failed: {exc}"[:500], "n_sampled": None}
     out["seed"] = seed
-    out["value_filter"] = sample_filter(out["soma_joinids"])
+    out["id_column"] = id_column
     out["max_cells"] = out["n_sampled"]
     return out
 

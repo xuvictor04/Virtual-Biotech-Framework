@@ -19,7 +19,6 @@ acquisition root's directory layout.
 
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -242,84 +241,84 @@ class OpenTargetsRelease:
         return report
 
 
-# ---------------------------------------------------------------------------- CLI: vbt data ot
+# ---------------------------------------------------------------------------- CLI: vbt data ot (an alias)
 
 
 def add_ot_parser(sources: Any) -> None:
-    """``vbt data ot list|fetch|manifest`` under the ``vbt data`` subcommands."""
-    o = sources.add_parser("ot", help=f"Open Targets Platform release tables ({SITE}); "
-                                      "`vbt data acquire open_targets.<table>` is the general form")
+    """``vbt data ot list|fetch|manifest``: a thin alias of the generic acquisition engine for the active
+    configuration's ``open_targets`` descriptor (its release, base URL and acquisition root): ``list`` is the live
+    listing's tables and file counts, ``fetch`` is ``vbt data acquire open_targets.<table> ...`` and ``manifest``
+    verifies the tables already in the acquisition home and writes their manifest (ASN-3). The functions above stay
+    for the tests that exercise the release format itself."""
+    o = sources.add_parser("ot", help="alias of `vbt data acquire open_targets[.<table>]` (the active descriptor's "
+                                      "release and base URL)")
     os_ = o.add_subparsers(dest="ot_action", required=True)
 
-    def common(p: Any, dest: bool = True) -> None:
-        p.add_argument("--release", default=RELEASE)
-        p.add_argument("--site", default=SITE, help=_suppress())
-        if dest:
-            p.add_argument("--dest", default=None,
-                           help="the release's output directory (default: $OPEN_TARGETS_DATA_PATH)")
+    def common(p: Any) -> None:
+        p.add_argument("--dest", default=None, metavar="ROOT",
+                       help="acquisition root (default: data.acquisition.root), as for `vbt data acquire`")
 
-    lp = os_.add_parser("list", help="tables of the release and their file counts (from release_data_integrity)")
-    common(lp, dest=False)
-    fp = os_.add_parser("fetch", help="download tables, verify each file's sha1, write .download-manifest.json")
+    os_.add_parser("list", help="tables of the descriptor's release and their file counts (live listing)")
+    fp = os_.add_parser("fetch", help="`vbt data acquire open_targets.<table> ...`")
     fp.add_argument("tables", nargs="+", help="table names (e.g. target go reactome)")
-    fp.add_argument("--workers", type=int, default=4)
+    fp.add_argument("--workers", type=int, default=None)
     fp.add_argument("--max-gb", type=float, help="refuse when the files to download exceed this size")
-    fp.add_argument("--dry-run", action="store_true", help="list the files and sizes to download")
+    fp.add_argument("--dry-run", action="store_true", help="print the plan (`--plan`)")
     common(fp)
-    mp = os_.add_parser("manifest", help="verify the tables already under --dest and write the manifest "
+    mp = os_.add_parser("manifest", help="verify the tables already in the acquisition home and write the manifest "
                                          "(nothing is downloaded)")
-    mp.add_argument("tables", nargs="*", help="tables to include (default: every table directory)")
+    mp.add_argument("tables", nargs="*", help="tables to include (default: every table with files)")
     common(mp)
     o.set_defaults(handler=_cmd_ot)
 
 
-def _suppress() -> Any:
+def _cmd_ot(args: Any, config: Mapping[str, Any]) -> int:
     import argparse
 
-    return argparse.SUPPRESS
+    from ..preflight import data_catalog
+    from . import acquire as A
+    from .cli import cmd_acquire
+    from .manifest import write_manifest as write_generic_manifest
 
-
-def _dest(args: Any) -> Path | None:
-    raw = args.dest or os.environ.get("OPEN_TARGETS_DATA_PATH", "")
-    return Path(raw).expanduser() if raw.strip() else None
-
-
-def _cmd_ot(args: Any, config: Mapping[str, Any]) -> int:
-    del config
-    if args.ot_action == "list":
-        integrity, about = load_integrity(args.release, site=args.site)
-        inv = inventory(integrity)
-        for table, files in inv.items():
-            print(f"{len(files):6d}  {table}")
-        print(f"# {len(inv)} tables, {sum(len(f) for f in inv.values())} Parquet files ({about['url']}, "
-              f"sha1 {about['sha1']})")
-        return 0
-    dest = _dest(args)
-    if dest is None:
-        print("error: give --dest or set OPEN_TARGETS_DATA_PATH")
+    _settings, catalog, _registry = data_catalog(dict(config))
+    try:
+        desc = catalog.source(SOURCE)
+    except Exception:  # noqa: BLE001
+        print(f"error: the active configuration has no {SOURCE} descriptor")
         return 2
+    acq = desc.acquisition
+    if args.ot_action == "fetch":
+        ns = argparse.Namespace(targets=[f"{SOURCE}.{t}" for t in args.tables], for_tools=[], for_agents=[],
+                                all=False, missing=False, pending=False, dest=args.dest, plan=bool(args.dry_run),
+                                offline=False, max_gb=args.max_gb, workers=args.workers, no_prepare=False,
+                                include_optional=False, env_file=None, json=False)
+        return cmd_acquire(ns, config)
+    settings = A.AcquisitionSettings.from_config(config)
+    groups = list(acq.tables) if acq is not None else []
+    root = Path(args.dest).expanduser().resolve() if getattr(args, "dest", None) else None
     if args.ot_action == "manifest":
-        if not dest.is_dir():
-            print(f"error: {dest} is not a directory")
+        # the tables already in the acquisition home (or those named): nothing else is listed or downloaded
+        home = A.source_home(desc, root or A.source_root(catalog, SOURCE, settings.root))
+        if not home.is_dir():
+            print(f"error: {home} is not a directory (`vbt data ot fetch` or `vbt data acquire {SOURCE}` puts the "
+                  "tables there)")
             return 2
-        integrity, about = load_integrity(args.release, dest=dest, site=args.site)
-        rep = write_manifest(dest, integrity, release=args.release, site=args.site,
-                             tables=args.tables or None, about=about)
-        print(rep.summary())
-        return 0 if rep.tables else 1
-    dest.mkdir(parents=True, exist_ok=True)
-    with OpenTargetsRelease(args.release, site=args.site) as rel:
-        try:
-            rep = rel.fetch(args.tables, dest, workers=args.workers, dry_run=args.dry_run,
-                            max_bytes=int(args.max_gb * 1e9) if args.max_gb is not None else None,
-                            on_file=lambda r: print(f"  {r.status:10s} {r.bytes:>13,d}  {r.rel}", flush=True))
-        except (ValueError, IntegrityError) as exc:
-            print(f"error: {exc}")
-            return 2
-    if args.dry_run:
-        for r in rep.results:
-            print(f"  {r.bytes:>13,d}  {r.rel}")
-        print(f"# {len(rep.results)} file(s), {sum(r.bytes for r in rep.results) / 1e9:.2f} GB to download")
+        groups = list(args.tables) or [g for g in groups if (home / g).is_dir()]
+    plan = A.plan_acquisition(catalog, {SOURCE: groups}, settings, root=root, sizes=False, write_index=False)
+    (sp,) = plan.sources
+    if sp.listing_error and (args.ot_action == "manifest" or not sp.files):
+        print(f"error: {sp.listing_error}")
+        return 2
+    if args.ot_action == "list":
+        counts = {g: sum(1 for f in sp.files if g in f.groups) for g in sp.groups}
+        for g, n in counts.items():
+            print(f"{n:6d}  {g}")
+        print(f"# {len(counts)} tables, {sum(counts.values())} files ({desc.source} {sp.release})"
+              + (f"; {sp.listing_error}" if sp.listing_error else ""))
         return 0
+    index = next((dict(f.extra.get("index")) for f in sp.listed if isinstance(f.extra.get("index"), Mapping)), {})
+    rep = write_generic_manifest(acq, sp.downloads, sp.listed, release=sp.release,
+                                 base=A._manifest_base(acq, desc, sp.release), groups=args.tables or None,
+                                 about=index)
     print(rep.summary())
-    return 1 if rep.failed else 0
+    return 0 if rep.tables else 1

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from ..tools.base import Tool, ToolContext, ToolFailure
 from . import ledger
@@ -99,7 +99,7 @@ async def _call(ctx: ToolContext, project: Project, name: str, args: dict[str, A
     manifest = _manifest(project, name)
     config = dict(getattr(ctx.runtime, "config", None) or {})
     settings = ProjectSettings.from_config(config, project)
-    timeout = float(manifest.get("timeout_s") or settings.call_timeout_s)
+    timeout = call_timeout(manifest, settings)
     network = ((config.get("bash") or {}).get("network_isolation")) != "unshare"
     directory = str(project.utilities_dir / name)
     mode = manifest.get("mode") or "function"
@@ -128,3 +128,14 @@ async def _call(ctx: ToolContext, project: Project, name: str, args: dict[str, A
     if res.output.strip():
         return {"result": value, "log": res.output[-8000:], **({"notes": res.notes} if res.notes else {})}
     return value if not res.notes else {"result": value, "notes": res.notes}
+
+
+def call_timeout(manifest: Mapping[str, Any], settings: Any) -> float:
+    """One call's timeout: the manifest's ``timeout_s`` (written by the authoring agent) capped at the owners'
+    ``projects.call_timeout_s``, which it used to override with no upper bound (ASN-6)."""
+    limit = float(settings.call_timeout_s)
+    try:
+        asked = float(manifest.get("timeout_s") or limit)
+    except (TypeError, ValueError):
+        asked = limit
+    return max(1.0, min(asked, limit))

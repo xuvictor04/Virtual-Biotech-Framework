@@ -617,13 +617,13 @@ def test_census_count_first_and_donor_balanced_sample(ctx: ServiceContext, monke
     out = verb(ctx, {"predicate": to_json(And((Eq("dataset_id", "d1"), Eq("is_primary_data", True)))),
                      "n_genes": 10, "cap_bytes": 10 ** 9, "max_cells": 5})
     assert out["n_cells"] == 8 and out["n_cells_pulled"] == 5 and out["admissible"] and out["truncated_by_max_cells"]
-    out = verb(ctx, {"value_filter": "is_primary_data == True", "sample": {"max_cells": 8, "seed": 1}})
+    out = verb(ctx, {"value_filter": "is_primary_data == True", "sample": {"max_cells": 8, "seed": 1, "key": ["dataset_id", "donor_id"]}})
     sample = out["sample"]
     assert sample["donor_key"] == ["dataset_id", "donor_id"] and sample["n_sampled"] == 8
     assert sample["per_dataset"] == {"d1": 4, "d2": 4}
     # donor D1 of d1 and donor D1 of d2 are different donors
     assert sample["per_donor"] == {"d1/D1": 2, "d1/D2": 2, "d2/D1": 4}
-    assert 99 not in sample["soma_joinids"]
+    assert 99 not in sample["ids"]
 
 
 def test_donor_balanced_gives_unused_shares_back() -> None:

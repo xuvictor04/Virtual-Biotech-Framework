@@ -460,8 +460,8 @@ def test_donor_balanced_sample_on_real_donor_counts() -> None:
     assert len({d for d in donors}) == 28 and set(rec["shared_labels"]) <= set(donors)
     assert {k for k in out["per_donor"] if k.endswith("/D496")} == {
         "1b350d0a-4535-4879-beb6-1142f3f94947/D496", "1b9d8702-5af8-4142-85ed-020eb06ec4f6/D496"}
-    vf = sample_filter(out["soma_joinids"][:3])
-    assert vf == "soma_joinid in [" + ", ".join(str(i) for i in out["soma_joinids"][:3]) + "]"
+    vf = sample_filter(out["ids"][:3], "soma_joinid")
+    assert vf == "soma_joinid in [" + ", ".join(str(i) for i in out["ids"][:3]) + "]"
 
 
 def test_census_x_values_are_counts() -> None:

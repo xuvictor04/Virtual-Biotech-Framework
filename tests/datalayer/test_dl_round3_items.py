@@ -713,13 +713,31 @@ def test_the_manifest_of_tables_already_downloaded(release, tmp_path):
     assert _manifest(dest)["complete"] is False
 
 
-def test_the_cli_writes_the_manifest_offline(release, tmp_path, capsys):
+def test_the_cli_writes_the_manifest_without_downloading(release, tmp_path, capsys):
+    """`vbt data ot manifest` is an alias of the generic engine (ASN-3): the active configuration's descriptor (here a
+    copy whose base URL is the local site) lists the release; nothing is downloaded, the manifest of the tables in
+    the acquisition home is written."""
+    import shutil
+
     from vbt.cli import main
 
-    dest = _local_release(tmp_path, release)
-    assert main(["data", "ot", "manifest", "--dest", str(dest)]) == 0
+    sources = tmp_path / "sources"
+    shutil.copytree(Path(__file__).resolve().parents[2] / "configs" / "data" / "sources", sources)
+    ot = sources / "open_targets.yaml"
+    ot.write_text(ot.read_text().replace("https://ftp.ebi.ac.uk/pub/databases/opentargets/platform", release.site))
+    root = tmp_path / "acq"
+    home = root / "open_targets" / "25.09"
+    home.parent.mkdir(parents=True)
+    shutil.move(str(_local_release(tmp_path, release)), home)
+    profile = tmp_path / "p.yaml"
+    profile.write_text(yaml.safe_dump({"data": {"descriptors_dir": str(sources),
+                                                "acquisition": {"root": str(root)}}}))
+    before = len(release.requests) if hasattr(release, "requests") else None
+    assert main(["--profile", "mock", "--profile", str(profile), "data", "ot", "manifest"]) == 0
     out = capsys.readouterr().out
-    assert "3 table(s), 4 file(s)" in out and (dest / ".download-manifest.json").is_file()
+    assert "3 table(s), 4 file(s)" in out and (home / ".download-manifest.json").is_file()
+    if before is not None:
+        assert not [r for r in release.requests[before:] if r.endswith(".parquet")]   # nothing downloaded
 
 
 def _ot_ctx(tmp: Path, dest: Path) -> ServiceContext:

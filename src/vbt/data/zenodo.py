@@ -476,11 +476,14 @@ def add_data_parsers(sub) -> None:
 
     add_acquire_parsers(ds)              # vbt data acquire | status (descriptor acquisition sections)
     add_ot_parser(ds)                    # vbt data ot list|fetch|manifest
-    z = ds.add_parser("zenodo", help=f"Zenodo record {RECORD_ID} ({FILE_KEY}, doi:{DOI})")
+    z = ds.add_parser("zenodo", help="the paper's Zenodo archive, member by member (the record is the active "
+                                     "configuration's zenodo_vbt descriptor's release; `vbt data acquire zenodo_vbt` "
+                                     "acquires its tables)")
     zs = z.add_subparsers(dest="zenodo_action", required=True)
 
     def common(p):
-        p.add_argument("--record", type=int, default=RECORD_ID)
+        p.add_argument("--record", type=int, default=None,
+                       help=f"Zenodo record id (default: the zenodo_vbt descriptor's release, else {RECORD_ID})")
         p.add_argument("--api-base", default=API_BASE, help=argparse_suppress())
 
     lp = zs.add_parser("list", help="list archive members (central directory only, a few hundred KB)")
@@ -509,13 +512,27 @@ def argparse_suppress():
     return argparse.SUPPRESS
 
 
+def record_from_config(config: dict[str, Any], source: str = "zenodo_vbt") -> int | None:
+    """The record id the active configuration pins: the ``zenodo_vbt`` descriptor's ``acquisition.release`` (ASN-6:
+    the command used the module's constant whatever the descriptor said)."""
+    try:
+        from ..preflight import data_catalog
+
+        _s, catalog, _r = data_catalog(dict(config))
+        acq = catalog.source(source).acquisition
+        return int(str(acq.release)) if acq is not None and acq.release else None
+    except Exception:  # noqa: BLE001 - no catalog: the shipped record
+        return None
+
+
 def _cmd_zenodo(args, config: dict[str, Any]) -> int:
     if args.zenodo_action == "presets":
         for k, v in PRESETS.items():
             print(f"{k:16s} {v.get('help', '')}")
         return 0
     dest = Path(args.dest) if getattr(args, "dest", None) else zenodo_root(config).parent
-    with ZenodoArchive(args.record, api_base=args.api_base) as arch:
+    record = args.record or record_from_config(config) or RECORD_ID
+    with ZenodoArchive(record, api_base=args.api_base) as arch:
         if args.zenodo_action == "list":
             infos = arch.list(args.pattern)
             if args.preset:

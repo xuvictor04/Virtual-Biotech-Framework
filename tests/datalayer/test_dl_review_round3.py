@@ -834,3 +834,52 @@ def test_the_cell_ontology_is_never_the_test_fixture(tmp_path, monkeypatch):
                                                   "data-version: cl/releases/2026-06-08/cl-basic.owl", 1))
     ready = status({"VBT_CL_OBO": str(pinned)})
     assert ready.status == "ready" and any(c.name == "R2:release" and c.ok for c in ready.checks)
+
+
+# --------------------------------------------------------------------------- ASN-4
+
+
+def test_the_sample_names_cells_by_the_tables_declared_key():
+    """The data child draws over the table's own key column and builds the filter through the format plugin; the
+    seed and the donor key come from the request (the overlay), never Census defaults in the verb."""
+    from types import SimpleNamespace
+
+    from vbt.datalayer.service.verbs.census_count import _sample
+
+    class Layout:
+        def columns(self, lspec, predicate=None, columns=()):
+            assert columns[0] == "cell_id"
+            rows = [(i, "dA" if i < 6 else "dB", f"D{i % 3}") for i in range(12)]
+            return {"cell_id": [r[0] for r in rows], "dataset_id": [r[1] for r in rows], "donor_id": [r[2] for r in rows]}
+
+    t = SimpleNamespace(spec=SimpleNamespace(key=SimpleNamespace(columns=["cell_id"])), layout="custom",
+                        ref="lab.cells", descriptor=SimpleNamespace(budget=None))
+    spec = {"seed": 7, "key": ["dataset_id", "donor_id"]}
+    out = _sample(Layout(), None, None, t, 12, spec, 4)
+    assert out["id_column"] == "cell_id" and out["n_sampled"] == 4 and out["seed"] == 7
+    assert out["value_filter"].startswith("cell_id in [")
+    assert "no seed" in _sample(Layout(), None, None, t, 12, {"key": ["dataset_id", "donor_id"]}, 4)["reason"]
+    assert "two columns" in _sample(Layout(), None, None, t, 12, {"seed": 1}, 4)["reason"]
+
+
+def test_lint_requires_the_samples_seed():
+    import yaml
+
+    from pathlib import Path
+
+    from vbt.datalayer.descriptor.overlay import Overlay
+
+    repo = Path(__file__).resolve().parents[2]
+    raw = yaml.safe_load((repo / "configs" / "data" / "overlays" / "single_cell.yaml").read_text())
+    for b in raw["tools"].values():
+        sample = ((b.get("count_first") or {}).get("sample")) if isinstance(b, dict) else None
+        if isinstance(sample, dict):
+            sample.pop("seed", None)
+    from vbt.datalayer.catalog import Catalog
+    from vbt.datalayer.descriptor.lint import lint_overlay
+    from vbt.datalayer.descriptor.load import load_descriptors
+
+    sources = load_descriptors(repo / "configs" / "data" / "sources")
+    found = lint_overlay(Overlay.model_validate(raw), Catalog(sources, {}, [], registry=discover(entry_points=False)),
+                         discover(entry_points=False))
+    assert any("declares no seed" in str(f) and f.level == "error" for f in found)

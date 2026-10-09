@@ -212,14 +212,15 @@ def test_donor_balanced_sample_returns_the_upstream_arguments(tmp_path: Path, mo
     monkeypatch.setattr(soma_layout, "_RESOLVED", {})
     monkeypatch.setitem(sys.modules, "cellxgene_census", _census(CELLS))
     out = load_verbs()["_census_count"](_ctx(tmp_path), {"value_filter": "is_primary_data == True",
-                                                         "sample": {"max_cells": 8, "seed": 3}})
+                                                         "sample": {"max_cells": 8, "seed": 3, "key": ["dataset_id", "donor_id"]}})
     sample = out["sample"]
     assert sample["n_sampled"] == 8 and sample["max_cells"] == 8 and sample["seed"] == 3
     assert sample["per_dataset"] == {"dA": 4, "dB": 4} and sample["n_donors"] == 4
-    assert sample["value_filter"] == "soma_joinid in [" + ", ".join(map(str, sample["soma_joinids"])) + "]"
+    assert sample["value_filter"] == "soma_joinid in [" + ", ".join(map(str, sample["ids"])) + "]"
     assert out["n_cells_pulled"] == 8                                  # the pull is sized by the sample
     capped = load_verbs()["_census_count"](_ctx(tmp_path), {"value_filter": "is_primary_data == True",
-                                                            "sample": {"max_cells": 8, "max_read": 5}})
+                                                            "sample": {"max_cells": 8, "max_read": 5, "seed": 3,
+                                                                       "key": ["dataset_id", "donor_id"]}})
     assert capped["sample"]["n_sampled"] is None and "at most 5" in capped["sample"]["reason"]
 
 
