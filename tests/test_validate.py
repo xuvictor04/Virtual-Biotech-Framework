@@ -251,7 +251,7 @@ async def test_off_calls_never_load_what_the_server_cannot_hold():
         return SimpleNamespace(tables={t: {"mb": {"t.big": 4000, "t.small": 500, "t.mid": 1500}[t]} for t in tables})
 
     adm = SimpleNamespace(est=SimpleNamespace(safety=1.3, peak_upstream=lambda st, t: st["mb"] * MB),
-                          limit_mb=lambda server: 4400.0,
+                          limit_mb=lambda server: 4400.0, is_learned=lambda server, cold: False,
                           ledger=SimpleNamespace(resident=lambda server: frozenset(resident[server]),
                                                  resident_mb=lambda server: 800.0))
     gw = SimpleNamespace(admission=adm, _stats={}, service=SimpleNamespace(stats=stats))
@@ -263,6 +263,12 @@ async def test_off_calls_never_load_what_the_server_cannot_hold():
     assert await calls.off_guard("s", ["t.mid"]) is None, "already loaded by an earlier off call"
     assert asked == [["t.big"], ["t.small", "t.mid"]], "statistics are asked once per table"
     assert await calls.off_guard("s", []) is None
+    # an off load that killed the server is not tried again (its estimate fitted: the estimate was wrong)
+    calls.after_off("s", ["t.mid"], _out(kind="oom", text="the server ran out of memory"))
+    why = await calls.off_guard("s", ["t.mid"])
+    assert why and "killed at its memory limit loading t.mid" in why
+    calls.after_off("s", ["t.small"], _out({"rows": []}))
+    assert await calls.off_guard("s", ["t.small"]) is None
 
 
 def test_the_check_step_reuses_an_earlier_check(tmp_path, monkeypatch):

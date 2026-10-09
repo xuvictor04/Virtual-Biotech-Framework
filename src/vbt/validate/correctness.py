@@ -100,16 +100,18 @@ async def run_correctness(ctx: Any) -> StepResult:
                 ctx.calls.append({"server": server, "tool": c.tool, "case": key, "mode": "enforce",
                                   "seconds": enf.seconds, "verdict": verdict, "first": first})
                 guard = None
+                whole = _whole_tables(ctx.catalog, binding)
                 if enf.is_error and enf.kind == "too_large":
                     # the gateway refused the load this host cannot hold: the same call without it would load
                     # the tables anyway and be killed at the server's limit (or take the host with it)
                     guard = "not called: the enforce call was refused too_large on this host"
                 else:
-                    guard = await calls.off_guard(server, _whole_tables(ctx.catalog, binding))
+                    guard = await calls.off_guard(server, whole)
                 if guard:
                     off_text = guard
                 else:
                     off = await calls.call(server, c.tool, c.args, mode="off")
+                    calls.after_off(server, whole, off)
                     ctx.calls.append({"server": server, "tool": c.tool, "case": key, "mode": "off",
                                       "seconds": off.seconds, "first": first})
                     off_text = judge_off(c, off, binding)
@@ -120,7 +122,15 @@ async def run_correctness(ctx: Any) -> StepResult:
             servers_out[server] = {"tables": tables, "cases": len(live), "start_s": round(calls.started_s, 1),
                                    "peak_mb": {n: s.get("peak_rss_mb") for n, s in status.items()},
                                    "containment": {n: s.get("containment") for n, s in status.items()},
-                                   "limit_mb": {n: s.get("limit_mb") for n, s in status.items()}}
+                                   "limit_mb": {n: s.get("limit_mb") for n, s in status.items()},
+                                   "exits": {n: s.get("exit") for n, s in status.items() if s.get("exit")}}
+        # each server's cases are on disk as soon as it is done (a long run that stops keeps what it judged)
+        mine = [r for r in rows if r["tool"].startswith(f"{server}.")]
+        out_dir = ctx.out / "correctness" / server
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "cases.json").write_text(json.dumps({"server": servers_out.get(server), "cases": mine},
+                                                       default=str, indent=1), encoding="utf-8")
+        release_memory()
     wrong = verdicts.get("wrong", 0)
     judged = sum(v for k, v in verdicts.items() if k != "skipped")
     summary = (f"{judged} case(s) on {len([s for s in servers_out if servers_out[s].get('cases')])} server(s): "
@@ -130,6 +140,27 @@ async def run_correctness(ctx: Any) -> StepResult:
     return StepResult("correctness", TITLE, status, summary, rows=rows, peak_mb=oracle_peak or None,
                       details={"by_test": {k: dict(v) for k, v in sorted(by_ct.items())}, "servers": servers_out,
                                "tools_without_cases": skipped_tools})
+
+
+def release_memory() -> None:
+    """Hand what one server's calls freed back to the system before the next server loads its tables: the parsed
+    upstream answers and the gateway's results stay in this process's heap otherwise (glibc keeps freed pages)."""
+    import ctypes
+    import gc
+    import sys
+
+    gc.collect()
+    pa = sys.modules.get("pyarrow")
+    if pa is not None:
+        try:
+            pa.default_memory_pool().release_unused()
+        except Exception:  # noqa: BLE001
+            pass
+    if sys.platform.startswith("linux"):
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except (OSError, AttributeError):
+            pass
 
 
 def _whole_tables(catalog: Any, binding: Any) -> list[str]:

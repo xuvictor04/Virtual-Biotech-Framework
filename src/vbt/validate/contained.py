@@ -186,6 +186,7 @@ class Calls:
     started_s: float = 0.0
     failures: dict[str, str] = field(default_factory=dict)
     _loaded: dict[str, set[str]] = field(default_factory=dict)   # tables off calls made a server load whole
+    _killed: dict[str, set[str]] = field(default_factory=dict)   # tables whose off load killed the server
 
     async def __aenter__(self) -> "Calls":
         from ..datalayer import build_gateway
@@ -277,6 +278,10 @@ class Calls:
         cold = [t for t in dict.fromkeys(tables) if t not in loaded and t not in adm.ledger.resident(server)]
         if not cold:
             return None
+        killed = sorted(set(cold) & self._killed.get(server, set()))
+        if killed or adm.is_learned(server, cold):
+            return (f"not called: {server} was killed at its memory limit loading {', '.join(killed or cold)} "
+                    "earlier in this run")
         missing = [t for t in cold if t not in stats]
         if missing:
             try:
@@ -296,6 +301,14 @@ class Calls:
                     f"{limit:,.0f} MB limit")
         loaded.update(cold)
         return None
+
+    def after_off(self, server: str, tables: Sequence[str], out: Outcome) -> None:
+        """An off call that ended in the server's death at its memory limit: its tables are never loaded again
+        without the gateway in this run (the gateway learns the same from its own calls)."""
+        text = f"{out.kind or ''} {out.text[:2000]}".lower()
+        if out.is_error and any(s in text for s in ("oom", "memory", "connection closed", "server_crash", "killed")):
+            self._killed.setdefault(server, set()).update(tables)
+            self._loaded.get(server, set()).difference_update(tables)
 
     def tool_schemas(self, server: str) -> dict[str, dict[str, Any]]:
         """``{tool: upstream input schema}`` as the server listed it (before the gateway's rewrite)."""
