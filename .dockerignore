@@ -1,0 +1,26 @@
+# Build context of deploy/full/Dockerfile (the repository root). Data, runs, secrets and VCS metadata never
+# enter an image; the upstream submodule's sources do (its .git does not).
+.git
+**/.git
+.github
+.env
+**/.env
+*.env
+!deploy/full/*.env.example
+data/
+runs/
+results/
+projects/
+**/__pycache__
+**/*.pyc
+*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.venv
+venv/
+.claude/
+*.sif
+deploy/full/out/
+third_party/TheVirtualBiotech/runs
+third_party/TheVirtualBiotech/data

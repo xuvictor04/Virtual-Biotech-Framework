@@ -1,0 +1,75 @@
+# Opt-in tests against the live APIs and the real data releases (docs/DATA_LAYER_REAL_DATA.md §7). Started by hand:
+#   network:   VBT_DL_NETWORK=1 -- live ClinicalTrials.gov, cBioPortal, E-utilities, Census, the Open Targets release
+#              integrity list and footers; runs on a GitHub-hosted runner
+#   real data: VBT_DL_REAL_DATA=<dir> -- the downloaded releases; runs on a self-hosted runner that holds them
+#              (e.g. the deployment host: <dir> = $VBT_HOME/data, laid out <source>/<release>/ by `vbt setup`)
+name: real-data
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "network, real-data or both"
+        type: choice
+        options: [network, real-data, both]
+        default: network
+      data_dir:
+        description: "real data root on the self-hosted runner (VBT_DL_REAL_DATA)"
+        type: string
+        default: /srv/vbt/data
+      runner:
+        description: "labels of the self-hosted runner with the data (JSON list)"
+        type: string
+        default: '["self-hosted", "vbt-data"]'
+      tests:
+        description: "pytest selection (default: the data-layer suite; its opt-in tests run because the variables are set)"
+        type: string
+        default: tests/datalayer
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  TEST_EXTRAS: "anthropic,mcp,analysis,survival,tools,web,dev"
+  TEST_PACKAGES: "anndata>=0.10 h5py zarr pronto>=2.5 cellxgene-census>=1.15"
+
+jobs:
+  network:
+    if: inputs.suite == 'network' || inputs.suite == 'both'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[${TEST_EXTRAS}]" ${TEST_PACKAGES}
+      - name: live APIs
+        env:
+          VBT_DL_NETWORK: "1"
+          NCBI_API_KEY: ${{ secrets.NCBI_API_KEY }}
+          NCBI_EMAIL: ${{ secrets.NCBI_EMAIL }}
+        run: python -m pytest -q -p no:cacheprovider ${{ inputs.tests }}
+
+  real-data:
+    if: inputs.suite == 'real-data' || inputs.suite == 'both'
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: environment
+        # the self-hosted runner runs inside the harness image or has its conda env active (docs/DEPLOYMENT.md)
+        run: |
+          python -c "import vbt" 2>/dev/null || pip install -e ".[${TEST_EXTRAS}]" ${TEST_PACKAGES}
+          python --version
+      - name: real releases
+        env:
+          VBT_DL_REAL_DATA: ${{ inputs.data_dir }}
+        run: python -m pytest -q -p no:cacheprovider ${{ inputs.tests }}

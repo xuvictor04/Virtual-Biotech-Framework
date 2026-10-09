@@ -221,6 +221,8 @@ services:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     environment:
       SEARXNG_BASE_URL: http://localhost:${SEARXNG_PORT:-8888}/
+      # the image listens on [::] by default, which fails on hosts with IPv6 disabled (os error 97)
+      GRANIAN_HOST: 0.0.0.0
     logging:
       driver: json-file
       options: {max-size: 1m, max-file: "1"}

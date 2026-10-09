@@ -1,0 +1,93 @@
+# The full deployment (docs/DEPLOYMENT.md): the harness web UI, SearxNG for WebSearch, and on a GPU host vLLM
+# serving the local model. deploy/full/deploy.sh drives it:
+#
+#   export VBT_HOME=/srv/vbt                     # host directory with data/ runs/ projects/ state/ models/
+#   deploy/full/deploy.sh up                     # build if needed, `vbt setup`, compose up, smoke
+#
+# By hand (what deploy.sh runs):
+#   docker compose -f deploy/full/compose.yaml run --rm setup            # vbt setup --deploy compose
+#   docker compose -f deploy/full/compose.yaml -f $VBT_HOME/state/compose.vllm.yaml up -d
+#
+# The vllm service is NOT in this file: `vbt setup` writes it to $VBT_HOME/state/compose.vllm.yaml from the serving
+# profile it picked for this host's GPUs (configs/local_models.yaml, the same renderer as `vbt local serve --docker`).
+# Without it (no GPU, a model server elsewhere, or Claude) the harness uses whatever host.env names.
+#
+# Environment (shell or --env-file):
+#   VBT_HOME            required: host directory mounted at /srv/vbt
+#   VBT_IMAGE           harness image (default vbt-harness:latest; deploy.sh build makes it)
+#   VBT_SECRETS_FILE    KEY=VALUE secrets for the harness (default $VBT_HOME/secrets.env; mode 600):
+#                       VBT_WEB_PASSWORD (required by the web UI), ANTHROPIC_API_KEY, HF_TOKEN, VLLM_API_KEY, NCBI_*
+#   VBT_BASE_PROFILES   harness profiles for every command (default: production)
+#   VBT_WEB_BIND / VBT_WEB_PORT   where the web UI is published (default 127.0.0.1:7860). Keep it on loopback and put
+#                       an authenticating reverse proxy (TLS) in front of it for remote users.
+#   VBT_UID / VBT_GID   user the harness runs as (default 10001, the image's `vbt`); must own $VBT_HOME
+#   SEARXNG_IMAGE       pin a SearxNG release in production (default searxng/searxng:latest)
+
+name: vbt
+
+x-harness: &harness
+  image: ${VBT_IMAGE:-vbt-harness:latest}
+  build:
+    context: ../..
+    dockerfile: deploy/full/Dockerfile
+  user: "${VBT_UID:-10001}:${VBT_GID:-10001}"
+  environment:
+    VBT_HOME: /srv/vbt
+    VBT_BASE_PROFILES: ${VBT_BASE_PROFILES:-production}
+    SEARXNG_URL: http://searxng:8080
+  env_file:
+    - path: ${VBT_SECRETS_FILE:-${VBT_HOME:?set VBT_HOME}/secrets.env}
+      required: false
+  volumes:
+    - ${VBT_HOME:?set VBT_HOME}/data:/srv/vbt/data
+    - ${VBT_HOME:?set VBT_HOME}/runs:/srv/vbt/runs
+    - ${VBT_HOME:?set VBT_HOME}/projects:/srv/vbt/projects
+    - ${VBT_HOME:?set VBT_HOME}/state:/srv/vbt/state
+  # The agents' Bash runs in this container. `vbt setup` turns on the bubblewrap sandbox (bash.sandbox.os: bwrap)
+  # only when it works here; Docker's default seccomp profile refuses the user namespaces bwrap needs. To allow
+  # them, uncomment (and review: it widens the container's syscall surface):
+  # security_opt: ["seccomp=unconfined", "apparmor=unconfined"]
+  # open-file limits come from the Docker daemon (1048576 under its systemd unit); a fixed `ulimits:` above the
+  # daemon's own hard limit makes the container fail to start
+  shm_size: 2g
+  logging:
+    driver: json-file
+    options: {max-size: 50m, max-file: "5"}
+
+services:
+  vbt:
+    <<: *harness
+    command: ["web", "--host", "0.0.0.0", "--port", "7860"]
+    restart: unless-stopped
+    ports:
+      - "${VBT_WEB_BIND:-127.0.0.1}:${VBT_WEB_PORT:-7860}:7860"
+    depends_on:
+      searxng:
+        condition: service_started
+
+  # One-shot: probe, host configuration, data, indexes, readiness, calibration (deploy.sh setup / up).
+  setup:
+    <<: *harness
+    profiles: ["setup"]
+    command: ["setup", "--deploy", "compose"]
+    restart: "no"
+
+  searxng:
+    image: ${SEARXNG_IMAGE:-searxng/searxng:latest}
+    restart: unless-stopped
+    # internal only: the harness reaches it as http://searxng:8080 (its bot limiter is off; never publish it)
+    volumes:
+      - ../local/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+      # the image listens on [::] by default, which fails on hosts with IPv6 disabled (os error 97)
+      GRANIAN_HOST: 0.0.0.0
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options: {max-size: 1m, max-file: "1"}

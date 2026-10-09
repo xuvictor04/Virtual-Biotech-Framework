@@ -1,0 +1,76 @@
+# Lint and the offline test suite on every push and pull request. The suite needs no network, model server,
+# GPU or reference data (scripted provider, generated fixtures, stubs, recorded responses); the opt-in real-data and
+# live-API tests skip themselves here (real-data.yml runs them by hand).
+name: ci
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  # The same packages the image installs for the tests' optional imports (anndata, pronto, Census, zarr); torch
+  # (harmonypy) and R stay out: the tests that need them skip.
+  TEST_EXTRAS: "anthropic,mcp,analysis,survival,tools,web,dev"
+  TEST_PACKAGES: "anndata>=0.10 h5py zarr pronto>=2.5 cellxgene-census>=1.15"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff==0.15.8
+      - run: ruff check src tests
+      - name: shell scripts and Dockerfile
+        run: |
+          bash -n deploy/full/deploy.sh deploy/full/install-env.sh deploy/full/install-harness.sh deploy/full/vbt-host \
+                  deploy/local/serve_vllm.sh
+          docker run --rm -v "$PWD/deploy:/mnt:ro" koalaman/shellcheck:v0.10.0 \
+            /mnt/full/deploy.sh /mnt/full/install-env.sh /mnt/full/install-harness.sh /mnt/full/vbt-host
+          docker run --rm -i hadolint/hadolint:v2.12.0 < deploy/full/Dockerfile
+      - name: compose files
+        env:
+          VBT_HOME: /tmp/vbt-home
+        run: |
+          mkdir -p "$VBT_HOME"
+          docker compose -f deploy/full/compose.yaml config --quiet
+          docker compose -f deploy/local/docker-compose.yml config --quiet
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        # the suite takes ~13 min on 4 CPUs; two shards of about equal length
+        shard: [datalayer, harness]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: install
+        run: |
+          pip install -e ".[${TEST_EXTRAS}]" ${TEST_PACKAGES}
+      - name: offline suite (${{ matrix.shard }})
+        run: |
+          if [ "${{ matrix.shard }}" = datalayer ]; then
+            python -m pytest -q -p no:cacheprovider tests/datalayer
+          else
+            python -m pytest -q -p no:cacheprovider tests --ignore=tests/datalayer
+          fi
