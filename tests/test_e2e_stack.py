@@ -167,6 +167,50 @@ async def test_the_preflight_check_reaches_the_gateway_before_the_data_child_lis
         run.close()
 
 
+@pytest.mark.parametrize("name,expected,absent", [("llamacpp", "llama-server", "vbt local serve"),
+                                                   ("vllm", "vbt local serve", "llama-server")])
+async def test_a_server_that_is_down_is_named_with_the_command_that_starts_it(monkeypatch, name, expected, absent):
+    """When the CPU run's llama-server stopped mid-session, every retry told the operator to run `vbt local serve`,
+    which starts vLLM: a llama.cpp provider names llama-server instead (vLLM and SGLang keep the vLLM hint)."""
+    import socket
+
+    from vbt.providers.base import Message, ModelSettings, ProviderError, RetryableProviderError, TextBlock
+    from vbt.providers.openai_compat import OpenAICompatProvider
+
+    monkeypatch.delenv("VBT_LLM_BASE_URL", raising=False)
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    p = OpenAICompatProvider(base_url=f"http://127.0.0.1:{port}/v1", name=name, auto_discover=False)
+    try:
+        with pytest.raises(RetryableProviderError) as ei:
+            await p.complete(settings=ModelSettings(name, "qwen3.5-2b", max_tokens=16), system="s",
+                             messages=[Message("user", [TextBlock("hi")])], tools=[])
+        assert expected in str(ei.value) and absent not in str(ei.value)
+        with pytest.raises(ProviderError) as ei:
+            await p.prepare()
+        assert expected in str(ei.value) and absent not in str(ei.value)
+    finally:
+        await p.aclose()
+
+
+@pytest.mark.parametrize("argv", [["ds", "retro-audit", "latest"], ["ds", "graduate", "target", "--run", "latest"],
+                                  ["ds", "replay", "latest", "--all"]])
+def test_the_commands_that_read_a_project_run_take_the_project(tmp_path, monkeypatch, argv):
+    """A project's runs are under <project>/runs: `vbt ds retro-audit RUN` of the end-to-end run did not find it
+    (only `--profile <project>/profile.yaml` did). The data commands that read a recorded run take --project, which
+    activates the project as `vbt run --project` does (its runs, descriptors and overlays)."""
+    from vbt import cli
+    from vbt.projects.model import init_project
+
+    monkeypatch.setenv("VBT_PROJECTS_DIR", str(tmp_path / "projects"))
+    project = init_project("demo", config=load_config(["mock"]))
+    args = cli.build_parser().parse_args(["--profile", "mock", *argv[:2], "--project", "demo", *argv[2:]])
+    cfg = cli.build_config(args)
+    assert Path(cfg["paths"]["runs_dir"]).resolve() == (project.root / "runs").resolve()
+    assert Path(cfg["data"]["project_dir"]).resolve() == project.root.resolve()
+
+
 @needs_arrow
 async def test_a_header_that_is_not_a_word_registers_as_drafted(config, tmp_path):
     """ClinVar's ``gene_condition_source_id`` (2026-10-07): the key InspectDataset drafted named ``#GeneID``, which

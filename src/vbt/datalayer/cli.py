@@ -1574,7 +1574,11 @@ def _add_common(p: argparse.ArgumentParser, *flags: str) -> None:
 
 
 def add_datasource_parsers(sub: Any) -> Any:
-    """Register ``vbt datasource`` (alias ``vbt ds``) on an argparse subparsers object."""
+    """Register ``vbt datasource`` (alias ``vbt ds``) on an argparse subparsers object. The commands that read a
+    recorded run (``retro-audit``, ``replay``, ``graduate``) take ``--project``: a project's runs are under
+    ``<project>/runs`` and its calls may read the project's own tables."""
+    from ..projects.cli import add_project_argument
+
     d = sub.add_parser("datasource", aliases=list(ALIASES),
                        help="data layer: descriptors, overlays, readiness, resolution (docs/DATA_LAYER.md)")
     ds = d.add_subparsers(dest="ds_cmd", required=True)
@@ -1646,6 +1650,7 @@ def add_datasource_parsers(sub: Any) -> Any:
     p = ds.add_parser("retro-audit", help="re-classify a recorded run's data calls offline")
     p.add_argument("run", help="run id, prefix, path or 'latest'")
     _add_common(p, "json")
+    add_project_argument(p)
     p.set_defaults(handler=cmd_retro_audit)
 
     p = ds.add_parser("status", help="per-server memory from reaper status files, host budget, calibrations")
@@ -1680,6 +1685,7 @@ def add_datasource_parsers(sub: Any) -> Any:
                         "the reaper's memory limit; inprocess: the data child's verbs in this process, with no "
                         "memory limit (opt-in, for debugging)")
     _add_common(p, "json")
+    add_project_argument(p)
     p.set_defaults(handler=cmd_replay)
 
     p = ds.add_parser("diff-release", help="role columns, types, encodings, vocabularies and matrix axes between "
@@ -1704,5 +1710,6 @@ def add_datasource_parsers(sub: Any) -> Any:
     p.add_argument("server", nargs="*", help="servers (default: every overlay)")
     p.add_argument("--run", action="append", help="recorded run (observe mode) to retro-audit (repeatable)")
     _add_common(p, "json")
+    add_project_argument(p)
     p.set_defaults(handler=cmd_graduate)
     return d
