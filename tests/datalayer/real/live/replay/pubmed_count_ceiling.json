@@ -1,7 +1,8 @@
 {
  "scenario": "pubmed_count_ceiling",
- "retrieved": "2026-10-08T02:45:08Z",
- "seconds": 0.35,
+ "retrieved": "2026-10-09T18:44:41Z",
+ "seconds": 0.68,
+ "source": "recorded by tests/datalayer/real/record_live.py real_live pubmed_count_ceiling through the shipped descriptors",
  "exchanges": [
   {
    "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
@@ -9,7 +10,7 @@
     "db": "pubmed",
     "retmode": "json",
     "tool": "vbt-datalayer",
-    "term": "PCSK9 AND evolocumab",
+    "term": "PCSK9[ti] AND evolocumab[ti]",
     "mindate": "1800/01/01",
     "maxdate": "2017/12/31",
     "datetype": "pdat",
@@ -17,8 +18,8 @@
    },
    "status": 200,
    "headers": {
-    "date": "Thu, 08 Oct 2026 02:45:22 GMT",
-    "content-type": "application/json; charset=UTF-8"
+    "Date": "Fri, 09 Oct 2026 18:44:40 GMT",
+    "Content-Type": "application/json; charset=UTF-8"
    },
    "body": {
     "header": {
@@ -26,9 +27,10 @@
      "version": "0.3"
     },
     "esearchresult": {
-     "count": "304"
+     "count": "32"
     }
-   }
+   },
+   "bytes": 77
   }
  ]
 }

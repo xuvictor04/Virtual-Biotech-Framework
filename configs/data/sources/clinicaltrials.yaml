@@ -30,6 +30,11 @@ leakage:
   rows: withhold
   redact: [protocolSection.statusModule.overallStatus, protocolSection.statusModule.whyStopped, resultsSection, hasResults]
   counts: inject_filter
+  # registry search areas that read the record as it is today and name no declared column: a count selecting on them
+  # (or on a redact column, or a date other than the first posting) is not bounded by the first-posted filter
+  current_terms: ["AREA[ResultsFirstPostDate]", "AREA[ResultsFirstSubmitDate]", "AREA[ResultsFirstSubmitQCDate]",
+                  "AREA[LastUpdateSubmitDate]", "AREA[StatusVerifiedDate]", "AREA[LastKnownStatus]",
+                  "AREA[DispFirstPostDate]", "AREA[ResultsSection]"]
 
 id_types:
   nct_id: {plugin: nct_id, resolvable: false}   # syntax only; existence is decided by the registry (existence: upstream)
@@ -63,7 +68,9 @@ tables:
     format: rest_json
     grain: one registered clinical study (its current registry record)
     key: {columns: [protocolSection.identificationModule.nctId], check: none,
-          version: protocolSection.statusModule.lastUpdatePostDateStruct.date}
+          version: protocolSection.statusModule.lastUpdatePostDateStruct.date,
+          # filter.ids matches aliases: NCT00062153 returns NCT00060528, which lists it here (verified 2026-10-09)
+          aliases: protocolSection.identificationModule.nctIdAliases}
     coverage: {statement: "Studies registered on ClinicalTrials.gov at the recorded data timestamp; registry search expands synonyms, so a match is not a literal text match.",
                absence_means: unknown}
     columns:
@@ -74,6 +81,7 @@ tables:
             role: nested
             fields:
               nctId:         {role: identifier, id_type: nct_id, remote_name: "AREA[NCTId]"}
+              nctIdAliases:  {role: identifier, id_type: nct_id, path: "[]", cardinality: many}
               briefTitle:    {role: text, remote_name: "AREA[BriefTitle]"}
               officialTitle: {role: text, remote_name: "AREA[OfficialTitle]"}
               acronym:       {role: label, of: nctId}
@@ -121,7 +129,10 @@ tables:
           conditionsModule:
             role: nested
             fields:
-              conditions: {role: text, path: "[]", remote_name: "AREA[Condition]"}
+              # searched as the registry's condition search (query.cond): conditions, keywords and synonyms. AREA[Condition]
+              # alone missed trials the upstream condition argument counts (glioblastoma, terminated, phase 3, by
+              # 2017-12-31: 2 against 4; NCT01132547 and NCT02443194 name it only as a keyword; 2026-10-09)
+              conditions: {role: text, path: "[]", remote_name: "AREA[ConditionSearch]"}
               keywords:   {role: text, path: "[]", remote_name: "AREA[Keyword]"}
           armsInterventionsModule:
             role: nested

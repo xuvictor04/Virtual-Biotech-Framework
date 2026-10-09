@@ -37,6 +37,7 @@ Existence modes ``upstream`` and ``off`` check syntax only.
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import json
 from collections import deque
@@ -135,6 +136,7 @@ class _Hit:
     replacement: tuple[str, ...] = ()
     existence: str | None = None
     hops: list[str] = field(default_factory=list)
+    form: str | None = None                            # a rejected value's recognised foreign form
 
 
 @dataclass(frozen=True)
@@ -578,6 +580,11 @@ class Resolver:
             return self._result(ctx, "unknown", canonical=unknown.canonical, matched=unknown.matched,
                                 existence="unknown", notes=unknown.notes)
         if absent is not None:
+            forms = [h for h in rejected if h.form or h.looks_like]
+            if forms and self.spec(absent[0].matched)[1].label_of:
+                # P04637 (a UniProt accession), ENST00000269305, ICD10:E11: a kind recognised the form and only a
+                # name lookup missed; 'not found' would say the entity does not exist (OT-RV3-07)
+                return self._unsupported_form(ctx, rejected, forms, absent[0])
             return self._absent(ctx, *absent)
         return self._rejected(ctx, rejected)
 
@@ -648,7 +655,8 @@ class Resolver:
             return _Hit("unknown", kind, kind, canonical=n.value if isinstance(n, Normalized) else None,
                         notes=[f"the resolver index of {kind} is not ready; {ctx.text!r} cannot be checked"])
         if isinstance(n, Rejected):
-            return _Hit("rejected", kind, kind, reason=f"{kind}: {n.reason}", looks_like=n.looks_like)
+            return _Hit("rejected", kind, kind, reason=f"{kind}: {n.reason}", looks_like=n.looks_like,
+                        form=n.form)
         return _Hit("absent", kind, kind, canonical=absent_value or n.value)
 
     def _attempt_label(self, ctx: "_Ctx", kind: str, parent: str, where: "_Where | None") -> _Hit:
@@ -656,7 +664,8 @@ class Resolver:
         n = self.plugin(kind).normalize(ctx.text)
         if isinstance(n, Rejected):
             ctx.tried.append(f"{kind}: {n.reason}")
-            return _Hit("rejected", parent, kind, reason=f"{kind}: {n.reason}", looks_like=n.looks_like)
+            return _Hit("rejected", parent, kind, reason=f"{kind}: {n.reason}", looks_like=n.looks_like,
+                        form=n.form)
         _, pspec = self.spec(parent)
         state, index = self._universe_state(parent)
         if index is None:
@@ -718,7 +727,8 @@ class Resolver:
 
     def _attempt_remote(self, ctx: "_Ctx", kind: str, n: Normalized | Rejected) -> _Hit:
         if isinstance(n, Rejected):
-            return _Hit("rejected", kind, kind, reason=f"{kind}: {n.reason}", looks_like=n.looks_like)
+            return _Hit("rejected", kind, kind, reason=f"{kind}: {n.reason}", looks_like=n.looks_like,
+                        form=n.form)
         src, _, bare = kind.partition(":")
         try:
             resp = self._remote(ctx, src, bare, (n.value,))
@@ -767,6 +777,18 @@ class Resolver:
             return _Hit("outside", kind, matched, canonical=ids[0], rule=self._rule_text(rule, groups[ids[0]]))
         if len(inside) == 1:
             c = inside[0]
+            rivals = self._exact_synonym_rivals(ctx, rule, groups[c], c, plugin, index, spec, where)
+            if rivals:
+                # 'GluD2' is, case for case, an alias of GRID2 and only casefolds to GLUD2's approved symbol: neither
+                # reading wins silently (OT-RV3-03); a mouse-style spelling no other gene uses (Tp53) still resolves
+                cands = [Candidate(c, index.label(c) or groups[c].label or None, self._rule_text(rule, groups[c]),
+                                   self._attrs(index, spec, c))]
+                cands += [Candidate(e.canonical, index.label(e.canonical) or None, e.rule,
+                                    self._attrs(index, spec, e.canonical)) for e in rivals]
+                return _Hit("ambiguous", kind, matched, rule=self._rule_text(rule, groups[c]), candidates=cands,
+                            notes=[f"{ctx.text!r} matches {c} only by case-insensitive {self._rule_text(rule, groups[c])}"
+                                   f" and is, case for case, a {'/'.join(sorted({e.rule for e in rivals}))} of "
+                                   f"{', '.join(_distinct(e.canonical for e in rivals))}"])
             hit = self._resolved(kind, matched, c, self._rule_text(rule, groups[c]), None, index=index,
                                  existence="exists" if index.contains(c) else None)
             if rule.head == "xref":
@@ -781,6 +803,26 @@ class Resolver:
                            self._attrs(index, spec, c)) for c in inside]
         return _Hit("ambiguous", kind, matched, rule=rule_text, candidates=cands,
                     notes=[f"{ctx.text!r} matches {len(inside)} {kind} keys by {rule_text}"])
+
+    def _exact_synonym_rivals(self, ctx: "_Ctx", rule: Rule, entry: Entry, canonical: str, plugin: Any,
+                              index: ResolverIndex, spec: Any, where: "_Where | None") -> list[Entry]:
+        """Synonyms (previous symbols, aliases) of *other* entities spelled exactly as the text, when a
+        ``label_casefold`` rule matched ``canonical`` only by ignoring case: one entry per rival entity."""
+        stripped = ctx.text.strip()
+        if rule.head != "label_casefold" or entry.label.strip() == stripped:
+            return []
+        kinds = {r.arg for r in rules_for(spec, plugin, self.settings.allow) if r.head == "synonym"}
+        if not kinds:
+            return []
+        out: dict[str, Entry] = {}
+        for e in index.lookup(plugin.label_key(ctx.text)):
+            if e.head != "synonym" or not e.canonical or e.canonical == canonical or e.label.strip() != stripped:
+                continue
+            if (e.arg or "") in SEARCH_ONLY_SYNONYMS or (None not in kinds and e.arg not in kinds):
+                continue
+            if _where_ok(where, e.canonical):
+                out.setdefault(e.canonical, e)
+        return [out[k] for k in sorted(out)]
 
     def _match(self, rule: Rule, text: str, n: Normalized | Rejected, plugin: Any, index: ResolverIndex,
                spec: Any) -> list[Entry]:
@@ -1128,6 +1170,16 @@ class Resolver:
         return self._result(ctx, "not_found", matched=hit.matched, existence="absent",
                             suggestions=self._suggest(hit.kind, ctx.text), notes=hit.notes)
 
+    def _unsupported_form(self, ctx: "_Ctx", rejected: list[_Hit], forms: list[_Hit], miss: _Hit) -> ResolutionResult:
+        """A value whose form a kind recognised (and refused) and that no name matches: invalid_argument with
+        subkind ``unsupported_form``, the recognised form, and the name lookup's suggestions."""
+        out = self._rejected(ctx, rejected)
+        what = forms[0].form or f"a {forms[0].looks_like[0]}"
+        return dataclasses.replace(
+            out, subkind="unsupported_form", suggestions=tuple(self._suggest(miss.kind, ctx.text)),
+            notes=tuple(_distinct([f"{ctx.text!r} is {what}, a form this argument does not take; no "
+                                   f"{miss.matched} matches it either", *out.notes])))
+
     def _rejected(self, ctx: "_Ctx", hits: list[_Hit]) -> ResolutionResult:
         reasons = tuple(h.reason for h in hits if h.reason)
         looks: list[str] = []
@@ -1299,6 +1351,11 @@ def error_for(res: ResolutionResult, argument: str, *, tool: str | None = None,
         if res.subkind:
             payload["subkind"] = res.subkind
         hint = f" (looks like {', '.join(res.looks_like)})" if res.looks_like else ""
+        if res.subkind == "unsupported_form":
+            payload["accepts"] = list(res.accepts)
+            payload["suggestions"] = [{"id": c.id, "label": c.label, "why": c.via} for c in res.suggestions]
+            return GatewayError(ErrorKind.invalid_argument, f"{argument}: {res.notes[0]}; pass one of "
+                                f"{', '.join(res.accepts)}", tool=tool, payload=payload)
         return GatewayError(ErrorKind.invalid_argument, f"{argument}={res.raw!r} is not an accepted identifier{hint}",
                             tool=tool, payload=payload)
     return None

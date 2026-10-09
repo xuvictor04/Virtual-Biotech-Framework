@@ -197,14 +197,14 @@ class KeyIdentifier(IdentifierBase):
     def matches(self, value: str) -> bool:
         return re.fullmatch(self.canonical, value) is not None
 
-    def reject(self, value: str, reason: str | None = None) -> Rejected:
+    def reject(self, value: str, reason: str | None = None, *, form: str | None = None) -> Rejected:
         hints = structured_hits(value, exclude={self.name, self.id_type})
         if reason is None:
             reason = f"not a {self.id_type} identifier (e.g. {self.examples[0]})" if self.examples else \
                 f"not a {self.id_type} identifier"
         if hints and "looks like" not in reason:
             reason = f"{reason}; looks like {hints[0]}"
-        return Rejected(reason, hints)
+        return Rejected(reason, hints, form)
 
 
 class TextIdentifier(KeyIdentifier):

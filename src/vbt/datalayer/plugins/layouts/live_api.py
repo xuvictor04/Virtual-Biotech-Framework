@@ -75,11 +75,13 @@ DEFAULT_PAGE_SIZE = 100
 RETRIES = 2                                    # 429/503 retries per request (Retry-After honoured)
 RETRY_MAX_S = 30.0
 RELEASE_TTL_S = 600.0                          # how long a source's release (options.release) is reused
+RELEASE_FAILURE_TTL_S = 60.0                   # how long a failed release request is not repeated
 
 _LOCK = threading.Lock()
 _LAST_REQUEST: dict[str, float] = {}
 _AS_OF: dict[str, str] = {}
 _RELEASES: dict[str, tuple[float, dict[str, Any]]] = {}   # release URL -> (monotonic time, {release, versions})
+_RELEASE_FAILURES: dict[str, tuple[float, str]] = {}       # release URL -> (monotonic time, why it failed)
 
 
 class RemoteError(Exception):
@@ -417,7 +419,9 @@ class LiveApiLayout(PluginBase):
                      ) -> dict[str, Any]:
         """``{release, versions}`` from one request to ``options.release.endpoint``: the data release at ``path``
         and the software versions at ``versions: {name: path}`` (CT.gov ``apiVersion``; cBioPortal ``portalVersion``
-        and ``dbVersion``, whose data release is per study; the PubMed build). Reused for ``max_age_s`` seconds."""
+        and ``dbVersion``, whose data release is per study; the PubMed build). Reused for ``max_age_s`` seconds; a
+        failed request is not repeated for ``RELEASE_FAILURE_TTL_S`` (at most ``max_age_s``) either, so a source that
+        hangs costs one timeout per minute for provenance instead of one per call (RR-3)."""
         rel = dict(self._options(spec).get("release") or {})
         if not rel.get("path") and not rel.get("versions"):
             return {}
@@ -428,7 +432,15 @@ class LiveApiLayout(PluginBase):
             hit = _RELEASES.get(url)
             if hit is not None and time.monotonic() - hit[0] <= max_age_s:
                 return dict(hit[1])
-        payload, _headers = self._get(url, dict(rel.get("params") or {}), Budget.of(budget))
+            failed = _RELEASE_FAILURES.get(url)
+            if failed is not None and time.monotonic() - failed[0] <= min(max_age_s, RELEASE_FAILURE_TTL_S):
+                raise RemoteError(f"{failed[1]} (not repeated within {RELEASE_FAILURE_TTL_S:.0f} s)", url=url)
+        try:
+            payload, _headers = self._get(url, dict(rel.get("params") or {}), Budget.of(budget))
+        except RemoteError as exc:
+            _RELEASE_FAILURES[url] = (time.monotonic(), str(exc))
+            raise
+        _RELEASE_FAILURES.pop(url, None)
 
         def first(path: Any) -> str | None:
             got = [v for v in jp_values(payload, str(path)) if v not in (None, "")]

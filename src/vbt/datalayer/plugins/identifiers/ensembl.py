@@ -34,7 +34,8 @@ class _Ensembl(KeyIdentifier):
         if not _ENS.fullmatch(t.value):
             if re.fullmatch(r"ENS[A-Z]*[TPE]\d{11}(?:\.\d+)?", t.value, re.IGNORECASE):
                 return self.reject(t.value, f"an Ensembl transcript/protein/exon ID, not a gene ID "
-                                            f"(e.g. {self.examples[0]})")
+                                            f"(e.g. {self.examples[0]})",
+                                   form="an Ensembl transcript/protein/exon ID")
             return self.reject(t.value)
         t.upper()
         m = _VERSION.fullmatch(t.value)

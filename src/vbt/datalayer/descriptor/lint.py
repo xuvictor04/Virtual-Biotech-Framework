@@ -1304,6 +1304,12 @@ class _OverlayLinter:
         for col, arg in res.key_from_args.items():
             if arg not in b.args:
                 self.add("error", f"{w}.key_from_args", f"{arg!r} is not an argument", "binding", arg)
+        for arg, path in (b.derived.rows_when if b.derived is not None else {}).items():
+            if arg not in b.args:
+                self.add("error", f"{w}.derived.rows_when", f"{arg!r} is not an argument", "binding", arg)
+            if path not in res.row_paths:
+                self.add("error", f"{w}.derived.rows_when.{arg}", f"{path!r} is not one of result.rows "
+                         f"({', '.join(res.row_paths) or 'none'})", "binding", path)
         if res.order_from_arg is not None:
             a = b.args.get(res.order_from_arg)
             if a is None or a.role != "order_by":
@@ -1311,6 +1317,10 @@ class _OverlayLinter:
                          "binding", res.order_from_arg)
         rt = self.result_table(b)
         computed = {k for k, f in res.fields.items() if f.computed is not None}
+        nest = (b.derived.nest or {}) if b.derived is not None else {}
+        # a derived nest's group fields (evidence_count, disease_name) rank its groups like columns
+        computed |= {str(k) for k in (nest.get("first_item") or {})} | ({str(nest["count_as"])}
+                                                                       if nest.get("count_as") else set())
         if rt is None:
             if res.fields or res.order:
                 self.add("warning", w, "cannot tell which table the rows belong to; fields and order not checked",

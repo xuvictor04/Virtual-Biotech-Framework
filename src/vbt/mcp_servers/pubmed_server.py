@@ -123,6 +123,16 @@ def availability_date(article) -> tuple[int, int, int] | None:
     return min(dates) if dates else None
 
 
+def book_date(book) -> tuple[int, int, int] | None:
+    """The latest date of a PubmedBookArticle's content (publication, last revision, ending date): a living book
+    such as GeneReviews (PubDate 1993, revised through today) is fetched as it reads now, so the ceiling is checked
+    on its latest revision."""
+    nodes = [book.find(".//Book/PubDate"), book.find(".//Book/EndingDate"), book.find(".//ContributionDate"),
+             book.find(".//DateRevised")]
+    dates = [d for d in (_element_date(n) for n in nodes) if d]
+    return max(dates) if dates else None
+
+
 def summary_date(doc: dict) -> tuple[int, int, int] | None:
     dates = [latest_possible(doc.get("pubdate")), latest_possible(doc.get("epubdate"))]
     dates = [d for d in dates if d]
@@ -241,10 +251,14 @@ def parse_articles(xml_text: str, ceiling: tuple[int, int, int] | None = None) -
     """Parse efetch XML into (articles, withheld) honouring the date ceiling."""
     root = ET.fromstring(xml_text)
     out, withheld = [], []
-    for art in root.findall(".//PubmedArticle"):
+    # book records (GeneReviews, NBK* chapters: PMID 20301295) come back as PubmedBookArticle; read only
+    # PubmedArticle, they were reported as requested IDs with no record
+    records = [(a, False) for a in root.findall(".//PubmedArticle")] + \
+        [(b, True) for b in root.findall(".//PubmedBookArticle")]
+    for art, book in records:
         pmid = art.findtext(".//PMID")
         if ceiling is not None:
-            when = availability_date(art)
+            when = book_date(art) if book else availability_date(art)
             if when is None or when > ceiling:
                 withheld.append({"pmid": pmid, "reason": (
                     f"publication date unknown; withheld under the {_fmt(ceiling)} literature ceiling"
@@ -256,15 +270,23 @@ def parse_articles(xml_text: str, ceiling: tuple[int, int, int] | None = None) -
             for t in art.findall(".//Abstract/AbstractText"))
         registry = [a.text for a in art.findall(".//DataBank/AccessionNumberList/AccessionNumber") if a.text]
         registry += re.findall(r"NCT\d{8}", abstract)
-        out.append({
+        title_node = art.find(".//ArticleTitle")
+        if title_node is None and book:
+            title_node = art.find(".//Book/BookTitle")
+        rec = {
             "pmid": pmid,
-            "title": "".join(art.find(".//ArticleTitle").itertext()) if art.find(".//ArticleTitle") is not None else "",
+            "title": "".join(title_node.itertext()) if title_node is not None else "",
             "journal": art.findtext(".//Journal/Title"),
             "year": art.findtext(".//PubDate/Year") or art.findtext(".//PubDate/MedlineDate"),
             "publication_types": [p.text for p in art.findall(".//PublicationType")],
             "registry_ids": sorted(set(registry)),
             "abstract": abstract,
-        })
+        }
+        if book:
+            rec["record_type"] = "book"
+            rec["book_title"] = "".join(art.find(".//Book/BookTitle").itertext()) \
+                if art.find(".//Book/BookTitle") is not None else None
+        out.append(rec)
     return out, withheld
 
 

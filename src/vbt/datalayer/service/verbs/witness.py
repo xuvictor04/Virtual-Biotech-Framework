@@ -44,7 +44,7 @@ from typing import Any, Mapping, Sequence
 from ...errors import ErrorKind, GatewayError
 from ...ipc import VERB_WITNESS, WitnessRequest, WitnessResponse
 from ...plugins.base import FormatError
-from ...predicate import from_json
+from ...predicate import from_json, to_json
 from .. import ServiceContext, ServiceError, layout_spec
 from ..reader import BudgetExceeded, TableUnavailable, UnboundParameter
 
@@ -336,6 +336,8 @@ def _projection(t: Any, layout: Any, columns: Sequence[str], predicate: Any) -> 
     extra = [c for c in t.spec.key.columns if not str(c).endswith("#")]
     if t.spec.key.version:
         extra.append(str(t.spec.key.version))
+    if getattr(t.spec.key, "aliases", None):
+        extra.append(str(t.spec.key.aliases))         # a requested alias is found on the record that lists it
     spec = getattr(t.descriptor, "leakage", None)
     if spec is not None:
         extra.extend(str(c) for c in (spec.available_at, spec.changed_at) if c)
@@ -355,7 +357,7 @@ def _per_record_releases(ctx: ServiceContext, t: Any, rows: Sequence[Any], predi
     are read; a failed read leaves that record out (provenance only)."""
     import time
 
-    from ...plugins.layouts.live_api import RELEASE_TTL_S, Budget, fetch_all
+    from ...plugins.layouts.live_api import RELEASE_FAILURE_TTL_S, RELEASE_TTL_S, Budget, RemoteError, fetch_all
     from ...predicate import Eq, In
 
     per = getattr(t.descriptor.release, "per", None) or {}
@@ -382,10 +384,18 @@ def _per_record_releases(ctx: ServiceContext, t: Any, rows: Sequence[Any], predi
             ids.extend(str(v) for v in p.values)
     ids.extend(str(r.get(kcol)) for r in rows if isinstance(r, Mapping) and r.get(kcol) not in (None, ""))
     ids = list(dict.fromkeys(ids))
-    if not ids or len(ids) > max_records:
+    if not ids and not rows:
+        # an empty answer depends on the record its filter names through a reference (molecular_data's
+        # molecularProfileId -> molecular_profile.studyId): its release, not the fetch time (LIVE3-11)
+        ids = _ids_through_refs(ctx, t, predicate, per["table"], kcol)
+    if not ids:
         return ref, {}
+    if len(ids) > max_records:
+        listed = _listed_releases(ctx, pt, kcol, vcol)   # a listing of 20 studies: one read of /studies
+        return ref, {rid: listed[rid] for rid in ids if rid in listed}
     layout = ctx.plugin("layout", pt.layout)
     out: dict[str, str] = {}
+    down = False
     for rid in ids:
         cache = f"{ref}:{rid}"
         hit = _STUDY_RELEASES.get(cache)
@@ -393,16 +403,85 @@ def _per_record_releases(ctx: ServiceContext, t: Any, rows: Sequence[Any], predi
             if hit[1]:
                 out[rid] = hit[1]
             continue
+        if down:
+            continue
         try:
             got = fetch_all(layout, layout_spec(pt), Eq(kcol, rid), Budget.of(pt.descriptor.budget),
                             projection=[kcol, vcol], max_rows=1)
-        except Exception:  # noqa: BLE001 - provenance only: the rows stand without a release
+        except Exception as exc:  # noqa: BLE001 - provenance only: the rows stand without a release
+            # not repeated for RELEASE_FAILURE_TTL_S (the entry reads as fresh that long), and a source that does not
+            # answer at all is not asked for the other records of this call either (RR-3)
+            _STUDY_RELEASES[cache] = (time.monotonic() - RELEASE_TTL_S + RELEASE_FAILURE_TTL_S, None)
+            down = down or (isinstance(exc, RemoteError) and exc.status is None)
             continue
         value = next((str(r.get(vcol)) for r in got["rows"] if isinstance(r, Mapping) and r.get(vcol)), None)
         _STUDY_RELEASES[cache] = (time.monotonic(), value)
         if value:
             out[rid] = value
     return ref, out
+
+
+_LISTED_RELEASES: dict[str, tuple[float, dict[str, str]]] = {}
+
+
+def _listed_releases(ctx: ServiceContext, pt: Any, kcol: str, vcol: str) -> dict[str, str]:
+    """``{record key: release}`` of every record of a listable live table (``/studies`` holds each study's
+    importDate), read once within the source's budget and kept for ``RELEASE_TTL_S``; {} when it cannot be read
+    (a path with placeholders, a failed or cut read)."""
+    import time
+
+    from ...plugins.layouts.live_api import RELEASE_TTL_S, Budget, fetch_all
+
+    ref = str(pt.physical)
+    hit = _LISTED_RELEASES.get(ref)
+    if hit is not None and time.monotonic() - hit[0] <= RELEASE_TTL_S:
+        return hit[1]
+    if "{" in str(pt.spec.path or ""):
+        return {}
+    try:
+        got = fetch_all(ctx.plugin("layout", pt.layout), layout_spec(pt), None, Budget.of(pt.descriptor.budget),
+                        projection=[kcol, vcol])
+    except Exception:  # noqa: BLE001 - provenance only
+        return {}
+    if got.get("truncated"):
+        return {}
+    out = {str(r.get(kcol)): str(r.get(vcol)) for r in got["rows"]
+           if isinstance(r, Mapping) and r.get(kcol) not in (None, "") and r.get(vcol) not in (None, "")}
+    _LISTED_RELEASES[ref] = (time.monotonic(), out)
+    return out
+
+
+def _ids_through_refs(ctx: ServiceContext, t: Any, predicate: Any, per_table: str, kcol: str) -> list[str]:
+    """The ``per_table`` keys a filter names through a reference: an ``Eq`` on a column that refers to another
+    table's key (``molecularProfileId`` -> ``molecular_profile``), whose record holds a column referring to
+    ``per_table.kcol`` (``studyId`` -> ``study.studyId``); that record is read by its key."""
+    from ...predicate import Eq
+
+    want = f"{per_table}.{kcol}"
+    for p in _conjuncts(predicate):
+        if not isinstance(p, Eq):
+            continue
+        col = (t.columns or {}).get(str(p.column))
+        ref = getattr(col, "ref", None) if col is not None else None
+        if not isinstance(ref, str) or "." not in ref:
+            continue
+        rtable, _, rkey = ref.partition(".")
+        try:
+            rt = ctx.table(f"{t.physical.source}.{rtable}")
+        except Exception:  # noqa: BLE001 - an undeclared referenced table names nothing
+            continue
+        link = next((n for n, c in (rt.columns or {}).items() if getattr(c, "ref", None) == want), None)
+        if link is None:
+            continue
+        try:
+            got = live_find(ctx, {"table": str(rt.ref), "predicate": to_json(Eq(rkey, p.value)),
+                                  "columns": [link], "limit": 1})
+        except Exception:  # noqa: BLE001 - provenance only
+            continue
+        ids = [str(r.get(link)) for r in got.get("rows") or [] if isinstance(r, Mapping) and r.get(link)]
+        if ids:
+            return ids
+    return []
 
 
 def live_find(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -461,6 +540,9 @@ def live_find(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]
         raise remote_failure(ref, exc) from None
     release = _release(layout, t)                      # provenance only: a failed release request keeps the rows
     rows = list(got["rows"])
+    if pivot is None and len(key) == 1:
+        # a listing of bare keys (E-utilities esearch idlist: ["28304224"]) is one row per key
+        rows = [r if isinstance(r, Mapping) else {key[0]: r} for r in rows]
     if pivot is not None:
         from ...predicate import evaluate
 

@@ -6,9 +6,11 @@ Verbs (phase 1):
   ``rank``; nulls last, ties by the canonical key; within the ``group_by`` groups, else within the
   order's ``within`` columns, with ``limit`` per group), cut to ``limit`` (per ``limit_grain``: each
   grain's best row), one row per ``distinct`` combination, with ``explode``/``carry``/``rename``. ``nest: {group_by, items, count_as, having,
-  item_filter, include_negated}`` groups rows **after** dropping negated rows and items (a ``qualifier``
-  with ``effect: negate`` that is true) and items failing ``item_filter``, keeps groups whose count
-  satisfies ``having`` (``min_arg`` reads the bound from an argument) and cuts the groups to ``limit``; ``split: {by, limit, values}`` returns ``{value: rows}`` with a limit per list.
+  item_filter, include_negated, first_item, order}`` groups rows **after** dropping negated rows and items (a
+  ``qualifier`` with ``effect: negate`` that is true) and items failing ``item_filter``, keeps groups whose count
+  satisfies ``having`` (``min_arg`` reads the bound from an argument), sets each ``first_item`` field from the
+  group's first item that has it, ranks the groups by ``order`` (ties by the group key) and cuts them to
+  ``limit``; ``split: {by, limit, values}`` returns ``{value: rows}`` with a limit per list.
   ``sections: {name: {table, verb, key, columns, order, limit, single, value}}`` are served
   per section; a section over an ``entity_detail`` table is always a list.
 * ``search``: ``search_text`` against the key, label and synonym leaves, ranked by match class
@@ -56,7 +58,7 @@ from typing import Any, Mapping, Sequence
 
 from ...descriptor.columns import is_container
 from ...errors import GatewayError
-from ...ipc import VERB_SERVE, ServeRequest, ServeResponse
+from ...ipc import VERB_SERVE, RankKeyModel, ServeRequest, ServeResponse
 from ...predicate import evaluate, from_json
 from .. import ServiceContext, ServiceError
 from .. import items as _items
@@ -148,10 +150,16 @@ def _nest(rows: list[dict[str, Any]], spec: Mapping[str, Any], negate: Sequence[
     out = []
     filtered = 0
     having = _resolve_having(spec.get("having") or {}, params or {})
+    first_item = dict(spec.get("first_item") or {})
     for gkey, g in groups.items():
         n = len(g[name])
         if count_as:
             g[str(count_as)] = n
+        for field, src in first_item.items():
+            # a group field read off its first item that has it (upstream's disease_name: the first evidence
+            # item's diseaseName, after the filters)
+            g[str(field)] = next((it.get(src) for it in g[name] if isinstance(it, Mapping) and it.get(src) is not None),
+                                 None)
         if n == 0 and dropped.get(gkey):
             if matched.get(gkey):
                 negated += 1                           # every matching item was negated
@@ -161,6 +169,11 @@ def _nest(rows: list[dict[str, Any]], spec: Mapping[str, Any], negate: Sequence[
         if not _having_ok(n, having):
             continue
         out.append(g)
+    order = spec.get("order")
+    if order:
+        # the groups ranked as upstream ranks them before its limit (find_diseases_by_phenotype: most evidence
+        # first), ties by the group key; without an order the groups keep the order their first row was read in
+        out = _sort_live(out, [RankKeyModel(**dict(o)) for o in order], group_by)
     return out, negated, filtered
 
 

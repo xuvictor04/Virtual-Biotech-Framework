@@ -209,6 +209,9 @@ class Normalized:
 class Rejected:
     reason: str
     looks_like: tuple[str, ...] = ()
+    # a recognised identifier form of another kind ("an Ensembl transcript/protein/exon ID", "a cross-reference in
+    # the ICD10 namespace"): the value is not unknown, it is a form the argument does not take
+    form: str | None = None
 
 
 @dataclass(frozen=True)

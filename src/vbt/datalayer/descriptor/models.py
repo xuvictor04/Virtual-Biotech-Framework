@@ -205,6 +205,9 @@ class KeySpec(Strict):
     # none: no identity, exact copies of a row occur in the release and are counted as stored
     row_identity: Literal["key", "content_hash", "none"] = "key"
     version: str | None = None                         # live records: the record-version column
+    # live records: a list column naming the record's former keys (CT.gov nctIdAliases: a merged NCT ID the
+    # registry answers with the surviving record); a requested key found there is the record, not a miss
+    aliases: str | None = None
     verified: bool = True
 
     @model_validator(mode="after")
@@ -428,6 +431,10 @@ class LeakageSpec(Strict):
     rows: Literal["withhold", "redact", "stamp"] = "withhold"
     redact: list[str] = []
     counts: Literal["inject_filter", "block", "stamp"] = "block"
+    # engine terms that select on the record as it is today and name no declared column (CT.gov
+    # AREA[ResultsFirstPostDate]); the redact columns and the time columns other than available_at count as such
+    # by themselves. A count that selects on any of them under the ceiling is not bounded by it.
+    current_terms: list[str] = []
 
 
 class MaterializedBy(Strict):

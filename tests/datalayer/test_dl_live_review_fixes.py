@@ -235,7 +235,8 @@ async def test_search_pubmed_under_the_literature_ceiling_is_not_a_tool_defect(t
     res = await _call(_gateway(ctx, tmp_path, {"pubmed": pubmed}), "pubmed", "search_pubmed",
                       {"query": "PCSK9 AND evolocumab", "max_results": 2})
     assert res.header["status"] == "partial" and res.header["total"] == 304
-    assert r.left == [] and res.provenance.leakage is None
+    # the record names the server's own (literature) ceiling, not data.leakage.ceiling (LIVE3-09)
+    assert r.left == [] and res.provenance.leakage == {"ceiling": "2017-12-31", "withheld": 0, "risk": False}
     assert ("witness_count", True, "total=304 (remote count request)") in [
         (c.name, c.ok, c.detail) for c in res.provenance.checks]
 

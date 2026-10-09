@@ -64,7 +64,10 @@ tools:
   get_drug_warnings:
     reads: {open_targets.drug_warning: {access: full_table}}
     args:
-      drug_id: {binds: open_targets.drug_warning.chemblIds, op: contains, accepts: [chembl_molecule, drug_name]}
+      # 25.09: drug_warning.chemblIds holds 48 IDs (93 items) that drug_molecule lacks (CHEMBL2107902: four 2005
+      # withdrawal warnings): existence is decided by the bound column, not the molecule universe
+      drug_id: {binds: open_targets.drug_warning.chemblIds, op: contains, accepts: [chembl_molecule, drug_name],
+                existence: bound}
       limit:   {role: limit, min: 1, max: 500}
     result:
       rows: $.warnings
@@ -138,7 +141,9 @@ tools:
     same_as: [target.get_pharmacogenomics]
     reads: {open_targets.pharmacogenomics: {access: bounded_scan}}
     args:
-      target_id: {binds: open_targets.pharmacogenomics.targetFromSourceId, accepts: [ensembl_gene, hgnc_symbol]}
+      # 25.09: 49 targetFromSourceId values (6,285 rows) are not target IDs (ENSG00000280905: 1,038 rows)
+      target_id: {binds: open_targets.pharmacogenomics.targetFromSourceId, accepts: [ensembl_gene, hgnc_symbol],
+                  existence: bound}
       drug_id:   {binds: "open_targets.pharmacogenomics.drugs[].drugId", op: contains,
                   accepts: [chembl_molecule, drug_name], existence: bound}
       limit:     {role: limit, min: 1, max: 500}

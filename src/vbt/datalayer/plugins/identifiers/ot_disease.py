@@ -101,7 +101,8 @@ class OtDisease(KeyIdentifier):
         canon = self._case.get(prefix.casefold())
         if canon is None:
             shown = ", ".join(self.prefixes[:8]) + (", ..." if len(self.prefixes) > 8 else "")
-            return self.reject(t.value, f"prefix {prefix!r} is not a disease ID prefix of this source ({shown})")
+            return self.reject(t.value, f"prefix {prefix!r} is not a disease ID prefix of this source ({shown})",
+                               form=f"a cross-reference in the {prefix} namespace")
         if sep == ":":
             t.apply("curie_colon_to_underscore", f"{prefix}_{local}")
         t.apply("canonical_prefix_case", f"{canon}_{local}")

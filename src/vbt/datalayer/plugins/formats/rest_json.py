@@ -6,12 +6,13 @@ The format of ``live_api`` tables (ClinicalTrials.gov v2, E-utilities, cBioPorta
   map (a mapping, not an Arrow schema; the ``live_api`` layout builds it from the layout options and the
   descriptor columns' ``remote_name``)::
 
-      {"filters":     {<column>: {param, join: ",", quote: none|essie,
+      {"filters":     {<column>: {param, join: ",", quote: none|essie, template: "{}[uid]",
                                   range: {lo, hi, lo_default, hi_default, format, extra}}},
        "remote_names": {<column>: "AREA[OverallStatus]"},     # Essie fields (CT.gov)
        "essie_param": "filter.advanced",                      # where Essie fragments go (ANDed)
-       "text_params": {<column> | "*": <param>},              # TextMatch: the source's own search engine
-                                                              # (a TextMatch on "@<param>" sets <param>)
+       "text_params": {<column> | "*": <param> | {param, tag: "[ti]"}},   # TextMatch: the source's own
+                                                              # search engine (a TextMatch on "@<param>"
+                                                              # sets <param>; ``tag`` field-tags each term)
        "kinds":       {<column>: integer | day | text}}       # from the descriptor's roles (see below)
 
   ``Eq``/``In`` (and ``Contains`` on a list column, and an ``Or`` of those on one column) on a filtered column
@@ -118,6 +119,24 @@ def iso_date(value: Any) -> str | None:
     return text
 
 
+_TERM = re.compile(r'"[^"]*"|[()]|[^\s()]+')
+_OPERATORS = frozenset({"AND", "OR", "NOT"})
+
+
+def tag_terms(text: str, tag: str) -> str:
+    """``text`` with ``tag`` after each search term: ``PCSK9 AND evolocumab`` -> ``PCSK9[ti] AND evolocumab[ti]``.
+    Boolean operators, parentheses and terms that already carry a field tag are kept as they are. E-utilities
+    ignores a tag after a parenthesised group: ``(PCSK9 AND evolocumab)[ti]`` counts every field (304 records to
+    2017, against 32 for the tagged terms; verified 2026-10-09)."""
+    out: list[str] = []
+    for tok in _TERM.findall(text):
+        if tok in ("(", ")") or tok in _OPERATORS or (tok.endswith("]") and "[" in tok):
+            out.append(tok)
+        else:
+            out.append(tok + tag)
+    return " ".join(out).replace("( ", "(").replace(" )", ")")
+
+
 @register
 class RestJsonFormat(PluginBase):
     kind: ClassVar[str] = "format"
@@ -159,12 +178,17 @@ class RestJsonFormat(PluginBase):
         kinds = dict(spec.get("kinds") or {})
         if isinstance(p, TextMatch):
             # "@<param>" names the request parameter itself (a free-text argument the source's engine
-            # matches, which has no column)
-            param = p.column[1:] if str(p.column).startswith("@") else (texts.get(p.column) or texts.get("*"))
-            if param:
+            # matches, which has no column); a column's own entry may tag each term with its field
+            # ({param: term, tag: "[tiab]"}: E-utilities searches title and abstract only)
+            entry = p.column[1:] if str(p.column).startswith("@") else (texts.get(p.column) or texts.get("*"))
+            tag = ""
+            if isinstance(entry, Mapping):
+                entry, tag = entry.get("param"), str(entry.get("tag") or "")
+            if entry:
+                param = str(entry)
                 if param in params:
                     return False
-                params[param] = str(p.text)
+                params[param] = tag_terms(str(p.text), tag) if tag else str(p.text)
                 return True
             base = str(p.column).replace("[]", "")
             name = remote.get(p.column) or remote.get(base)
@@ -208,7 +232,8 @@ class RestJsonFormat(PluginBase):
             values = [p.value] if isinstance(p, (Eq, Contains)) else list(p.values)
             if not values or str(f["param"]) in params:
                 return False
-            params[str(f["param"])] = str(f.get("join", ",")).join(quote(_text(v)) for v in values)
+            template = str(f.get("template") or "{}")         # E-utilities: 28304224[uid] names one record
+            params[str(f["param"])] = str(f.get("join", ",")).join(template.format(quote(_text(v))) for v in values)
             return True
         rng = f.get("range")
         if isinstance(p, (Range, Cmp)) and isinstance(rng, Mapping):

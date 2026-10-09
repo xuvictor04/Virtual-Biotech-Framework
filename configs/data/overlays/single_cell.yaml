@@ -80,6 +80,7 @@ tools:
       rows: $.genes_found
       row_key: [feature_id]
       count_fields: {"$.total_found": "len($.genes_found)", "$.total_not_found": "len($.genes_not_found)"}
+      not_found_list: $.genes_not_found         # census_feature is not resolvable: upstream decides existence
     serve: pass
 
   query_cell_metadata:
@@ -149,6 +150,7 @@ tools:
         sparsity: {computed: {expr: "1 - nnz / n_measured_obs", undefined_when: [{eq: [n_measured_obs, 0]}]}}
         percent_nonzero: {computed: {expr: "100 * nnz / n_measured_obs", undefined_when: [{eq: [n_measured_obs, 0]}]}}
       count_fields: {"$.total_found": "len($.gene_statistics)"}
+      not_found_list: $.genes_not_found
     serve: pass
     defects:
       - {id: SC-003, what: "a gene measured in no cell gets sparsity 1.0 (all zeros) instead of undefined",

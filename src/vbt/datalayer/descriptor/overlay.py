@@ -295,6 +295,11 @@ class ResultSpec(Strict):
     on_unknown_items: Literal["not_found", "partial"] = "not_found"
     echo: dict[str, str | EchoSpec] = {}
     echo_set: EchoSet | None = None
+    # the reply's own list of requested values it found no record for (single_cell genes_not_found): those are
+    # not_found_items (status partial), and all of them with no rows is not_found (existence: upstream)
+    not_found_list: str | None = None
+    # the rows the source's server withheld under its own ceiling (PubMed ``withheld``): withheld.leakage
+    withheld_list: str | None = None
     order: list[RankSpec] = []
     order_from_arg: str | None = None
     # the order when an argument is given and no order_by argument decides (upstream ranks most constrained first
@@ -349,6 +354,9 @@ class DerivedSpec(Strict):
     aggregate: dict[str, Any] = {}
     sections: dict[str, SectionSpec] = {}
     envelope: dict[str, Any] = {}
+    # the rows path when an argument is given: {list_therapeutic_areas: $.therapeutic_areas} puts the rows where
+    # upstream does for that call (one of result.rows); otherwise the first rows path
+    rows_when: dict[str, str] = {}
     compose: list["DerivedSpec"] = []
 
 

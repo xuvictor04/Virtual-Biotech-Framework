@@ -1,5 +1,5 @@
 {
- "description": "Search for targets by gene symbol or name.\nData: Open Targets Platform 25.09 · table target — one record = one Ensembl human gene.\nKey: id.\nResults: ranked by match_class asc (verified by the harness); `_vbt.total` counts all matches.\npathways: mixed direct and propagated annotations.\ngo: direct annotations only.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Every Ensembl human gene in Open Targets 25.09 (existence only).",
+ "description": "Search for targets by gene symbol or name.\nData: Open Targets Platform 25.09 · table target — one record = one Ensembl human gene.\nKey: id.\nResults: ranked by match_class asc, then approvedSymbol asc (verified by the harness); `_vbt.total` counts all matches.\npathways: mixed direct and propagated annotations.\ngo: direct annotations only.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Every Ensembl human gene in Open Targets 25.09 (existence only).",
  "schema": {
   "properties": {
    "limit": {

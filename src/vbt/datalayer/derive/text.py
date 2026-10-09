@@ -77,7 +77,8 @@ def _order_text(b: Any) -> str | None:
     within = f" within {', '.join(first.within)}" if first.within else ""
     how = {"witness": "verified by the harness", "upstream_full_sort": "upstream sorts every match",
            "source_server_side": "ranked by the source, not verified"}[b.result.order_source]
-    return f"ranked by {first.column} {first.direction}{within} ({how})"
+    then = "".join(f", then {r.column} {r.direction}" for r in order[1:])
+    return f"ranked by {first.column} {first.direction}{within}{then} ({how})"
 
 
 def _propagation(name: str, prop: str, fraction: float | None) -> str:

@@ -44,6 +44,10 @@ tables:
   cancer_type:
     kind: ontology
     path: cancer-types
+    # read live: the universe of cbio_cancer_type (universe_via) is this listing (897 types, 115 KB on 2026-10-09)
+    layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}",
+                                         endpoint: cancer-types, params: {projection: SUMMARY}}}
+    format: rest_json
     grain: one OncoTree cancer type used by cBioPortal
     key: {columns: [cancerTypeId], check: none}
     columns:
@@ -193,6 +197,9 @@ tables:
     kind: entity_detail
     path: "studies/{studyId}/molecular-profiles"
     layout: {plugin: live_api, options: {base_url: "${VBT_CBIOPORTAL_BASE:-https://www.cbioportal.org/api}", release: *cbio_versions,
+                                         # one profile by its ID names its study (an empty molecular_data answer
+                                         # is dated by that study's importDate, not the fetch time)
+                                         key_endpoint: "molecular-profiles/{molecularProfileId}",
                                          count: {params: {projection: META}, header: total-count}}}
     format: rest_json
     grain: one molecular profile of one study (one data type, such as mutations, CNA or mRNA expression)

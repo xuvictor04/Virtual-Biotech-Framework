@@ -57,6 +57,8 @@ import hashlib
 import json
 import logging
 import math
+import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -95,7 +97,7 @@ from ..launch import build_launch_spec
 from ..memory import AdmissionController, MemoryEstimator, ResidencyLedger, TableRead, crash_decision, read_status
 from ..memory.host import host_budget_mb
 from ..memory.sizing import is_auto
-from ..predicate import And, Cmp, Eq, In, IsNull, Not, Predicate, TextMatch, map_columns, to_json
+from ..predicate import And, Cmp, Contains, Eq, In, IsNull, Not, Predicate, TextMatch, map_columns, to_json
 from ..record import (
     DataProvenance,
     OrderInfo,
@@ -250,6 +252,10 @@ class _CallState:
     engine_text: dict[str, str] = field(default_factory=dict)       # engine_param -> the text sent upstream
     serve_as_of: str | None = None                                  # derived rows of a live table: its release
     order_verified: bool | None = None
+    rows_path: str | None = None                       # the rows path a derived reply used (rows_when)
+    redirected: bool = False                                        # an echo accepted a redirected record
+    listed_checked: bool = False                                    # result.not_found_list was read
+    self_counted: bool = False                                      # result.withheld_list was counted
     not_found_items: list[Any] | None = None
     short_page: str | None = None
     serve_excluded_unknown: dict[str, int] = field(default_factory=dict)
@@ -841,7 +847,8 @@ class DataGateway:
         st.notes.extend(st.decision.notes)
         await self._family_rows(plan, st, contract, selected)
         # 8. leakage
-        st.leakage = prepare_leakage(contract, plan.args_sent, self._ceiling, tool=name)
+        st.leakage = prepare_leakage(contract, plan.args_sent, self._ceiling, tool=name,
+                                     environ={**os.environ, **base_tool_env(dict(self.config or {}))})
         st.notes.extend(st.leakage.notes)
         await self._ceiling_totals(plan, st, contract, selected)
         # 9. admission (upstream only; observe mode reserves nothing and never recycles a server)
@@ -1160,6 +1167,34 @@ class DataGateway:
             rel = dict(resp.release or {})
             if rel:
                 st.live_release[str(ref).split(".")[0]] = rel
+
+    async def _row_releases(self, plan: CallPlan, st: _CallState, contract: ToolContract, t: Any,
+                            rows: list[Any]) -> None:
+        """Upstream-served records of a source whose release is per record (``release.per``: a cBioPortal study's
+        importDate) that come back without that version (search_studies lists studies without importDate): their
+        releases are read for the record versions of the provenance (LIVE3-11). Provenance only."""
+        if t is None or st.mode != "enforce" or not rows:
+            return
+        desc = t.descriptor
+        per = getattr(desc.release, "per", None) or {}
+        version = t.spec.key.version
+        key = [k for k in t.key if not str(k).endswith("#")]
+        if per.get("table") != _last(str(t.physical)) or not version or len(key) != 1:
+            return
+        if all(isinstance(r, Mapping) and get_path(r, str(version)) not in (None, "") for r in rows):
+            return                                     # the rows carry their own versions
+        ids = sorted({str(get_path(r, key[0])) for r in rows if isinstance(r, Mapping) and get_path(r, key[0])})
+        if not ids:
+            return
+        try:
+            resp = await self.service.call(VERB_RELEASE, ReleaseRequest(
+                table=str(t.ref), predicate=to_json(In(key[0], tuple(ids)))))
+        except ServiceError:
+            return
+        got = dict((resp.release or {}).get("per") or {}) if resp.release else {}
+        if got:
+            lr = st.live_release.setdefault(desc.source, {})
+            lr["per"] = {**dict(lr.get("per") or {}), **got}
 
     async def _recompute_genes(self, plan: CallPlan, st: _CallState, contract: ToolContract, obj: Any) -> None:
         """``count_first.recompute_genes``: genes_found/genes_not_found of the written file, from its
@@ -1545,7 +1580,10 @@ class DataGateway:
             st.results[req.arg] = res
             canonical_value = res.canonical
             if res.status == "resolved_unverified":
-                found = await self._count(table, Eq(column, canonical_value), st) if table and column else None
+                # a list column (drug_warning.chemblIds) holds the ID as one of its items
+                probe = Contains(column, canonical_value) if a.op in ("contains", "overlaps") else \
+                    Eq(column, canonical_value)
+                found = await self._count(table, probe, st) if table and column else None
                 if found is None:
                     plan.existence[req.arg] = "unknown"
                     st.notes.append(f"{req.arg}: {res.raw!r} is not in the identity universe and the bound column "
@@ -1611,7 +1649,7 @@ class DataGateway:
                 continue
             tb, column = bound_column(contract, arg, a, selected)
             spec = column_spec(contract, tb, column)
-            if getattr(spec, "self", False):
+            if getattr(spec, "self_", False):
                 continue                               # the entity table itself: its other members are other rows
             for member in members[:MAX_FAMILY_COUNTS]:
                 _p, per = build_predicate(contract, {arg: member}, selected=selected, registry=self.registry,
@@ -1619,6 +1657,9 @@ class DataGateway:
                 if arg not in per:
                     continue
                 parts = [per[arg] if k == arg else p for k, p in st.per_arg.items()]
+                # a list column names the parent and its salts in one row (drug_mechanism_of_action.chemblIds):
+                # rows the requested ID already matched are in the answer, not left behind (OT-RV3-05)
+                parts.append(Not(st.per_arg[arg]))
                 parts += [Not(Eq(c, v)) for c, v in st.anchors.values()]
                 n = await self._count(table, parts[0] if len(parts) == 1 else And(tuple(parts)), st)
                 if n:
@@ -2223,6 +2264,7 @@ class DataGateway:
         if cls.outcome in ("empty", "empty_unverified"):
             if cls.is_json:
                 self._echo_set_none_found(plan, st, contract, cls.obj)
+                self._listed_missing(plan, st, contract, cls.obj, rows_returned=False)
             st.notes.append(cls.reason)
             return self._result(plan, st, obj=cls.obj if cls.is_json else {}, rows=[], counters=counters,
                                 served_by=served_by, total=0 if cls.outcome == "empty" else None,
@@ -2331,6 +2373,7 @@ class DataGateway:
             st.notes.append(f"{len(items)} unknown item(s) withheld")
             st.not_found_items = items
         rows_now = [r for _, rs in processed for r in rs]
+        await self._row_releases(plan, st, contract, t, rows_now)
         # witness checks W1-W6
         w = st.witness
         violated = {a: n for a, n in counters.excluded.items() if n}
@@ -2403,8 +2446,14 @@ class DataGateway:
         items_path = t.items_path if t is not None and t.is_item_table and b.result.rows_of else None
         parents: dict[str, str | None] = {}
         alias = {k.lstrip("/"): k for k in b.result.parent_key}
+        # an argument whose echo accepts a redirect (a merged NCT ID answered by its surviving record) is checked by
+        # that echo (W4), not re-applied to the row: T4 dropped the redirected record and answered empty (LIVE3-02)
+        redirected = {arg for arg, spec in b.result.echo_specs().items()
+                      if any(acc == "redirect" or acc.startswith("synonym:") for acc in spec.accept)}
         for arg, pred in st.per_arg.items():
             binding = contract.args.get(arg.split("+")[0]) if not arg.startswith("@") else None
+            if arg in redirected:
+                continue
             if items_path:
                 # rows are items: item columns are read on the item, parent columns from its parent key
                 prefix = items_path + "."
@@ -2530,6 +2579,49 @@ class DataGateway:
         raise GatewayError(ErrorKind.not_found, f"{len(missing)} requested {es.arg} returned no record: "
                            f"{', '.join(map(str, missing[:5]))}", tool=st.name, payload=payload)
 
+    def _listed_missing(self, plan: CallPlan, st: _CallState, contract: ToolContract, obj: Any, *,
+                        rows_returned: bool) -> None:
+        """``result.not_found_list``: the requested values upstream itself lists as found nowhere (search_genes
+        ``genes_not_found``) are ``not_found_items`` and leave the resolution summary's resolved count; every
+        requested value listed, with no rows, is ``not_found`` (``existence: upstream`` decides by upstream's own
+        not-found; an unknown ENSG00000999999 was 'resolved' and answered as a successful empty, LIVE3-04)."""
+        path = contract.binding.result.not_found_list
+        if not path or st.listed_checked:
+            return
+        st.listed_checked = True
+        listed = [x for v in jp_get(obj, path) for x in (v if isinstance(v, list) else [v]) if x is not None]
+        if not listed:
+            return
+        asked: dict[str, list[Any]] = {}
+        for arg, a in contract.args.items():
+            if a.existence != "upstream":
+                continue
+            vals = plan.args_sent.get(arg, plan.args_raw.get(arg))
+            if isinstance(vals, list) and vals:
+                asked[arg] = list(vals)
+        names = {str(v): arg for arg, vals in asked.items() for v in vals}
+        missing = [v for v in listed if str(v) in names]
+        if not missing:
+            return
+        for arg in {names[str(v)] for v in missing}:
+            gone = [v for v in missing if names[str(v)] == arg]
+            rs = st.resolution_summary.get(arg)
+            if isinstance(rs, dict):
+                rs["resolved"] = max(0, int(rs.get("resolved") or 0) - len(gone))
+                rs["unresolved"] = list(rs.get("unresolved") or []) + gone
+        requested = sum(len(v) for v in asked.values())
+        if not rows_returned and len(missing) >= requested:
+            arg = names[str(missing[0])]
+            payload = not_found_payload(arg, missing, None, list(contract.args[arg].accepts),
+                                        [f"upstream: listed under {path}"], [], None, plan.bound_table)
+            payload["items"] = missing
+            raise GatewayError(ErrorKind.not_found, f"{len(missing)} requested value(s) found nowhere: "
+                               f"{', '.join(map(str, missing[:5]))}", tool=st.name, payload=payload)
+        st.not_found_items = list(st.not_found_items or []) + [v for v in missing
+                                                               if v not in (st.not_found_items or [])]
+        st.notes.append(f"{len(missing)} requested value(s) found nowhere (upstream's {path}): "
+                        f"{', '.join(map(str, missing[:10]))}")
+
     def _witness_checks(self, plan: CallPlan, st: _CallState, contract: ToolContract, t: Any, rows: list[Any],
                         returned_raw: int, obj: Any) -> tuple[str, str] | None:
         b = contract.binding
@@ -2538,6 +2630,7 @@ class DataGateway:
         missing = self._echo_set_missing(plan, st, contract, obj)
         if missing is not None and not rows:
             self._echo_set_none_found(plan, st, contract, obj)
+        self._listed_missing(plan, st, contract, obj, rows_returned=bool(rows))
         if missing is not None:
             got = [str(v) for v in jp_get(obj, es.path) if v is not None]
             want = {str(v) for v in st.values.get(es.arg, plan.args_sent.get(es.arg)) or []}
@@ -2564,6 +2657,7 @@ class DataGateway:
                 if acc == "redirect" or acc.startswith("synonym:"):
                     accepted = True
                     st.resolved[arg] = f"{plan.args_raw.get(arg)} -> {got} (alias_redirect)"
+                    st.redirected = True
                     st.notes.append(f"{arg}: the source answered for {got} (alias of {want})")
                     break
             if not accepted:
@@ -2586,8 +2680,9 @@ class DataGateway:
         if b.result.kind == "record" and total > 1 and len(rows) == 1:
             return "W5", f"one record returned, the witness found {total}"
         keys = self._keys_of(rows, cols, st) if cols else []
-        # W2 outside
-        if w.key_set is not None and keys:
+        # W2 outside (a record the echo accepted as a redirect is keyed by its surviving ID, which the witness of the
+        # requested ID does not hold)
+        if w.key_set is not None and keys and not st.redirected:
             # key parts no returned row carries (a tissue id upstream keeps on the enclosing group) are
             # compared on the parts the rows do carry, never as null
             idx = [i for i, c in enumerate(cols) if any(isinstance(r, Mapping) and get_path(r, c) is not None
@@ -2767,10 +2862,17 @@ class DataGateway:
             nest["item_filter"] = inner
             nest["include_negated"] = bool(plan.args_raw.get(_INCLUDE_NEGATED) or
                                            plan.gateway_args.get(_INCLUDE_NEGATED))
+        ranks = [_rank_json(o) for o in st.order]
+        made = _nest_outputs(nest)
+        if nest is not None and any(r["column"] in made for r in ranks):
+            # the order ranks the groups by what the nest computes (evidence_count desc, then disease): the data
+            # child ranks the groups before it cuts them to the limit, and reads the rows by the stored columns only
+            nest["order"] = [{**r, "column": d.rename.get(r["column"], r["column"])} for r in ranks]
+            ranks = [r for r in ranks if r["column"] not in made]
         # a search tool called with only its key argument (biosample_id, no query) is a lookup by key
         verb = "find" if d.verb == "search" and not st.search_text else d.verb
         req = ServeRequest(table=d.table, verb=verb, predicate=to_json(pred) if pred else None,
-                           columns=list(d.columns), order=[RankKeyModel(**_rank_json(o)) for o in st.order],
+                           columns=list(d.columns), order=[RankKeyModel(**r) for r in ranks],
                            limit=limit, limit_grain=limit_grain, group_by=within + list(d.group_by),
                            explode=list(d.explode), carry=list(d.carry), rename=dict(d.rename), split=d.split,
                            nest=nest, aggregate=dict(d.aggregate), sections=sections, anchor=anchor, anchors=anchors,
@@ -2823,6 +2925,11 @@ class DataGateway:
         else:
             rows = list(resp.rows)
             path = paths[0]
+            for arg, when in d.rows_when.items():
+                if _truthy_arg(plan.args_raw.get(arg)):
+                    path = when                        # upstream's key for this call (therapeutic_areas)
+                    break
+            st.rows_path = path
             if path != "$":
                 obj = place_rows(obj, path, rows, record=b.result.kind == "record")
             elif b.result.kind == "record":
@@ -2831,6 +2938,8 @@ class DataGateway:
                 obj["rows"] = rows                     # an envelope is declared: rows under "rows"
             else:
                 obj = rows  # type: ignore[assignment]
+        if isinstance(obj, dict):
+            _declare_counts(obj, b.result.count_fields)
         st.section_meta = {k: dict(v) for k, v in dict(resp.sections.get("_section_meta") or {}).items()
                            if k in d.sections}
         for sname, sec in d.sections.items():
@@ -2987,7 +3096,8 @@ class DataGateway:
         types = [st.storage_types.get(c) for c in cols]
         mapper = mapper or self._mapper(contract)
         upstream = serve is None
-        groups = groups if groups is not None else [(b.result.row_paths[0] if b.result.row_paths else "$", rows)]
+        groups = groups if groups is not None else [(st.rows_path or (b.result.row_paths[0] if b.result.row_paths
+                                                                      else "$"), rows)]
         full_rows: list[Any] = []
         new_groups: list[tuple[str, list[Any]]] = []
         truncated = False
@@ -3278,6 +3388,9 @@ class DataGateway:
         b = contract.binding
         if st.family_rows and status in ("ok", "empty", "empty_unverified"):
             status = "partial"                         # rows elsewhere in the family: never a complete or empty answer
+        self._self_withheld(st, contract, obj, counters)
+        if st.leakage is not None and st.leakage.current and total is not None:
+            total, total_method, status = self._ceiling_safe_total(st, contract, obj, total, total_method, status)
         t = self._rows_table(plan, contract)
         cols = list(cols if cols is not None else self._key_columns(contract, t))
         types = [st.storage_types.get(c) for c in cols]
@@ -3557,8 +3670,8 @@ class DataGateway:
                               transforms=list(st.transforms), record_versions=versions),
             memory=st.admission.to_record() if st.admission is not None else {"admission": "not_applicable"},
             leakage=(dict(native["leakage"]) if native is not None and native.get("leakage") else
-                     leakage_record(st.leakage.ceiling, withheld_leakage, st.leakage.risk or leakage_unchecked > 0)
-                     if st.leakage is not None and st.leakage.active else None),
+                     self._leakage_record(st.leakage, withheld_leakage, leakage_unchecked)
+                     if st.leakage is not None and st.leakage.recorded else None),
             evidence_nature=(t.spec.evidence_nature.model_dump() if t is not None and t.spec.evidence_nature
                              else None),
             upstream=self._upstream_info(plan), t_ms=dict(st.t_ms), derived=derived or None)
@@ -3573,6 +3686,55 @@ class DataGateway:
             rows, default=str, sort_keys=True).encode("utf-8")).hexdigest()
         prov.tool_use_id = getattr(getattr(plan, "_vbt_ctx", None), "tool_call_id", None) or None
         return prov.finalize()
+
+    @staticmethod
+    def _leakage_record(lk: LeakagePlan, withheld: int, unchecked: int) -> dict[str, Any] | None:
+        """The provenance ``leakage`` block: the data ceiling when it bounds (or cannot date) a source the tool
+        reads, else the ceiling the source's own server applied (PubMed's literature ceiling)."""
+        data = lk.active or bool(lk.ceiling is not None and lk.undated)
+        return leakage_record(lk.ceiling if data else lk.self_ceiling, withheld, (lk.risk or unchecked > 0) and data,
+                              lk.reason if data else None)
+
+    def _self_withheld(self, st: _CallState, contract: ToolContract, obj: Any, counters: Counters) -> None:
+        """``result.withheld_list``: the rows the source's server withheld under its own ceiling (PubMed
+        ``withheld``) are counted as ``withheld.leakage`` in the header and the provenance record (LIVE3-09)."""
+        path = contract.binding.result.withheld_list if contract.binding is not None else None
+        lk = st.leakage
+        if not path or lk is None or lk.self_ceiling is None or not isinstance(obj, (dict, list)) or st.self_counted:
+            return
+        st.self_counted = True
+        n = len([x for v in jp_get(obj, path) for x in (v if isinstance(v, list) else [v]) if x is not None])
+        if n:
+            counters.withheld["leakage"] = counters.withheld.get("leakage", 0) + n
+            st.notes.append(f"{n} record(s) withheld by the source's own evidence ceiling {lk.self_ceiling} "
+                            f"(listed in {path.removeprefix('$.')})")
+
+    def _ceiling_safe_total(self, st: _CallState, contract: ToolContract, obj: Any, total: int, total_method: str,
+                            status: str) -> tuple[int | None, str, str]:
+        """A call that selects on the record as it is today (a status, a later date, posted results) under the
+        evidence ceiling (LIVE3-01): a first-posted bound does not bound it. The records also unchanged since the
+        ceiling (``ceiling_totals.available_and_unchanged``) held the same values then, so they are the total (a
+        lower bound: partial); without that count the answer is partial with ``leakage.risk``."""
+        lk = st.leakage
+        b = contract.binding
+        fields = ", ".join(lk.current)
+        safe = (st.ceiling_totals or {}).get("available_and_unchanged")
+        status = "partial" if status in ("ok", "empty") and (total or safe) else status
+        if safe is None:
+            lk.risk = True
+            lk.reason = "selects on the current record"
+            st.notes.insert(0, f"the call selects on {fields}, which the source holds only as it is today: its total "
+                            f"({total}) is not bounded by the evidence ceiling {lk.ceiling} (leakage risk)")
+            return total, total_method, status
+        st.notes.insert(0, f"the call selects on {fields}, which the source holds only as it is today: under the "
+                        f"evidence ceiling {lk.ceiling} the total counts the {safe} matching record(s) also last "
+                        f"changed by then (their value then is their value now); the {total} first posted by then "
+                        "include records whose value changed after it")
+        spec = b.result.total if b is not None else None
+        path = spec if isinstance(spec, str) else getattr(spec, "path", None)
+        if path and isinstance(obj, dict) and isinstance(jp_first(obj, path), (int, float)):
+            jp_set(obj, path, int(safe))               # the reply's own count, not only the header's
+        return int(safe), "ceiling_unchanged", status
 
     def _stamp_times(self, st: _CallState) -> None:
         """``t_ms`` {prepare, call, finish, total} as of building the record (§15.1)."""
@@ -3741,6 +3903,37 @@ class _OneTool:
 def _vocab_request(table: str, column: str) -> Any:
     from ..ipc import VocabRequest
     return VocabRequest(table=table, column=column)
+
+
+def _declare_counts(obj: dict[str, Any], count_fields: Sequence[str] | Mapping[str, str]) -> None:
+    """A derived reply carries upstream's top-level count fields (``count``, ``total_found``): each one absent from
+    the envelope is declared here and T11 sets it (a ``len(<path>)`` field only when the reply holds that path)."""
+    targets = count_fields.items() if isinstance(count_fields, Mapping) else ((p, None) for p in count_fields)
+    for target, expr in targets:
+        name = str(target)[2:] if str(target).startswith("$.") else None
+        if not name or not name.isidentifier() or name in obj:
+            continue
+        m = re.fullmatch(r"len\(\$\.(\w+)\)", str(expr)) if expr is not None else None
+        if expr is not None and (m is None or m.group(1) not in obj):
+            continue
+        obj[name] = None
+
+
+def _truthy_arg(v: Any) -> bool:
+    """A flag argument as upstream reads it (``if list_therapeutic_areas:``)."""
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def _nest_outputs(nest: Mapping[str, Any] | None) -> set[str]:
+    """The group fields a derived ``nest`` computes (``count_as``, ``first_item``): an order may rank by them."""
+    if not nest:
+        return set()
+    out = {str(k) for k in (nest.get("first_item") or {})}
+    if nest.get("count_as"):
+        out.add(str(nest["count_as"]))
+    return out
 
 
 def _rank_json(o: Any) -> dict[str, Any]:

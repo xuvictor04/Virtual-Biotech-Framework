@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import sys
 import types
 from pathlib import Path
@@ -43,6 +42,7 @@ from typing import Any, Callable
 
 import pytest
 
+from netgate import network_enabled
 from test_dl_gateway_flow import REGISTRY, FakeBridge, raw_of
 from test_dl_real_live import Replay
 from vbt.datalayer.catalog import Catalog
@@ -67,7 +67,7 @@ SOURCES = REPO / "configs" / "data" / "sources"
 OVERLAYS = REPO / "configs" / "data" / "overlays"
 FIX = Path(__file__).resolve().parent / "real" / "live"
 ROUND3 = FIX / "round3"
-NETWORK = os.environ.get("VBT_DL_NETWORK") == "1"
+NETWORK = network_enabled()
 needs_network = pytest.mark.skipif(not NETWORK, reason="set VBT_DL_NETWORK=1 to call the live APIs")
 
 ACC = "acc_tcga_pan_can_atlas_2018"
@@ -371,7 +371,18 @@ async def test_derived_compose_merges_on_each_sub_tables_key(tmp_path: Path, mon
                              key_columns=[], as_of="2026-06-04 18:48:28")
 
     monkeypatch.setattr(gw.service, "serve", serve)
+    # the release provenance the gateway reads for the live source goes nowhere (RR-3: it reached cBioPortal) and
+    # its failure costs the call nothing
+    released: list[str] = []
+
+    def refuse(url: str, params: Any = None, **_kw: Any) -> Any:
+        released.append(url)
+        raise live.RemoteError(f"no network here: {url}", url=url)
+
+    monkeypatch.setattr(live.LiveApiLayout, "transport", staticmethod(refuse))
+    monkeypatch.setattr(live, "_RELEASES", {})
     res = await call(gw, "clinicaltrials", "get_clinical_data", {"study_id": ACC, "sample_ids": ["S1", "S2"]})
+    assert released and all("cbioportal" in u for u in released)
     rows = {r["sampleId"]: r for r in res.obj["data"]}
     assert rows["S1"]["SAMPLE_TYPE"] == "Primary" and rows["S2"]["SAMPLE_TYPE"] == "Metastasis"
     assert res.obj["patients"] == [{"studyId": ACC, "patientId": "P1", "AGE": "58", "OS_STATUS": "1:DECEASED"}]
@@ -467,7 +478,12 @@ async def test_upstream_count_under_the_ceiling_reports_both_totals(tmp_path: Pa
     rec = recorded("ceiling_count")
     assert tot == {"available": rec["available"], "available_and_unchanged": rec["available_and_unchanged"],
                    "ceiling": CEILING}
-    assert tot["available"] > tot["available_and_unchanged"] and out["header"]["total"] == tot["available"]
+    assert tot["available"] > tot["available_and_unchanged"]
+    # LIVE3-01: status selects on the record as it is today, which a first-posted bound does not bound: the total is
+    # the records also unchanged since the ceiling (their status then is their status now), a lower bound
+    h = out["header"]
+    assert h["total"] == tot["available_and_unchanged"] and h["status"] == "partial"
+    assert h["total_method"] == "ceiling_unchanged" and any("selects on status (overallStatus)" in n for n in h["notes"])
     assert any("also last changed" in n for n in out["prov"]["result"].get("notes", []) + out["header"]["notes"])
     assert out["prov"]["source"]["versions"] == {"apiVersion": "2.0.5"}
 

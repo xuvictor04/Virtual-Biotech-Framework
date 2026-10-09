@@ -22,6 +22,7 @@ tools:
       order_from_arg: sort
       order_source: source_server_side
       drop_fields: {$.summary: "restates count and returned; the header carries both"}
+      withheld_list: $.withheld                   # records past the literature ceiling (or undated): withheld.leakage
     serve: pass
     text:
       notes: ["a count of 0 is an unverified empty: PubMed search maps and expands terms, so no match is not evidence that nothing was published",
@@ -36,6 +37,7 @@ tools:
       row_key: [pmid]
       echo_set: {arg: pmids, path: "$.articles[*].pmid", mode: subset, withheld_path: "$.withheld[*].pmid"}
       nested_errors: ["$.unrequested"]            # a record returned under a PMID nobody asked for
+      withheld_list: $.withheld
       drop_fields: {$.summary: "restates the counts; the header and echo_set carry them"}
     serve: pass
     defects:

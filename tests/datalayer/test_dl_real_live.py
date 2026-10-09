@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import threading
 import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -28,6 +27,7 @@ from typing import Any, Callable
 
 import pytest
 
+from netgate import network_enabled
 from test_dl_gateway_flow import REGISTRY, make_gateway, raw_of
 from vbt.datalayer.catalog import Catalog
 from vbt.datalayer.descriptor.load import load_yaml
@@ -46,7 +46,7 @@ REPO = Path(__file__).resolve().parents[2]
 SOURCES = REPO / "configs" / "data" / "sources"
 OVERLAYS = REPO / "configs" / "data" / "overlays"
 FIX = Path(__file__).resolve().parent / "real" / "live"
-NETWORK = os.environ.get("VBT_DL_NETWORK") == "1"
+NETWORK = network_enabled()
 needs_network = pytest.mark.skipif(not NETWORK, reason="set VBT_DL_NETWORK=1 to call the live APIs")
 
 ST = "protocolSection.statusModule.overallStatus"
@@ -371,7 +371,11 @@ def test_pubmed_count_under_the_literature_ceiling(tmp_path: Path, replay: Calla
     out = s_pubmed_count_ceiling(tmp_path)
     (url, sent), = r.sent
     assert sent["rettype"] == "count" and sent["maxdate"] == "2017/12/31" and sent["datetype"] == "pdat"
-    assert out["total"] == int(fixture("eutils/esearch_count_ceiling_2017.json")["body"]["esearchresult"]["count"])
+    # a title search tags each term ([ti] after a parenthesised group is ignored: every field, 304 to 2017)
+    assert sent["term"] == "PCSK9[ti] AND evolocumab[ti]"
+    recorded = fixture("replay/pubmed_count_ceiling.json")["exchanges"][0]["body"]["esearchresult"]["count"]
+    assert out["total"] == int(recorded) < int(fixture("eutils/esearch_count_ceiling_2017.json")["body"]
+                                                ["esearchresult"]["count"])
     assert out["total"] < int(fixture("eutils/esearch_count.json")["body"]["esearchresult"]["count"])
 
 

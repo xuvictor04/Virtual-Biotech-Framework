@@ -32,6 +32,7 @@ measure thresholds through the column's statistic plugin (unknown never passes, 
 
 from __future__ import annotations
 
+import contextlib
 import math
 import re
 from dataclasses import dataclass, field
@@ -673,21 +674,7 @@ def apply_arg_contracts(contract: Any, args: Mapping[str, Any], vocab: Mapping[s
             continue
 
         if binding.role == "order_direction":
-            if binding.values:
-                keys = {str(k).casefold(): k for k in binding.values}
-                k = keys.get(str(value).casefold())
-                if k is None:
-                    raise _invalid(contract, name, value, f"unknown {name} value {value!r}",
-                                   [str(k) for k in binding.values], reason="order_direction")
-                direction = binding.values[k]
-            elif isinstance(value, bool):
-                direction = "asc" if value else "desc"
-            elif str(value).lower() in ("asc", "desc"):
-                direction = str(value).lower()
-            else:
-                raise _invalid(contract, name, value, f"{name} must be a boolean or asc/desc",
-                               [True, False], reason="order_direction")
-            out.order = {**(out.order or {}), "direction": direction}
+            out.order = {**(out.order or {}), "direction": _order_direction(contract, name, binding, value)}
             continue
 
         if binding.role == "free_text":
@@ -824,6 +811,12 @@ def apply_arg_contracts(contract: Any, args: Mapping[str, Any], vocab: Mapping[s
         if name in args or not isinstance(prop, Mapping) or "default" not in prop:
             continue
         binding = bindings.get(name)
+        if binding is not None and binding.role == "order_direction" and prop["default"] is not None:
+            # upstream sorts in its default direction (ascending=False): the rows the gateway ranks, and the header,
+            # follow it rather than the order_by value's own direction (OT-RV3-02)
+            with contextlib.suppress(GatewayError):
+                out.order = {**(out.order or {}),
+                             "direction": _order_direction(contract, name, binding, prop["default"])}
         if binding is None or not binding.default_disclosed or binding.role in ("limit", "output_path", "unbound",
                                                                                  "projection"):
             continue
@@ -852,6 +845,23 @@ def apply_arg_contracts(contract: Any, args: Mapping[str, Any], vocab: Mapping[s
                                reason="boolean")
             out.gateway_args[name] = value
     return out
+
+
+def _order_direction(contract: Any, name: str, binding: Any, value: Any) -> str:
+    """The sort direction an ``order_direction`` argument value names (its ``values`` map, a boolean, asc/desc)."""
+    if binding.values:
+        keys = {str(k).casefold(): k for k in binding.values}
+        k = keys.get(str(value).casefold())
+        if k is None:
+            raise _invalid(contract, name, value, f"unknown {name} value {value!r}",
+                           [str(k) for k in binding.values], reason="order_direction")
+        return str(binding.values[k])
+    if isinstance(value, bool):
+        return "asc" if value else "desc"
+    if str(value).lower() in ("asc", "desc"):
+        return str(value).lower()
+    raise _invalid(contract, name, value, f"{name} must be a boolean or asc/desc", [True, False],
+                   reason="order_direction")
 
 
 #: Gateway-only override of a qualifier the gateway enforces by default (§7, §11.3).

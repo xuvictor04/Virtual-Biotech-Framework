@@ -771,8 +771,11 @@ def _live_predicate(table: Any, where: Any, notes: list[str] | None = None) -> P
     parts: list[Predicate] = []
     engine: list[str] = []
     for col, v in where.items():
-        if table.spec.pivot is None and str(col).split(".")[0].split("[")[0] not in table.columns:
-            raise _invalid("where", col, f"{table.ref} has no column {col!r}", sorted(table.columns))
+        if table.spec.pivot is None and live_column(table, str(col)) is None:
+            # the whole dotted path, as `columns` checks it: a misspelled nested field (overalStatus) read the whole
+            # page budget and filtered locally on a field no record has (LIVE3-07)
+            raise _invalid("where", col, f"{table.ref} has no column {col!r} (name nested columns by their dotted "
+                           "path)", sorted(table.columns))
         text = table.spec.pivot is None and _engine_text(table, str(col))
         ops = dict(v) if isinstance(v, Mapping) else {"in" if isinstance(v, list) else "eq": v}
         if text and set(ops) != {"search"}:
@@ -839,6 +842,31 @@ def _last_field(path: str) -> str:
     return parts[-1] if parts else str(path)
 
 
+def _key_normalizers(ctx: ServiceContext, table: Any, key: Sequence[str]) -> list[Any]:
+    """Per key column, the function giving a value's normal form under the column's id_type (``nct00761280`` ->
+    ``NCT00761280``); the value as text when the column has none or the plugin rejects it."""
+    out: list[Any] = []
+    for c in key:
+        col = live_column(table, c)
+        id_type = getattr(col, "id_type", None) if col is not None and col is not True else None
+        spec = table.descriptor.id_types.get(str(id_type).rpartition(":")[2]) if id_type else None
+        plugin = None
+        if spec is not None:
+            try:
+                plugin = ctx.plugin("identifier", spec.plugin)
+            except Exception:  # noqa: BLE001 - no plugin: compared as stored
+                plugin = None
+
+        def norm(v: Any, plugin: Any = plugin) -> Any:
+            if plugin is None or v is None:
+                return v
+            n = plugin.normalize(str(v))
+            return getattr(n, "value", v) if not hasattr(n, "reason") else v
+
+        out.append(norm)
+    return out
+
+
 def _live_find(ctx: ServiceContext, table: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
     from ...predicate import to_json
     from .. import layout_spec
@@ -893,24 +921,42 @@ def _live_find(ctx: ServiceContext, table: Any, payload: Mapping[str, Any]) -> d
             avail, changed = leakage["bounded_on"][0], leakage["bounded_on"][1]
             notes.append(f"the total counts records available ({_last_field(avail)}) and last changed "
                          f"({_last_field(changed)}) by {leakage['ceiling']}, the rows this find can return; an "
-                         f"upstream count under the same ceiling bounds only {_last_field(avail)} and also counts the "
-                         "records changed after it (which are withheld from rows), so its total is larger")
+                         f"upstream count under the same ceiling bounds only {_last_field(avail)}, so it also counts "
+                         "records changed after it (withheld from rows), and its free-text arguments may search "
+                         "other fields than this find's columns: the two totals need not differ by leakage alone")
         if leakage.get("redacted"):
             notes.append(f"{leakage['redacted']} row(s) redacted (fields changed after the ceiling nulled)")
-    # keys the filter named that the source did not return (and that no ceiling withheld): unknown to the source
+    # keys the filter named that the source did not return (and that no ceiling withheld): unknown to the source.
+    # Keys are compared in their id_type's normal form (the registry matches nct00761280 as NCT00761280), and a key
+    # the returned record lists as an alias (key.aliases) is that record: the source redirected it (LIVE3-03)
     asked = got.get("requested_keys")
     missing: list[Any] = []
     if asked is not None and not got.get("truncated"):
         key = [c for c in table.key if not str(c).endswith("#")]
         from ...gateway.fields import get_path
 
-        seen = {json.dumps([get_path(r, c) for c in key], default=str) for r in rows if isinstance(r, Mapping)}
-        held = {json.dumps([w.get(c) for c in key] if isinstance(w, Mapping) else [w], default=str)
+        norm = _key_normalizers(ctx, table, key)
+
+        def text_of(parts: Sequence[Any]) -> str:
+            return json.dumps([norm[i](v) for i, v in enumerate(parts)], default=str)
+
+        seen = {text_of([get_path(r, c) for c in key]) for r in rows if isinstance(r, Mapping)}
+        held = {text_of([w.get(c) for c in key] if isinstance(w, Mapping) else [w])
                 for w in got.get("withheld_keys") or []}
+        aliases: dict[str, Any] = {}
+        alias_col = getattr(table.spec.key, "aliases", None)
+        if alias_col and len(key) == 1:
+            for r in rows:
+                if isinstance(r, Mapping):
+                    for a in get_path(r, alias_col) or []:
+                        aliases.setdefault(text_of([a]), get_path(r, key[0]))
         for k in asked:
             parts = [k.get(c) for c in key] if isinstance(k, Mapping) else [k]
-            text = json.dumps(parts, default=str)
-            if text not in seen and text not in held:
+            text = text_of(parts)
+            if text in aliases and text not in seen:
+                notes.append(f"{json.dumps(parts[0], default=str)} is an alias of {aliases[text]}: the source "
+                             "answered with that record")
+            elif text not in seen and text not in held:
                 missing.append(k)
     if missing and payload.get("_lookup") and len(asked or []) == 1:
         k = missing[0]

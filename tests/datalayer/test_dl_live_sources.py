@@ -205,7 +205,7 @@ def test_pubmed_witness_is_an_esearch_count(ctx: ServiceContext, stub: Stub) -> 
     out = load_verbs()["_witness"](ctx, {"table": "pubmed.records", "predicate": to_json(pred)})
     assert out["total"] == 23
     path, q = stub.requests[-1]
-    assert path == "/eutils/esearch.fcgi" and q["rettype"] == "count" and q["term"] == "PCSK9 AND evolocumab"
+    assert path == "/eutils/esearch.fcgi" and q["rettype"] == "count" and q["term"] == "PCSK9[ti] AND evolocumab[ti]"
     assert q["maxdate"] == "2025/01/31" and q["mindate"] == "1800/01/01" and q["datetype"] == "pdat"
     assert q["db"] == "pubmed"
 

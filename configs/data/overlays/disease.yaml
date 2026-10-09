@@ -107,7 +107,11 @@ tools:
       arg_echo: {limit: $.limit}
       order: [{column: id, direction: asc}]
     serve: derived
-    derived: {verb: find, table: open_targets.disease, columns: [id, name, description]}
+    derived:
+      verb: find
+      table: open_targets.disease
+      columns: [id, name, description]
+      rows_when: {list_therapeutic_areas: $.therapeutic_areas}   # upstream lists the areas under therapeutic_areas
     defects:
       - {id: OT-DIS-004, what: "a name is matched by substring and the first therapeutic area in file order is used",
          where: "disease_mcp/tools.py:465-490", effect: silent_wrong}
@@ -124,12 +128,14 @@ tools:
       grain: disease
       count_fields: {"$.count": "len($.diseases)", "$.diseases[*].evidence_count": "len($.diseases[*].evidence)"}
       arg_echo: {limit: $.limit}
-      order: [{column: disease, direction: asc}]
+      # upstream sorts the diseases by evidence count (most first) before its limit; ties by the disease id
+      order: [{column: evidence_count, direction: desc}, {column: disease, direction: asc}]
     serve: derived
     derived:
       verb: find
       table: open_targets.disease_phenotype
-      nest: {group_by: [disease], items: evidence, count_as: evidence_count, having: {min_arg: min_evidence}}
+      nest: {group_by: [disease], items: evidence, count_as: evidence_count, having: {min_arg: min_evidence},
+             first_item: {disease_name: diseaseName}}   # upstream: the first (filtered) evidence item's diseaseName
       rename: {disease: disease_id}
       sections:
         phenotype: {path: $.phenotype_name, table: open_targets.disease_hpo, verb: lookup, single: true,

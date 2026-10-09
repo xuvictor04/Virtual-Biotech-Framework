@@ -1,5 +1,5 @@
 {
- "description": "Get evidence strings associated with a specific publication.\nData: Open Targets Platform 25.09 · table evidence — one record = one evidence string, i.e. one target-disease assertion from one data source.\nKey: sourceId, id.\nArguments: pmid accepts pmid (resolved; unknown -> error).\nResults: ranked by score desc within sourceId (verified by the harness); `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Evidence strings of the 23 OT 25.09 data sources; absence means no evidence in these sources, not a negative finding.",
+ "description": "Get evidence strings associated with a specific publication.\nData: Open Targets Platform 25.09 · table evidence — one record = one evidence string, i.e. one target-disease assertion from one data source.\nKey: sourceId, id.\nArguments: pmid accepts pmid (resolved; unknown -> error).\nResults: ranked by score desc within sourceId, then id asc (verified by the harness); `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. Evidence strings of the 23 OT 25.09 data sources; absence means no evidence in these sources, not a negative finding.",
  "schema": {
   "properties": {
    "limit": {

@@ -1,5 +1,5 @@
 {
- "description": "Get significant adverse drug reactions from OpenFDA data.\nData: Open Targets Platform 25.09 · table openfda_significant_adverse_drug_reactions — one record = one FAERS adverse event significantly reported for one drug.\nKey: chembl_id, event.\nArguments: drug_id accepts chembl molecule or drug name (resolved; unknown -> error).\nResults: ranked by llr desc (verified by the harness); `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. openFDA FAERS events with llr above the drug's critical value; absence means not significant or not reported.",
+ "description": "Get significant adverse drug reactions from OpenFDA data.\nData: Open Targets Platform 25.09 · table openfda_significant_adverse_drug_reactions — one record = one FAERS adverse event significantly reported for one drug.\nKey: chembl_id, event.\nArguments: drug_id accepts chembl molecule or drug name (resolved; unknown -> error).\nResults: ranked by llr desc, then event asc (verified by the harness); `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. openFDA FAERS events with llr above the drug's critical value; absence means not significant or not reported.",
  "schema": {
   "properties": {
    "drug_id": {

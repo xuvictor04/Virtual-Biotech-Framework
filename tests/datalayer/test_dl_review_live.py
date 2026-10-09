@@ -125,6 +125,36 @@ def test_phenotype_min_evidence_and_limit_follow_negation(live, fixture_ready) -
     assert len(r.rows("diseases")) == 1 and r.header.get("total") == 2
 
 
+def test_phenotype_limit_keeps_the_best_supported_diseases(live, fixture_ready) -> None:
+    """OT-RV3-01: upstream sorts the diseases by evidence count (most first) before its limit, so a limited call
+    keeps the best-supported diseases, not the lowest disease ids; the envelope keeps upstream's `count` and
+    each row's `disease_name`."""
+    bridge, off = enforce(live, fixture_ready), live("off")
+    r = ok(bridge.call("disease", "find_diseases_by_phenotype", {"phenotype_id": F.SEIZURE, "limit": 1}), "partial")
+    # Y (MONDO_0100002) has one item, Z (MONDO_0100003) two after its negated item is removed
+    assert [(d["disease_id"], d["evidence_count"]) for d in r.rows("diseases")] == [(F.PHENO["Z"], 2)]
+    assert r.rows("diseases")[0]["disease_name"] == "seizure disorder Z"
+    assert r.obj["count"] == 1 and r.header["total"] == 2
+    assert r.header["order"].startswith("evidence_count desc, then disease asc")
+    full = ok(bridge.call("disease", "find_diseases_by_phenotype", {"phenotype_id": F.SEIZURE}))
+    assert [d["disease_id"] for d in full.rows("diseases")] == [F.PHENO["Z"], F.PHENO["Y"]]
+    assert full.obj["count"] == 2
+    assert {"count", "diseases", "phenotype_name"} <= set(full.obj) and \
+        set(full.obj) - {"_vbt"} <= set(off.call("disease", "find_diseases_by_phenotype",
+                                                 {"phenotype_id": F.SEIZURE}).obj)
+
+
+def test_therapeutic_area_list_comes_back_under_upstreams_key(live, fixture_ready) -> None:
+    """OT-RV3-06: list_therapeutic_areas=True lists the areas under `therapeutic_areas` with `count`, as upstream
+    does; a therapeutic_area call keeps `diseases`."""
+    bridge, off = enforce(live, fixture_ready), live("off")
+    want = off.call("disease", "find_diseases_by_therapeutic_area", {"list_therapeutic_areas": True}).obj
+    r = ok(bridge.call("disease", "find_diseases_by_therapeutic_area", {"list_therapeutic_areas": True}))
+    assert "diseases" not in r.obj and sorted(ids(r.rows("therapeutic_areas"))) == \
+        sorted(ids(want["therapeutic_areas"])) and want["therapeutic_areas"]
+    assert r.obj["count"] == want["count"] == len(want["therapeutic_areas"])
+
+
 @pytest.mark.parametrize("args", [{"target_a": TP53BP1, "target_b": TP53}, {"target_a": TP53, "target_b": TP53BP1},
                                   {"target_a": TP53BP1}, {"target_b": TP53}])
 def test_interaction_pair_is_undirected(live, fixture_ready, args: dict[str, Any]) -> None:

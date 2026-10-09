@@ -1,5 +1,5 @@
 {
- "description": "Get safety warnings for a drug.\nData: Open Targets Platform 25.09 · table drug_warning — one record = one ChEMBL drug warning (withdrawal or black box) for one or more molecules.\nKey: id.\nArguments: drug_id accepts chembl molecule or drug name (resolved; unknown -> error).\nResults: ranked by year desc (verified by the harness); `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. ChEMBL drug warnings; absence means no warning curated, not that the drug is safe.",
+ "description": "Get safety warnings for a drug.\nData: Open Targets Platform 25.09 · table drug_warning — one record = one ChEMBL drug warning (withdrawal or black box) for one or more molecules.\nKey: id.\nArguments: drug_id accepts chembl molecule or drug name (resolved; unknown -> error).\nResults: ranked by year desc, then id asc (verified by the harness); `_vbt.total` counts all matches.\nEmpty vs not found: unknown identifiers are errors; an empty result is citable only as an absence. ChEMBL drug warnings; absence means no warning curated, not that the drug is safe.",
  "schema": {
   "properties": {
    "drug_id": {

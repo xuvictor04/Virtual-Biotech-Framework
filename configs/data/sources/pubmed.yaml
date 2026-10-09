@@ -42,10 +42,15 @@ tables:
         params: {db: pubmed, retmode: json, tool: vbt-datalayer}      # NCBI asks callers to name their tool
         rows_path: $.esearchresult.idlist
         total_path: $.esearchresult.count
-        text_params: {"*": term}
+        # a field-tagged search: [ti] title words, [tiab] title and abstract words (E-utilities field tags), set
+        # on each term: E-utilities ignores a tag after a parenthesised group ("(PCSK9 AND evolocumab)[ti]" counted
+        # 304 records to 2017 in every field, "PCSK9[ti] AND evolocumab[ti]" 32; verified 2026-10-09)
+        text_params: {"*": term, title: {param: term, tag: "[ti]"}, abstract: {param: term, tag: "[tiab]"}}
         filters:
           pubdate: {range: {lo: mindate, hi: maxdate, lo_default: "1800/01/01", hi_default: "3000/12/31",
                             format: "%Y/%m/%d", extra: {datetype: pdat}}}
+          # one record by its PMID: term=28304224[uid] (count 1; 99999999[uid] counts 0, verified 2026-10-09)
+          pmid: {param: term, join: " OR ", template: "{}[uid]"}
         count: {params: {rettype: count}, total_path: $.esearchresult.count}
         # the PubMed build an upstream-served call read (einfo; provenance source.versions, reused for 10 minutes;
         # 2026-10-08: dbbuild Build-2026.10.08.12.28, lastupdate 2026/10/08 12:28). No `path`: the witness and
@@ -59,13 +64,13 @@ tables:
                absence_means: unknown}
     columns:
       pmid:     {role: identifier, id_type: pmid, self: true}
-      title:    {role: text, searchable: true}
+      title:    {role: text, searchable: true, remote_name: "[ti]"}       # searched by the engine (text_params)
       journal:  {role: category, vocab: data}
       year:     {role: time, precision: year, stored_as: iso8601_string, missing: unknown}
       pubdate:  {role: time, precision: variable, stored_as: iso8601_string, missing: unknown, partial_dates: latest}
       epubdate: {role: time, precision: variable, stored_as: iso8601_string, missing: unknown, partial_dates: latest}
       authors:  {role: payload}
       doi:      {role: identifier, id_type: doi, resolvable: false}
-      abstract: {role: text, searchable: true}
+      abstract: {role: text, searchable: true, remote_name: "[tiab]"}
       publication_types: {role: category, vocab: data, path: "[]"}
       registry_ids: {role: reference, ref_kinds: [nct_id], path: "[]"}
