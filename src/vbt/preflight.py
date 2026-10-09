@@ -44,9 +44,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .config import base_tool_env, env_files, resolve_path
 from .envpolicy import child_env
@@ -572,13 +573,115 @@ def run_contained(config: Mapping[str, Any], argv: list[str], env: Mapping[str, 
         return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=dict(env))
 
 
+#: A local table whose files take at least this much disk is checked in a data child of its own (see
+#: :func:`check_groups`).
+CHECK_ISOLATE_BYTES = 32 * 1024 * 1024
+
+
+def _local_bytes(catalog: Any, ref: str) -> int:
+    """Bytes on disk of a local table's files (an item table: its parent's), from ``stat`` alone; 0 when remote or
+    absent."""
+    try:
+        t = catalog.table(ref)
+        if t.is_item_table:
+            t = catalog.table(str(t.physical))
+        root = getattr(catalog.source(t.ref.source), "root", None)
+        path = t.physical_spec.path
+    except Exception:  # noqa: BLE001
+        return 0
+    if not root or not path:
+        return 0
+    base = Path(str(root)) / str(path)
+    total = 0
+    try:
+        if base.is_file():
+            return base.stat().st_size
+        for dirpath, _dirs, files in os.walk(base):
+            for name in files:
+                try:
+                    total += (Path(dirpath) / name).stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        return 0
+    return total
+
+
+def check_groups(config: dict[str, Any], tables: Iterable[str] = ()) -> list[list[str]]:
+    """The tables of one session check, split into the data-child processes that check them: every table whose
+    files take :data:`CHECK_ISOLATE_BYTES` or more (with its item tables) in a process of its own, the rest
+    together. One process checking every table kept what each check cached (readers, footers, vocabulary
+    snapshots) until the end: on the 31 Open Targets 25.09 tables its peak was 2,681 MB, against 2,233 MB for the
+    largest single table (interaction). ``[[]]`` (every table, one process) when the catalog does not load."""
+    try:
+        _settings, catalog, _registry = data_catalog(config)
+        refs = [str(r) for r in (tables or catalog.table_refs())]
+    except Exception:  # noqa: BLE001 - the child reports a broken catalog itself
+        return [list(tables)]
+    big: dict[str, list[str]] = {}
+    rest: list[str] = []
+    for ref in refs:
+        try:
+            t = catalog.table(ref)
+            parent = str(t.physical) if t.is_item_table else ref
+        except Exception:  # noqa: BLE001
+            rest.append(ref)
+            continue
+        if _local_bytes(catalog, parent) >= CHECK_ISOLATE_BYTES:
+            big.setdefault(parent, []).append(ref)
+        else:
+            rest.append(ref)
+    groups = [sorted(g) for _parent, g in sorted(big.items())]
+    if rest:
+        groups.append(rest)
+    return groups or [[]]
+
+
+def _merge_checks(responses: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {"tables": {}, "table_errors": {}, "quarantined": []}
+    seen: set[str] = set()
+    for r in responses:
+        out["tables"].update(r.get("tables") or {})
+        out["table_errors"].update(r.get("table_errors") or r.get("errors") or {})
+        for q in r.get("quarantined") or []:
+            key = json.dumps(q, sort_keys=True, default=str)
+            if key not in seen:
+                seen.add(key)
+                out["quarantined"].append(q)
+        for k, v in r.items():
+            if k not in ("tables", "table_errors", "errors", "quarantined"):
+                out.setdefault(k, v)
+    return out
+
+
 def run_data_check(config: dict[str, Any], *, tables: Iterable[str] = (), depth: str | None = None,
                    timeout: float = DATA_CHECK_TIMEOUT_S) -> dict[str, Any]:
-    """Run ``server.py --check --json`` once, under the data child's memory limit, and return its
-    ``CheckResponse`` JSON."""
+    """Run ``server.py --check --json`` under the data child's memory limit and return its ``CheckResponse``
+    JSON: one process per group of :func:`check_groups` (the large tables each in their own), merged."""
     from .datalayer.settings import DataSettings
 
     depth = depth or DataSettings.from_config(config).readiness.session_depth
+    groups = check_groups(config, tables)
+    if len(groups) == 1:
+        return _run_check_once(config, groups[0], depth, timeout)
+    deadline = time.monotonic() + timeout
+    responses: list[dict[str, Any]] = []
+    failed: list[str] = []
+    for group in groups:
+        try:
+            responses.append(_run_check_once(config, group, depth, max(60.0, deadline - time.monotonic())))
+        except DataCheckUnavailable as exc:
+            # one group's child failing (a table killed at the data child's limit) never hides the other groups'
+            # results: its tables carry the error, as a table the child could not check does
+            failed.append(str(exc))
+            responses.append({"tables": {}, "table_errors": {str(t): f"the data child checking it failed: {exc}"[:800]
+                                                             for t in group}})
+    if len(failed) == len(groups):
+        raise DataCheckUnavailable(failed[0])
+    return _merge_checks(responses)
+
+
+def _run_check_once(config: dict[str, Any], tables: Sequence[str], depth: str, timeout: float) -> dict[str, Any]:
     args = ["--check", "--json", "--depth", depth]
     for t in tables:
         args += ["--table", str(t)]
@@ -1714,6 +1817,10 @@ def add_doctor_parser(sub: Any) -> Any:
     d.add_argument("--analysis", action="store_true",
                    help="also check the Python/R analysis stack (scanpy, pydeseq2, rpy2, lme4, glmmTMB, ...)")
     d.set_defaults(handler=_doctor_handler)
+    # `vbt validate`, the host certification (vbt.validate), is registered with the doctor it extends
+    from .validate import add_validate_parser
+
+    add_validate_parser(sub)
     return d
 
 

@@ -68,6 +68,9 @@ __all__ = [
 INFER_BYTES = 1 << 20
 #: Header lines of a GCT 1.2 file before the column header (``#1.2`` and the dimension line).
 GCT_PREAMBLE = 2
+#: The statistics scan (``stats``) decodes blocks of about this many rows, at most :data:`STATS_BLOCK_BYTES` each.
+STATS_BATCH_ROWS = 65536
+STATS_BLOCK_BYTES = 32 << 20
 
 
 def _arrow() -> Any:
@@ -705,8 +708,13 @@ class CsvFormat(PluginBase):
         names = self.unique_names(hdr.names)
         rename = {f"c{i}": n for i, n in enumerate(names)}
 
+        # blocks of many rows: with 1 MiB blocks a wide matrix (DepMap 24Q4 CRISPRGeneEffect.csv, 17,917 columns of
+        # about 360 KB per line) decoded two rows per batch and the per-column statistics of 1,178 rows took 182 s;
+        # 32 MiB blocks take 7.7 s at 674 MB peak (64 MiB: 5.9 s, 735 MB)
+        block = self._block_size(frag, hdr, STATS_BATCH_ROWS, cap=STATS_BLOCK_BYTES)
+
         def renamed() -> Iterator[Any]:
-            for b in self._batches(frag, None):
+            for b in self._batches(frag, None, block_size=block):
                 yield b.rename_columns([rename[c] for c in b.schema.names])
 
         st = stats_from_batches(renamed())
@@ -730,8 +738,9 @@ class CsvFormat(PluginBase):
     def compile(self, predicate: Predicate, schema: Any) -> tuple[Any, Predicate | None]:
         return residual_compile(predicate, schema)
 
-    def _block_size(self, frag: Fragment, hdr: _Header, batch_rows: int) -> int:
-        """Bytes of ``batch_rows`` lines (estimated from the head), so a block decodes about one batch."""
+    def _block_size(self, frag: Fragment, hdr: _Header, batch_rows: int, *, cap: int = INFER_BYTES * 16) -> int:
+        """Bytes of ``batch_rows`` lines (estimated from the head), so a block decodes about one batch (at most
+        ``cap`` bytes of rows)."""
         head = self._head(frag)
         lines = head.split(b"\n")
         header_bytes = sum(len(line) + 1 for line in lines[:hdr.skip])
@@ -739,7 +748,7 @@ class CsvFormat(PluginBase):
         per_line = sum(len(line) + 1 for line in complete) // len(complete) if complete else \
             max(64, len(head) - header_bytes)
         # a block holds the skipped header lines plus about one batch of rows (never less than one row)
-        return header_bytes + max(1 << 14, per_line, min(INFER_BYTES * 16, per_line * max(1, int(batch_rows))))
+        return header_bytes + max(1 << 14, per_line, min(int(cap), per_line * max(1, int(batch_rows))))
 
     def scan(self, frags: Sequence[Fragment], *, columns: list[str] | None, predicate: Predicate | None,
              partitions: Mapping[str, str], batch_rows: int = 1024,

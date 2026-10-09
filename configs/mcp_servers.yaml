@@ -15,8 +15,12 @@
 #   smoke            `vbt doctor --smoke=upstream` call: {tool: ..., args: {...}} or false
 #
 # Data layer keys (docs/DATA_LAYER.md §14 and §17; all optional, read when data.enabled):
-#   mem_limit_mb     process memory limit enforced by the reaper (RLIMIT_DATA): an int, 'auto'
-#                    (derived from the tables the server reads) or null (data.memory.default_server_mb)
+#   mem_limit_mb     process memory limit enforced by the reaper: an int (MB), 'auto' (0.8 x the host
+#                    budget, vbt.datalayer.memory.sizing) or null (data.memory.default_server_mb, itself
+#                    'auto' by default)
+#   limit_kind       how the limit is enforced: rss (default, data.memory.limit_kind: a memory cgroup when
+#                    one can be created, else the RSS watchdog; no RLIMIT_DATA) | cgroup | watchdog |
+#                    rlimit_data | none
 #   overlay          the server's overlay file (default configs/data/overlays/<name>.yaml, matched by
 #                    its `server:` field); servers without one get the generic guard (_generic.yaml)
 #   sources          descriptor sources the server reads (default: those its overlay binds); phase 1
@@ -73,7 +77,8 @@ servers:
     enabled: true
     # TileDB reserves 1 GiB read buffers per obs column: Census pulls fail with std::bad_alloc under any
     # RLIMIT_DATA (4,500 to 40,000 MB tested) while RSS stays under 3 GB, so this server is contained by its
-    # resident memory (a memory cgroup, else the RSS watchdog) at data.memory.default_server_mb
+    # resident memory (a memory cgroup, else the RSS watchdog) at data.memory.default_server_mb. rss is the
+    # default for every server; it is pinned here so that a host-wide limit_kind: rlimit_data never applies to it.
     limit_kind: rss
   - name: association
     # Open Targets target-disease associations + literature
