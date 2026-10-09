@@ -2,7 +2,9 @@
 
 :func:`build_launch_spec` rewrites a server's command so it runs under
 :mod:`vbt.datalayer.launch.reaper` (executed by path with the harness interpreter and ``-E``):
-an ``RLIMIT_DATA`` memory limit, a status file next to the server log, a ``VBT_CHILD_EXIT``
+a memory limit (:func:`server_limit_mb`, scaled with the host unless configured) contained the way
+:func:`limit_kind` says (by default ``rss``: a memory cgroup, else the RSS watchdog; never ``RLIMIT_DATA``
+unless asked), a status file next to the server log, a ``VBT_CHILD_EXIT``
 marker in the server log when the child ends (the reaper tees the child's stderr, so a memory exit
 carries its ``cause``: ``memory_error``, ``cgroup_oom_kill``, ``watchdog``, ``kernel_oom_kill`` or
 ``peak_rss``), and for Python children an explicit environment in which ``PYTHONHASHSEED=0`` actually
@@ -19,8 +21,8 @@ from typing import Any
 from ..api import LaunchSpec
 from ..memory import sizing
 
-__all__ = ["REAPER", "EXIT_MARKER", "CHILD_ENV", "DATA_SERVER", "LIMIT_KINDS", "build_launch_spec", "limit_kind",
-           "server_limit_mb", "host_memory_mb", "status_path"]
+__all__ = ["REAPER", "EXIT_MARKER", "CHILD_ENV", "DATA_SERVER", "LIMIT_KINDS", "DEFAULT_LIMIT_KIND",
+           "build_launch_spec", "limit_kind", "server_limit_mb", "limit_source", "host_memory_mb", "status_path"]
 
 #: The launcher script, executed by path (it never imports vbt).
 REAPER = Path(__file__).resolve().with_name("reaper.py")
@@ -65,49 +67,59 @@ def _memory_raw(settings: Any) -> dict[str, Any]:
 
 
 LIMIT_KINDS = ("rlimit_data", "cgroup", "watchdog", "rss", "none")
+#: The containment when neither the server nor ``data.memory.limit_kind`` names one: it works for every server.
+DEFAULT_LIMIT_KIND = "rss"
 
 
 def limit_kind(cfg: Any, settings: Any = None) -> str:
     """How a server's memory is contained: its own ``limit_kind`` (``configs/mcp_servers.yaml``), else
-    ``data.memory.limit_kind``. ``rss`` contains resident memory only (a memory cgroup, else the RSS watchdog)
-    and sets no ``RLIMIT_DATA``, which TileDB's Census reads and Arrow's thread stacks fail under."""
+    ``data.memory.limit_kind``, else ``rss``. ``rss`` contains resident memory only (a memory cgroup, else the RSS
+    watchdog) and sets no ``RLIMIT_DATA``, which TileDB's Census reads and Arrow's thread stacks fail under."""
     own = None if isinstance(cfg, str) else getattr(cfg, "limit_kind", None)
     if own:
         if own not in LIMIT_KINDS:
             raise ValueError(f"server {getattr(cfg, 'name', cfg)!r}: limit_kind {own!r} is not one of {LIMIT_KINDS}")
         return str(own)
-    return str(getattr(getattr(settings, "memory", None), "limit_kind", "rlimit_data") or "rlimit_data")
+    return str(getattr(getattr(settings, "memory", None), "limit_kind", None) or DEFAULT_LIMIT_KIND)
+
+
+def _configured_limit(cfg: Any, settings: Any) -> tuple[bool, Any]:
+    """``(data child?, the limit setting that applies)``: the server's own ``mem_limit_mb``, else
+    ``data.service.mem_limit_mb`` (the data child) or ``data.memory.default_server_mb``."""
+    name = cfg if isinstance(cfg, str) else getattr(cfg, "name", "")
+    child = name == DATA_SERVER
+    value = None if isinstance(cfg, str) else getattr(cfg, "mem_limit_mb", None)
+    if value is None and settings is not None:
+        section = getattr(settings, "service" if child else "memory", None)
+        value = getattr(section, "mem_limit_mb" if child else "default_server_mb", None)
+    return child, value
 
 
 def server_limit_mb(cfg: Any, settings: Any = None) -> int:
     """The memory limit (MB) a server runs under; 0 means no limit.
 
-    Per server ``mem_limit_mb`` wins; the data child defaults to ``data.service.mem_limit_mb``
-    and every other server to ``data.memory.default_server_mb``. ``auto`` scales with the host
-    (:mod:`..memory.sizing`): a server gets ``0.8 x`` the host budget (at least 2,048 MB), the data
-    child 5% of the memory it may plan with (3,000-32,768 MB). A number stays as given.
+    The server's own ``mem_limit_mb`` wins; else the data child takes ``data.service.mem_limit_mb`` and every
+    other server ``data.memory.default_server_mb``. ``auto`` (or no setting) scales with the host
+    (:mod:`..memory.sizing`): an upstream server gets ``0.8 x`` the host budget (at least 2,048 MB), the data
+    child 5% of the memory the harness plans with (3,000-32,768 MB). A number stays as given.
     ``limit_kind: none`` disables the limit.
     """
-    memory = getattr(settings, "memory", None)
     if limit_kind(cfg, settings) == "none":
         return 0
-    name = cfg if isinstance(cfg, str) else getattr(cfg, "name", "")
-    own = None if isinstance(cfg, str) else getattr(cfg, "mem_limit_mb", None)
-    explicit = _as_mb(own)
-    if explicit is not None:
-        return max(0, explicit)
+    child, value = _configured_limit(cfg, settings)
+    number = _as_mb(value)
+    if number is not None:
+        return max(0, number)
     raw = _memory_raw(settings)
     plan = sizing.plan_mb(raw)
-    if name == DATA_SERVER and not sizing.is_auto(own):
-        value = getattr(getattr(settings, "service", None), "mem_limit_mb", None) if settings is not None else None
-        if _as_mb(value) is not None:
-            return max(0, _as_mb(value) or 0)
-        if settings is None or sizing.is_auto(value):
-            return sizing.data_child_for(plan) if plan else sizing.CHILD_FLOOR_MB
-    value = getattr(memory, "default_server_mb", None) if memory is not None else None
-    if not sizing.is_auto(own) and _as_mb(value) is not None:
-        return max(0, _as_mb(value) or 0)
+    if child:
+        return sizing.data_child_for(plan) if plan else sizing.CHILD_FLOOR_MB
     return sizing.server_limit_for(plan, raw) if plan else UNKNOWN_HOST_SERVER_MB
+
+
+def limit_source(cfg: Any, settings: Any = None) -> str:
+    """``configured`` when a number sets the server's limit, else ``auto`` (it scales with the host)."""
+    return "configured" if _as_mb(_configured_limit(cfg, settings)[1]) is not None else "auto"
 
 
 def status_path(log_dir: str | Path, server: str) -> Path:
