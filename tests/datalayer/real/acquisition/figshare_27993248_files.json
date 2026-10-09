@@ -1,0 +1,58 @@
+{
+ "source": "https://api.figshare.com/v2/articles/27993248/files?page_size=1000",
+ "retrieved": "2026-10-08",
+ "files_in_article": 73,
+ "bytes_in_article": 30825074613,
+ "excerpt": [
+  {
+   "id": 51064631,
+   "name": "CRISPRGeneDependency.csv",
+   "size": 421115594,
+   "is_link_only": false,
+   "download_url": "https://ndownloader.figshare.com/files/51064631",
+   "supplied_md5": "0d3bdadf0c59264e39f7fbadf232ccdb",
+   "computed_md5": "0d3bdadf0c59264e39f7fbadf232ccdb",
+   "mimetype": "text/csv"
+  },
+  {
+   "id": 51064667,
+   "name": "CRISPRGeneEffect.csv",
+   "size": 428678699,
+   "is_link_only": false,
+   "download_url": "https://ndownloader.figshare.com/files/51064667",
+   "supplied_md5": "6edf7ade09b9b34199210b559d4745d3",
+   "computed_md5": "6edf7ade09b9b34199210b559d4745d3",
+   "mimetype": "text/csv"
+  },
+  {
+   "id": 51064916,
+   "name": "CRISPRInferredCommonEssentials.csv",
+   "size": 20795,
+   "is_link_only": false,
+   "download_url": "https://ndownloader.figshare.com/files/51064916",
+   "supplied_md5": "545edef0d377f252db6e5e675201bd77",
+   "computed_md5": "545edef0d377f252db6e5e675201bd77",
+   "mimetype": "undefined"
+  },
+  {
+   "id": 51065297,
+   "name": "Model.csv",
+   "size": 645696,
+   "is_link_only": false,
+   "download_url": "https://ndownloader.figshare.com/files/51065297",
+   "supplied_md5": "675210d17675f3517b0ce39a3c274f16",
+   "computed_md5": "675210d17675f3517b0ce39a3c274f16",
+   "mimetype": "undefined"
+  },
+  {
+   "id": 51065795,
+   "name": "README.txt",
+   "size": 43103,
+   "is_link_only": false,
+   "download_url": "https://ndownloader.figshare.com/files/51065795",
+   "supplied_md5": "54628c15a10b9ff6536db245cfed5231",
+   "computed_md5": "54628c15a10b9ff6536db245cfed5231",
+   "mimetype": "text/plain"
+  }
+ ]
+}

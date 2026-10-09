@@ -227,3 +227,37 @@ tables:
             # 0.00-15.64 (5.49) GSE16879, 0.14-16.79 (7.57) GSE23597, 2.37-14.28 (6.99) GSE73661
       sections: {uns.cohort_info: {role: payload},
                  obsm.X_pca: {role: vector, dim: 50, optional: true}}   # no obsm in any of the four files
+
+# ---------------------------------------------------------------------------------------------- acquisition
+# `vbt data acquire zenodo_vbt`: the members these tables read, extracted from the record's 2.9 GB zip with range
+# requests (only the central directory and those members are transferred; each member is checked by its CRC-32).
+# Read on 2026-10-08: record 22259123 redirects to its current version 22259124 (doi:10.5281/zenodo.22259124,
+# published 2026-09-02), file virtualbiotech_submission.zip, 2,909,966,318 bytes, md5 9e30309e22cf269431af573fd732fb49,
+# 2,866 members; the six tables below are 30 members, 92,001,168 bytes. `vbt data zenodo fetch --preset ...`
+# extracts other parts of the archive (case-study code, results, traces).
+acquisition:
+  release: "22259123"
+  homepage: https://doi.org/10.5281/zenodo.22259123
+  licence: "CC BY 4.0 (the Zenodo record's license)"
+  transport:
+    plugin: zip_member
+    options:
+      archive_index: {index: "https://zenodo.org/api/records/{release}", files: "$.files[*]", path: "$.key",
+                      url: "$.links.self", size: "$.size", checksums: {md5: "$.checksum"},
+                      select: virtualbiotech_submission.zip,
+                      record: {version_record: "$.id", doi: "$.doi", published: "$.metadata.publication_date"}}
+  dir: zenodo/{release}
+  env: {VBT_ZENODO_DIR: "{home}"}
+  tables:
+    disease:                        {files: ["virtualbiotech_submission/clinical_trials/data/disease/**"],
+                                     count: 1, bytes: 5545555}
+    drug_molecule:                  {files: ["virtualbiotech_submission/clinical_trials/data/drug_molecule/**"],
+                                     count: 2, bytes: 2275731}
+    association_by_datatype_direct: {files: ["virtualbiotech_submission/clinical_trials/data/association_by_datatype_direct/**"],
+                                     count: 21, bytes: 32355246}
+    chembl_clinical_nct:            {files: [virtualbiotech_submission/clinical_trials/data/chembl_clinical_nct_data.parquet],
+                                     count: 1, bytes: 10376365}
+    clinical_trial_labels:          {files: [virtualbiotech_submission/clinical_trials/data/clinical_trial_labels_reconciled.csv],
+                                     count: 1, bytes: 6741476}
+    ibd_cohorts:                    {files: ["virtualbiotech_submission/osmr/code/data/GSE*.h5ad"], count: 4,
+                                     bytes: 34706795}

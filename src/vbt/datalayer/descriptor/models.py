@@ -47,7 +47,7 @@ __all__ = [
     "ViewSpec", "SectionSpec", "ParseSpec", "AxisSpec", "MatrixSpec", "EnrichmentSpec", "EnrichmentFamily",
     "MembershipSpec", "MemberEnd", "ScopeFacet", "CompositeRef", "IdTypeFrom", "KindFrom", "AliasesFrom",
     "CutoffSpec", "TimeFallback", "MissingKind", "ColumnSpec", "SENTINEL_WORDS", "SENTINEL_OPS", "plugin_name",
-    "id_type_identity",
+    "id_type_identity", "AcquisitionSpec", "AcquisitionTransport", "AcquisitionFiles", "PrepareStep",
 ]
 
 SCHEMA = "vbt.datasource/1"
@@ -573,6 +573,100 @@ class TableSpec(Strict):
         return self.items_of is not None
 
 
+class AcquisitionTransport(Strict):
+    """The acquisition plugin that lists and reads the source's files, and its options (``{release}`` is
+    substituted in every string)."""
+
+    plugin: str                                        # http | huggingface | s3 | gcs | json_index | zip_member | ...
+    options: dict[str, Any] = {}
+
+
+class AcquisitionFiles(Strict):
+    """What one table (or one named download group, ``extra``) needs from the source: the listed files matching
+    ``files`` (path globs: ``**`` spans directories), or a ``prepare`` step's output."""
+
+    files: list[str] = []
+    exclude: list[str] = []
+    bytes: int | None = None                           # known size of the matched files (plan without a listing)
+    count: int | None = None                           # known number of files
+    prepared_by: str | None = None                     # the prepare step that writes this table from downloads
+    optional: bool = False                             # acquired only when named (extra groups)
+    note: str | None = None
+
+    @model_validator(mode="after")
+    def _has_files(self) -> "AcquisitionFiles":
+        if not self.files and not self.prepared_by:
+            raise ValueError("an acquisition entry names `files` or the `prepared_by` step that writes it")
+        return self
+
+
+class PrepareStep(Strict):
+    """An unmodified upstream script that turns downloaded files into what the data layer reads. ``command`` is an
+    argv; ``{python}`` (this interpreter), ``{upstream}`` (``vars.upstream``), ``{home}``, ``{downloads}``,
+    ``{output}`` (the home's ``output`` directory) and ``{release}`` are substituted."""
+
+    command: list[str]
+    needs: list[str]                                   # download groups (tables or extra) the step reads
+    output: str                                        # the directory the step writes, relative to the home
+    fresh: bool = True                                 # the step creates `output` whole and refuses an existing one
+    manifest: str | None = None                        # the manifest the step writes into `output`
+    complete_key: str = "complete"                     # that manifest's completeness flag
+    output_bytes: int | None = None                    # disk the output needs (an estimate), for the plan
+    note: str | None = None
+
+    @field_validator("command")
+    @classmethod
+    def _argv(cls, v: list[str]) -> list[str]:
+        if not v or not all(isinstance(x, str) and x for x in v):
+            raise ValueError("prepare.command is a non-empty argv list of strings")
+        return v
+
+
+class AcquisitionSpec(Strict):
+    """How the source's files are acquired (``vbt data acquire``): a transport plugin, the files of each table,
+    optional prepare steps, where they land, and what a person must know (licence, login).
+
+    ``mode``: ``download`` (the default), ``remote`` (read live; nothing to download) or ``manual`` (a person
+    must fetch the files: ``login`` says how). The home of a source is ``<acquisition root>/<dir>``; downloads
+    land in ``<home>/<downloads>`` and keep their listed paths; ``env`` names the variables that point the data
+    layer at the files (``{home}``, ``{downloads}`` and ``{release}`` substituted)."""
+
+    mode: Literal["download", "remote", "manual"] = "download"
+    release: str | None = None                         # the release acquired and pinned (default: release.expect)
+    transport: AcquisitionTransport | None = None
+    dir: str = "{source}/{release}"
+    downloads: str = "."
+    env: dict[str, str] = {}
+    index_cache: str | None = None                     # where the transport keeps its index (relative to downloads)
+    tables: dict[str, AcquisitionFiles] = {}
+    extra: dict[str, AcquisitionFiles] = {}            # named download groups that are not tables
+    prepare: dict[str, PrepareStep] = {}
+    verify: list[Literal["size", "checksum", "parquet_framing"]] = ["size", "checksum"]
+    manifest: str | None = ".download-manifest.json"  # written in the downloads directory (upstream format)
+    manifest_base: str | None = None                   # the manifest's `base` (default: the transport's `base`)
+    licence: str | None = None
+    login: str | None = None
+    notes: str | None = None
+    homepage: str | None = None
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "AcquisitionSpec":
+        if self.mode == "download" and self.transport is None:
+            raise ValueError("acquisition mode download needs a `transport`")
+        clash = sorted(set(self.tables) & set(self.extra))
+        if clash:
+            raise ValueError(f"acquisition.extra names tables: {clash}")
+        groups = set(self.tables) | set(self.extra)
+        for name, step in self.prepare.items():
+            unknown = [n for n in step.needs if n not in groups]
+            if unknown:
+                raise ValueError(f"acquisition.prepare.{name}.needs names unknown download groups: {unknown}")
+        for name, entry in {**self.tables, **self.extra}.items():
+            if entry.prepared_by is not None and entry.prepared_by not in self.prepare:
+                raise ValueError(f"acquisition entry {name}: prepared_by {entry.prepared_by!r} is not a prepare step")
+        return self
+
+
 class SourceDescriptor(Strict):
     schema_: Literal["vbt.datasource/1"] = Field(alias="schema")
     source: str
@@ -589,6 +683,21 @@ class SourceDescriptor(Strict):
     views: dict[str, ViewSpec] = {}
     leakage: LeakageSpec | None = None
     concepts: dict[str, list[str]] = {}
+    acquisition: AcquisitionSpec | None = None
+
+    @model_validator(mode="after")
+    def _acquisition_tables(self) -> "SourceDescriptor":
+        if self.acquisition is None:
+            return self
+        # a descriptor narrowed to fewer tables keeps the others' files as optional download groups (acquired only
+        # when named), so a prepare step that reads them still resolves
+        for name in [t for t in self.acquisition.tables if t not in self.tables]:
+            entry = self.acquisition.tables.pop(name)
+            self.acquisition.extra[name] = entry.model_copy(update={"optional": True})
+        items = [t for t in self.acquisition.tables if self.tables[t].items_of is not None]
+        if items:
+            raise ValueError(f"acquisition.tables names item tables (they share their parent's files): {items}")
+        return self
 
     @field_validator("source")
     @classmethod

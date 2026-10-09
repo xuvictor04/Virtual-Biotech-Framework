@@ -1,0 +1,116 @@
+{
+ "source": "https://huggingface.co/api/datasets/tahoebio/Tahoe-100M/tree/2dc57900b7981cfcf5e211527169a0b006546a95/metadata",
+ "retrieved": "2026-10-08",
+ "revision": "2dc57900b7981cfcf5e211527169a0b006546a95",
+ "entries": [
+  {
+   "type": "directory",
+   "oid": "de186d1c7681c1af80a82c618ce919c7040dd710",
+   "size": 0,
+   "path": "metadata/pseudobulk_differential_expression"
+  },
+  {
+   "type": "file",
+   "oid": "92702f68bd9e6db5a4c25ae7ce948d8ae94fbec9",
+   "size": 19040,
+   "lfs": {
+    "oid": "67641f5bdd3fb077978ff1fec4d0d617490674bcd42850515ae3997194c29d4d",
+    "size": 19040,
+    "pointerSize": 130
+   },
+   "xetHash": "a5932661336006e057f88f2ba33399821692edc1e069c020c232e103f8869c41",
+   "path": "metadata/cell_line_metadata.parquet"
+  },
+  {
+   "type": "file",
+   "oid": "885f30e77be0fae18e273a667c408a30efa4e9a1",
+   "size": 40475,
+   "lfs": {
+    "oid": "7a04c7a6611e74c92253163b994ff0a47191928ee7511f1c2ca508cee0e79f28",
+    "size": 40475,
+    "pointerSize": 130
+   },
+   "xetHash": "96fd83de8a8ac897dbf09fbc9120d3c4fd33290ff713a83dbf71476286188197",
+   "path": "metadata/drug_metadata.parquet"
+  },
+  {
+   "type": "file",
+   "oid": "3f4b9256eeab50cce83040e6163ac890f4209eb5",
+   "size": 1326799,
+   "lfs": {
+    "oid": "d6104d1ca570d94832be0d27ffe8b7e4e54cfd366c9080239219f9c406eb751c",
+    "size": 1326799,
+    "pointerSize": 132
+   },
+   "xetHash": "7dd08d55398367a214cf09bf83b047ad2fcf01664446e0dce80209b5ca09f610",
+   "path": "metadata/gene_metadata.parquet"
+  },
+  {
+   "type": "file",
+   "oid": "03a4fc4dbdf28721ebc07700d592c6cb12e13254",
+   "size": 1744784,
+   "path": "metadata/gene_vocabulary.json"
+  },
+  {
+   "type": "file",
+   "oid": "bb269c388a131b3474e1bc436769343709bb0d46",
+   "size": 4790043,
+   "path": "metadata/gene_vocabulary.jsonl"
+  },
+  {
+   "type": "file",
+   "oid": "99d0072fc922ce7dd2b4a55c5fcbb57ae8f02028",
+   "size": 2293981573,
+   "lfs": {
+    "oid": "e51b24f3666f5f433c59ff01dd6fa33934627091455e89d929f2c1ddc87401fe",
+    "size": 2293981573,
+    "pointerSize": 135
+   },
+   "xetHash": "33442dc3e43419dfadce79e585cd66060230745f0e459e646d5ec4a6c991de19",
+   "path": "metadata/obs_metadata.parquet"
+  },
+  {
+   "type": "file",
+   "oid": "a46caa3dca80e7b35e52e4115756f561c34c7577",
+   "size": 65636,
+   "lfs": {
+    "oid": "33167f0ce28cff8357c503cda67d1c7fea200bff6918ee1de3c4f3549175b9d3",
+    "size": 65636,
+    "pointerSize": 130
+   },
+   "xetHash": "e14f69d362f413e2d5970781da0651cc76a2446e562c3a5e3e7a47c3e34672dc",
+   "path": "metadata/sample_metadata.parquet"
+  }
+ ],
+ "de_shards": {
+  "source": "https://huggingface.co/api/datasets/tahoebio/Tahoe-100M/tree/2dc57900b7981cfcf5e211527169a0b006546a95/metadata/pseudobulk_differential_expression",
+  "pages": 2,
+  "files": 1026,
+  "bytes": 88859715303,
+  "lfs_sha256": true,
+  "first": {
+   "type": "file",
+   "oid": "a65b369274ab59036392e00d2e08935f950dd95e",
+   "size": 91442763,
+   "lfs": {
+    "oid": "5071292ace0abb0b1266f35f6739d59e63a8396ffae583f729e11af26e1b2560",
+    "size": 91442763,
+    "pointerSize": 133
+   },
+   "xetHash": "27727ea3eaa58ba62feaf383bcde78dbe817ca8a51d2b06153c3419f836ea5f2",
+   "path": "metadata/pseudobulk_differential_expression/train-00000-of-01026.parquet"
+  },
+  "last": {
+   "type": "file",
+   "oid": "8fbfa190cde58094c37b3f83f9f9adfe07669bbc",
+   "size": 87780823,
+   "lfs": {
+    "oid": "855b3a0acbaedd989349edb36f72bcdb9c6a0fe0fabbf3a31dadcd6ccfa2368b",
+    "size": 87780823,
+    "pointerSize": 133
+   },
+   "xetHash": "79e2e95dc302cdf5a312fd1d7309f2ec691d9a7a3a41f8da311a69fb4b7aa1f0",
+   "path": "metadata/pseudobulk_differential_expression/train-01025-of-01026.parquet"
+  }
+ }
+}

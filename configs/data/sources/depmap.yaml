@@ -171,3 +171,26 @@ tables:
                    parse: {pattern: '^(?P<symbol>\S+) \((?P<entrez_id>\d+)\)$',
                            fields: {entrez_id: {role: identifier, id_type: ncbi_gene},
                                     symbol:    {role: label, of: entrez_id, unique: false, authority: release_snapshot}}}}
+
+# ---------------------------------------------------------------------------------------------- acquisition
+# `vbt data acquire depmap`: the four files from figshare article 27993248 ("DepMap 24Q4 Public", published
+# 2024-12-10, 73 files, 30,825,074,613 bytes in all), each checked against figshare's supplied md5. Read on
+# 2026-10-08. The DepMap portal's download API answered scripts with a bot-verification page that day, and figshare
+# holds the Public releases up to 24Q4: a later release needs its article id here, or a download from the portal.
+acquisition:
+  release: 24Q4
+  homepage: https://figshare.com/articles/dataset/DepMap_24Q4_Public/27993248
+  licence: "CC BY 4.0 (the figshare article's license)"
+  transport:
+    plugin: json_index
+    options: {index: "https://api.figshare.com/v2/articles/27993248/files?page_size=1000", files: "$[*]",
+              path: "$.name", url: "$.download_url", size: "$.size", checksums: {md5: "$.supplied_md5"}}
+  dir: depmap/{release}
+  env: {DEPMAP_DATA_PATH: "{home}"}
+  tables:
+    gene_effect:       {files: [CRISPRGeneEffect.csv], count: 1, bytes: 428678699}
+    gene_dependency:   {files: [CRISPRGeneDependency.csv], count: 1, bytes: 421115594}
+    model:             {files: [Model.csv], count: 1, bytes: 645696}
+    common_essentials: {files: [CRISPRInferredCommonEssentials.csv], count: 1, bytes: 20795}
+  extra:
+    readme: {files: [README.txt], count: 1, bytes: 43103, optional: true, note: "the release notes"}

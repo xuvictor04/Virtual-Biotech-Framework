@@ -24,17 +24,17 @@ from the environment are honoured.  Tests inject a local server via
 
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import io
 import os
-import re
 import time
 import zipfile
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
+
+from ..datalayer.plugins.acquisition import glob_match as _glob_match
 
 RECORD_ID = 22259123
 DOI = "10.5281/zenodo.22259123"
@@ -85,47 +85,8 @@ def preset_names() -> list[str]:
     return list(PRESETS)
 
 
-_GLOB_CACHE: dict[str, re.Pattern] = {}
-
-
-def _glob_regex(pattern: str) -> re.Pattern:
-    """Translate a path glob: ``**`` spans directories, ``*``/``?`` do not."""
-    rx = _GLOB_CACHE.get(pattern)
-    if rx is not None:
-        return rx
-    i, out = 0, []
-    while i < len(pattern):
-        c = pattern[i]
-        if pattern.startswith("**/", i):
-            out.append("(?:.*/)?")
-            i += 3
-        elif pattern.startswith("**", i):
-            out.append(".*")
-            i += 2
-        elif c == "*":
-            out.append("[^/]*")
-            i += 1
-        elif c == "?":
-            out.append("[^/]")
-            i += 1
-        elif c == "[":
-            j = pattern.find("]", i)
-            if j < 0:
-                out.append(re.escape(c))
-                i += 1
-            else:
-                out.append(fnmatch.translate(pattern[i:j + 1])[4:-3])  # strip (?s:...)\Z
-                i = j + 1
-        else:
-            out.append(re.escape(c))
-            i += 1
-    rx = re.compile("".join(out) + r"\Z", re.S)
-    _GLOB_CACHE[pattern] = rx
-    return rx
-
-
-def glob_match(path: str, pattern: str) -> bool:
-    return bool(_glob_regex(pattern).match(path))
+# ``**`` spans directories, ``*``/``?`` do not: the acquisition plugins' glob (one implementation for both)
+glob_match = _glob_match
 
 
 def _rel(name: str) -> str:
@@ -507,11 +468,13 @@ class ZenodoArchive:
 
 
 def add_data_parsers(sub) -> None:
-    d = sub.add_parser("data", help="fetch external data (the paper's Zenodo case-study archive, Open Targets "
-                                    "release tables)")
+    d = sub.add_parser("data", help="acquire external data: any declared table (acquire, status), the paper's "
+                                    "Zenodo case-study archive, Open Targets release tables")
     ds = d.add_subparsers(dest="data_source", required=True)
+    from .cli import add_acquire_parsers
     from .opentargets import add_ot_parser
 
+    add_acquire_parsers(ds)              # vbt data acquire | status (descriptor acquisition sections)
     add_ot_parser(ds)                    # vbt data ot list|fetch|manifest
     z = ds.add_parser("zenodo", help=f"Zenodo record {RECORD_ID} ({FILE_KEY}, doi:{DOI})")
     zs = z.add_subparsers(dest="zenodo_action", required=True)

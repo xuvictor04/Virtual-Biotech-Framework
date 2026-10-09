@@ -12,6 +12,13 @@ plugins, never protocol methods.
 
 Format plugins import pyarrow only inside the methods that read data (the Arrow types below are
 plain ``Any`` aliases), so the harness can import any plugin module.
+
+A sixth kind, ``acquisition`` (:class:`AcquisitionPlugin`), runs on the harness side only: the transports of
+``vbt data acquire`` (an HTTPS server with a directory index or a checksum list, a Hugging Face dataset
+repository, a public S3 or GCS bucket, a JSON index such as a Zenodo record or a figshare article, members of a
+remote zip). It is discovered like the others but kept out of :data:`~vbt.datalayer.plugins.KINDS`, so the data
+child's registry, its provenance ``plugins`` and the pinned kind set do not change: see
+:data:`~vbt.datalayer.plugins.HARNESS_KINDS` and :data:`HARNESS_CAPABILITIES`.
 """
 
 from __future__ import annotations
@@ -42,6 +49,8 @@ __all__ = [
     "FormatPlugin", "LayoutPlugin", "StatisticPlugin", "IdentifierPlugin", "EnvelopePlugin", "PluginBase",
     "IdentifierBase", "EnvelopeBase",
     "plugin_key", "ArrowSchema", "ArrowTable", "ArrowRecordBatch",
+    "RemoteFile", "AcquisitionError", "AcquisitionPlugin", "AcquisitionBase", "HARNESS_CAPABILITIES",
+    "CHECKSUM_ALGOS",
 ]
 
 API_VERSION = 1
@@ -256,6 +265,40 @@ class PluginError(Exception):
     """A plugin that cannot be registered (collision, API mismatch, missing attributes)."""
 
 
+#: Checksum algorithms a listing may report, strongest first (``git_sha1`` is the blob id of a file a git
+#: repository stores without LFS, ``crc32`` the CRC of a zip member).
+CHECKSUM_ALGOS: tuple[str, ...] = ("sha256", "sha1", "md5", "git_sha1", "crc32")
+
+
+@dataclass(frozen=True)
+class RemoteFile:
+    """One file a source publishes, as an acquisition plugin lists it.
+
+    ``path`` is a canonical relative path (where the file lands under the download directory, and what the
+    descriptor's acquisition patterns match); ``url`` where it is read from; ``checksums`` the publisher's
+    digests by algorithm (:data:`CHECKSUM_ALGOS`, lowercase hex); ``member`` the member name when the file is
+    inside an archive at ``url``."""
+
+    path: str
+    url: str
+    size: int | None = None
+    checksums: Mapping[str, str] = field(default_factory=dict)
+    member: str | None = None
+    extra: Mapping[str, Any] = field(default_factory=dict)
+
+
+class AcquisitionError(Exception):
+    """A listing or a transfer that failed. A transport never answers a failure with an empty listing or an
+    empty file (I14). ``transient`` failures (connection reset, HTTP 429/5xx) are retried by the engine."""
+
+    def __init__(self, message: str, *, url: str | None = None, status: int | None = None,
+                 transient: bool = False) -> None:
+        super().__init__(message)
+        self.url = url
+        self.status = status
+        self.transient = transient
+
+
 # ---------------------------------------------------------------------------
 # Capabilities
 # ---------------------------------------------------------------------------
@@ -276,6 +319,15 @@ CAPABILITIES: dict[str, frozenset[str]] = {
     "envelope": frozenset({"rows", "totals", "nested_errors", "http_status"}),
 }
 
+#: Capabilities of the harness-side kinds (:data:`~vbt.datalayer.plugins.HARNESS_KINDS`), kept apart from
+#: :data:`CAPABILITIES` (whose keys are the data child's kinds). ``acquisition``: ``range`` a fetch resumes from
+#: an offset; ``sizes`` / ``checksums`` the listing reports them; ``members`` the files are members of an archive
+#: (fetched whole, checked by CRC); ``index`` the listing reads one index document that can be kept beside the
+#: data (``index_cache``), so a manifest can be rewritten offline.
+HARNESS_CAPABILITIES: dict[str, frozenset[str]] = {
+    "acquisition": frozenset({"range", "sizes", "checksums", "members", "index"}),
+}
+
 #: Methods a declared capability requires.
 CAPABILITY_METHODS: dict[str, dict[str, tuple[str, ...]]] = {
     "format": {"leaf_projection": ("read_leaves",), "matrix": ("axis_values", "slice"), "string_compile": ("quote",)},
@@ -283,6 +335,7 @@ CAPABILITY_METHODS: dict[str, dict[str, tuple[str, ...]]] = {
     "statistic": {"test": ("test",), "paired": ("aggregate_pair",), "veto_labels": ("vetoed_companions",)},
     "identifier": {},
     "envelope": {},
+    "acquisition": {},
 }
 
 #: Methods every plugin of a kind implements.
@@ -293,6 +346,7 @@ REQUIRED_METHODS: dict[str, tuple[str, ...]] = {
     "statistic": ("sort_key", "predicate", "bounds", "validate", "aggregate", "comparable", "describe", "family"),
     "identifier": ("configure", "normalize", "normalize_stored", "looks_like", "label_key", "describe"),
     "envelope": ("decode",),
+    "acquisition": ("listing", "fetch", "describe"),
 }
 
 REQUIRED_ATTRS: dict[str, tuple[str, ...]] = {
@@ -301,6 +355,7 @@ REQUIRED_ATTRS: dict[str, tuple[str, ...]] = {
     "statistic": ("kind", "name", "version", "capabilities"),
     "identifier": ("kind", "name", "version", "id_type", "canonical", "examples"),
     "envelope": ("kind", "name", "version", "capabilities"),
+    "acquisition": ("kind", "name", "version", "capabilities"),
 }
 
 
@@ -470,6 +525,40 @@ class EnvelopePlugin(Protocol):
     def conformance_cases(cls) -> Any: ...
 
 
+class AcquisitionPlugin(Protocol):
+    """A transport of ``vbt data acquire`` (harness side): lists what a source publishes and streams one file.
+
+    ``options`` are the descriptor's ``acquisition.transport.options`` (``{release}`` substituted); ``session``
+    is the engine's HTTP session (:class:`vbt.datalayer.plugins.acquisition.HttpSession`: retries, and the
+    proxy and CA settings of the environment), so a plugin opens no connection of its own and tests serve it
+    from a local fixture server. A plugin is generic (a protocol or a hosting platform), never one dataset:
+    everything specific to a source is in its descriptor."""
+
+    kind: ClassVar[str] = "acquisition"
+    name: ClassVar[str]
+    version: ClassVar[str]
+    api: ClassVar[int] = API_VERSION
+    capabilities: ClassVar[frozenset[str]]
+    requires: ClassVar[tuple[str, ...]] = ()
+
+    def listing(self, options: Mapping[str, Any], session: Any, *, index_cache: Any = None) -> list[RemoteFile]:
+        """Every file the source publishes under ``options``, sorted by path. ``index_cache`` (capability
+        ``index``) is a directory where the index document is kept and read back when it still verifies.
+        Raises :class:`AcquisitionError`, never returns a partial listing."""
+        ...
+
+    def fetch(self, file: RemoteFile, session: Any, *, offset: int = 0) -> Iterator[bytes]:
+        """The file's bytes from ``offset`` (capability ``range``; without it only offset 0)."""
+        ...
+
+    def describe(self, options: Mapping[str, Any]) -> str:
+        """Where the files come from, in one line (at most 200 characters)."""
+        ...
+
+    @classmethod
+    def conformance_cases(cls) -> Any: ...
+
+
 # ---------------------------------------------------------------------------
 # Convenience bases (optional; plugins only have to satisfy the protocol)
 # ---------------------------------------------------------------------------
@@ -542,3 +631,16 @@ class EnvelopeBase(PluginBase):
     """Defaults for envelope plugins."""
 
     kind: ClassVar[str] = "envelope"
+
+
+class AcquisitionBase(PluginBase):
+    """Defaults for acquisition plugins: ``fetch`` streams ``file.url`` from ``offset`` with a ``Range`` request
+    (the session refuses a server that ignores the range)."""
+
+    kind: ClassVar[str] = "acquisition"
+
+    def fetch(self, file: RemoteFile, session: Any, *, offset: int = 0) -> Iterator[bytes]:
+        return session.stream_bytes(file.url, offset=offset)
+
+    def describe(self, options: Mapping[str, Any]) -> str:
+        return f"{self.name}: {dict(options)}"[:200]

@@ -68,3 +68,29 @@ tables:
                    integrity: partial}                       # cl.obo's UBERON targets are outside the CL universe
       xref:         {role: identifier, xref: true, id_type_from: prefix, cardinality: many, path: "[]", resolvable: false}
       subset:       {role: category, vocab: data, path: "[]"}
+
+# ---------------------------------------------------------------------------------------------- acquisition
+# `vbt data acquire cell_ontology`: cl-basic.obo of the pinned CL release (OBO Foundry versioned PURL, a GitHub
+# release asset; 3,347,518 bytes, data-version cl/releases/2026-06-08, sha256 recorded on 2026-10-08) and, when named
+# (`cell_ontology.uberon_basic`), uberon-basic.obo of UBERON release 2026-10-01 (12,155,980 bytes on 2026-10-08).
+# VBT_CL_OBO points the term table at the file.
+acquisition:
+  release: "2026-06-08"
+  homepage: https://obofoundry.org/ontology/cl.html
+  licence: "CC BY 4.0 (the file's terms:license header; some term depictions are CC BY-NC-ND 4.0 images, not in the
+    file)"
+  transport:
+    plugin: http
+    options:
+      files:
+        cl-basic.obo: {url: "https://purl.obolibrary.org/obo/cl/releases/{release}/cl-basic.obo", bytes: 3347518,
+                       sha256: 73996c6349283e7a8cbd8183367a1cb810d0077e9c291ae0c72bd31e869f8c1c}
+        uberon-basic.obo: {url: "https://purl.obolibrary.org/obo/uberon/releases/2026-10-01/uberon-basic.obo",
+                           bytes: 12155980}
+  dir: cell_ontology/{release}
+  env: {VBT_CL_OBO: "{home}/cl-basic.obo"}
+  tables:
+    term: {files: [cl-basic.obo], count: 1, bytes: 3347518}
+  extra:
+    uberon_basic: {files: [uberon-basic.obo], count: 1, bytes: 12155980, optional: true,
+                   note: "UBERON anatomy terms; no table reads them yet (the uberon id type checks syntax only)"}

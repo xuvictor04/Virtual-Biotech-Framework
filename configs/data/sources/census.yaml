@@ -110,3 +110,18 @@ tables:
       # raw X: UMI/read counts stored as float32, implicit zeros (verified on 2025-11-08: a 200 cells x
       # 3 genes slice of X["raw"] held 65 stored values, all whole numbers from 1 to 4, none stored as 0)
       values: {X: {role: measure, statistic: count, missing: zero}}
+
+# ---------------------------------------------------------------------------------------------- acquisition
+# Nothing to download: the upstream single_cell server and the soma layout read the Census live from its public S3
+# bucket (anonymous, us-west-2), at the release the `stable` alias names (2025-11-08 on 2026-10-08). The transport
+# below locates that release; `vbt data acquire` only reports it.
+acquisition:
+  mode: remote
+  release: "2025-11-08"
+  homepage: https://chanzuckerberg.github.io/cellxgene-census/
+  licence: "per dataset, as CZ CELLxGENE Discover lists it (not restated here)"
+  transport:
+    plugin: s3
+    options: {bucket: cellxgene-census-public-us-west-2, region: us-west-2, prefix: "cell-census/{release}/soma/"}
+  notes: "Read live; the data child needs outbound HTTPS to the bucket. A Census pull is sized before it is admitted
+    (count_first), so hosts with more memory admit larger pulls (data.memory)."

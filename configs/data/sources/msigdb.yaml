@@ -56,3 +56,24 @@ tables:
             family: {include_zero_overlap: true, size_bounds: {min_arg: min_size, max_arg: max_size, counted_within: universe}}
             test: hypergeom_enrichment
             correction: fdr_bh
+
+# ---------------------------------------------------------------------------------------------- acquisition
+# `vbt data acquire msigdb`: the Hallmark GMT of the pinned release (no login; 48,690 bytes and its sha256 recorded on
+# 2026-10-08). Releases 2025.1.Hs and 2026.1.Hs exist: set `release` here and in the descriptor's `release.expect`
+# and `hallmark.path` together to upgrade.
+acquisition:
+  release: 2024.1.Hs
+  homepage: https://www.gsea-msigdb.org/gsea/msigdb/
+  licence: "CC BY 4.0 for MSigDB v2022.1 and later (https://www.gsea-msigdb.org/gsea/msigdb_license_terms.jsp, read
+    2026-10-08). That page names further terms for the KEGG-, BioCarta- and STKE-derived sets of C2/M2; only the
+    Hallmark collection is acquired here."
+  transport:
+    plugin: http
+    options:
+      base: https://data.broadinstitute.org/gsea-msigdb/msigdb/release/{release}/
+      files: {h.all.v2024.1.Hs.symbols.gmt: {bytes: 48690,
+                                             sha256: ee2463540042078bfa3f67828e1e223bb354446d9fbb4d22845866835ba5c772}}
+  dir: msigdb/{release}
+  env: {MSIGDB_DATA_PATH: "{home}"}
+  tables:
+    hallmark: {files: [h.all.v2024.1.Hs.symbols.gmt], count: 1, bytes: 48690}
