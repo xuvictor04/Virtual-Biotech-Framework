@@ -99,10 +99,15 @@ async def run_correctness(ctx: Any) -> StepResult:
                 key = f"{server}.{c.tool}#{i}"
                 ctx.calls.append({"server": server, "tool": c.tool, "case": key, "mode": "enforce",
                                   "seconds": enf.seconds, "verdict": verdict, "first": first})
+                guard = None
                 if enf.is_error and enf.kind == "too_large":
                     # the gateway refused the load this host cannot hold: the same call without it would load
                     # the tables anyway and be killed at the server's limit (or take the host with it)
-                    off_text = "not called: the enforce call was refused too_large on this host"
+                    guard = "not called: the enforce call was refused too_large on this host"
+                else:
+                    guard = await calls.off_guard(server, _whole_tables(ctx.catalog, binding))
+                if guard:
+                    off_text = guard
                 else:
                     off = await calls.call(server, c.tool, c.args, mode="off")
                     ctx.calls.append({"server": server, "tool": c.tool, "case": key, "mode": "off",
@@ -125,6 +130,20 @@ async def run_correctness(ctx: Any) -> StepResult:
     return StepResult("correctness", TITLE, status, summary, rows=rows, peak_mb=oracle_peak or None,
                       details={"by_test": {k: dict(v) for k, v in sorted(by_ct.items())}, "servers": servers_out,
                                "tools_without_cases": skipped_tools})
+
+
+def _whole_tables(catalog: Any, binding: Any) -> list[str]:
+    """The physical tables a tool's upstream call loads whole (``reads.<table>.access: full_table``)."""
+    out: list[str] = []
+    for ref, rs in (getattr(binding, "reads", None) or {}).items():
+        if getattr(rs, "access", None) != "full_table":
+            continue
+        try:
+            t = catalog.table(str(ref))
+            out.append(str(t.physical) if t.is_item_table else str(ref))
+        except Exception:  # noqa: BLE001
+            out.append(str(ref))
+    return out
 
 
 def _oracle_text(c: Any) -> str:

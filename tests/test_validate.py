@@ -234,6 +234,51 @@ def test_steps_without_their_prerequisite_are_skipped_with_the_reason(tmp_path, 
     assert report.ok and (out / "validate.md").is_file() and (out / "validate.json").is_file()
 
 
+async def test_off_calls_never_load_what_the_server_cannot_hold():
+    """Without the gateway nothing admits upstream's whole-table loads: validate skips an off call whose tables (not
+    yet resident) would take the server over its limit, with the admission's own estimate, and counts the tables an
+    allowed off call loads."""
+    from types import SimpleNamespace
+
+    from vbt.datalayer.memory.estimate import MB
+    from vbt.validate.contained import Calls
+
+    resident: dict[str, set[str]] = {"s": {"t.warm"}}
+    asked: list[list[str]] = []
+
+    async def stats(tables):
+        asked.append(list(tables))
+        return SimpleNamespace(tables={t: {"mb": {"t.big": 4000, "t.small": 500, "t.mid": 1500}[t]} for t in tables})
+
+    adm = SimpleNamespace(est=SimpleNamespace(safety=1.3, peak_upstream=lambda st, t: st["mb"] * MB),
+                          limit_mb=lambda server: 4400.0,
+                          ledger=SimpleNamespace(resident=lambda server: frozenset(resident[server]),
+                                                 resident_mb=lambda server: 800.0))
+    gw = SimpleNamespace(admission=adm, _stats={}, service=SimpleNamespace(stats=stats))
+    calls = Calls({}, ["s"], log_dir=Path("."), gateway=gw)
+    why = await calls.off_guard("s", ["t.big"])
+    assert why and "t.big whole" in why and "4,400 MB limit" in why
+    assert await calls.off_guard("s", ["t.warm"]) is None, "a table the server holds costs nothing more"
+    assert await calls.off_guard("s", ["t.small", "t.mid"]) is None              # 800 + 2000 x 1.3 = 3,400
+    assert await calls.off_guard("s", ["t.mid"]) is None, "already loaded by an earlier off call"
+    assert asked == [["t.big"], ["t.small", "t.mid"]], "statistics are asked once per table"
+    assert await calls.off_guard("s", []) is None
+
+
+def test_the_check_step_reuses_an_earlier_check(tmp_path, monkeypatch):
+    for k, v in DEAD.items():
+        monkeypatch.setenv(k, v)
+    earlier = {"depth": "deep", "tables": {"open_targets.target": {"status": "ready", "checks": []},
+                                           "open_targets.go": {"status": "missing", "checks": []}}}
+    path = tmp_path / "check.json"
+    path.write_text(json.dumps(earlier))
+    report, out = run_validate(_config(), Options(steps=["check"], out=tmp_path / "out", check_from=path))
+    step = report.steps[0]
+    assert step.status == PASS and "reused from" in step.summary and "depth deep: 1 ready" in step.summary
+    assert step.details["absent"] == ["open_targets.go"]
+    assert json.loads((out / "check.json").read_text()) == earlier, "the run keeps the check it used"
+
+
 def test_the_cli_runs_the_host_and_lint_steps(tmp_path, capsys):
     from vbt import cli
 

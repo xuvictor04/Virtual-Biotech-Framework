@@ -185,6 +185,7 @@ class Calls:
     _current: tuple[str, str] = ("", "")
     started_s: float = 0.0
     failures: dict[str, str] = field(default_factory=dict)
+    _loaded: dict[str, set[str]] = field(default_factory=dict)   # tables off calls made a server load whole
 
     async def __aenter__(self) -> "Calls":
         from ..datalayer import build_gateway
@@ -261,6 +262,40 @@ class Calls:
         finally:
             self._current = ("", "")
         return outcome_of(out, time.monotonic() - t0)
+
+    async def off_guard(self, server: str, tables: Sequence[str]) -> str | None:
+        """Why the ``off`` call of a tool that loads ``tables`` whole must not be made, else None (and the tables
+        count as loaded). Without the gateway nothing admits upstream's whole-table loads: the call is skipped when
+        the tables not yet resident in the server (its admission ledger, plus what earlier off calls loaded) would
+        take its resident memory over its limit, with the admission's own estimate and safety factor."""
+        gw = self.gateway
+        adm = getattr(gw, "admission", None)
+        stats = getattr(gw, "_stats", None)
+        if adm is None or stats is None or not tables:
+            return None
+        loaded = self._loaded.setdefault(server, set())
+        cold = [t for t in dict.fromkeys(tables) if t not in loaded and t not in adm.ledger.resident(server)]
+        if not cold:
+            return None
+        missing = [t for t in cold if t not in stats]
+        if missing:
+            try:
+                resp = await gw.service.stats(missing)
+                for t in missing:
+                    stats[t] = resp.tables.get(t)
+            except Exception as exc:  # noqa: BLE001 - no estimate: the load is not made blind
+                return f"not called: no statistics to size upstream's whole-table load of {', '.join(cold)} ({exc})"
+        from ..datalayer.memory import MB
+
+        need = sum(adm.est.peak_upstream(stats[t], t) / MB for t in cold if stats.get(t) is not None)
+        limit = float(adm.limit_mb(server) or 0)
+        resident = float(adm.ledger.resident_mb(server) or 0)
+        if limit > 0 and resident + need * adm.est.safety > limit:
+            return (f"not called: without the gateway upstream would load {', '.join(cold)} whole (about "
+                    f"{need:,.0f} MB, x{adm.est.safety:g}) on {resident:,.0f} MB resident, over the server's "
+                    f"{limit:,.0f} MB limit")
+        loaded.update(cold)
+        return None
 
     def tool_schemas(self, server: str) -> dict[str, dict[str, Any]]:
         """``{tool: upstream input schema}`` as the server listed it (before the gateway's rewrite)."""

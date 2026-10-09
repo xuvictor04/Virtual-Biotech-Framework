@@ -539,3 +539,25 @@ async def test_live_census_pulls_fall_back_to_the_rss_watchdog(tmp_path):
     assert cont["watchdog_kill_mb"] == pytest.approx(cont["limit_mb"] - max(512, 0.05 * cont["limit_mb"]), abs=0.2)
     assert "unlimited" in cont["data_limit_line"]
     assert 0 < got["file_cells"] <= 300
+
+
+@needs_census
+@linux_only
+async def test_live_census_reads_fail_under_rlimit_data(tmp_path):
+    """Why ``rss`` is the default: the same server under ``RLIMIT_DATA`` at the same limit fails the count with
+    TileDB's ``std::bad_alloc`` (a typed ``oom``) while its resident memory stays far below the limit."""
+    from dl_upstream import call
+
+    bridge = await _census_bridge(tmp_path, server={"limit_kind": "rlimit_data"})
+    try:
+        count = await call(bridge, "single_cell", "count_cells",
+                           {"value_filter": f"dataset_id == '{CENSUS_DATASET}'"})
+        cont = _containment(bridge)
+    finally:
+        await bridge.aclose()
+    print("D3 census rlimit_data:", json.dumps({"count": {"is_error": count.is_error, "kind": count.kind,
+                                                          "text": count.text[:400]}, "containment": cont},
+                                               default=str))
+    assert cont["containment"] == "rlimit_data" and "unlimited" not in cont["data_limit_line"]
+    assert count.is_error and "bad_alloc" in count.text, count.text[:600]
+    assert float(cont["peak_rss_mb"]) < 0.5 * float(cont["limit_mb"])
