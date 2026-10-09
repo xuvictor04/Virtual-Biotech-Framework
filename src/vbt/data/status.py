@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .acquire import AcquisitionSettings, source_env, source_home, source_release
+from .acquire import AcquisitionSettings, source_env, source_home, source_release, source_root
 from .manifest import MANIFEST, load_manifest
 
 __all__ = ["TableStatus", "SourceStatus", "collect_status", "status_lines"]
@@ -117,7 +117,8 @@ def collect_status(config: Mapping[str, Any], *, sources: Sequence[str] = (), ch
         acq = desc.acquisition
         release = source_release(desc)
         remote = desc.kind == "remote" or (acq is not None and acq.mode == "remote")
-        home = source_home(desc, acq_settings.root, release) if acq is not None and not remote else None
+        home = source_home(desc, source_root(catalog, source, acq_settings.root), release) \
+            if acq is not None and not remote else None
         env = source_env(desc, home, release) if home is not None else {}
         st = SourceStatus(source=source, kind="remote" if remote else "local", release=release,
                           root=str(desc.root) if desc.root else None, home=str(home) if home else None, env=env,

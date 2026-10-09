@@ -321,6 +321,72 @@ def test_a_wide_key_is_counted_on_arrow_arrays_too(tmp_path, monkeypatch):
         sorted(checks(slow, "R5b")[0].detail.split(": ", 1)[1].split(", "))
 
 
+def test_the_arrow_key_pass_is_bounded_by_the_resident_budget(tmp_path, monkeypatch):
+    """Holding every key part's values whole took the data child from 109 to 2,105 MB on 25.09 interaction (14.5 M
+    rows, seven parts), the floor of every session check. Rows are hashed first, one part and row group at a time,
+    and only the rows whose hash repeats are counted exactly; over ``data.service.max_resident_mb`` the exact count
+    runs in hash-partitioned passes that each fit. The duplicates and examples are the single pass's and the scan's."""
+    n = 20_000
+    parts = ["src", "a", "b"]
+    rows = [{"src": ("x", "y")[i % 2], "a": f"P{i:06d}", "b": None if i % 7 == 0 else f"Q{(i * 3) % n:06d}"}
+            for i in range(n)]
+    rows += [dict(rows[i]) for i in range(0, n, 97)] + [dict(rows[14]), dict(rows[14])]   # null part included
+    expected = len(range(0, n, 97)) + 2
+
+    def build(tmp: Path) -> ServiceContext:
+        write(tmp, "edges", rows[: n // 2], part="part-00000", row_group_size=3000)
+        write(tmp, "edges", rows[n // 2:], part="part-00001", row_group_size=1024)
+        return make_ctx(tmp, {"edges": {"kind": "fact", "path": "edges", "grain": "pair",
+                                        "key": {"columns": parts, "nullable": ["b"], "check": "full"},
+                                        "columns": {p: {"role": "identifier"} for p in parts}}})
+
+    ctx = build(tmp_path / "one")
+    reader = ctx.reader("s.edges")
+    types = reader.storage_types(parts)
+    single = _checks._arrow_key_duplicates(reader, parts, types)
+    passes: list[int] = []
+    real_codes = _checks._key_codes
+
+    def counting_codes(reader, key, keep=None):
+        passes.append(int(keep.sum()) if keep is not None else -1)
+        return real_codes(reader, key, keep)
+
+    monkeypatch.setattr(_checks, "_key_codes", counting_codes)
+    bounded = _checks._arrow_key_duplicates(reader, parts, types, budget_bytes=4096)
+    assert single is not None and bounded is not None
+    assert single[0] == bounded[0] == expected and single[2] == bounded[2] == len(rows)
+    assert single[1] == bounded[1] and len(single[1]) == 5
+    assert len(passes) > 1, "a budget of 4 KB was counted in one pass"
+    assert sum(passes) <= 2 * expected + 8, "rows whose hash is unique were counted exactly"
+    # a valid key never reaches the exact count
+    passes.clear()
+    unique = rows[:n]
+    clean = make_ctx(tmp_path / "clean", {"edges": {"kind": "fact", "path": "edges", "grain": "pair",
+                                                      "key": {"columns": parts, "nullable": ["b"], "check": "full"},
+                                                      "columns": {p: {"role": "identifier"} for p in parts}}})
+    write(tmp_path / "clean", "edges", unique, row_group_size=2048)
+    assert _checks._arrow_key_duplicates(clean.reader("s.edges"), parts, types, budget_bytes=4096) == (0, [], n)
+    assert passes == []
+    # the check reads the budget from data.service.max_resident_mb, and its verdict is the scan's (both list five of
+    # the 209 duplicates: the first keys repeated, and the scan the first repeats it meets)
+    monkeypatch.setattr(_checks, "_key_codes", real_codes)
+    budgets: list[Any] = []
+    real_dups = _checks._arrow_key_duplicates
+
+    def recording(*a, **k):
+        budgets.append(k.get("budget_bytes"))
+        return real_dups(*a, **k)
+
+    monkeypatch.setattr(_checks, "_arrow_key_duplicates", recording)
+    fast = check_table(build(tmp_path / "fast"), "s.edges", "standard")
+    assert budgets == [DataSettings.from_dict({}).service.max_resident_mb * (1 << 20)]
+    monkeypatch.setattr(_checks, "_arrow_key_duplicates", lambda *a, **k: None)
+    slow = check_table(build(tmp_path / "slow"), "s.edges", "standard")
+    assert fast.key_check.duplicates == slow.key_check.duplicates == expected
+    assert fast.status == slow.status == "key_violation"
+    assert checks(fast, "R5b")[0].detail.split(": ", 1)[1] == ", ".join(single[1])
+
+
 def _evidence(tmp: Path, n: int) -> ServiceContext:
     """interaction_evidence's shape: a content-identity table whose grouping key has a nullable identifier, every
     record stored twice; the copies in another file and row groups of another size."""

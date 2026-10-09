@@ -241,10 +241,9 @@ def cmd_approve(args: argparse.Namespace, config: Mapping[str, Any]) -> int:
 
 
 def cmd_memory(args: argparse.Namespace, config: Mapping[str, Any]) -> int:
-    from ..agents import memory_path
     from ..audit.index import resolve_run
-
     from ..config import resolve_path
+    from .notes import add_notes
 
     p = _project(args, config)
     run_dir = None
@@ -256,24 +255,7 @@ def cmd_memory(args: argparse.Namespace, config: Mapping[str, Any]) -> int:
             continue
     if run_dir is None:
         raise ProjectError(f"no run {args.from_run!r} under {p.runs_dir} or the runs directory")
-    agents = [args.agent] if args.agent else sorted(d.name for d in (run_dir / "memory").glob("*") if d.is_dir())
-    added = 0
-    for agent in agents:
-        src = memory_path(run_dir, agent)
-        if not src.is_file():
-            continue
-        dest = p.memory_path(agent)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        old = dest.read_text(encoding="utf-8") if dest.is_file() else ""
-        seen = set(old.splitlines())
-        new = [ln for ln in src.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip() and
-               ln not in seen]
-        if new:
-            dest.write_text(old + ("" if not old or old.endswith("\n") else "\n")
-                            + f"<!-- from run {run_dir.name} -->\n" + "\n".join(new) + "\n", encoding="utf-8")
-            added += len(new)
-            ledger.append_ledger(p, {"event": "memory", "kind": "memory", "name": agent, "who": {"user": "cli"},
-                                     "why": f"notes from run {run_dir.name}", "lines": len(new)})
+    added = add_notes(p, run_dir, [args.agent] if args.agent else None, who={"user": "cli"})
     _out(f"{added} new line(s) of notes added to project {p.name}")
     return 0
 

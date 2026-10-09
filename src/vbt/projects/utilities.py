@@ -9,9 +9,9 @@ the reaper's memory limit applies, and the network follows ``bash.network_isolat
 arguments validated against the declared schema by the runtime like any tool's.
 
 The tools reach a session in two ways: the registration tool adds a new one to the running session's registry, and
-:func:`project_tools_for_roots` (called by :func:`vbt.tools.builtin.builtin_tools`) finds the active project from
-the skill roots (a project's ``skills/`` directory is the last one when a project is active) and lists its
-utilities at session start. Agents get them through the ``util__*`` grant :func:`vbt.agents.load_roster` adds to
+the runtime lists the configuration's project's utilities at session start (``Runtime`` calls :func:`utility_tools`
+with :func:`vbt.projects.active_project`). :func:`project_tools_for_roots` finds the project from skill roots
+instead (a project's ``skills/`` directory), for callers that have only those. Agents get them through the ``util__*`` grant :func:`vbt.agents.load_roster` adds to
 every agent that can run code while a project is active.
 """
 

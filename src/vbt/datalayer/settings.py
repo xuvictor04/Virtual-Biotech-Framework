@@ -5,6 +5,11 @@ expands ``${VAR:-x}`` / ``${vars.x}`` with the same helpers as :mod:`vbt.config`
 the descriptor, overlay and cache directories against the project root, so hand-built
 configs work before ``configs/default.yaml`` carries the ``data`` block.
 
+Memory budgets set to ``auto`` (the data child's ``service.mem_limit_mb`` and ``max_resident_mb``, the witness
+and readiness budgets) are resolved for this host by :func:`vbt.datalayer.memory.sizing.resolve_auto`, so the
+typed sections always hold numbers; ``raw`` keeps what was configured (``auto`` included), which the launcher
+(``memory.default_server_mb``, the data child's limit) and the host budget resolve where they are used.
+
 The data child receives the same settings as JSON in ``VBT_DATA_SETTINGS``
 (:meth:`DataSettings.to_json` / :meth:`DataSettings.from_json`).
 """
@@ -19,6 +24,7 @@ from pathlib import Path
 from typing import Any, Literal, Mapping
 
 from .. import config as _config
+from .memory import sizing as _sizing
 
 __all__ = [
     "DATA_DEFAULTS", "SETTINGS_ENV", "GatewaySettings", "ServiceSettings", "ResolutionSettings", "WitnessSettings",
@@ -35,6 +41,7 @@ DATA_DEFAULTS: dict[str, Any] = {
     "descriptors_dir": "configs/data/sources",
     "overlays_dir": "configs/data/overlays",
     "cache_dir": "${VBT_DATA_DIR:-data}/.vbt-datalayer",
+    "project_dir": None,
     "gateway": {
         "mode": "enforce",
         "enforce_servers": "all",
@@ -42,7 +49,7 @@ DATA_DEFAULTS: dict[str, Any] = {
         "when_service_down": "strict",
         "unbound_empty": "empty_unverified",
     },
-    "service": {"mem_limit_mb": 3000, "max_concurrency": 4, "timeout_s": 600, "max_resident_mb": 2000},
+    "service": {"mem_limit_mb": "auto", "max_concurrency": 4, "timeout_s": 600, "max_resident_mb": "auto"},
     "resolution": {
         "max_candidates": 10,
         "allow": ["raw_member", "normalized", "label", "previous", "alias", "exact_synonym", "related_synonym",
@@ -54,17 +61,18 @@ DATA_DEFAULTS: dict[str, Any] = {
     },
     "witness": {
         "enabled": True,
-        "max_scan_bytes": 2_000_000_000,
+        "max_scan_bytes": "auto",
         "max_inflate_rows": 5000,
-        "max_inflate_bytes": 20_000_000,
-        "max_key_set": 20000,
-        "repair_max_bytes": 500_000_000,
+        "max_inflate_bytes": "auto",
+        "max_key_set": "auto",
+        "repair_max_bytes": "auto",
         "topk": True,
     },
     "derive": {"enum_max": 64, "description_max_chars": 1200},
     "memory": {
-        "default_server_mb": 12000,
-        "limit_kind": "rlimit_data",
+        "host_mb": "auto",
+        "default_server_mb": "auto",
+        "limit_kind": "rss",
         "estimate_safety": 1.3,
         "expansion": {"flat": 1.5, "string": 3.5, "nested": 8.0, "fragmentation": 1.15},
         "object_overhead_bytes": {"string": 50, "nested_item": 120, "struct_item": 240},
@@ -74,13 +82,14 @@ DATA_DEFAULTS: dict[str, Any] = {
         "max_oom_kills": 3,
         "max_result_bytes": 2_000_000,
         "host_budget_mb": "auto",
+        "harness_reserve_mb": 2048,
         "relay_max_message_mb": 0,
     },
     "readiness": {
         "per_turn_depth": "shallow",
         "session_depth": "standard",
         "key_check_full_max_rows": 50_000_000,
-        "vocab_budget_bytes": 500_000_000,
+        "vocab_budget_bytes": "auto",
         "remote_ttl_s": 3600,
         "sentinels": True,
         "block_when": "all_unready",
@@ -146,10 +155,10 @@ class GatewaySettings:
 
 @dataclass(frozen=True)
 class ServiceSettings:
-    mem_limit_mb: int = 3000
+    mem_limit_mb: int = 3000                         # 'auto' resolves to 5% of the host, 3,000-32,768 (sizing)
     max_concurrency: int = 4
     timeout_s: float = 600
-    max_resident_mb: int = 2000
+    max_resident_mb: int = 2000                      # what one request may hold resident ('auto': 2/3 of the child)
 
 
 @dataclass(frozen=True)
@@ -181,8 +190,9 @@ class DeriveSettings:
 
 @dataclass(frozen=True)
 class MemorySettings:
-    default_server_mb: int | str = 12000            # 'auto' derives from estimates (§14.2)
-    limit_kind: Literal["rlimit_data", "cgroup", "watchdog", "rss", "none"] = "rlimit_data"   # per server too
+    host_mb: int | str = "auto"                      # the memory planned with; 'auto': MemTotal and the cgroup limit
+    default_server_mb: int | str = "auto"            # 'auto': 0.8 x the host budget, at least 2,048 (§14.2)
+    limit_kind: Literal["rlimit_data", "cgroup", "watchdog", "rss", "none"] = "rss"   # per server too
     estimate_safety: float = 1.3
     expansion: Mapping[str, float] = field(default_factory=lambda: dict(DATA_DEFAULTS["memory"]["expansion"]))
     object_overhead_bytes: Mapping[str, int] = field(
@@ -193,6 +203,7 @@ class MemorySettings:
     max_oom_kills: int = 3
     max_result_bytes: int = 2_000_000
     host_budget_mb: int | str = "auto"
+    harness_reserve_mb: float = 2048                  # host_budget_mb 'auto' keeps max(this, 5% of the host)
     relay_max_message_mb: float = 0                   # > 0: the reaper relays stdout with this message cap
 
 
@@ -335,6 +346,9 @@ class DataSettings:
     overlays_dir: Path = Path("configs/data/overlays")
     cache_dir: Path = Path("data/.vbt-datalayer")
     project_root: Path = _config.PROJECT_ROOT
+    #: The active project's directory (docs/PROJECTS.md): its descriptors and overlays are searched after the
+    #: shipped ones, and its approved plugins discovered after the shipped ones (``plugins.registry.discover``).
+    project_dir: Path | None = None
     gateway: GatewaySettings = field(default_factory=GatewaySettings)
     service: ServiceSettings = field(default_factory=ServiceSettings)
     resolution: ResolutionSettings = field(default_factory=ResolutionSettings)
@@ -356,7 +370,11 @@ class DataSettings:
         config = config or {}
         variables = {str(k): "" if v is None else str(v) for k, v in (config.get("vars") or {}).items()}
         root = Path(variables.get("project_root") or _config.PROJECT_ROOT)
-        return cls.from_dict(dict(config.get("data") or {}), project_root=root, variables=variables)
+        data = dict(config.get("data") or {})
+        project = config.get("project")
+        if not data.get("project_dir") and isinstance(project, Mapping) and project.get("dir"):
+            data["project_dir"] = str(project["dir"])         # activated by `--project` or the project's profile
+        return cls.from_dict(data, project_root=root, variables=variables)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any], *, project_root: Path | None = None,
@@ -368,6 +386,8 @@ class DataSettings:
         variables = dict(variables or {})
         variables.setdefault("project_root", str(root))
         data = _config._expand(data, variables)
+        configured = copy.deepcopy(data)
+        data = _sizing.resolve_auto(data)                 # every 'auto' budget as its number on this host
 
         def _dir(value: Any) -> Path:
             p = Path(str(value)).expanduser()
@@ -379,7 +399,8 @@ class DataSettings:
             overlays_dir=_dir(data["overlays_dir"]),
             cache_dir=_dir(data["cache_dir"]),
             project_root=root,
-            raw=copy.deepcopy(data),
+            project_dir=_dir(data["project_dir"]) if data.get("project_dir") else None,
+            raw=configured,
             **{name: _section(sec, data.get(name)) for name, sec in _SECTIONS.items()},
         )
 

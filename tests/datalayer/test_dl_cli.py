@@ -136,6 +136,19 @@ def test_estimate_without_data_is_not_admissible(tmp_path: Path, monkeypatch: py
 
 
 @needs_arrow
+def test_estimate_of_a_tool_reading_an_item_table_and_its_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                 capsys: pytest.CaptureFixture[str]) -> None:
+    """``target.get_chemical_probes`` reads ``target`` and its item table ``target_chemical_probes``: the item table
+    is estimated as its physical table, a TableRef, which could not be sorted with the plain refs (TypeError on the
+    real 25.09 data)."""
+    monkeypatch.setenv("OPEN_TARGETS_DATA_PATH", str(tmp_path / "missing"))
+    monkeypatch.setenv("VBT_DATA_DIR", str(tmp_path))
+    assert cli.main(["--profile", "mock", "ds", "estimate", "--tool", "target.get_chemical_probes", "--json"]) == 1
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["tool"]["unavailable"] == ["open_targets.target"]
+
+
+@needs_arrow
 def test_check_and_resolve_report_missing_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                                capsys: pytest.CaptureFixture[str]) -> None:
     """check exits 1 when a requested table is not ready; resolve says no local index exists (R7)."""

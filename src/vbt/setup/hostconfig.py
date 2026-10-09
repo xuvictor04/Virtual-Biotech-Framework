@@ -10,21 +10,20 @@ Three files in the state directory:
 * ``compose.vllm.yaml``: the ``vllm`` service for ``deploy/full/compose.yaml`` (Docker deployments with GPUs),
   rendered from ``configs/local_models.yaml`` by the same code as ``vbt local serve --docker``.
 
-Sizing (MB; ``ram`` = the smaller of MemTotal and the container's memory limit):
+Sizing (MB; ``ram`` = the smaller of MemTotal and the container's memory limit, or ``data.memory.host_mb`` when
+it is a number): the rule of :mod:`vbt.datalayer.memory.sizing`, the one the harness applies to ``auto`` at run time,
+so ``vbt setup`` writes the numbers ``auto`` would give on this host:
 
-* ``data.memory.host_budget_mb`` = ``0.75 x ram - reserve``, ``reserve = max(2048, 0.05 x ram)``: the sum of
-  the upstream servers' resident memory (``memory/host.py``; its ``auto`` cannot see a container limit);
-* ``data.memory.default_server_mb``: before any data is measured, ``clamp(0.25 x ram, 12000, host budget)``;
-  once ``vbt setup`` has estimated the tables the enabled servers load whole (step ``size``), the largest
-  server's estimate x ``estimate_safety``, at least 12000 and at most the host budget;
+* ``data.memory.host_budget_mb`` = ``0.75 x ram - reserve``, ``reserve = max(harness_reserve_mb (2048), 0.05 x
+  ram)``, at least 1,024: the sum of the upstream servers' resident memory (``memory/host.py``);
+* ``data.memory.default_server_mb`` = ``0.8 x`` the host budget, at least 2,048 (8,192 on a 16 GB host, 293,601 on
+  512 GB). Once ``vbt setup`` has estimated the tables the enabled servers load whole (step ``size``), a largest
+  server's estimate x ``estimate_safety`` above that raises it, up to the host budget;
 * ``data.service.mem_limit_mb`` = ``clamp(0.05 x ram, 3000, 32768)`` (the data child; ``max_resident_mb`` 2/3
   of it), ``data.service.max_concurrency`` = ``clamp(cpus // 2, 4, 16)``;
 * ``data.memory.workspace_mb`` = ``clamp(0.25 x ram / limits.max_parallel_agents, 8000, 65536)`` (agent Bash);
-* ``data.memory.limit_kind`` = ``cgroup`` where a memory cgroup can be created, else left at its default;
+* ``data.memory.limit_kind`` = ``cgroup`` where a memory cgroup can be created, else left at its default (``rss``);
 * ``bash.sandbox.os`` = ``bwrap`` where bubblewrap works.
-
-On hosts below the defaults (under ~16 GB) every value stays at the shipped default, so a small host behaves as
-before.
 """
 
 from __future__ import annotations
@@ -38,6 +37,8 @@ from typing import Any, Iterable, Mapping
 
 import yaml
 
+from ..datalayer.memory import sizing as _sizing
+
 __all__ = ["size_host", "pick_serving", "host_profile", "host_env", "render_compose_vllm", "write_host_files",
            "read_env_file", "HOST_PROFILE", "HOST_ENV", "COMPOSE_VLLM", "DEFAULT_SERVER_MB_MIN"]
 
@@ -45,11 +46,11 @@ HOST_PROFILE = "host.yaml"
 HOST_ENV = "host.env"
 COMPOSE_VLLM = "compose.vllm.yaml"
 
-#: data.memory.default_server_mb shipped in configs/default.yaml: never sized below it.
-DEFAULT_SERVER_MB_MIN = 12000
-SERVICE_MB_MIN, SERVICE_MB_MAX = 3000, 32768
+#: The floor of one server's limit (``vbt.datalayer.memory.sizing.SERVER_FLOOR_MB``).
+DEFAULT_SERVER_MB_MIN = _sizing.SERVER_FLOOR_MB
+SERVICE_MB_MIN, SERVICE_MB_MAX = _sizing.CHILD_FLOOR_MB, _sizing.CHILD_CEILING_MB
 WORKSPACE_MB_MIN, WORKSPACE_MB_MAX = 8000, 65536
-RESERVE_MB_MIN = 2048
+RESERVE_MB_MIN = int(_sizing.DEFAULT_RESERVE_MB)
 
 
 def _clamp(value: float, lo: float, hi: float) -> int:
@@ -69,18 +70,22 @@ def size_host(facts: Mapping[str, Any], config: Mapping[str, Any], *,
     safety = float(memory_cfg.get("estimate_safety") or 1.3)
     parallel = int(((config.get("limits") or {}).get("max_parallel_agents")) or 8)
     out: dict[str, Any] = {"ram_mb": ram, "cpus": cpus, "notes": []}
+    own = memory_cfg.get("host_mb")
+    if not _sizing.is_auto(own) and isinstance(own, (int, float)) and not isinstance(own, bool) and own > 0:
+        ram = out["ram_mb"] = own                      # the harness's share of a host it shares
+        out["notes"].append(f"sized from data.memory.host_mb ({own:,} MB), not the host's memory")
     if not ram:
         out["notes"].append("host memory unknown: the shipped memory settings are kept")
         return out
     ram = float(ram)
-    reserve = max(RESERVE_MB_MIN, 0.05 * ram)
-    budget = max(1024, int(0.75 * ram - reserve))
+    budget = int(_sizing.host_budget_for(ram, memory_cfg))
     out["host_budget_mb"] = budget
+    rule = _sizing.server_limit_for(ram, memory_cfg)
     if server_need_mb:
         largest_server, largest = max(server_need_mb.items(), key=lambda kv: kv[1])
         need = math.ceil(largest * safety)
         out["largest_server"] = {"server": largest_server, "estimate_mb": round(largest), "with_safety_mb": need}
-        server_mb = min(budget, max(DEFAULT_SERVER_MB_MIN, need))
+        server_mb = max(rule, min(budget, need))
         if need > budget:
             out["notes"].append(
                 f"server {largest_server} loads ~{largest:,.0f} MB of tables whole (x{safety} safety = {need:,} MB), "
@@ -91,9 +96,9 @@ def size_host(facts: Mapping[str, Any], config: Mapping[str, Any], *,
                 f"all enabled servers together load ~{total:,.0f} MB whole; the host budget ({budget:,} MB) recycles "
                 "idle servers (least recently used first) to stay within it")
     else:
-        server_mb = min(budget, max(DEFAULT_SERVER_MB_MIN, int(0.25 * ram)))
+        server_mb = rule
     out["default_server_mb"] = int(server_mb)
-    out["service_mem_limit_mb"] = _clamp(0.05 * ram, SERVICE_MB_MIN, SERVICE_MB_MAX)
+    out["service_mem_limit_mb"] = _sizing.data_child_for(ram)
     out["service_max_resident_mb"] = int(out["service_mem_limit_mb"] * 2 / 3)
     out["service_max_concurrency"] = _clamp(cpus // 2, 4, 16)
     out["workspace_mb"] = _clamp(0.25 * ram / max(1, parallel), WORKSPACE_MB_MIN, WORKSPACE_MB_MAX)

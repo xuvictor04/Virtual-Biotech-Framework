@@ -45,7 +45,7 @@ from .manifest import MANIFEST, ManifestReport, atomic_write, load_manifest, par
 
 __all__ = [
     "AcquisitionSettings", "SourcePlan", "PlannedFile", "AcquisitionPlan", "FileResult", "SourceResult",
-    "AcquisitionReport", "plan_acquisition", "execute", "source_release", "source_home", "source_env",
+    "AcquisitionReport", "plan_acquisition", "execute", "source_release", "source_home", "source_env", "source_root",
     "acquisition_registry", "LOCK", "write_env_file", "record_provenance", "fmt_bytes", "fmt_seconds",
     "groups_for", "IntegrityError", "transport_options",
 ]
@@ -147,6 +147,16 @@ def fmt_seconds(s: float) -> str:
 def source_release(desc: Any) -> str:
     acq = desc.acquisition
     return str((acq.release if acq is not None else None) or desc.release.expect or "current")
+
+
+def source_root(catalog: Any, source: str, default: Path) -> Path:
+    """The acquisition root of ``source``: a source the active project added (``catalog.project_sources``) is acquired
+    into ``<project>/data``, where its descriptor's root reads (``${VBT_PROJECT_DIR}/data/<source>`` with ``dir:
+    <source>``; docs/PROJECTS.md); every other source into ``default`` (``data.acquisition.root``)."""
+    project = getattr(catalog, "project_dir", None)
+    if project is not None and source in (getattr(catalog, "project_sources", None) or ()):
+        return Path(project) / "data"
+    return Path(default)
 
 
 def source_home(desc: Any, root: Path, release: str | None = None) -> Path:
@@ -498,7 +508,9 @@ def plan_source(desc: Any, names: Sequence[str], settings: AcquisitionSettings, 
 def plan_acquisition(catalog: Any, wanted: Mapping[str, Sequence[str]], settings: AcquisitionSettings, *,
                      root: Path | None = None, registry: Any = None, session: HttpSession | None = None,
                      offline: bool = False, sizes: bool = True, write_index: bool = True) -> AcquisitionPlan:
-    """The plan for ``wanted`` (``{source: [tables or extra groups]}``), one :func:`plan_source` per source."""
+    """The plan for ``wanted`` (``{source: [tables or extra groups]}``), one :func:`plan_source` per source. Without
+    ``root`` each source goes under its :func:`source_root` (a project's sources into the project)."""
+    explicit = root is not None
     root = Path(root or settings.root)
     registry = registry or acquisition_registry()
     rate, measured = _rate(settings)
@@ -511,8 +523,10 @@ def plan_acquisition(catalog: Any, wanted: Mapping[str, Sequence[str]], settings
             if desc.acquisition is None:
                 plan.notes.append(f"{source}: the descriptor declares no acquisition section")
                 continue
-            plan.sources.append(plan_source(desc, names, settings, root=root, registry=registry, session=session,
-                                            offline=offline, sizes=sizes, write_index=write_index))
+            plan.sources.append(plan_source(desc, names, settings,
+                                            root=root if explicit else source_root(catalog, source, root),
+                                            registry=registry, session=session, offline=offline, sizes=sizes,
+                                            write_index=write_index))
         return plan
     finally:
         if own:

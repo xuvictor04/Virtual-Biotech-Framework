@@ -17,7 +17,8 @@ Projects (docs/PROJECTS.md): the active project's directory is ``$VBT_PROJECT_DI
 ``tool_env`` when a project is active, so the data child, Bash and the data client see the same project; a
 ``env.VBT_PROJECT_DIR`` variable takes precedence). :func:`project_search_dirs` names its ``descriptors/`` and
 ``overlays/``, which the catalog searches after the shipped directories, and :func:`project_plugin_files` the
-plugin modules under its ``plugins/<kind>/`` (``data.plugins.paths`` entries).
+plugin modules under its ``plugins/<kind>/``; :func:`approved_project_plugins` those of them plugin discovery
+imports: registered (approved when the review asked for it) and unchanged since.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 import yaml
 from pydantic import BaseModel, ValidationError
@@ -41,6 +42,7 @@ __all__ = [
     "DescriptorError", "Quarantined", "expand", "load_yaml", "load_descriptor", "load_descriptors", "load_overlay",
     "load_overlays", "digest", "variables_from_config", "YAML_SUFFIXES", "PROJECT_ENV", "PROJECT_DESCRIPTORS",
     "PROJECT_OVERLAYS", "PROJECT_PLUGINS", "project_dir", "project_search_dirs", "project_plugin_files",
+    "approved_project_plugins",
 ]
 
 YAML_SUFFIXES = (".yaml", ".yml")
@@ -373,3 +375,59 @@ def project_plugin_files(root: str | Path | None) -> list[str]:
     if not base.is_dir():
         return []
     return [str(p) for p in sorted(base.glob("*/*.py")) if p.is_file() and not p.name.startswith(("_", "."))]
+
+
+#: The schema of a project's provenance records (``vbt.projects.ledger.ITEM_SCHEMA``; read here without importing
+#: the projects package, which the data child never loads).
+_ITEM_SCHEMA = "vbt.project.item/1"
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return "sha256:" + h.hexdigest()
+
+
+def approved_project_plugins(root: str | Path | None, kinds: Iterable[str] | None = None
+                             ) -> tuple[list[str], list[str]]:
+    """``(files, problems)``: the plugin modules of a project directory that discovery may import, and why the others
+    may not. A module ``plugins/<kind>/<name>.py`` is imported only when its provenance record
+    (``provenance/plugin/<name>.json``) says ``registered`` for that kind (a plugin waiting for review is not in
+    ``plugins/``) and the file's hash is the one recorded: a module written or changed by hand, or by an agent's
+    Bash, after the registration (its conformance suite and review) is never imported by the harness or the data
+    child. ``kinds`` limits the kinds listed."""
+    files: list[str] = []
+    problems: list[str] = []
+    if not root:
+        return files, problems
+    base = Path(root)
+    wanted = set(kinds) if kinds is not None else None
+    for f in project_plugin_files(base):
+        p = Path(f)
+        kind, name = p.parent.name, p.stem
+        if wanted is not None and kind not in wanted:
+            continue
+        rel = f"{PROJECT_PLUGINS}/{kind}/{p.name}"
+        try:
+            record = json.loads((base / "provenance" / "plugin" / f"{name}.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            problems.append(f"{rel}: no provenance record (not registered through RegisterPlugin): not imported")
+            continue
+        if not isinstance(record, dict) or record.get("schema") != _ITEM_SCHEMA or record.get("kind") != "plugin" \
+                or record.get("plugin_kind") != kind or record.get("status") != "registered":
+            problems.append(f"{rel}: its provenance record is not a registered {kind} plugin (status "
+                            f"{record.get('status') if isinstance(record, dict) else None!r}): not imported")
+            continue
+        digest = (record.get("files") or {}).get(rel)
+        try:
+            actual = _sha256_file(p)
+        except OSError as exc:
+            problems.append(f"{rel}: unreadable ({exc}): not imported")
+            continue
+        if not digest or actual != digest:
+            problems.append(f"{rel}: changed since it was registered (`vbt project check` lists it): not imported")
+            continue
+        files.append(str(p))
+    return files, problems

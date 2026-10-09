@@ -176,6 +176,8 @@ vbt --no-web chat                          # no web search (information-leakage 
 vbt web                                    # browser UI (fig. S1); needs VBT_WEB_PASSWORD or --no-auth on localhost
 vbt tools                                  # each agent's resolved tool list
 vbt doctor [--smoke] [--analysis]          # installation, credentials, reference data, MCP servers
+vbt validate [--depth deep]                # certify this host on its real data (docs/DEPLOYMENT.md §7.5)
+vbt project init NAME; vbt chat --project NAME   # a project the system adds data and helpers to (docs/PROJECTS.md)
 vbt local profiles | serve | check | bench # the local model server (docs/LOCAL_LLM.md)
 ```
 

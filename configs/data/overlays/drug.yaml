@@ -6,7 +6,7 @@ sources: [open_targets]
 upstream_commit: ${vars.upstream_commit:-71f9da68c95c5ee0ef4c1d9b8f45f10693de022d}   # the commit these bindings were reviewed against
 tools:
   search_drugs:
-    reads: {open_targets.drug_molecule: {access: projection,
+    reads: {open_targets.drug_molecule: {access: full_table,
                                          columns: [id, name, drugType, maximumClinicalTrialPhase, linkedTargets, synonyms, tradeNames]}}
     args:
       query:     {role: free_text, interpreted_as: casefold_substring, pooled: true,   # 'statin' finds every statin

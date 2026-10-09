@@ -431,9 +431,10 @@ def _rows_distinct(table: Any) -> bool:
 
 
 def _declarable(name: str) -> bool:
-    """A descriptor declares a column by its name, read as a path: a ``.``, a backtick or a bracket would make it a
-    nested field, so such columns cannot be declared (the data layer leaves undeclared columns out)."""
-    return not re.search(r"[.`\[\]/^@]", name) and bool(name.strip())
+    """A descriptor declares a top-level column by its literal name; a ``.`` in it is read as part of the name (HGNC's
+    ``pseudogene.org``). A backtick, a bracket or a path prefix (``/``, ``^``, ``@``) cannot be declared (the data
+    layer leaves undeclared columns out)."""
+    return not re.search(r"[`\[\]/^@]", name) and bool(name.strip())
 
 
 def _pattern_of(col: Any) -> str:
@@ -546,8 +547,8 @@ def inspect_dataset(path: Path, *, sample_rows: int = 5, max_rows: int = INSPECT
     key, nullable, identity = _key_of(table, columns)
     skipped = [c["name"] for c in columns if not _declarable(c["name"])]
     if skipped:
-        notes.append(f"columns {skipped} cannot be declared (a '.' or other path character in the name reads as a "
-                     "nested field); the draft leaves them out, so the data tools do not serve them")
+        notes.append(f"columns {skipped} cannot be declared (a backtick, bracket or path prefix in the name reads as "
+                     "path syntax); the draft leaves them out, so the data tools do not serve them")
     if not key:
         notes.append("no column or combination of up to three columns identifies a row: choose the key yourself "
                      "(the data may hold duplicate rows)")

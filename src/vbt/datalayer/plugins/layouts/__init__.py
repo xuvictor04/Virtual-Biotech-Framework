@@ -105,8 +105,15 @@ def _skip_dir(name: str) -> bool:
 
 def _walk(base: str, *, recursive: bool = True, stores: str | None = None) -> Iterator[tuple[str, os.DirEntry]]:
     """``(relpath, entry)`` of files under ``base``, hidden and ``_``-prefixed directories skipped. With
-    ``stores`` (a name pattern), directories matching it are yielded as entries and not walked into."""
+    ``stores`` (a name pattern), directories matching it are yielded as entries and not walked into. Directory links
+    are followed, each real directory once: a link back to a directory already walked (a loop) is not walked again."""
     stack = [""]
+    seen: set[tuple[int, int]] = set()
+    try:
+        st = os.stat(base)
+        seen.add((st.st_dev, st.st_ino))
+    except OSError:
+        pass
     while stack:
         rel = stack.pop()
         try:
@@ -124,6 +131,14 @@ def _walk(base: str, *, recursive: bool = True, stores: str | None = None) -> It
                 if stores is not None and not _skip_dir(e.name) and fnmatch.fnmatchcase(e.name, stores):
                     yield relpath, e
                 elif recursive and not _skip_dir(e.name):
+                    try:
+                        st = e.stat(follow_symlinks=True)
+                        ident = (st.st_dev, st.st_ino)
+                    except OSError:
+                        continue
+                    if ident in seen:
+                        continue                       # a directory link loop (or a second link to one walked)
+                    seen.add(ident)
                     stack.append(relpath)
                 continue
             yield relpath, e

@@ -2,12 +2,12 @@
 
 After a data spec or plugin is registered, :func:`refresh_data_layer`:
 
-1. updates the session's configuration (the project's plugin modules in ``data.plugins.paths``);
-2. rebuilds the data catalog (shipped + project) and plugin registry and hands them to the running gateway: with
-   ``DataGateway.reload_catalog(catalog, registry)`` when the gateway offers it, else by setting the catalog and
-   registry the gateway, its readiness cache and its resolver hold;
-3. restarts the ``data`` child (``MCPBridge.recycle``) with the updated settings, so it serves the new tables and
-   its listing (the ``mcp__data__*`` table enums, derived by the gateway from the new catalog) is re-registered.
+1. updates the session's configuration (``data.project_dir``: discovery imports the project's approved plugins);
+2. calls :meth:`vbt.runtime.Runtime.reload_data_layer`, which rebuilds the data catalog (shipped + project) and
+   plugin registry, hands them to the running gateway (``DataGateway.reload_catalog``) and restarts the ``data``
+   child (``MCPBridge.recycle``) with the updated settings, so it serves the new tables and its listing (the
+   ``mcp__data__*`` table enums, derived by the gateway from the new catalog) is re-registered. A runtime without
+   that method (an embedding of an older harness) gets the same steps from here.
 
 Every step is best effort: what could not be refreshed is named in the returned note and becomes available in the
 next session of the project, which builds everything from the project directory.
@@ -48,14 +48,31 @@ async def refresh_data_layer(runtime: Any, project: Project) -> str:
     if not isinstance(config, dict):
         return "the new item is available from the next session of the project"
     updated = activate(config, project, runs=False)
-    config.setdefault("data", {}).setdefault("plugins", {})["paths"] = updated["data"]["plugins"]["paths"]
+    data = config.setdefault("data", {})
+    data["project_dir"] = updated["data"]["project_dir"]
+    if "plugins" in updated["data"]:
+        data["plugins"] = updated["data"]["plugins"]
+    reload = getattr(runtime, "reload_data_layer", None)
+    if callable(reload):
+        problems = list(await reload())
+    else:
+        problems = await _refresh(runtime, project, config)
+    if problems == ["no data gateway runs in this session"]:
+        return ("no data gateway runs in this session: the new data is served from the next session with the data "
+                "layer enabled")
+    if problems:
+        return "; ".join(problems) + ": the new data is served from the next session of the project"
+    return ""
+
+
+async def _refresh(runtime: Any, project: Project, config: dict[str, Any]) -> list[str]:
+    """What :meth:`vbt.runtime.Runtime.reload_data_layer` does, for a runtime without it."""
     if hasattr(runtime, "_data_settings"):
         runtime._data_settings = None                  # noqa: SLF001 - parsed again from the updated config
     gateway = getattr(runtime, "gateway", None)
     bridge = getattr(runtime, "mcp", None)
     if gateway is None or bridge is None:
-        return ("no data gateway runs in this session: the new data is served from the next session with the data "
-                "layer enabled")
+        return ["no data gateway runs in this session"]
     problems = []
     try:
         from ..datalayer.catalog import build_catalog
@@ -90,6 +107,4 @@ async def refresh_data_layer(runtime: Any, project: Project) -> str:
     clear = getattr(runtime, "_system_cache", None)
     if hasattr(clear, "clear"):
         clear.clear()
-    if problems:
-        return "; ".join(problems) + ": the new data is served from the next session of the project"
-    return ""
+    return problems

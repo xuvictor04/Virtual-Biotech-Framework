@@ -28,6 +28,9 @@ Refuted facts are recorded in ``confirmed`` (``{"<column>": {"confirmed": false,
 ``{"constraint:<column> <op> <value>": {"confirmed": false, "on_refute": "drop_field"}}``) so
 the gateway can drop or recompute the fields bound to them.
 
+A matrix (§6.7) runs R4/R5 on its header axes and R8 on long cells; R6, R7, R9 and R10 run on each axis's
+declared columns as ``axis_values`` reads them (findings name the axis: ``@row.ModelID``).
+
 Depths: ``shallow`` runs R1/R2 only (stat calls, no file opened); ``standard`` runs everything with
 bounded samples (``check: full`` keys only up to ``data.readiness.key_check_full_max_rows``);
 ``deep`` runs full uniqueness and full referential passes.
@@ -44,7 +47,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from ..descriptor.columns import CompositeRef, is_container
 from ..ipc import CheckItemModel, KeyCheckModel, TableCheckModel
@@ -312,12 +315,26 @@ def _schema_path(reader: TableReader, path: str) -> str:
     return out
 
 
+def _top_level(names: Sequence[str], columns: Iterable[str]) -> int:
+    """How many leading ``names`` (a declared path split at its dots) make up its top-level column: a descriptor
+    column key is a literal name, which may hold a dot (HGNC's ``pseudogene.org``), so the longest dotted prefix that
+    is a column wins; 1 when none is."""
+    have = set(columns)
+    for n in range(len(names), 1, -1):
+        if ".".join(names[:n]) in have:
+            return n
+    return 1
+
+
 def _arrow_type_of(reader: TableReader, path: str) -> Any:
-    """The Arrow type at a declared path (lists kept on the last step); None when absent."""
+    """The Arrow type at a declared path (lists kept on the last step); None when absent. A top-level column whose
+    name holds a dot is matched whole (:func:`_top_level`)."""
     import pyarrow as pa
 
     schema = reader.schema()
-    names = path.split(".")
+    parts = path.split(".")
+    n = _top_level(parts, [*schema.names, *reader.partitions])
+    names = [".".join(parts[:n]), *parts[n:]]
     if names[0] in reader.partitions:
         return "partition"
     if names[0] not in schema.names:
@@ -807,7 +824,8 @@ def r5_keys(run: CheckRun, ref: str | None = None) -> KeyCheckModel:
         arrow_filter = None
     elif not content and not t.is_item_table and fraction >= 1.0 and len(flat) == len(key) and \
             total_rows is not None and total_rows <= SPILL_KEYS * ARROW_KEY_ROWS_PER_SPILL_KEY:
-        fast = _arrow_key_duplicates(reader, key, types)
+        fast = _arrow_key_duplicates(reader, key, types,
+                                     budget_bytes=int(run.ctx.settings.service.max_resident_mb) * (1 << 20))
     try:
         if fast is None and t.is_item_table:
             # the items are counted in Arrow (whole parent rows sampled by their key values): the scan rendered every
@@ -934,72 +952,255 @@ def _arrow_prefix_sample(reader: TableReader, parts: Sequence[str], buckets: int
     return keep
 
 
-def _arrow_key_duplicates(reader: TableReader, key: Sequence[str], types: Sequence[str | None]
-                          ) -> tuple[int, list[str], int] | None:
+#: Bytes per row the exact Arrow key pass holds besides the values of the part it encodes: the combined code (int64),
+#: the codes of the part being folded in, and the hash tables that encode and count the combined codes (measured: the
+#: Arrow pool alone peaked at 68 bytes per row over all 14.5 M rows of 25.09 interaction).
+ARROW_KEY_ROW_BYTES = 96
+#: Passes of the exact count at most: past this many the pass is not bounded by the budget, the caller scans rows.
+ARROW_KEY_MAX_PASSES = 64
+_NULL_HASH = 0x9E3779B97F4A7C15
+_NAN_HASH = 0x7FF8000000000001
+
+
+def _value_hashes(arr: Any) -> Any:
+    """One uint64 per value of a flat array, equal for equal values (NaN with NaN, null with null) within this
+    process: each distinct value of the array is hashed once (Python's ``hash``: the hashes never leave the
+    process, and equal hashes are only candidates that the exact pass decides)."""
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    arr = arr.combine_chunks() if isinstance(arr, pa.ChunkedArray) else arr
+    enc = pc.dictionary_encode(arr)
+
+    def one(v: Any) -> int:
+        if v is None:
+            return _NULL_HASH
+        if isinstance(v, float) and v != v:
+            return _NAN_HASH
+        try:
+            return hash(v) & 0xFFFFFFFFFFFFFFFF
+        except TypeError:
+            return hash(repr(v)) & 0xFFFFFFFFFFFFFFFF
+
+    values = np.fromiter((one(v) for v in enc.dictionary.to_pylist()), dtype=np.uint64, count=len(enc.dictionary))
+    idx = np.asarray(pc.fill_null(enc.indices.cast(pa.int64()), -1).to_numpy(zero_copy_only=False), dtype=np.int64)
+    out = np.full(len(idx), _NULL_HASH, dtype=np.uint64)
+    known = idx >= 0
+    out[known] = values[idx[known]]
+    return out
+
+
+def _key_hashes(reader: TableReader, key: Sequence[str]) -> tuple[Any, list[tuple[str, int, int]]] | None:
+    """``(hashes, layout)``: one uint64 per row mixing its key parts' value hashes (rows with equal keys have equal
+    hashes), read one part and one row group at a time, and the ``(file, row group, rows)`` layout. None when the
+    parts do not read as aligned arrays."""
+    import numpy as np
+
+    mixed: Any = None
+    layout: list[tuple[str, int, int]] | None = None
+    mult = np.uint64(_PART_HASH_MULT)
+    for part in key:
+        where: list[tuple[str, int, int]] = []
+        hashes: list[Any] = []
+        base = 0
+        for frag, rg, arr in reader.leaf_arrays(part):
+            n = len(arr)
+            where.append((frag.uri, rg, n))
+            h = _value_hashes(arr)
+            del arr
+            if mixed is None:
+                hashes.append(h)
+            else:
+                if layout is None or len(where) > len(layout) or where[-1] != layout[len(where) - 1]:
+                    return None
+                seg = mixed[base:base + n]
+                seg *= mult
+                seg ^= h
+            base += n
+        if mixed is None:
+            layout = where
+            mixed = np.concatenate(hashes) if hashes else np.zeros(0, dtype=np.uint64)
+            del hashes
+        elif where != layout:
+            return None
+    if mixed is None:
+        return np.zeros(0, dtype=np.uint64), []
+    mixed ^= mixed >> np.uint64(33)                   # the low bits of small integers' hashes are the integers
+    mixed *= np.uint64(0xFF51AFD7ED558CCD)
+    mixed ^= mixed >> np.uint64(33)
+    return mixed, layout or []
+
+
+def _repeated_rows(hashes: Any) -> Any:
+    """A mask of the rows whose hash another row has (every row of a duplicate key is among them)."""
+    import numpy as np
+
+    if len(hashes) < 2:
+        return np.zeros(len(hashes), dtype=bool)
+    ordered = np.sort(hashes)
+    same = ordered[1:] == ordered[:-1]
+    if not same.any():
+        return np.zeros(len(hashes), dtype=bool)
+    values = np.unique(ordered[1:][same])
+    del ordered, same
+    at = np.searchsorted(values, hashes)
+    np.minimum(at, len(values) - 1, out=at)
+    return values[at] == hashes
+
+
+def _key_codes(reader: TableReader, key: Sequence[str], keep: Any = None
+               ) -> tuple[Any, list[tuple[str, int, int]]] | None:
+    """``(codes, layout)``: one int64 per row (of the rows ``keep`` selects), equal exactly when every key part is
+    equal (NULLS NOT DISTINCT), and the ``(file, row group, rows)`` layout the parts were read in. Each part is
+    dictionary-encoded one row group at a time and the chunks' dictionaries unified, so a part's values are held
+    once as its distinct values; its codes are folded into the combined code before the next part is read. When the
+    product of the parts' cardinalities passes 63 bits (the seven-part key of the 14.5 M-row interaction table:
+    about 5e21) the codes combined so far are encoded again, which bounds them by the row count. None when the parts
+    do not read as aligned arrays."""
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    combined: Any = None
+    width = 1
+    layout: list[tuple[str, int, int]] | None = None
+    for part in key:
+        chunks, where, base = [], [], 0
+        for frag, rg, arr in reader.leaf_arrays(part):
+            arr = arr.combine_chunks() if isinstance(arr, pa.ChunkedArray) else arr
+            n = len(arr)
+            where.append((frag.uri, rg, n))
+            if keep is not None:
+                arr = arr.filter(pa.array(keep[base:base + n]))
+            base += n
+            chunks.append(pc.dictionary_encode(arr))
+            del arr
+        if layout is None:
+            layout = where
+        elif where != layout:
+            return None
+        if not chunks:
+            return np.zeros(0, dtype=np.int64), layout
+        unified = pa.chunked_array(chunks).unify_dictionaries()
+        del chunks
+        w = len(unified.chunk(0).dictionary) + 1
+        code = np.concatenate([np.asarray(pc.fill_null(c.indices.cast(pa.int64()), -1).to_numpy(zero_copy_only=False),
+                                          dtype=np.int64) for c in unified.iterchunks()])
+        del unified
+        code += 1                                       # 0 is null
+        if combined is None:
+            combined, width = code, w
+            continue
+        if width * w >= 2 ** 63:
+            again = pc.dictionary_encode(pa.array(combined))
+            combined = np.array(again.indices.cast(pa.int64()).to_numpy(zero_copy_only=False), dtype=np.int64)
+            width = len(again.dictionary)
+            del again
+            if width * w >= 2 ** 63:
+                return None
+        combined *= w
+        combined += code
+        width *= w
+        del code
+    return combined, layout or []
+
+
+def _key_values_at(reader: TableReader, key: Sequence[str], rows: Sequence[int]) -> dict[int, list[Any]]:
+    """The key parts' values of a few rows (positions in the table's read order)."""
+    import pyarrow as pa
+
+    wanted = sorted(set(int(r) for r in rows))
+    out: dict[int, list[Any]] = {r: [None] * len(key) for r in wanted}
+    for i, part in enumerate(key):
+        base = 0
+        for _frag, _rg, arr in reader.leaf_arrays(part):
+            n = len(arr)
+            for r in wanted:
+                if base <= r < base + n:
+                    value = arr[r - base]
+                    out[r][i] = value.as_py() if isinstance(value, pa.Scalar) else value
+            base += n
+    return out
+
+
+def _arrow_key_duplicates(reader: TableReader, key: Sequence[str], types: Sequence[str | None], *,
+                          budget_bytes: int | None = None) -> tuple[int, list[str], int] | None:
     """``(duplicates, up to five rendered duplicate keys, rows)`` of a key of flat columns, counted on Arrow arrays
-    with NULLS NOT DISTINCT: each part is dictionary-encoded over the whole table and the codes are combined into one
-    integer per row, whose repeats are the duplicate keys. Rendering every key in Python took 3.4 minutes of a
-    standard check of the 4.0 M-row 25.09 association_overall_direct table, and the indirect tables hold 13 M rows.
-    When the product of the parts' cardinalities passes 63 bits (the seven-part key of the 14.5 M-row interaction
-    table: about 5e21) the codes combined so far are encoded again, which bounds them by the row count.
-    None when a part is a partition or a cleaned column (in-band unknowns) or the parts do not read as aligned
-    arrays: the caller scans the rows instead."""
+    with NULLS NOT DISTINCT. Rendering every key in Python took 3.4 minutes of a standard check of the 4.0 M-row
+    25.09 association_overall_direct table, and the indirect tables hold 13 M rows.
+
+    Two passes, so the data child never holds the key's values whole (that took it from 109 to 2,105 MB on the
+    25.09 interaction table, 14.5 M rows and seven parts, the floor of every session check):
+
+    1. a 64-bit hash per row mixed from its parts' value hashes (:func:`_key_hashes`, one part and one row group at
+       a time); rows with equal keys have equal hashes, so only rows whose hash repeats can be duplicates;
+    2. the exact count over those rows alone (:func:`_key_codes`: dictionary codes folded into one integer per row).
+       Their count is usually 0. When it needs more than ``budget_bytes`` (``data.service.max_resident_mb``;
+       :data:`ARROW_KEY_ROW_BYTES` per row plus the decoded values of the largest part) the candidates are split
+       by their hash into passes that each fit.
+
+    None when a part is a partition or a cleaned column (in-band unknowns), the parts do not read as aligned
+    arrays, or more than :data:`ARROW_KEY_MAX_PASSES` passes would be needed: the caller scans the rows instead."""
+    import numpy as np
     import pyarrow as pa
     import pyarrow.compute as pc
 
     if not key or any(k in reader.partitions or reader._unclean(k) for k in key):
         return None
-    indices: list[Any] = []
-    dictionaries: list[Any] = []
     try:
-        layout = None
-        for part in key:
-            chunks, where = [], []
-            for frag, rg, arr in reader.leaf_arrays(part):
-                where.append((frag.uri, rg, len(arr)))
-                chunks.append(arr.combine_chunks() if isinstance(arr, pa.ChunkedArray) else arr)
-            if layout is None:
-                layout = where
-            elif where != layout:
+        hashed = _key_hashes(reader, key)
+        if hashed is None:
+            return None
+        hashes, layout = hashed
+        total = sum(n for _f, _r, n in layout)
+        if total != len(hashes):
+            return None
+        candidates = _repeated_rows(hashes)
+        n_cand = int(np.count_nonzero(candidates))
+        if not n_cand:
+            return 0, [], total
+        passes = 1
+        if budget_bytes:
+            largest = max(reader.estimate_scan_bytes([reader.physical_path(k)], None, use_sidecars=False)
+                          for k in key)
+            need = n_cand * ARROW_KEY_ROW_BYTES + int(largest * n_cand / max(total, 1))
+            passes = max(1, math.ceil(need / budget_bytes))
+            if passes > ARROW_KEY_MAX_PASSES:
                 return None
-            if not chunks:
-                return 0, [], 0
-            enc = pc.dictionary_encode(pa.chunked_array(chunks).combine_chunks())
-            del chunks
-            dictionaries.append(enc.dictionary)
-            indices.append(enc.indices)                 # int32, null where the part is null
-        combined: Any = None
-        width = 1
-        for idx, d in zip(indices, dictionaries):
-            w = len(d) + 1
-            code = pc.add(pc.fill_null(idx.cast(pa.int64()), -1), 1)                  # 0 is null
-            if combined is None:
-                combined, width = code, w
+        part_of = (hashes % np.uint64(passes)).astype(np.uint8) if passes > 1 else None
+        del hashes
+        dups = 0
+        found: list[tuple[int, int]] = []              # (first row of a repeated key, its count), up to 5 per pass
+        for p in range(passes):
+            keep = candidates if part_of is None else candidates & (part_of == p)
+            got = _key_codes(reader, key, keep)
+            if got is None or got[1] != layout:
+                return None
+            combined = got[0]
+            if not len(combined):
                 continue
-            if width * w >= 2 ** 63:
-                again = pc.dictionary_encode(combined)
-                combined, width = again.indices.cast(pa.int64()), len(again.dictionary)
-                if width * w >= 2 ** 63:
-                    return None
-            combined = pc.add(pc.multiply(combined, w), code)
-            width *= w
-        rows = len(combined)
-        counts = pc.value_counts(combined)
-        repeated = counts.filter(pc.greater(counts.field("counts"), 1))
-        dups = int(pc.sum(pc.subtract(repeated.field("counts"), 1)).as_py() or 0)
+            counts = pc.value_counts(pa.array(combined))
+            repeated = counts.filter(pc.greater(counts.field("counts"), 1))
+            dups += int(pc.sum(pc.subtract(repeated.field("counts"), 1)).as_py() or 0)
+            if len(repeated):
+                where = np.flatnonzero(keep)
+                for value, n in zip(repeated.field("values").slice(0, 5).to_pylist(),
+                                    repeated.field("counts").slice(0, 5).to_pylist()):
+                    found.append((int(where[int(np.argmax(combined == value))]), int(n)))
+            del combined, counts, repeated
         examples: list[str] = []
-        for value, n in zip(repeated.field("values").slice(0, 5).to_pylist(),
-                            repeated.field("counts").slice(0, 5).to_pylist()):
-            row = pc.index(combined, value).as_py()
-            parts = [None if not idx[row].is_valid else d[idx[row].as_py()].as_py()
-                     for idx, d in zip(indices, dictionaries)]
-            examples.extend([canonical(parts, types)] * (n - 1))   # one per repeat, as a scan lists
+        found.sort()
+        if found:
+            values = _key_values_at(reader, key, [r for r, _n in found[:5]])
+            for r, n in found[:5]:
+                examples.extend([canonical(values[r], types)] * (n - 1))   # one per repeat, as a scan lists
         examples = examples[:5]
     except MemoryError:
         raise                                          # out of memory, not an unanswerable check
     except (ServiceError, FormatError, ValueError, TypeError, NotImplementedError, pa.ArrowException):
         return None
-    return dups, examples, rows
+    return dups, examples, total
 
 
 #: Items of parent rows that share their parent key (a broken parent key) are compared across rows in memory up to
@@ -2038,6 +2239,264 @@ def r8_matrix_sentinels(run: CheckRun) -> None:
 
 
 # ---------------------------------------------------------------------------
+# R6, R7, R9, R10 on a matrix's axes and values
+# ---------------------------------------------------------------------------
+
+def _axis_columns(spec: Any) -> dict[str, Any]:
+    """The declared columns of one matrix axis: its ``columns`` and the fields its header ``parse`` yields
+    (``attributes_from`` columns belong to the other table and are checked there)."""
+    cols = dict(spec.columns or {})
+    if spec.parse is not None:
+        for name, col in (spec.parse.fields or {}).items():
+            cols.setdefault(name, col)
+    return cols
+
+
+def _axis_table(frames: Sequence[Any]) -> Any:
+    """One Arrow table of every fragment's axis members; a column a fragment lacks is null there, a column whose
+    type differs between fragments is read as text."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    names: list[str] = []
+    for f in frames:
+        names.extend(n for n in f.column_names if n not in names)
+    out: dict[str, Any] = {}
+    for name in names:
+        parts = []
+        for f in frames:
+            if name in f.column_names:
+                arr = f.column(name).combine_chunks()
+                if pa.types.is_dictionary(arr.type):
+                    arr = arr.dictionary_decode()
+                parts.append(arr)
+            else:
+                parts.append(None)
+        types = {p.type for p in parts if p is not None}
+        target = types.pop() if len(types) == 1 else pa.large_string()
+        cast = []
+        for p, f in zip(parts, frames):
+            if p is None:
+                cast.append(pa.nulls(f.num_rows, target))
+            elif p.type != target:
+                cast.append(pc.cast(p, target, safe=False))
+            else:
+                cast.append(p)
+        out[name] = pa.chunked_array(cast, type=target)
+    return pa.table(out)
+
+
+class _AxisReader:
+    """One matrix axis's members read as the R6/R7/R9/R10 checks read a table: the axis's declared columns over
+    the values ``fmt.axis_values`` gives for every fragment. It answers the reader calls those checks make
+    (``schema``, ``snapshot``, ``sample_rows``, ``scan``, ``leaf_arrays``, ``column_spec``)."""
+
+    def __init__(self, reader: TableReader, axis: str, spec: Any, data: Any) -> None:
+        from types import SimpleNamespace
+
+        self.ctx = reader.ctx
+        self.table = reader.table
+        self.desc = reader.desc
+        self.axis = axis
+        self.data = data
+        self.partitions: dict[str, Any] = {}
+        self.levels: list[Any] = []
+        self.key = list(spec.key.columns)
+        columns = _axis_columns(spec)
+        alias = {"row": "obs", "col": "var"}.get(axis, axis)
+        prefixes = (f"@{axis}.", f"@{alias}.")
+        constraints = []
+        for c in reader.spec.constraints:
+            col = str(c.column)
+            for p in prefixes:
+                if col.startswith(p) and col[len(p):] in columns:
+                    constraints.append(c.model_copy(update={"column": col[len(p):]}))
+        self.spec = SimpleNamespace(columns=columns, partitions={}, constraints=constraints, edge=None)
+
+    def schema(self) -> Any:
+        return self.data.schema
+
+    def _unclean(self, path: str) -> bool:
+        return False
+
+    def column_spec(self, path: str) -> Any:
+        return self.spec.columns.get(path)
+
+    def _column(self, path: str) -> Any:
+        if path not in self.data.column_names:
+            raise ServiceError(f"{self.axis} axis has no column {path!r}")
+        return self.data.column(path).combine_chunks()
+
+    def leaf_arrays(self, path: str, predicate: Any = None) -> Iterator[tuple[Any, int, Any]]:
+        yield None, 0, self._column(path)
+
+    def snapshot(self, path: str, *, budget_bytes: int | None = None, max_values: int | None = None
+                 ) -> ValueSnapshot:
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        from .reader import _snapshot_id
+
+        arr = self._column(path)
+        storage = str(arr.type)
+        while pa.types.is_list(arr.type) or pa.types.is_large_list(arr.type):
+            arr = pc.list_flatten(arr)
+        nulls = arr.null_count
+        nans = 0
+        if pa.types.is_floating(arr.type):
+            nan_mask = pc.is_nan(arr)
+            nans = int(pc.sum(nan_mask).as_py() or 0)
+            arr = arr.filter(pc.invert(pc.fill_null(nan_mask, True)))
+        limit = budget_bytes if budget_bytes is not None else int(self.ctx.settings.readiness.vocab_budget_bytes)
+        cap = max_values if max_values is not None else 100_000
+        counts = pc.value_counts(arr.drop_null())
+        raw: dict[str, Any] = {}
+        n: dict[str, int] = {}
+        complete = arr.nbytes <= limit
+        for v, c in zip(counts.field("values").to_pylist(), counts.field("counts").to_pylist()):
+            r = render_value(v, storage)
+            if r not in raw:
+                if len(raw) >= cap:
+                    complete = False
+                    continue
+                raw[r] = v
+            n[r] = n.get(r, 0) + int(c)
+        values = tuple(raw[r] for r in sorted(raw))
+        return ValueSnapshot(values, {raw[r]: n[r] for r in sorted(raw)}, nulls, nans, complete,
+                             _snapshot_id(values, storage), storage)
+
+    def sample_rows(self, n: int, *, seed: int = 0, columns: Sequence[str] | None = None) -> list[dict[str, Any]]:
+        keep = [c for c in (columns or self.data.column_names) if c in self.data.column_names]
+        rows = self.data.select(keep).to_pylist()
+        if len(rows) > n:
+            rows = random.Random(seed).sample(rows, n)
+        return rows
+
+    def scan(self, predicate: Any = None, *, columns: Sequence[str] | None = None,
+             attribute_unknown: bool = True) -> Iterator[Any]:
+        from types import SimpleNamespace
+
+        if predicate is not None:
+            raise ServiceError("an axis is scanned whole")
+        keep = [c for c in (columns or self.data.column_names) if c in self.data.column_names]
+        for row in self.data.select(keep).to_pylist():
+            yield SimpleNamespace(row=row)
+
+
+def _axis_stats(data: Any) -> dict[str, ColumnStats]:
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    out: dict[str, ColumnStats] = {}
+    for name in data.column_names:
+        arr = data.column(name)
+        lo = hi = None
+        if pa.types.is_integer(arr.type) or pa.types.is_floating(arr.type):
+            try:
+                mm = pc.min_max(arr)
+                lo, hi = mm["min"].as_py(), mm["max"].as_py()
+            except (pa.ArrowException, KeyError):
+                lo = hi = None
+        out[name] = ColumnStats(int(arr.nbytes), int(arr.null_count), num_values=len(arr), min=lo, max=hi,
+                                storage_type=str(arr.type))
+    return out
+
+
+def _matrix_value_stats(reader: TableReader, name: str) -> ColumnStats:
+    """Null count, count and the range of the known values of one matrix value, read in long-view batches from
+    every fragment (NaN is an unknown, as the long view reads it)."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    lo = hi = None
+    nulls = n = 0
+    for frag in reader.fragments():
+        for batch in reader.fmt.slice(frag, name, row_predicate=None, col_keys=None, budget_bytes=None):
+            arr = batch.column(batch.schema.get_field_index(name))
+            n += len(arr)
+            if pa.types.is_floating(arr.type):
+                arr = pc.if_else(pc.is_nan(arr), pa.scalar(None, arr.type), arr)
+            nulls += arr.null_count
+            if len(arr) == arr.null_count:
+                continue
+            mm = pc.min_max(arr)
+            a, b = mm["min"].as_py(), mm["max"].as_py()
+            lo = a if lo is None or a < lo else lo
+            hi = b if hi is None or b > hi else hi
+    return ColumnStats(0, nulls, num_values=n, min=lo, max=hi)
+
+
+def matrix_axis_checks(run: CheckRun) -> None:
+    """R6, R7, R9 and R10 of a matrix (§6.7): each axis's declared columns (``columns`` and the header ``parse``
+    fields) are read with the format's ``axis_values`` from every fragment and checked as a table's columns are
+    (verified:false facts and literal constraints, vocabulary snapshots, references, relations); R6 runs on the
+    ``values`` declared ``verified: false`` from the matrix's statistics. Findings name the axis
+    (``@row.ModelID``)."""
+    reader = run.reader
+    assert reader is not None
+    matrix = reader.spec.matrix
+    if matrix is None or not callable(getattr(reader.fmt, "axis_values", None)):
+        return
+    for axis, spec in matrix.axes.items():
+        if not _axis_columns(spec):
+            continue
+        try:
+            frames = [reader.fmt.axis_values(frag, axis) for frag in reader.fragments()]
+        except MemoryError:
+            raise
+        except (FormatError, ServiceError, ValueError, NotImplementedError) as exc:
+            run.add("R7", False, f"@{axis} axis values not read ({exc})", level="warning", column=f"@{axis}")
+            continue
+        if not frames:
+            continue
+        data = _axis_table(frames)
+        sub = CheckRun(run.ctx, run.ref, run.depth, reader=_AxisReader(reader, axis, spec, data),  # type: ignore[arg-type]
+                       sample_rows=run.sample_rows, rows=data.num_rows)
+        sub.stats = _axis_stats(data)
+        r6_facts(sub)
+        r7_vocab(sub)
+        r9_refs(sub)
+        r10_relations(sub)
+        prefix = f"@{axis}."
+        for c in sub.checks:
+            run.checks.append(c.model_copy(update={"column": prefix + c.column if c.column else f"@{axis}",
+                                                   "detail": f"{prefix}{c.detail}"[:2000]}))
+        run.statuses.extend(sub.statuses)
+        for col, st in sub.columns.items():
+            run.columns[prefix + col] = worst([run.columns.get(prefix + col, "ready"), st])
+        run.confirmed.update({prefix + k: v for k, v in sub.confirmed.items()})
+        run.vocab.update({prefix + k: v for k, v in sub.vocab.items()})
+    for name, col in matrix.values.items():
+        if getattr(col, "role", None) != "measure" or getattr(col, "verified", True) is not False:
+            continue
+        plugin = run.ctx.statistic(getattr(col, "statistic", None)) or \
+            run.ctx.statistic(getattr(col, "fallback", None))
+        if plugin is None:
+            run.add("R6", False, f"{name}: statistic {col.statistic} is not registered", status="plugin_unavailable",
+                    column=name)
+            continue
+        stats = run.stats.get(name)
+        if stats is None or stats.min is None or stats.max is None:
+            try:
+                stats = _matrix_value_stats(reader, name)
+            except MemoryError:
+                raise
+            except (FormatError, ServiceError, ValueError, NotImplementedError) as exc:
+                run.add("R6", False, f"{name}: values not read ({exc})", level="warning", column=name)
+                continue
+        res = plugin.validate(stats, None, col)
+        run.confirmed[name] = dict(res.facts)
+        if res.confirmed is False:
+            run.add("R6", False, f"{name}: {res.detail}", status="encoding_drift", column=name,
+                    hint="the descriptor's scale or encoding is refuted by the data")
+        elif res.confirmed is None:
+            run.add("R6", False, f"{name}: not confirmed ({res.detail}); used for disclosure only (I9)",
+                    level="warning", column=name)
+        else:
+            run.add("R6", True, f"{name}: facts confirmed", column=name)
+
+
+# ---------------------------------------------------------------------------
 # R9: referential samples
 # ---------------------------------------------------------------------------
 
@@ -2527,6 +2986,7 @@ def check_table(ctx: ServiceContext, ref: str, depth: str = "standard", *,
             if depth != "standard_files" and not any(c.name in ("R4", "R5") and not c.ok and c.level == "error"
                                                      for c in run.checks):
                 r8_matrix_sentinels(run)            # read as long cells (axis keys are not columns)
+                matrix_axis_checks(run)             # R6/R7/R9/R10 on the axes' declared columns
             return run.model()
         r4_types(run)
         if depth == "standard_files":

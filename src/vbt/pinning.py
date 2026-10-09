@@ -12,6 +12,7 @@ Nothing here contacts the network; git and package lookups fail soft.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import platform
 import re
@@ -24,7 +25,7 @@ from typing import Any, Iterable, Mapping
 __all__ = ["build_pinned_config", "git_info", "prompt_hashes", "package_versions", "installed_distributions",
            "PINNED_PACKAGES", "PIN_SCHEMA", "default_model_pattern", "CLAUDE_MODEL_PATTERN", "SERVED_MODEL_PATTERN",
            "LOCAL_PROVIDER_NAMES", "REDACTED", "redact_config", "drop_redacted", "pinned_profiles",
-           "served_model_conflict", "pinned_data"]
+           "served_model_conflict", "pinned_data", "pinned_project"]
 
 PIN_SCHEMA = 1
 
@@ -328,6 +329,42 @@ def pinned_data(config: Mapping[str, Any], runtime: Any) -> dict[str, Any]:
     return data
 
 
+def pinned_project(config: Mapping[str, Any]) -> dict[str, Any] | None:
+    """``pinned["project"]`` (docs/PROJECTS.md): the active project's name and directory, and digests of what it
+    adds: its catalog (``catalog_sha256`` over its descriptor and overlay files, each listed), its approved plugin
+    modules and its registered utilities (their provenance ``source_hash``). None without a project. ``vbt replay``
+    and a resumed session activate the same project; the digests say whether it changed since. Never raises."""
+    spec = config.get("project")
+    if not isinstance(spec, Mapping) or not spec.get("dir"):
+        return None
+    root = Path(str(spec["dir"]))
+    out: dict[str, Any] = {"name": spec.get("name"), "dir": str(root)}
+    try:
+        from .datalayer.descriptor.load import approved_project_plugins
+
+        files: dict[str, str] = {}
+        for sub in ("descriptors", "overlays"):
+            d = root / sub
+            for f in sorted(d.glob("*.y*ml")) if d.is_dir() else []:
+                files[f"{sub}/{f.name}"] = _sha256_bytes(f.read_bytes())
+        out["catalog_files"] = files
+        out["catalog_sha256"] = _sha256_text("".join(f"{k}\0{v}\0" for k, v in sorted(files.items())))
+        plugins, problems = approved_project_plugins(root)
+        out["plugins"] = {str(Path(f).relative_to(root)): _sha256_bytes(Path(f).read_bytes()) for f in plugins}
+        if problems:
+            out["plugins_not_imported"] = problems
+        utilities: dict[str, Any] = {}
+        udir = root / "provenance" / "utility"
+        for f in sorted(udir.glob("*.json")) if udir.is_dir() else []:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+            if isinstance(rec, Mapping) and rec.get("status") == "registered":
+                utilities[str(rec.get("name") or f.stem)] = rec.get("source_hash")
+        out["utilities"] = utilities
+    except Exception as exc:  # noqa: BLE001 - a pin record never blocks a session
+        out["error"] = f"{type(exc).__name__}: {exc}"[:500]
+    return out
+
+
 def build_pinned_config(config: Mapping[str, Any], runtime: Any, *, interface: str = "chat",
                         profiles: Iterable[str] = (), server: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The pinned configuration of a session (see the module docstring).
@@ -390,6 +427,9 @@ def build_pinned_config(config: Mapping[str, Any], runtime: Any, *, interface: s
     if server:
         pinned["provider"]["server"] = _redact(dict(server))
     pinned["data"] = pinned_data(config, runtime)
+    project = pinned_project(config)
+    if project is not None:
+        pinned["project"] = project
     skill_hashes = getattr(runtime, "skill_hashes", None)
     if skill_hashes is not None:
         try:

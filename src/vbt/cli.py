@@ -186,7 +186,26 @@ def build_config(args, extra_profiles: Iterable[str] = (), *, pinned: Mapping[st
     if model:
         m = resolve_model(cfg, model)
         cfg = deep_merge(cfg, {"models": {t: {"model": m} for t in MODEL_TIERS if t in (cfg.get("models") or {})}})
+    cfg = _with_project(args, cfg, pinned)
     cfg["profiles"] = profiles
+    return cfg
+
+
+def _with_project(args, cfg: dict[str, Any], pinned: Mapping[str, Any] | None) -> dict[str, Any]:
+    """``cfg`` with the project of ``--project`` active (docs/PROJECTS.md); a resumed session without the flag
+    continues in the project it was pinned with, while that project still exists."""
+    from .projects.cli import apply_project
+
+    if getattr(args, "project", None):
+        return apply_project(args, cfg)
+    spec = (pinned or {}).get("project") if not _profiles(args) else None
+    if isinstance(spec, Mapping) and spec.get("dir") and not (cfg.get("project") or {}).get("dir"):
+        from .projects import ProjectError, Project, activate
+
+        try:
+            return activate(cfg, Project.load(spec["dir"]))
+        except ProjectError:
+            return cfg
     return cfg
 
 
@@ -850,7 +869,22 @@ async def cmd_chat(args, config: dict[str, Any] | None = None) -> int:
         for p in _report_paths(session.run.dir):
             console.print(f"{p.name}: {p}")
         console.print(f"Records: {session.run.dir}")
+        _print_project_notes(console, session)
     return 0
+
+
+def _print_project_notes(console, session) -> None:
+    """The run's new agent notes offered to (or added to) the active project at close (vbt.projects.notes)."""
+    notes = getattr(session, "project_notes", None)
+    if not notes:
+        return
+    who = ", ".join(notes.get("agents") or [])
+    if notes.get("mode") == "add":
+        console.print(f"Project {notes['project']}: {notes.get('added', 0)} new line(s) of agent notes added ({who})",
+                      highlight=False)
+    else:
+        console.print(f"Project {notes['project']}: {notes['lines']} new line(s) of agent notes ({who}); "
+                      f"`{notes['command']}` adds them for later sessions", highlight=False)
 
 
 def _read_turn_file(path: str) -> list[str]:
@@ -967,6 +1001,8 @@ async def cmd_run(args, config: dict[str, Any] | None = None) -> int:
     finally:
         ctl.restore()
         await session.close()
+    if not (ndjson or quiet):
+        _print_project_notes(console, session)
     summary = _run_summary(session)
     try:
         from .verify import verify_run
@@ -975,6 +1011,8 @@ async def cmd_run(args, config: dict[str, Any] | None = None) -> int:
         summary["verify"] = f"error: {type(exc).__name__}: {exc}"
     summary["failed_turns"] = failed
     summary["interrupted"] = interrupted
+    if getattr(session, "project_notes", None):
+        summary["project_notes"] = session.project_notes
     not_completed = [t for t in summary["turns"] if t.get("status") != "completed"]
     strict = not getattr(args, "no_strict", False)
     bad = bool(failed or interrupted or not_completed or summary["verify"] != "COMPLETE")
@@ -1088,8 +1126,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "agents are told which servers lack data")
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
+    from .projects.cli import add_project_argument, add_project_parser
+
     c = sub.add_parser("chat", help="interactive CSO session")
     _add_session_flags(c)
+    add_project_argument(c)
     r = sub.add_parser("run", help="headless: one argument per conversation turn")
     r.add_argument("queries", nargs="*")
     r.add_argument("-f", "--file", help="file with one turn per line ('#' lines are comments)")
@@ -1098,6 +1139,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="exit 0 even when a turn did not complete or verify is not COMPLETE")
     r.add_argument("--events", choices=["ndjson"], help="write the event stream as JSON lines to stdout")
     _add_session_flags(r)
+    add_project_argument(r)
     rp = sub.add_parser("replay", help="re-run a recorded session's turns and compare (writes replay_diff.json)")
     rp.add_argument("run", help="run id, prefix, path or 'latest'")
     rp.add_argument("-q", "--quiet", action="store_true")
@@ -1120,7 +1162,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_bulk_parser(sub)
     add_case_parsers(sub)       # case1, scenario, data (P9)
     add_local_parsers(sub)      # local profiles | serve | check | bench (local inference server)
-    add_setup_parser(sub)       # setup [--plan | --probe | --status] (host bring-up, docs/DEPLOYMENT.md)
+    add_project_argument(add_setup_parser(sub))   # setup [--plan | --probe | --status] (docs/DEPLOYMENT.md)
+    add_project_parser(sub)     # project init|list|show|check|profile|approve|reject|memory (docs/PROJECTS.md)
     return p
 
 
@@ -1161,6 +1204,8 @@ def apply_host_config(args, environ: dict[str, str] | None = None) -> Path | Non
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .projects import ProjectError
+
     p = build_parser()
     args = p.parse_args(argv)
     try:
@@ -1168,7 +1213,7 @@ def main(argv: list[str] | None = None) -> int:
         config = build_config(args)
         if args.cmd == "replay" and getattr(args, "replay_model", None):
             resolve_model(config, args.replay_model)
-    except (ModelResolutionError, ProfileError) as exc:
+    except (ModelResolutionError, ProfileError, ProjectError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     from .preflight import DataReadinessError, ProviderNotReadyError
@@ -1189,6 +1234,9 @@ def main(argv: list[str] | None = None) -> int:
     except DataReadinessError as exc:  # session preflight: nothing was sent to the model
         print(f"error: {exc}\nRun `vbt doctor` for details; --allow-missing-data starts a degraded run, "
               "--skip-preflight skips the check.", file=sys.stderr)
+        return 2
+    except ProjectError as exc:  # vbt project ...
+        print(f"error: {exc}", file=sys.stderr)
         return 2
 
 

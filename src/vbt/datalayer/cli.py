@@ -958,8 +958,10 @@ def cmd_estimate(args: argparse.Namespace, config: dict[str, Any]) -> int:
         except Exception as exc:  # noqa: BLE001
             _err(f"error: {exc}")
             return 2
-        tables = sorted({catalog.table(r).physical if catalog.table(r).is_item_table else r for r in contract.tables})
-        full = set(contract.full_table_reads)
+        # an item table is estimated as its physical table (a TableRef: compared as text with the plain refs)
+        tables = sorted({str(catalog.table(r).physical) if catalog.table(r).is_item_table else str(r)
+                         for r in contract.tables})
+        full = {str(f) for f in contract.full_table_reads}
     elif args.table:
         tables = list(args.table)
         bad = _unknown_tables(catalog, tables)

@@ -92,6 +92,13 @@ def _configured_limit(cfg: Any, settings: Any) -> tuple[bool, Any]:
     if value is None and settings is not None:
         section = getattr(settings, "service" if child else "memory", None)
         value = getattr(section, "mem_limit_mb" if child else "default_server_mb", None)
+        if child:
+            # DataSettings resolves the data child's 'auto' when it is built; the launcher plans it again from the
+            # host at launch time, as it does for every other server
+            raw = getattr(settings, "raw", None) or {}
+            service = raw.get("service") if isinstance(raw, dict) else None
+            if isinstance(service, dict) and sizing.is_auto(service.get("mem_limit_mb")):
+                value = sizing.AUTO
     return child, value
 
 

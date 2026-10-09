@@ -101,7 +101,23 @@ class SetupContext:
         host = Path(self.layout.state) / hostconfig.HOST_PROFILE
         if host.is_file():
             out.append(str(host))
+        project = self.project_profile()
+        if project and project not in out:
+            out.append(project)
         return out
+
+    def project_profile(self) -> str | None:
+        """The active project's profile (``vbt setup --project NAME``): the data commands setup runs then see the
+        project's sources, which ``vbt data acquire`` fetches into the project (docs/PROJECTS.md)."""
+        from ..projects import active_project
+        from ..projects.model import profile_is_current, write_profile
+
+        project = active_project(self.config)
+        if project is None:
+            return None
+        if not profile_is_current(project, self.config):
+            write_profile(project, self.config)
+        return str(project.profile_path)
 
     def host_env(self) -> dict[str, str]:
         if self.pending_env is not None:

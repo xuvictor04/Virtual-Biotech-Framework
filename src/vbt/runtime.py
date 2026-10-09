@@ -553,6 +553,7 @@ class Runtime:
         self._system_cache: dict[str, Any] = {}
         self._known_agents: dict[str, AgentDefinition] = {}
         self.registry.extend(builtin_tools(skill_roots=self.skill_roots))
+        self.registry.extend(self._project_utility_tools())
         self._materialize_skills()
         for t in provenance_tools():
             if t.name in STRICT_TOOLS:
@@ -570,6 +571,60 @@ class Runtime:
             log.exception("registering bulk dispatch tools failed")
 
     # ------------------------------------------------------------------ setup
+
+    def _project_utility_tools(self) -> list[Tool]:
+        """The active project's registered utilities (``util__<name>``; docs/PROJECTS.md): those whose files still
+        match their provenance record. None without a project; a broken project never blocks a runtime."""
+        try:
+            from .projects import active_project
+            from .projects.utilities import utility_tools
+
+            project = active_project(self.config)
+            return utility_tools(project) if project is not None else []
+        except Exception as exc:  # noqa: BLE001
+            self._note_audit_error(f"project utilities: {type(exc).__name__}: {exc}")
+            return []
+
+    async def reload_data_layer(self) -> list[str]:
+        """Serve what was registered in the running session (a project's descriptor, overlay or plugin): rebuild the
+        data settings, plugin registry and catalog from ``self.config``, hand them to the gateway
+        (``DataGateway.reload_catalog``) and restart the ``data`` child with the new settings, so its tables and its
+        ``mcp__data__*`` listing follow. Returns what could not be refreshed (empty when everything was)."""
+        self._data_settings = None
+        self._system_cache.clear()
+        gateway, bridge = self.gateway, self.mcp
+        if gateway is None or bridge is None:
+            return ["no data gateway runs in this session"]
+        problems: list[str] = []
+        from .datalayer.settings import SETTINGS_ENV
+
+        try:
+            from .datalayer.catalog import build_catalog
+            from .datalayer.descriptor.load import variables_from_config
+            from .datalayer.plugins.registry import discover
+
+            settings = self.data_settings()
+            registry = discover(settings)
+            catalog = build_catalog(settings, registry, variables=variables_from_config(self.config),
+                                    run=self.run_variables())
+            gateway.reload_catalog(catalog, registry, settings=settings)
+        except Exception as exc:  # noqa: BLE001 - the session keeps its previous catalog
+            log.warning("refreshing the data catalog failed", exc_info=True)
+            problems.append(f"the gateway's catalog could not be rebuilt ({type(exc).__name__}: {exc})")
+        try:
+            st = getattr(bridge, "_servers", {}).get("data")
+            if st is None:
+                problems.append("this session runs no data child")
+            else:
+                st.cfg.env = {**dict(getattr(st.cfg, "env", None) or {}),
+                              SETTINGS_ENV: self.data_settings().to_json()}
+                if not await bridge.recycle("data", wait_s=60.0):
+                    problems.append("the data child is busy and was not restarted")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("restarting the data child failed", exc_info=True)
+            problems.append(f"the data child could not be restarted ({type(exc).__name__}: {exc})")
+        self._system_cache.clear()
+        return problems
 
     def _materialize_skills(self) -> None:
         """Link every skill into <run>/.claude/skills and record {name: sha256}."""

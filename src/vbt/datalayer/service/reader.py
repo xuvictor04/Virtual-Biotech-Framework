@@ -39,7 +39,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 from ..catalog import POSITION_MARK, TableRef
 from ..descriptor.columns import is_container
 from ..plugins.base import Fragment, Normalized, ValueSnapshot
-from ..plugins.formats import conjuncts, round_to_storage, storage_typed
+from ..plugins.formats import conjuncts, round_to_storage, storage_typed, top_column
 from ..plugins.layouts import prune_fragments
 from ..predicate import (
     map_columns,
@@ -517,6 +517,20 @@ class TableReader:
     def top_columns(self) -> list[str]:
         return [n for n in self.schema().names if n not in self.partitions]
 
+    def _top_of(self, leaf: str) -> str:
+        """The top-level column a leaf path reads. A column name may hold a dot (HGNC's ``pseudogene.org``, a literal
+        descriptor key): the longest dotted prefix that is a column of the data wins over the first segment."""
+        names = set(self.schema().names)
+        if leaf in names:
+            return leaf
+        if "`" in leaf:
+            return top_column(leaf)
+        parts = leaf.split(".")
+        for n in range(len(parts) - 1, 1, -1):
+            if ".".join(parts[:n]) in names:
+                return ".".join(parts[:n])
+        return parts[0]
+
     def storage_type(self, path: str) -> str | None:
         try:
             t = _type_at(self.schema(), path)
@@ -794,7 +808,7 @@ class TableReader:
         import pyarrow as pa
 
         if info is None:
-            tops = sorted({leaf.split(".")[0] for leaf in leaves}) or None
+            tops = sorted({self._top_of(leaf) for leaf in leaves}) or None
             batches = list(self.fmt.scan([frag], columns=tops, predicate=None, partitions=self.partitions))
             if not batches:
                 return

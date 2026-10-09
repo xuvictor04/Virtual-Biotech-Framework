@@ -211,11 +211,35 @@ The third round ran on the same releases and the live APIs on 2026-10-08
 | R6 counted struct containers as lists (`tep`, `hallmarks` null in every gene) | a struct container counts as null or present (`tep` 41 present) | `test_dl_round3_items.py` |
 | No checked way to download an Open Targets release; `R2:manifest_absent` on every table | `vbt data ot list\|fetch\|manifest`: sha1 against `release_data_integrity`, the upstream manifest format | `test_dl_round3_items.py` |
 
-Not done: R6, R7, R9 and R10 (value facts, vocabularies, references, relations) do not run on matrix tables;
-the CT.gov leakage policy stays `rows: withhold` (see the comment in `configs/data/sources/clinicaltrials.yaml`).
+Not done in round 3 (R6, R7, R9 and R10 on matrix tables are done since; see the next section): the CT.gov
+leakage policy stays `rows: withhold` (see the comment in `configs/data/sources/clinicaltrials.yaml`).
 An item table whose parent has more than 16 M rows (evidence `mutatedSamples[]`) still uses the spilled row
 scan. Biosample `ancestors`/`descendants` (refuted as closures) get no readiness finding: hierarchy columns
 have no `on_refute` facet and R10 checks only ancestor closures.
+
+### Host-scaled memory, `vbt validate` and projects (wave C)
+
+Packages D3 (host-scaled defaults, `vbt validate`) and D5 (projects), integrated on 2026-10-09 and run on the same
+releases.
+
+| Finding | Fix | Tests |
+|---|---|---|
+| Memory settings were fixed numbers (12,000 MB per server, a 3,000 MB data child) whatever the host | every budget ships `auto` and scales with the host (`memory/sizing.py`, DATA_LAYER.md §14.2): 8,192 MB per server on 16 GB, 293,601 MB on 512 GB; `DataSettings` resolves the data child's and the witness/readiness budgets; `vbt setup` writes the same rule's numbers | `test_dl_round3_memory.py`, `test_setup.py::test_sizing_is_the_rule_auto_applies_at_run_time` |
+| `RLIMIT_DATA` was the default containment; Census reads fail under it with `std::bad_alloc` | `limit_kind: rss` by default (a memory cgroup, else the RSS watchdog) | `test_dl_round3_memory.py` (live Census opt-in) |
+| `target.get_chemical_probes` and `get_genetic_constraint` were declared `projection` reads, which admission does not size; the unmodified loader read the whole `target` table and the server was OOM-killed at 3,000 MB; functional_genomics' `target_essentiality` was declared a bounded scan and its upstream calls were OOM-killed at 4,400 MB | the 21 `projection` reads of target, pathway, disease and drug and the five `target_essentiality` reads are `full_table` (the upstream loader's `get_dataset` reads every column) | `test_dl_reads_complete.py::test_whole_table_loads_are_not_declared_projections`, `::test_functional_genomics_loads_target_essentiality_whole` |
+| The readiness key pass (R5b) held every key part's values: 2,105 MB on 25.09 `interaction`, the floor of every session check | rows are hashed one part and row group at a time; only rows whose hash repeats are counted exactly, in passes bounded by `data.service.max_resident_mb` (which nothing read before). `interaction`'s standard check: 692 MB, 23.6 s; the whole standard session check: largest data child 1,078 MB (`study`), 294.9 s, statuses unchanged | `test_dl_real_ot_servers.py::test_the_arrow_key_pass_is_bounded_by_the_resident_budget` |
+| R6, R7, R9 and R10 did not run on matrix tables | they run on each axis's declared columns (`checks.matrix_axis_checks`); DepMap's `@row.ModelID -> model.ModelID` resolves | `test_dl_round3_memory.py::test_matrix_axis_columns_get_r9_references` |
+| A column whose name holds a dot (HGNC `pseudogene.org`) could not be declared: R4 split the name at the dot (`schema_drift`), a CSV scan asked for `pseudogene` | a descriptor column key is a literal name everywhere; drafts declare such columns | `test_dl_literal_names_and_links.py`, `test_utilities.py::test_drafts_of_real_shapes_register_as_drafted` |
+| The layouts' directory walk followed a directory link loop forever | each real directory is walked once | `test_dl_literal_names_and_links.py` |
+| No command checked a host end to end | `vbt validate` (DEPLOYMENT.md §7.5) | `test_validate.py` |
+
+Projects (docs/PROJECTS.md) are wired into the harness: `vbt project ...` and `--project NAME` on `chat`, `run` and
+`setup`; `data.project_dir` is a typed setting carried to the data child; plugin discovery imports a project's
+plugin module only when its provenance record says registered and the file is unchanged (a module written into
+`plugins/` by hand or by an agent's Bash is never imported); the runtime lists the project's utilities from the
+configuration; `Runtime.reload_data_layer` and `DataGateway.reload_catalog` serve a registration in the running
+session; the run pins its project with digests; `vbt data acquire` puts a project's sources under `<project>/data`;
+at the close of a session the run's new agent notes are offered to the project (`projects.notes_at_close`).
 
 ## How to use the layer
 
@@ -273,6 +297,8 @@ else starts guarded. `lenient` lets those calls run unguarded.
 | `vbt ds replay <run> <tool_use_id...> \| --all [--backend bridge\|inprocess]` | re-execute recorded calls (the default `auto` is the guarded bridge) |
 | `vbt ds diff-release`, `graduate`, `retro-audit` | release drift, the observe-to-enforce checklist, offline re-classification |
 | `vbt verify <run> --data` | fresh fingerprints and replays; missing tables, unreadable fingerprints and lost records leave the run INCOMPLETE |
+| `vbt validate [--depth D] [--only/--skip STEPS]` | certify this host on its real data: lint, the session check, the six correctness tests with the gateway enforcing and off, latency, memory, live sources, replication, the model server (DEPLOYMENT.md §7.5) |
+| `vbt project init\|list\|show\|check\|profile\|approve\|reject\|memory` | projects (docs/PROJECTS.md); `--project NAME` on `chat`, `run` and `setup` |
 
 Open Targets release files are fetched with `vbt data ot list|fetch|manifest` (see the README): each file's
 sha1 is checked against the release's `release_data_integrity`, and `.download-manifest.json` (the upstream
@@ -324,8 +350,11 @@ source's page budget is `partial`.
 
 `data.memory.*` keys:
 
-* `limit_kind`: `rlimit_data`, `cgroup`, `watchdog`, `rss` or `none`. It applies to MCP servers and to the
-  Bash workspace.
+* `host_mb`, `default_server_mb`, `host_budget_mb` (and the data child's `data.service.mem_limit_mb`,
+  `max_resident_mb`, the witness and readiness budgets): `auto` by default, scaled with the host by one rule
+  (DATA_LAYER.md §14.2; `vbt validate`'s `host` step prints every value on the host); a number stays as given.
+* `limit_kind`: `rss` (the default), `rlimit_data`, `cgroup`, `watchdog` or `none`. It applies to MCP servers and
+  to the Bash workspace.
   * A server in `configs/mcp_servers.yaml` may set its own `limit_kind`. `single_cell` uses `rss`: resident
     memory only (a memory cgroup, else the RSS watchdog), with no `RLIMIT_DATA`. The upstream Census
     pulls failed under every `RLIMIT_DATA` tested (4,500 to 40,000 MB), because TileDB reserves read

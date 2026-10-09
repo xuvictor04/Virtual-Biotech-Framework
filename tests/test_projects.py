@@ -30,7 +30,6 @@ from vbt.projects.model import (
     list_projects,
     profile_is_current,
     resolve_project,
-    write_profile,
 )
 from vbt.tools.builtin import builtin_tools
 
@@ -168,10 +167,14 @@ def test_activate_adds_project_paths_after_the_shipped_ones(pconfig, project):
     assert "project" not in pconfig and pconfig["tool_env"].get(PROJECT_ENV) in (None, "")   # input untouched
     assert active_project(cfg).root == project.root and active_project(pconfig) is None
     assert activate(pconfig, project, runs=False)["paths"]["runs_dir"] == pconfig["paths"]["runs_dir"]
+    assert cfg["data"]["project_dir"] == str(project.root)
+    assert DataSettings.from_config(cfg).project_dir == project.root
     plugin = project.plugins_dir / "statistic" / "score_0_10.py"
     plugin.parent.mkdir(parents=True)
     plugin.write_text("# a plugin module\n")
-    assert activate(pconfig, project)["data"]["plugins"]["paths"] == [str(plugin)]
+    # discovery imports the project's approved plugins itself (data.project_dir): none is listed as a path, so an
+    # unapproved module is never imported
+    assert not (activate(pconfig, project)["data"].get("plugins") or {}).get("paths")
     assert project_plugin_files(project.root) == [str(plugin)]
 
 
@@ -186,13 +189,12 @@ def test_the_profile_activates_the_project_with_the_unmodified_loader(pconfig, p
     assert cfg["paths"]["read_roots"][:-1] == shipped["paths"]["read_roots"]
     assert active_project(cfg).name == "demo"
     assert profile_is_current(project, pconfig)
+    assert cfg["data"]["project_dir"] == str(project.root)
     plugin = project.plugins_dir / "statistic" / "x.py"
     plugin.parent.mkdir(parents=True)
     plugin.write_text("")
-    assert not profile_is_current(project, pconfig)
-    write_profile(project, pconfig)
-    assert profile_is_current(project, pconfig)
-    assert load_config(["mock", str(project.profile_path)])["data"]["plugins"]["paths"] == [str(plugin)]
+    assert profile_is_current(project, pconfig), "plugins are discovered from data.project_dir, not the profile"
+    assert not load_config(["mock", str(project.profile_path)])["data"]["plugins"]["paths"]
 
 
 def test_apply_project_flag(pconfig, project):
@@ -381,16 +383,29 @@ def _fake_utility(project: Project, name: str = "double") -> dict:
     return rec
 
 
-def test_builtin_tools_list_the_projects_utilities_from_its_skill_root(pconfig, project):
+def test_the_runtime_lists_the_projects_utilities_from_its_configuration(pconfig, project, tmp_path):
+    """The runtime registers the configuration's project's utilities (``project.dir``), not whatever project a
+    skill root happens to point into."""
+    from vbt.projects.utilities import project_tools_for_roots, utility_tools
+    from vbt.runtime import Runtime
+    from vbt.session import Run
+
     _fake_utility(project)
     cfg = activate(pconfig, project)
-    names = {t.name for t in builtin_tools(cfg["paths"]["skills"])}
-    assert "util__double" in names and "RegisterUtility" in names
-    assert "util__double" not in {t.name for t in builtin_tools(pconfig["paths"]["skills"])}
-    tool = next(t for t in builtin_tools(cfg["paths"]["skills"]) if t.name == "util__double")
-    assert tool.input_schema["required"] == ["x"] and "Doubles" in tool.description
-    (project.utilities_dir / "double" / "utility.py").write_text("def run(x):\n    return 0\n")   # tampered
+    assert {t.name for t in utility_tools(active_project(cfg))} == {"util__double"}
+    assert {t.name for t in project_tools_for_roots(cfg["paths"]["skills"])} == {"util__double"}
     assert "util__double" not in {t.name for t in builtin_tools(cfg["paths"]["skills"])}
+    assert "RegisterUtility" in {t.name for t in builtin_tools()}
+    run = Run(tmp_path / "run", config=cfg)
+    try:
+        rt = Runtime(cfg, run)
+        tool = rt.registry.get("util__double")
+        assert tool.input_schema["required"] == ["x"] and "Doubles" in tool.description
+        assert "util__double" not in Runtime(pconfig, run).registry.names()
+        (project.utilities_dir / "double" / "utility.py").write_text("def run(x):\n    return 0\n")   # tampered
+        assert "util__double" not in Runtime(cfg, run).registry.names()
+    finally:
+        run.close()
 
 
 # ---------------------------------------------------------------------------- CLI
@@ -477,3 +492,79 @@ def test_memory_promotion_from_a_run(pconfig, project, capsys):
     assert "L2G above 0.5" in project.memory_path("genomics-analyst").read_text()
     assert project_main(["--profile", "mock", "memory", str(project.root), "--from-run", str(run)]) == 0
     assert project.memory_path("genomics-analyst").read_text().count("L2G above 0.5") == 1   # no duplicates
+
+
+def test_a_sessions_notes_are_offered_to_the_project_at_close(pconfig, project):
+    """At the close of a session in a project the run's new agent notes are offered with the command that adds them
+    (projects.notes_at_close: offer), added at once (add), or left alone (off); without a project nothing happens."""
+    from vbt.projects.notes import offer_at_close
+
+    run = project.runs_dir / "20260102_000000_cafe0001"
+    (run / "memory" / "genomics-analyst").mkdir(parents=True)
+    (run / "memory" / "genomics-analyst" / "MEMORY.md").write_text("Prefer credible sets over lead SNPs.\n\n")
+    cfg = activate(pconfig, project)
+    assert offer_at_close(pconfig, run) is None                                   # no project active
+    offer = offer_at_close(cfg, run, run_id=run.name)
+    assert offer["mode"] == "offer" and offer["lines"] == 1 and offer["agents"] == ["genomics-analyst"]
+    assert offer["command"] == f"vbt project memory demo --from-run {run.name}"
+    assert not project.memory_path("genomics-analyst").exists(), "an offer writes nothing"
+    cfg["projects"] = {**(cfg.get("projects") or {}), "notes_at_close": "off"}
+    assert offer_at_close(cfg, run) is None
+    cfg["projects"]["notes_at_close"] = "add"
+    added = offer_at_close(cfg, run, run_id=run.name)
+    assert added["added"] == 1 and "credible sets" in project.memory_path("genomics-analyst").read_text()
+    assert offer_at_close(cfg, run) is None                                        # nothing new any more
+    assert any(e.get("event") == "memory" and e.get("who") == {"run": run.name} for e in ledger.read_ledger(project))
+    cfg["projects"]["notes_at_close"] = "sometimes"
+    with pytest.raises(ProjectError, match="notes_at_close"):
+        ProjectSettings.from_config(cfg, project)
+
+
+def test_vbt_project_and_the_project_flag_are_vbt_commands(pconfig, project, capsys, monkeypatch):
+    """`vbt project ...` runs the project commands; `--project NAME` activates a project for a session command."""
+    from vbt import cli
+
+    monkeypatch.setenv("VBT_PROJECTS_DIR", str(project.root.parent))
+    assert cli.main(["--profile", "mock", "project", "show", "demo", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["name"] == "demo"
+    assert cli.main(["--profile", "mock", "project", "show", "nope"]) == 2
+    assert "no project 'nope'" in capsys.readouterr().err
+    args = cli.build_parser().parse_args(["--profile", "mock", "run", "--project", "demo", "hello"])
+    cfg = cli.build_config(args)
+    assert cfg["project"]["name"] == "demo" and cfg["data"]["project_dir"] == str(project.root)
+    assert cli.build_parser().parse_args(["setup", "--project", "demo", "--plan"]).project == "demo"
+    resumed = cli.build_config(cli.build_parser().parse_args(["run", "x"]),
+                               pinned={"profiles": ["mock"], "project": {"name": "demo", "dir": str(project.root)}})
+    assert resumed["project"]["dir"] == str(project.root), "a resumed session continues in its project"
+
+
+def test_the_pinned_config_records_the_project_and_its_digests(pconfig, project):
+    """A run pins its project (name, directory) and digests of what the project adds, so a replay or a resumed
+    session runs in the same project and can tell whether it changed."""
+    from vbt.pinning import pinned_project
+
+    assert pinned_project(pconfig) is None
+    _place(project)
+    _fake_utility(project)
+    cfg = activate(pconfig, project)
+    pin = pinned_project(cfg)
+    assert pin["name"] == "demo" and pin["dir"] == str(project.root)
+    assert list(pin["catalog_files"]) == ["descriptors/lab_assays.yaml"] and pin["catalog_sha256"]
+    assert pin["utilities"] == {"double": ledger.read_record(project, "utility", "double")["source_hash"]}
+    before = pin["catalog_sha256"]
+    (project.descriptors_dir / "lab_assays.yaml").write_text(
+        (project.descriptors_dir / "lab_assays.yaml").read_text() + "\n# changed\n")
+    assert pinned_project(cfg)["catalog_sha256"] != before
+
+
+def test_a_projects_sources_are_acquired_into_the_project(pconfig, project, tmp_path):
+    """`vbt data acquire` without --dest puts a source the project added under <project>/data, where its descriptor's
+    root reads; shipped sources stay under data.acquisition.root."""
+    from vbt.data.acquire import source_root
+
+    _place(project)
+    catalog = _catalog(pconfig, project)
+    assert catalog.project_dir == project.root and "lab_assays" in catalog.project_sources
+    assert source_root(catalog, "lab_assays", tmp_path / "sources") == project.root / "data"
+    assert source_root(catalog, "open_targets", tmp_path / "sources") == tmp_path / "sources"
+    assert source_root(_catalog(pconfig, None), "lab_assays", tmp_path / "sources") == tmp_path / "sources"

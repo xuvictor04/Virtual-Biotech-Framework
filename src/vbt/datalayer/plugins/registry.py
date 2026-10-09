@@ -4,7 +4,10 @@
 ``vbt.datalayer.plugins.<kind>s`` whose classes are decorated with :func:`register`; missing
 subpackages are skipped), Python entry points in group ``vbt.datalayer.<kind>``, and the
 modules or files listed in ``data.plugins.paths``. ``data.plugins.disabled`` drops plugins by
-``kind/name`` or ``name``. Two plugins with one ``kind/name`` are an error unless
+``kind/name`` or ``name``. Then, with an active project (``data.project_dir``), the project's approved plugin modules
+``plugins/<kind>/<name>.py`` (:func:`~vbt.datalayer.descriptor.load.approved_project_plugins`: registered through
+``RegisterPlugin`` and unchanged since; anything else under ``plugins/`` is never imported). Two plugins with one
+``kind/name`` are an error unless
 ``data.plugins.override`` names the winner (matched against the plugin's ``module:Class``, its
 entry-point origin or its source file). A plugin whose ``api`` differs from :data:`~.base.API_VERSION`, that lacks
 a required attribute or method, or that declares an unknown capability is an error.
@@ -24,6 +27,7 @@ import importlib
 import importlib.metadata
 import importlib.util
 import inspect
+import logging
 import pkgutil
 import sys
 from pathlib import Path
@@ -46,6 +50,8 @@ __all__ = ["register", "registered", "PluginRegistry", "discover", "discover_har
 
 _REGISTERED: list[type] = []
 _PKG = "vbt.datalayer.plugins"
+log = logging.getLogger(__name__)
+_WARNED: set[str] = set()
 
 
 def register(cls: type | None = None, *, kind: str | None = None) -> Any:
@@ -305,6 +311,21 @@ def discover(settings: Any = None, *, kinds: Mapping[str, type] | None = None,
         mod = _import_path(str(entry))
         for cls in registered([mod]):
             offer(cls, _origin(cls))
+    project = getattr(settings, "project_dir", None)
+    if project:
+        from ..descriptor.load import approved_project_plugins
+
+        files, problems = approved_project_plugins(project, reg.kinds)
+        for why in problems:
+            if why not in _WARNED:
+                _WARNED.add(why)
+                log.warning("project plugin %s", why)
+        for entry in files:
+            if str(entry) in {str(p) for p in paths}:
+                continue                               # listed in data.plugins.paths too (a profile written before)
+            mod = _import_path(str(entry))
+            for cls in registered([mod]):
+                offer(cls, f"project:{_origin(cls)}")
     for obj in extra:
         offer(obj, _origin(obj))
 

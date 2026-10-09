@@ -109,9 +109,39 @@ Recommended RAM for the harness host with the full release:
 | **Total** | **256 GB minimum; 512 GB to 1 TB** for the full configuration with headroom |
 
 The host budget (`data.memory.host_budget_mb`) caps the sum of the servers' resident memory: when a load would cross
-it, the least recently used idle server is recycled, so a smaller host still works with more reloads. `vbt setup`
-sizes the budget (75% of RAM minus a reserve) and the per-server limit (the largest server's whole-table loads x1.3,
-step `size`) from the host it runs on and the data it finds.
+it, the least recently used idle server is recycled, so a smaller host still works with more reloads.
+
+**Memory settings scale with the host (`auto`).** `configs/default.yaml` ships every memory budget as `auto`, resolved
+by one rule (`src/vbt/datalayer/memory/sizing.py`) from `plan`, the memory the harness may plan with: the smaller of
+MemTotal and the memory cgroup limit of the process and its ancestors (a container's `--memory`), or
+`data.memory.host_mb` when it is a number (set it on a host the harness shares, e.g. with the model server's RAM), or
+`$VBT_HOST_MEMORY_MB`.
+
+| Setting | `auto` means | Floor |
+|---|---|---|
+| `data.memory.host_budget_mb` (sum over the upstream servers) | 0.75 x plan - max(`harness_reserve_mb` 2,048, 5% of plan) | 1,024 |
+| `data.memory.default_server_mb` (one upstream server) | 0.8 x the host budget | 2,048 |
+| `data.service.mem_limit_mb` (the data child) | 5% of plan, at most 32,768 | 3,000 |
+| `data.service.max_resident_mb` | 2/3 of the data child's limit (what one request holds resident: the readiness key pass) | |
+| `data.witness.max_scan_bytes`, `max_inflate_bytes`, `max_key_set`, `repair_max_bytes`; `data.readiness.vocab_budget_bytes` | the shipped floor x data child / 3,000 | the shipped floor |
+
+| plan | host budget | one server | data child |
+|---:|---:|---:|---:|
+| 16 GB (16,384 MB) | 10,240 MB | 8,192 MB | 3,000 MB |
+| 64 GB | 45,875 MB | 36,700 MB | 3,276 MB |
+| 128 GB | 91,750 MB | 73,400 MB | 6,553 MB |
+| 512 GB | 367,002 MB | 293,601 MB | 26,214 MB |
+
+On a 512 GB host every server loads the Open Targets tables it reads whole, as upstream does (genetics' ~79.5 GB x1.3
+safety is about 103 GB). On a 16 GB host a load that cannot fit is refused before the call with `too_large`; the
+refusal names the host (`host_mb`), whether the limit was `auto` or configured (`limit_source`) and, for `auto`, the
+smallest host that would admit it (`host_mb_needed`). A number anywhere stays as configured, and a server's own
+`mem_limit_mb` in `configs/mcp_servers.yaml` wins over `default_server_mb`.
+
+**Containment is `rss` by default** (`data.memory.limit_kind`): a server is held to its limit by resident memory, in a
+memory cgroup when one can be created, else by the reaper's RSS watchdog. `RLIMIT_DATA` is set only when a server or
+the host asks for `rlimit_data`: TileDB's Census reads reserve large virtual buffers and fail under it with
+`std::bad_alloc` while their resident memory stays under 3 GB (`single_cell` is pinned to `rss`).
 
 ### 2.3 Disk per source
 
@@ -227,7 +257,7 @@ vbt [--profile P ...] setup [--plan | --probe | --status] [--only S,..] [--from 
 | `probe` | CPUs (affinity, cgroup quota), RAM (MemTotal and the container's memory limit), GPUs (`nvidia-smi`, or `state/nvidia-smi.csv`), free disk under each directory, whether a memory cgroup can be created (the reaper's own functions), whether bubblewrap works, the container runtime, and reachability of every URL the descriptors name plus the model server and SearxNG | `setup-state.json` |
 | `configure` | serving profile (from the GPUs), harness profile, memory sizing (below), data roots | `host.yaml`, `host.env`, `compose.vllm.yaml` |
 | `acquire` | `vbt data acquire --for-tools <every tool the enabled agents may call>` (`--plan --json` for the plan, `--offline` with `--no-network`); the variables it reports (`OPEN_TARGETS_DATA_PATH=...`) replace the defaults | the data under `data/sources/<source>/<release>`, then `host.yaml` and `host.env` again |
-| `size` | `vbt ds estimate --json` of the tables the enabled servers load whole; the largest server's estimate x1.3 becomes `data.memory.default_server_mb` | `host.yaml` again |
+| `size` | `vbt ds estimate --json` of the tables the enabled servers load whole; when the largest server's estimate x1.3 is above the rule's server limit (0.8 x the host budget) it raises `data.memory.default_server_mb`, up to the host budget | `host.yaml` again |
 | `index` | `vbt ds index build --table ...` for every table the enabled tools read: only the id types those tables hold | `data/.vbt-datalayer/` |
 | `check` | `vbt ds check --json --table ...` for every table the enabled tools read | readiness cache |
 | `calibrate` | `vbt ds calibrate --table ...` for the local tables loaded whole | calibrations |
@@ -246,12 +276,14 @@ time of the data steps is this host's own measured seconds per GB after its firs
 before that). The commands are configuration: `setup.steps.<step>.run` / `.plan` in a profile replace a step's
 arguments.
 
-**Sizing** (MB; `ram` = the smaller of MemTotal and the container limit): host budget `0.75 x ram - max(2048, 0.05 x
-ram)`; server limit `clamp(0.25 x ram, 12000, budget)` before `size`, then the largest server's whole-table loads x1.3
-(at least 12000, at most the budget); data child `clamp(0.05 x ram, 3000, 32768)`; agents' Bash `clamp(0.25 x ram /
-max_parallel_agents, 8000, 65536)`; `limit_kind: cgroup` where a memory cgroup can be created; `bash.sandbox.os:
-bwrap` where bubblewrap works (Docker's default seccomp profile refuses it; `compose.yaml` shows the opt-in). On a
-host under ~16 GB every value stays at its shipped default.
+**Sizing** (MB; `ram` = the smaller of MemTotal and the container limit, or `data.memory.host_mb`): the rule `auto`
+applies at run time (section 2.2), so `host.yaml` holds the numbers `auto` gives on this host: host budget `0.75 x ram
+- max(2048, 0.05 x ram)`; server limit `0.8 x budget` (at least 2,048), raised by step `size` when the largest
+server's whole-table loads x1.3 need more (at most the budget); data child `clamp(0.05 x ram, 3000, 32768)`, its
+`max_resident_mb` 2/3 of that; agents' Bash `clamp(0.25 x ram / max_parallel_agents, 8000, 65536)`; `limit_kind:
+cgroup` where a memory cgroup can be created (else the shipped `rss`); `bash.sandbox.os: bwrap` where bubblewrap works
+(Docker's default seccomp profile refuses it; `compose.yaml` shows the opt-in). `vbt setup --project NAME` also
+fetches, checks and indexes the sources of that project (docs/PROJECTS.md).
 
 **Reference rates** (seconds per GB of local data, measured with Open Targets 25.09's 31 downloaded tables, 1.76 GB,
 on 4 CPUs; section 9): size 10.8, index 194.5, check 81.2, calibrate 34.0. They extrapolate linearly, which is an
@@ -310,7 +342,36 @@ Secrets live only in `$VBT_HOME/secrets.env` (mode 600; `VBT_SECRETS_FILE` moves
 harness, provider keys never reach the MCP servers or the agents' Bash (`src/vbt/envpolicy.py`); only the PubMed
 server gets the NCBI variables. Rotate by editing the file and `deploy.sh up` (containers are recreated).
 
-### 7.5 Monitoring
+### 7.5 Certifying a host: `vbt validate`
+
+```
+vbt [--profile P ...] validate [--only|--skip STEP,..] [--depth standard|deep] [--servers S,..] [--max-tools N]
+                               [--memory-tables N] [--replicate quick|full|off] [--timeout-s S] [--out DIR]
+                               [--check-from check.json] [--json]
+```
+
+`vbt validate` (also `python -m vbt.validate`) runs on the host's real data and writes `validate.md` and
+`validate.json` (schema `vbt.validate/1`) to `--out` (default `<state>/validate/<UTC time>`); it exits 1 when a step
+fails. Each step reports PASS, FAIL, WARN or SKIPPED with the reason, and nothing in it names a dataset or a server:
+cases, oracles and limits come from the descriptors, the overlays and the upstream signatures.
+
+| Step | What it does |
+|---|---|
+| `host` | the plan, MemTotal, the cgroup limit, the containment, and every memory setting: configured, on this host, the rule |
+| `lint` | `vbt ds lint` |
+| `check` | the session check at `--depth` (deep by default), large tables each in a data child of their own; writes `check.json` for `--check-from` |
+| `correctness` | the six correctness tests per server, gateway enforcing vs off, against an oracle that reads the files with pyarrow alone |
+| `latency` | p50/p95 per server: enforce, off, first calls, warm overhead, witness and data-child requests |
+| `memory` | the largest present tables that fit the server limit: the upstream loader's measured peak vs the estimates |
+| `live` | endpoint reachability and the live servers' checks (skipped unless `VBT_DL_NETWORK=1`) |
+| `replication` | Case 1 on the Zenodo archive against the authors' tables (skipped without the archive) |
+| `model` | `vbt local check` (skipped when no model server answers) |
+
+On the 16 GB development machine (2026-10-09, a 3,000 MB server profile to stay under a 6 GB per-process-tree
+cap shared with other jobs) a deep run took 829 s; its correctness step found 0 wrong answers in enforce mode over 145
+cases on 9 servers, and the latency, memory, live and replication steps passed.
+
+### 7.6 Monitoring
 
 `deploy.sh ps` (health checks of `vbt` and `vllm`), `vbt-host ds status <run>` (per-server memory, host budget,
 calibrations), `vbt setup --status` (last outcome of every step), `state/logs/`, `runs/INDEX.md`.

@@ -197,6 +197,9 @@ data:
   descriptors_dir: configs/data/sources
   overlays_dir: configs/data/overlays
   cache_dir: ${VBT_DATA_DIR:-data}/.vbt-datalayer   # index/, readiness/, stats/; always safe to delete
+  # The active project (docs/PROJECTS.md; `--project NAME` or the project's profile.yaml set it): its descriptors and
+  # overlays are searched after the shipped ones, its approved plugins discovered after the shipped ones.
+  project_dir: null
   gateway:
     mode: enforce                 # "off" | observe | enforce ("off" quoted: YAML reads a bare off as false)
     # Servers that graduated from observe to enforce (docs/DATA_LAYER.md §22; `vbt ds graduate`): an
@@ -211,15 +214,14 @@ data:
     when_service_down: strict     # strict: guarded tools not_ready; lenient: generic guard
     unbound_empty: empty_unverified   # empty_unverified | error
   service:                        # the `data` child (service/server.py), launched through the reaper
-    # The data child's limit and the witness/readiness budgets below are the floors of their host-scaled values
-    # (vbt.datalayer.memory.sizing: 5% of the host's memory within 3,000-32,768 MB, the budgets x that / 3,000;
-    # `vbt validate` prints them for this host). `vbt setup` writes this host's numbers into <state>/host.yaml; a
-    # data child whose own mem_limit_mb is `auto` gets the scaled limit from the launcher. These keys take `auto`
-    # here once DataSettings resolves it for the typed settings (vbt.datalayer.memory.sizing.resolve_auto).
-    mem_limit_mb: 3000
+    # The data child's limit and the witness/readiness budgets marked auto scale with the host
+    # (vbt.datalayer.memory.sizing, resolved when the settings are read; `vbt validate` prints them for this host):
+    # mem_limit_mb auto = 5% of data.memory.host_mb within 3,000-32,768 MB; the budgets = the floor in the comment
+    # x that limit / 3,000. A number stays as given; `vbt setup` writes this host's numbers into <state>/host.yaml.
+    mem_limit_mb: auto            # 3,000 MB up to a 60 GB host; 26,214 MB on 512 GB
     max_concurrency: 4
     timeout_s: 600
-    max_resident_mb: 2000
+    max_resident_mb: auto         # 2/3 of mem_limit_mb: what one request may hold resident (the R5 key pass)
   resolution:
     max_candidates: 10
     allow: [raw_member, normalized, label, previous, alias, exact_synonym, related_synonym, retired, xref,
@@ -230,11 +232,11 @@ data:
     remote_ttl_s: 3600            # universe_via listing caches
   witness:
     enabled: true
-    max_scan_bytes: 2000000000
+    max_scan_bytes: auto          # at least 2,000,000,000 decoded bytes per scan
     max_inflate_rows: 5000
-    max_inflate_bytes: 20000000
-    max_key_set: 20000
-    repair_max_bytes: 500000000
+    max_inflate_bytes: auto       # at least 20,000,000
+    max_key_set: auto             # at least 20,000
+    repair_max_bytes: auto        # at least 500,000,000
     topk: true                    # false: counts only (no top-k comparison)
   derive: {enum_max: 64, description_max_chars: 1200}
   memory:
@@ -269,7 +271,7 @@ data:
     per_turn_depth: shallow       # stat-only signatures before every turn
     session_depth: standard       # R1-R10 at session start (preflight runs the data child's --check)
     key_check_full_max_rows: 50000000
-    vocab_budget_bytes: 500000000 # bounded vocabulary scans (R7)
+    vocab_budget_bytes: auto      # bounded vocabulary scans (R7): at least 500,000,000
     remote_ttl_s: 3600
     sentinels: true
     block_when: all_unready       # a session blocks on data only when no granted data tool is ready

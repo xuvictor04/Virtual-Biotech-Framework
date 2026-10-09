@@ -763,11 +763,25 @@ def _env_refs(path: Path, mtime_ns: int) -> tuple[str, ...]:
     return _ENV_REFS[key]
 
 
+def _mtime(path: Path) -> int | None:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
 def data_catalog(config: dict[str, Any]) -> tuple[Any, Any, Any]:
     """``(settings, catalog, registry)`` of the config's data layer (no pyarrow). Kept per process
-    while the settings, variables and descriptor/overlay files are unchanged (the per-turn check)."""
+    while the settings, variables and descriptor/overlay files are unchanged (the per-turn check): the shipped ones
+    and the active project's, with its approved plugin modules and their provenance records."""
     from .datalayer.catalog import build_catalog
-    from .datalayer.descriptor.load import variables_from_config
+    from .datalayer.descriptor.load import (
+        PROJECT_DESCRIPTORS,
+        PROJECT_OVERLAYS,
+        approved_project_plugins,
+        project_search_dirs,
+        variables_from_config,
+    )
     from .datalayer.plugins.registry import discover
     from .datalayer.settings import DataSettings
 
@@ -780,7 +794,17 @@ def data_catalog(config: dict[str, Any]) -> tuple[Any, Any, Any]:
                                        "cannot be loaded")
     stamps = []
     env: dict[str, str | None] = {}
-    for d in (settings.descriptors_dir, settings.overlays_dir):
+    dirs = [settings.descriptors_dir, settings.overlays_dir]
+    project = Path(settings.project_dir) if settings.project_dir else None
+    if project is None:
+        found = project_search_dirs(variables)
+        project = found[0].parent if found else None
+    if project is not None:
+        # a registration made in this process (RegisterDataSpec, RegisterPlugin) is a different catalog
+        dirs += [project / PROJECT_DESCRIPTORS, project / PROJECT_OVERLAYS]
+        stamps += [(f, _mtime(Path(f))) for f in approved_project_plugins(project)[0]]
+        stamps.append((str(project / "provenance" / "plugin"), _mtime(project / "provenance" / "plugin")))
+    for d in dirs:
         for p in sorted(Path(d).glob("*.y*ml")) if Path(d).is_dir() else []:
             try:
                 mtime = p.stat().st_mtime_ns

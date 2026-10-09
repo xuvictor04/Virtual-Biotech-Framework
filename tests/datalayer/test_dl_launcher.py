@@ -124,7 +124,12 @@ def test_build_launch_spec(tmp_path):
     assert spec.status_path == str(tmp_path / "target.status.json")
     assert spec.env == CHILD_ENV == {"ARROW_DEFAULT_MEMORY_POOL": "system", "MALLOC_ARENA_MAX": "2",
                                      "PRELOAD_MCP_DATA": "0"}
-    assert "--containment" not in spec.args                     # rlimit_data is the reaper's default
+    # rss is the default containment (a memory cgroup, else the RSS watchdog); rlimit_data is the reaper's own default
+    # and needs no flag
+    assert spec.args[spec.args.index("--containment") + 1] == "rss" and spec.args.index("--containment") < \
+        spec.args.index("--")
+    rd = build_launch_spec(cfg, DataSettings.from_dict({"memory": {"limit_kind": "rlimit_data"}}), tmp_path)
+    assert "--containment" not in rd.args
     wd = build_launch_spec(cfg, DataSettings.from_dict({"memory": {"limit_kind": "watchdog"}}), tmp_path)
     assert wd.args[wd.args.index("--containment") + 1] == "watchdog" and wd.args.index("--containment") < \
         wd.args.index("--")
@@ -294,7 +299,8 @@ def test_killed_child_gives_signal_marker_and_rc(tmp_path):
 @linux_only
 @needs_fastmcp
 async def test_allocation_over_limit_is_oom_and_server_survives(tmp_path):
-    gw = LaunchGateway()
+    # RLIMIT_DATA turns an over-limit allocation into a MemoryError inside the tool (opt-in since rss is the default)
+    gw = LaunchGateway(DataSettings.from_dict({"memory": {"limit_kind": "rlimit_data"}}))
     bridge = MCPBridge([py_server("oom", OOM, tmp_path / "state", mem_limit_mb=512)], log_dir=tmp_path / "logs",
                        options=FAST, gateway=gw)
     try:
@@ -452,10 +458,15 @@ def test_cli_data_child_commands_run_under_the_reaper() -> None:
     from vbt.datalayer.cli import _run_reaped
 
     probe = [sys.executable, "-c", "import resource; print(resource.getrlimit(resource.RLIMIT_DATA)[0])"]
-    proc = _run_reaped({"data": {"service": {"mem_limit_mb": 1500}}}, probe, {}, timeout=60)
+    proc = _run_reaped({"data": {"service": {"mem_limit_mb": 1500}, "memory": {"limit_kind": "rlimit_data"}}}, probe, {},
+                       timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert int(proc.stdout.strip().splitlines()[-1]) == 1500 * 1024 * 1024
     assert "VBT_CHILD_EXIT" in proc.stderr
+    # under the default (rss) the same command runs reaped without RLIMIT_DATA, held by its resident memory
+    rss = _run_reaped({"data": {"service": {"mem_limit_mb": 1500}}}, probe, {}, timeout=60)
+    assert rss.returncode == 0, rss.stderr
+    assert int(rss.stdout.strip().splitlines()[-1]) == -1 and "VBT_CHILD_EXIT" in rss.stderr
 
 
 async def test_replay_auto_backend_is_the_guarded_bridge() -> None:

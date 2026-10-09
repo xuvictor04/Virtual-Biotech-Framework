@@ -3137,8 +3137,25 @@ The launcher is one stdlib-only file executed by path with the harness interpret
    by its resident memory (cgroup, else the watchdog).
 
 Per-server `mem_limit_mb` comes from `configs/mcp_servers.yaml` or defaults to
-`data.memory.default_server_mb`; `auto` = `min(0.8 × host budget, max(2048, baseline + 1.3 × max over
-the server's tools of Σ peak(reads)))`. The data child defaults to `data.service.mem_limit_mb` (3,000).
+`data.memory.default_server_mb`; the data child defaults to `data.service.mem_limit_mb`. Every `auto` scales with
+`plan`, the memory the harness may plan with (`memory/sizing.py`): the smaller of MemTotal and the memory cgroup
+limit of this process and its ancestors, else `data.memory.host_mb` when it is a number, `$VBT_HOST_MEMORY_MB`
+overriding the probe. The rules (each with a floor; a number stays as configured):
+
+| Setting | `auto` | Floor |
+|---|---|---|
+| `data.memory.host_budget_mb` | 0.75 × plan − max(`harness_reserve_mb` 2,048, 5% of plan) | 1,024 |
+| `data.memory.default_server_mb`, a server's `mem_limit_mb: auto` | 0.8 × host budget | 2,048 |
+| `data.service.mem_limit_mb` (the data child) | 5% of plan, at most 32,768 | 3,000 |
+| `data.service.max_resident_mb` | 2/3 of the data child's limit | |
+| `data.witness.max_scan_bytes`, `max_inflate_bytes`, `max_key_set`, `repair_max_bytes`, `data.readiness.vocab_budget_bytes` | the shipped value × data child / 3,000 | the shipped value |
+
+`DataSettings` resolves the data child's and the budgets' `auto` when the settings are read (the typed settings
+always hold numbers; `raw` keeps `auto`); the launcher resolves the server limits at launch. On a 16 GB host the
+values are 10,240 / 8,192 / 3,000 MB, on 512 GB 367,002 / 293,601 / 26,214 MB. A `too_large` over the limit names
+the host (`host_mb`), `limit_source` (`auto` or `configured`) and, for `auto`, `host_mb_needed`. Containment
+defaults to `rss` (`data.memory.limit_kind`; `DEFAULT_LIMIT_KIND`): a memory cgroup, else the RSS watchdog, with no
+`RLIMIT_DATA`, which works for every server (5. above); `rlimit_data` is opt-in per server or host.
 
 ### 14.3 Admission (`memory/admission.py`, `memory/ledger.py`)
 
@@ -3194,7 +3211,12 @@ inflation is capped by `max_inflate_rows` and `max_inflate_bytes`. Remote reads 
 `count_via` are admitted count-first: `total × est_row_bytes` over the cap is `too_large` before the
 call. The data child enforces `data.witness.max_scan_bytes` (decoded bytes after
 pruning) and `data.service.max_resident_mb`; over budget it answers `total_method: unknown`
-(witness) or `too_large` (derived), never a partial answer presented as complete.
+(witness) or `too_large` (derived), never a partial answer presented as complete. `max_resident_mb` bounds the
+readiness key pass (R5b on Arrow arrays): rows are hashed one key part and one row group at a time, only the rows
+whose hash repeats are counted exactly, and over the budget that exact count runs in hash-partitioned passes that
+each fit. Holding every part's values whole had taken the data child to 2,105 MB on the 14.5 M rows of 25.09
+`interaction` (seven parts), the floor of every session check; the bounded pass peaked at 582 MB (a process of its
+own, imports included) and that table's whole standard check at 692 MB in the data child (VERIFIED, Wave C).
 
 ### 14.6 Budgets on this host (EST; `vbt datasource estimate` prints them)
 
@@ -3384,6 +3406,7 @@ data:
   descriptors_dir: configs/data/sources
   overlays_dir: configs/data/overlays
   cache_dir: ${VBT_DATA_DIR:-data}/.vbt-datalayer   # index/, readiness/, stats/; always safe to delete
+  project_dir: null                   # the active project (docs/PROJECTS.md); set by --project or its profile
   gateway:
     mode: enforce                     # "off" | observe | enforce (quote "off")
     enforce_servers: all              # or a list, for staged rollout
@@ -3391,10 +3414,10 @@ data:
     when_service_down: strict         # strict: guarded tools not_ready; lenient: generic guard
     unbound_empty: empty_unverified   # empty_unverified | error
   service:
-    mem_limit_mb: 3000
+    mem_limit_mb: auto                # the data child: 5% of memory.host_mb within 3,000-32,768 MB (§14.6)
     max_concurrency: 4
     timeout_s: 600
-    max_resident_mb: 2000
+    max_resident_mb: auto             # 2/3 of mem_limit_mb: what one request holds resident (R5 key pass, §14.5)
   resolution:
     max_candidates: 10
     allow: [raw_member, normalized, label, previous, alias, exact_synonym, related_synonym, retired, xref, crosswalk, parent_family]
@@ -3404,16 +3427,17 @@ data:
     remote_ttl_s: 3600                # universe_via listing caches
   witness:
     enabled: true
-    max_scan_bytes: 2000000000
+    max_scan_bytes: auto              # auto budgets: the floor x service.mem_limit_mb / 3,000 (§14.6)
     max_inflate_rows: 5000
-    max_inflate_bytes: 20000000
-    max_key_set: 20000
-    repair_max_bytes: 500000000
+    max_inflate_bytes: auto           # at least 20,000,000
+    max_key_set: auto                 # at least 20,000
+    repair_max_bytes: auto            # at least 500,000,000
     topk: true                        # false: counts only (no top-k comparison)
   derive: {enum_max: 64, description_max_chars: 1200}
   memory:
-    default_server_mb: 12000          # 'auto' derives from estimates (§14.2)
-    limit_kind: rlimit_data           # rlimit_data | cgroup | watchdog | none (cgroup/watchdog: phase 4)
+    host_mb: auto                     # planned with: the smaller of MemTotal and the memory cgroup limit (§14.6)
+    default_server_mb: auto           # one upstream server: 0.8 x the host budget, at least 2,048 MB (§14.2)
+    limit_kind: rss                   # rss (cgroup, else watchdog; no RLIMIT_DATA) | rlimit_data | cgroup | watchdog | none
     estimate_safety: 1.3
     expansion: {flat: 1.5, string: 3.5, nested: 8.0, fragmentation: 1.15}
     object_overhead_bytes: {string: 50, nested_item: 120, struct_item: 240}   # per num_values (§10.4)
@@ -3422,13 +3446,14 @@ data:
     max_recycles_per_10min: 4
     max_oom_kills: 3
     max_result_bytes: 2000000
-    host_budget_mb: auto              # phase 4
-    relay_max_message_mb: 0           # phase 4: > 0 relays server stdout with this message cap
+    host_budget_mb: auto              # the sum over servers: 0.75 x host_mb - reserve; a number; off
+    harness_reserve_mb: 2048          # the reserve is max(this, 5% of host_mb)
+    relay_max_message_mb: 0           # > 0 relays server stdout with this message cap
   readiness:
     per_turn_depth: shallow
     session_depth: standard
     key_check_full_max_rows: 50000000
-    vocab_budget_bytes: 500000000     # bounded vocabulary scans (R7)
+    vocab_budget_bytes: auto          # bounded vocabulary scans (R7): at least 500,000,000
     remote_ttl_s: 3600
     sentinels: true
     block_when: all_unready           # session blocks on data only when no granted data tool is ready

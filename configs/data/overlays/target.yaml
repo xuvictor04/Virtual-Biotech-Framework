@@ -25,7 +25,7 @@ tools:
     text: {drop_promises: [chromosome, proteinAnnotations]}   # the docstring promises fields absent in 25.09
 
   search_targets_by_name:
-    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, approvedName, biotype, symbolSynonyms]}}
+    reads: {open_targets.target: {access: full_table, columns: [id, approvedSymbol, approvedName, biotype, symbolSynonyms]}}
     args:
       query: {role: free_text, binds_any: [open_targets.target.approvedSymbol, open_targets.target.approvedName],
               interpreted_as: casefold_substring}
@@ -43,7 +43,7 @@ tools:
 
   get_target_tractability:
     same_as: [drug.get_target_tractability]
-    reads: {open_targets.target: {access: projection, columns: [id, tractability]}}
+    reads: {open_targets.target: {access: full_table, columns: [id, tractability]}}
     args:
       target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
     result:
@@ -193,7 +193,7 @@ tools:
          where: "target_mcp/tools.py:1382-1385,1471-1481", effect: false_empty}
 
   get_target_hallmarks:
-    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, hallmarks]}}
+    reads: {open_targets.target: {access: full_table, columns: [id, approvedSymbol, hallmarks]}}
     args:
       target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
     result:
@@ -207,7 +207,7 @@ tools:
     serve: pass
 
   get_target_tep:
-    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, tep]}}
+    reads: {open_targets.target: {access: full_table, columns: [id, approvedSymbol, tep]}}
     args:
       target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
     result:
@@ -220,7 +220,7 @@ tools:
     serve: pass
 
   get_chemical_probes:
-    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, chemicalProbes]}}
+    reads: {open_targets.target: {access: full_table, columns: [id, approvedSymbol, chemicalProbes]}}
     args:
       target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
     result:
@@ -236,7 +236,7 @@ tools:
     serve: pass
 
   get_genetic_constraint:
-    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, constraint]}}
+    reads: {open_targets.target: {access: full_table, columns: [id, approvedSymbol, constraint]}}
     args:
       target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
     result:
@@ -248,7 +248,7 @@ tools:
     serve: pass
 
   get_subcellular_locations:
-    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, subcellularLocations]}}
+    reads: {open_targets.target: {access: full_table, columns: [id, approvedSymbol, subcellularLocations]}}
     args:
       target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
     result:
@@ -262,7 +262,7 @@ tools:
     serve: pass
 
   get_target_class:
-    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, targetClass]}}
+    reads: {open_targets.target: {access: full_table, columns: [id, approvedSymbol, targetClass]}}
     args:
       target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
     result:
@@ -275,7 +275,7 @@ tools:
     serve: pass
 
   get_homologues:
-    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, homologues]}}
+    reads: {open_targets.target: {access: full_table, columns: [id, approvedSymbol, homologues]}}
     args:
       target_id:      {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
       species_filter: {binds: "open_targets.target.homologues[].speciesName", interpreted_as: casefold_substring,

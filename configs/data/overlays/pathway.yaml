@@ -9,7 +9,7 @@ sources: [open_targets]
 upstream_commit: ${vars.upstream_commit:-71f9da68c95c5ee0ef4c1d9b8f45f10693de022d}   # the commit these bindings were reviewed against
 tools:
   get_gene_pathways:
-    reads: {open_targets.target: {access: projection, columns: [id, pathways]}}
+    reads: {open_targets.target: {access: full_table, columns: [id, pathways]}}
     args:
       target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
     result:
@@ -31,7 +31,7 @@ tools:
       notes: ["topLevelTerm is a lossy single label (a pathway can sit under several top-level pathways); the exact top-level ancestors come from pathway.get_pathway_info or mcp__data__expand (direction ancestors) on the Reactome hierarchy."]
 
   search_pathways:
-    reads: {open_targets.target: {access: projection, columns: [id, pathways]}}
+    reads: {open_targets.target: {access: full_table, columns: [id, pathways]}}
     args:
       query:          {role: free_text, binds_any: ["open_targets.target.pathways[].pathway", "open_targets.target.pathways[].pathwayId"],
                        interpreted_as: casefold_substring, pooled: true}   # 'cholesterol' lists 9 pathways
@@ -62,7 +62,7 @@ tools:
          where: "pathway_mcp/tools.py:149-153", effect: silent_wrong}
 
   get_gene_ontology:
-    reads: {open_targets.target: {access: projection, columns: [id, go]}}
+    reads: {open_targets.target: {access: full_table, columns: [id, go]}}
     args:
       target_id: {binds: open_targets.target.id, accepts: [ensembl_gene, hgnc_symbol]}
       aspect:    {binds: "open_targets.target.go[].aspect", item_filter: true,
@@ -85,7 +85,7 @@ tools:
          where: "pathway_mcp/tools.py:236", test: test_dl_defect_detectors.py::test_ot_path_003, effect: false_empty}
 
   search_go_terms:
-    reads: {open_targets.target: {access: projection, columns: [id, go]}, open_targets.go: {access: full_table}}
+    reads: {open_targets.target: {access: full_table, columns: [id, go]}, open_targets.go: {access: full_table}}
     args:
       query:  {role: free_text, binds_any: ["open_targets.target.go[].id"], interpreted_as: casefold_substring, pooled: true}
       aspect: {binds: "open_targets.target.go[].aspect", item_filter: true}
@@ -113,7 +113,7 @@ tools:
          where: "pathway_mcp/tools.py:287", effect: false_empty}
 
   find_genes_in_pathway:
-    reads: {open_targets.target: {access: projection, columns: [id, pathways]}}
+    reads: {open_targets.target: {access: full_table, columns: [id, pathways]}}
     args:
       pathway_id: {binds: "open_targets.target.pathways[].pathwayId", accepts: [reactome_pathway]}
     result:
@@ -133,7 +133,7 @@ tools:
          where: "pathway_mcp/tools.py:366-370", effect: error}
 
   get_pathway_enrichment:
-    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, pathways]},
+    reads: {open_targets.target: {access: full_table, columns: [id, approvedSymbol, pathways]},
             open_targets.reactome: {access: full_table}}
     args:
       gene_list:        {binds: open_targets.target.id, op: in, each: true, accepts: [ensembl_gene, hgnc_symbol],
@@ -172,7 +172,7 @@ tools:
          where: "pathway_mcp/tools.py:463-505", effect: silent_wrong}
 
   get_go_enrichment:
-    reads: {open_targets.target: {access: projection, columns: [id, approvedSymbol, go]}, open_targets.go: {access: full_table}}
+    reads: {open_targets.target: {access: full_table, columns: [id, approvedSymbol, go]}, open_targets.go: {access: full_table}}
     args:
       gene_list:        {binds: open_targets.target.id, op: in, each: true, accepts: [ensembl_gene, hgnc_symbol],
                          on_missing: partial, min_resolved_fraction: 0.9}

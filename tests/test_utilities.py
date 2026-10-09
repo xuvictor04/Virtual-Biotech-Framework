@@ -398,7 +398,7 @@ async def test_inspect_dataset_drafts_a_descriptor_that_registers(rt, project, t
                                   "content_identity"])
 async def test_drafts_of_real_shapes_register_as_drafted(rt, project, case):
     """Shapes the real files showed (2026-10-09): the HGNC complete set is a tab-separated ``.txt`` whose column
-    ``pseudogene.org`` holds a dot and whose sparse columns are empty or numeric in the first MiB the CSV plugin
+    ``pseudogene.org`` holds a dot (declared and served under its literal name) and whose sparse columns are empty or numeric in the first MiB the CSV plugin
     infers types from; the Tahoe-100M cell-line driver table has no null-free key (its rows are unique only with a
     nullable column); Tahoe drug names hold spaces and parentheses; Open Targets 25.09 drug_mechanism_of_action has
     no unique combination of scalar columns (its rows differ in the list of molecules), so its identity is the
@@ -443,7 +443,8 @@ async def test_drafts_of_real_shapes_register_as_drafted(rt, project, case):
                              files=[path.name], why="without the override")
         assert "check real_late_text_type.rows" in msg
     elif case == "dotted_column":
-        assert "pseudogene.org" not in info["draft_descriptor"] and any("pseudogene.org" in n for n in info["notes"])
+        # a descriptor column key is a literal name: the dot is part of it, and the check reads it whole
+        assert "pseudogene.org" in info["draft_descriptor"] and not any("pseudogene.org" in n for n in info["notes"])
     elif case == "nullable_composite_key":
         assert info["key"] == ["cell_name", "Driver_Gene_Symbol", "Driver_ProtEffect"]
         assert info["key_nullable"] == ["Driver_ProtEffect"]
@@ -728,8 +729,11 @@ async def test_a_plugin_registers_only_after_its_conformance_suite_passes(rt, pr
     assert (project.plugins_dir / "statistic" / "score_0_10.py").is_file()
     stamp = Path(pconfig["data"]["cache_dir"]) / "conformance" / "statistic.score_0_10.json"
     assert json.loads(stamp.read_text())["plugin"] == "statistic/score_0_10"
-    assert "plugins/statistic/score_0_10.py" in project.profile_path.read_text()
-    assert str(project.plugins_dir / "statistic" / "score_0_10.py") in rt.config["data"]["plugins"]["paths"]
+    assert rt.config["data"]["project_dir"] == str(project.root)
+    assert _discovered(rt.config).has("statistic", "score_0_10")       # approved and unchanged: imported
+    module = project.plugins_dir / "statistic" / "score_0_10.py"
+    module.write_text(module.read_text() + "\n# changed after registration\n")
+    assert not _discovered(rt.config).has("statistic", "score_0_10"), "a changed plugin module was imported"
 
     msg = await _refused(rt, "RegisterPlugin", kind="statistic", content=BROKEN, why="x")
     assert "conformance suite failed" in msg
@@ -749,16 +753,47 @@ async def test_plugins_wait_for_a_human_by_default(rt, project, pconfig):
     out = await _call(rt, "RegisterPlugin", kind="statistic", content=SCORE_0_10, why="an in-house 0-10 score")
     assert out["status"] == "pending_review" and out["conformance"]["exit_code"] == 0
     assert not (project.plugins_dir / "statistic" / "score_0_10.py").exists()
-    assert "score_0_10" not in project.profile_path.read_text()
+    assert not _discovered(pconfig, project).has("statistic", "score_0_10")
     info = await _call(rt, "ProjectInfo")
     assert info["review"] == "none" and info["plugin_review"] == "human"
     assert [p["name"] for p in info["pending"]] == ["score_0_10"]
     rec = approve_pending(project, "plugin", "score_0_10", by="owner", config=pconfig)
     assert rec["status"] == "registered" and rec["review"]["mode"] == "human"
     assert (project.plugins_dir / "statistic" / "score_0_10.py").is_file()
-    assert "plugins/statistic/score_0_10.py" in project.profile_path.read_text()
+    assert _discovered(pconfig, project).has("statistic", "score_0_10")
     stamp = Path(pconfig["data"]["cache_dir"]) / "conformance" / "statistic.score_0_10.json"
     assert json.loads(stamp.read_text())["plugin"] == "statistic/score_0_10"
+
+
+def _discovered(config, project=None):
+    """The data layer's plugin registry for ``config`` (with ``project`` activated)."""
+    from vbt.datalayer.plugins.registry import discover
+    from vbt.datalayer.settings import DataSettings
+
+    if project is not None:
+        config = activate(config, project)
+    return discover(DataSettings.from_config(config))
+
+
+def test_hand_written_plugin_modules_are_never_imported(pconfig, project):
+    """Only a module ``RegisterPlugin`` registered (its suite passed, its review given) and unchanged since is
+    imported: one written into ``plugins/`` by hand or by an agent's Bash is not, in the harness or the data child."""
+    from vbt.datalayer.descriptor.load import approved_project_plugins
+
+    module = project.plugins_dir / "statistic" / "score_0_10.py"
+    module.parent.mkdir(parents=True, exist_ok=True)
+    module.write_text(SCORE_0_10)
+    files, problems = approved_project_plugins(project.root)
+    assert files == [] and "no provenance record" in problems[0]
+    assert not _discovered(pconfig, project).has("statistic", "score_0_10")
+    record = {"schema": ledger.ITEM_SCHEMA, "kind": "plugin", "name": "score_0_10", "plugin_kind": "statistic",
+              "status": "pending_review", "files": {"plugins/statistic/score_0_10.py": ledger.sha256_file(module)}}
+    ledger.write_record(project, record)
+    assert approved_project_plugins(project.root)[0] == [] and not _discovered(pconfig, project).has(
+        "statistic", "score_0_10")
+    ledger.write_record(project, {**record, "status": "registered"})
+    assert approved_project_plugins(project.root)[0] == [str(module)]
+    assert _discovered(pconfig, project).has("statistic", "score_0_10")
 
 
 # ---------------------------------------------------------------------------- review

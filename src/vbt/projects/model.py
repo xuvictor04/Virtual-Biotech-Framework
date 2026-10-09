@@ -18,9 +18,10 @@ directory: ``$VBT_PROJECTS_DIR``, ``<VBT_HOME>/projects``, or ``<data>/projects`
       provenance/         ledger.jsonl (every registration and refusal) and <kind>/<name>.json (current records)
 
 :func:`activate` turns a loaded configuration into the project's: ``project: {name, dir}``, the project's skills
-after the shipped skill roots, the project directory as a read root, its runs directory, its plugin modules in
-``data.plugins.paths`` and ``VBT_PROJECT_DIR`` in ``tool_env`` (the data layer's catalog, the data child, Bash
-and the data client then search the project's descriptors and overlays after the shipped ones).
+after the shipped skill roots, the project directory as a read root, its runs directory, ``data.project_dir`` (the
+data layer then searches the project's descriptors and overlays after the shipped ones and discovers its approved
+plugins: registered, and unchanged since) and ``VBT_PROJECT_DIR`` in ``tool_env`` (the data child, Bash and the
+data client see the same project).
 :func:`write_profile` writes the same layer as a profile file, so the unmodified CLI activates a project with
 ``--profile``. Nothing here writes outside the project directory.
 """
@@ -73,6 +74,8 @@ PROJECT_DEFAULTS: dict[str, Any] = {
     "max_import_bytes": None,        # largest data import (null: bounded by the free disk space only)
     "check_depth": "standard",       # `vbt ds check` depth a data spec must pass
     "runs_in_project": True,   # runs of an active project go to <project>/runs
+    # a run's agent notes at the session's close: offer (count them and name `vbt project memory`), add, off
+    "notes_at_close": "offer",
 }
 
 _REVIEW_RANK = {m: i for i, m in enumerate(REVIEW_MODES)}
@@ -100,6 +103,7 @@ class ProjectSettings:
     max_import_bytes: int | None = None
     check_depth: str = "standard"
     runs_in_project: bool = True
+    notes_at_close: str = "offer"
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any] | None, project: "Project | None" = None) -> "ProjectSettings":
@@ -115,6 +119,9 @@ class ProjectSettings:
         if plugin_review not in REVIEW_MODES:
             raise ProjectError(f"projects.plugin_review must be one of {', '.join(REVIEW_MODES)} "
                                f"(got {plugin_review!r})")
+        notes = str(raw.get("notes_at_close") or "offer")
+        if notes not in ("offer", "add", "off"):
+            raise ProjectError(f"projects.notes_at_close must be offer, add or off (got {notes!r})")
         sandbox = str(raw.get("sandbox") or "auto")
         if sandbox not in SANDBOX_MODES:
             raise ProjectError(f"projects.sandbox must be one of {', '.join(SANDBOX_MODES)} (got {sandbox!r})")
@@ -125,7 +132,7 @@ class ProjectSettings:
                    max_source_bytes=int(raw.get("max_source_bytes") or 2_000_000),
                    max_import_bytes=int(raw["max_import_bytes"]) if raw.get("max_import_bytes") else None,
                    check_depth=str(raw.get("check_depth") or "standard"),
-                   runs_in_project=bool(raw.get("runs_in_project", True)))
+                   runs_in_project=bool(raw.get("runs_in_project", True)), notes_at_close=notes)
 
     def review_for(self, kind: str) -> str:
         """The review an item of ``kind`` needs: ``review``, and for a plugin (code the harness and the data child
@@ -351,10 +358,13 @@ def activate(config: Mapping[str, Any], project: Project, *, runs: bool | None =
     if runs if runs is not None else ProjectSettings.from_config(config, project).runs_in_project:
         paths["runs_dir"] = str(project.runs_dir)
     data = cfg.setdefault("data", {})
-    plugins = data.setdefault("plugins", {})
-    own_prefix = str(project.plugins_dir) + os.sep
-    plugins["paths"] = [*(p for p in plugins.get("paths") or [] if not str(p).startswith(own_prefix)),
-                        *project.plugin_files()]
+    data["project_dir"] = root
+    plugins = data.get("plugins")
+    if isinstance(plugins, dict) and plugins.get("paths"):
+        # discovery imports the project's approved plugins itself (data.project_dir); a module listed here would
+        # be imported whatever its provenance says
+        own_prefix = str(project.plugins_dir) + os.sep
+        plugins["paths"] = [p for p in plugins["paths"] if not str(p).startswith(own_prefix)]
     tool_env = cfg.setdefault("tool_env", {})
     tool_env[PROJECT_ENV] = root
     return cfg
@@ -404,14 +414,11 @@ def profile_layer(project: Project, config: Mapping[str, Any] | None = None) -> 
     pd = "${vars.project_dir}"
     skills = [s for s in (_raw(config, "paths", "skills") or []) if "${vars.project_dir}" not in str(s)]
     roots = [s for s in (_raw(config, "paths", "read_roots") or []) if "${vars.project_dir}" not in str(s)]
-    plugins = [s for s in (_raw(config, "data", "plugins", "paths") or [])
-               if "${vars.project_dir}" not in str(s)]
-    rel = [f"{pd}/{Path(p).relative_to(project.root).as_posix()}" for p in project.plugin_files()]
     layer: dict[str, Any] = {
         "vars": {"project_dir": str(project.root)},
         "project": {"name": project.name, "dir": pd},
         "paths": {"skills": [*skills, f"{pd}/skills"], "read_roots": [*roots, pd]},
-        "data": {"plugins": {"paths": [*plugins, *rel]}},
+        "data": {"project_dir": pd},
         "tool_env": {PROJECT_ENV: pd},
     }
     if ProjectSettings.from_config(config, project).runs_in_project:
@@ -422,8 +429,8 @@ def profile_layer(project: Project, config: Mapping[str, Any] | None = None) -> 
 def _profile_text(project: Project, config: Mapping[str, Any] | None) -> str:
     return ("# Generated by `vbt project` -- activates project " + project.name + " for any vbt command:\n"
             f"#   vbt --profile {project.profile_path} chat\n"
-            "# Regenerated when a plugin is registered and by `vbt project profile " + project.name + "`; the\n"
-            "# shipped lists are copied from the configuration files as written. Do not edit.\n"
+            "# Regenerated by `vbt project profile " + project.name + "`; the shipped lists are copied from the\n"
+            "# configuration files as written. Do not edit.\n"
             + yaml.safe_dump(profile_layer(project, config), sort_keys=False, width=120))
 
 

@@ -23,7 +23,7 @@ tools:
     serve: pass
 
   search_diseases_by_name:
-    reads: {open_targets.disease: {access: projection, columns: [id, name, description, therapeuticAreas, synonyms, ontology]}}
+    reads: {open_targets.disease: {access: full_table, columns: [id, name, description, therapeuticAreas, synonyms, ontology]}}
     args:
       query: {role: free_text, interpreted_as: casefold_substring,
               binds_any: [open_targets.disease.name, open_targets.disease.synonyms.hasExactSynonym,
@@ -45,7 +45,7 @@ tools:
          where: "disease_mcp/tools.py:159-171", test: test_dl_defect_detectors.py::test_ot_dis_002, effect: false_empty}
 
   get_disease_hierarchy:
-    reads: {open_targets.disease: {access: projection, columns: [id, name, parents, children, ancestors, descendants, ontology]}}
+    reads: {open_targets.disease: {access: full_table, columns: [id, name, parents, children, ancestors, descendants, ontology]}}
     args:
       disease_id: {binds: open_targets.disease.id, accepts: [ot_disease, disease_name]}
     result:
@@ -75,7 +75,7 @@ tools:
          where: "disease_mcp/tools.py:286-294", effect: silent_wrong}
 
   get_disease_phenotypes:
-    reads: {open_targets.disease_phenotype: {access: full_table}, open_targets.disease: {access: projection, columns: [id]}}
+    reads: {open_targets.disease_phenotype: {access: full_table}, open_targets.disease: {access: full_table, columns: [id]}}
     args:
       disease_id: {binds: open_targets.disease_phenotype.disease, accepts: [ot_disease, disease_name]}
       limit:      {role: limit, min: 1, max: 500}
@@ -93,7 +93,7 @@ tools:
       notes: ["include_descendants=true also returns the phenotypes of every descendant disease term; each row names its own disease."]
 
   find_diseases_by_therapeutic_area:
-    reads: {open_targets.disease: {access: projection, columns: [id, name, description, therapeuticAreas, ontology]}}
+    reads: {open_targets.disease: {access: full_table, columns: [id, name, description, therapeuticAreas, ontology]}}
     args:
       therapeutic_area:       {binds: open_targets.disease.therapeuticAreas, op: contains, accepts: [ot_disease, disease_name],
                                universe_where: {eq: [ontology.isTherapeuticArea, true]}}

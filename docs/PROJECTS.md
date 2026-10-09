@@ -22,17 +22,19 @@ and nothing a project creates touches the shipped harness or other projects.
 
 ```bash
 vbt project init oncology --description "In-house oncology screens"     # or: python -m vbt.projects init ...
-vbt --profile <projects>/oncology/profile.yaml chat                     # run a session in the project
+vbt chat --project oncology                                             # run a session in the project
 vbt project show oncology                                               # what the system registered
 vbt project check oncology --tests                                      # files vs provenance, lint, tests again
 ```
 
 `<projects>` is `projects.root`, else the deployment layout's projects directory: `$VBT_PROJECTS_DIR`,
 `<VBT_HOME>/projects` (`/srv/vbt/projects` in the image), or `data/projects` in a checkout. `vbt project init`
-prints the exact `--profile` argument. `python -m vbt.projects` applies the host configuration exactly as a plain
-`vbt` command does (`host.env` from the setup state directory and the profiles `vbt setup` recorded), so a
-project is created where the sessions will look for it and its profile is generated from the same configuration. Once the CLI wires `--project` (see *Status*), `vbt chat --project
-oncology`, `vbt run --project oncology ...` and `vbt setup --project oncology` do the same without a profile path.
+prints the exact `--profile` argument. `vbt project` (and `python -m vbt.projects`) applies the host configuration
+exactly as every `vbt` command does (`host.env` from the setup state directory and the profiles `vbt setup`
+recorded), so a project is created where the sessions will look for it and its profile is generated from the same
+configuration. `vbt chat --project oncology`, `vbt run --project oncology ...` and `vbt setup --project oncology`
+activate it without a profile path (`vbt --profile <projects>/oncology/profile.yaml chat` does the same); a resumed
+session (`--resume`) and `vbt replay` continue in the project the run was pinned with.
 
 In the session, ask for what you need ("we have an assay export in `incoming/assays.csv`; how do lung lines
 compare?"). The CSO delegates to the `data-engineer` when a dataset, format or helper is missing; the engineer
@@ -74,11 +76,15 @@ Activating a project (`vbt.projects.activate`, or the generated `profile.yaml`) 
 | `paths.skills` | the shipped roots, then `<project>/skills` (a project skill cannot shadow a shipped one) |
 | `paths.read_roots` | the shipped roots, then the project directory (read-only for agents) |
 | `paths.runs_dir` | `<project>/runs` (unless `projects.runs_in_project: false`) |
-| `data.plugins.paths` | the configured paths, then the project's plugin modules |
+| `data.project_dir` | the project directory (typed in `DataSettings`, carried to the data child in `VBT_DATA_SETTINGS`) |
 | `tool_env.VBT_PROJECT_DIR` | the project directory |
 
-`VBT_PROJECT_DIR` reaches every process that reads data: the harness's catalog (as `env.VBT_PROJECT_DIR`), the
-data child, `vbt ds` commands, Bash and the data client. The catalog loads `<project>/descriptors` and
+`data.project_dir` (and `VBT_PROJECT_DIR`, which reaches Bash and the data client) tells every process that reads
+data where the project is: the harness's catalog, the data child, `vbt ds` and `vbt data` commands. Plugin discovery
+(`plugins.registry.discover`) imports the project's plugin modules after the shipped ones, and only those whose
+provenance record says `registered` and whose file still has the recorded hash
+(`descriptor.load.approved_project_plugins`): a module written into `plugins/` by hand or by an agent's Bash, or
+changed after its review, is never imported, in the harness or the data child. The catalog loads `<project>/descriptors` and
 `<project>/overlays` **after** `data.descriptors_dir`/`overlays_dir`, and a project can only add: a project file
 naming a shipped source or server, a descriptor whose acquisition declares `prepare` steps or `env` variables, a
 generic overlay (`_*.yaml`), an overlay whose `same_as` names another
@@ -125,8 +131,9 @@ and cell-line metadata and the live HGNC complete set):
   none`; a single key gets a `local_key` id type whose `canonical` is the narrowest generic pattern every value
   matches;
 - numeric columns are measures, low-cardinality text columns categories, other text payload;
-- a column whose name holds a `.` (HGNC's `pseudogene.org`) reads as a nested path in a descriptor, so the draft
-  leaves it out and says so in `notes`.
+- a column whose name holds a `.` (HGNC's `pseudogene.org`) is declared under its literal name (a descriptor
+  column key is a name, not a path); one holding a backtick, a bracket or a path prefix (`/`, `^`, `@`) is left
+  out and named in `notes`.
 
 `ProjectInfo` shows what exists.
 
@@ -142,13 +149,15 @@ Everything a project adds is checked against what it could make the harness do o
 | descriptor, overlay, acquisition spec | declarative; the data child reads the files a descriptor names | every path a descriptor names (its root, each table's and manifest's path, any absolute path in it, and where links under a table's location lead) must be inside the project or readable by the registering agent (`paths.read_roots`, never `paths.blocked_read`); `acquisition.prepare` (a command `vbt data acquire` runs as the operator) and `acquisition.env` (variables `vbt setup` writes into `host.env`, which every `vbt` command loads) are refused; `vbt project check` applies the same rules to every project descriptor |
 | data import (`files`) | copied into `<project>/data/<source>/` | each file must be readable by the agent (links included); at most half of the free disk space beyond 1 GiB, or `projects.max_import_bytes`; staged once and moved into place |
 | utility | its tests and every call run in the sandbox (below) | files hashed; a changed file is never run |
-| plugin | its conformance suite runs in the sandbox; once registered it is **imported by the harness and the data child**, outside the sandbox | `projects.plugin_review` (default `human`): installed only once a person approves it (`vbt project approve`); hosts that accept system-written plugins set it to `reviewer` or `none` |
+| plugin | its conformance suite runs in the sandbox; once registered it is **imported by the harness and the data child**, outside the sandbox (the gateway calls statistic, identifier, layout and envelope plugins in the harness) | `projects.plugin_review` (default `human`): installed only once a person approves it (`vbt project approve`); hosts that accept system-written plugins set it to `reviewer` or `none`. Only the approved file is imported: discovery checks its provenance record and hash first |
 
 Data stays where it is when the descriptor's root names a directory the agent may read (a reference-data root, a
 shared disk): nothing is copied and the record holds only the descriptor. For data to download, the acquisition
 section's `dir` must be the directory the root reads under the project's `data/`; the registration answer gives
 the command that fetches it there: `vbt --profile <project>/profile.yaml data acquire <source> --dest
-<project>/data`.
+<project>/data`. Without `--dest`, `vbt data acquire` puts a source the active project added under `<project>/data`
+(`vbt.data.acquire.source_root`) and every other source under `data.acquisition.root`; `vbt data status` reads the
+same homes, and `vbt setup --project NAME` fetches, indexes and checks the project's sources with the shipped ones.
 
 ## The sandbox
 
@@ -198,13 +207,19 @@ the trace has `project_registration` and `project_utility_call` events.
 ## In-session and later sessions
 
 - A **utility** becomes a tool in the running session at once (added to the registry) and is listed at the start of
-  every later session of the project (from the project's skill root, `vbt.tools.builtin.builtin_tools`).
-- A **data spec or plugin**: the session's catalog and plugin registry are rebuilt and handed to the running
-  gateway, and the data child is restarted with the new settings, so the `mcp__data__*` tools serve the new tables
-  in the next turn (`vbt.projects.reload`). If any step fails, the tool result says the item is served from the
-  next session of the project, which builds everything from the project directory.
-- **Project notes**: `vbt project memory NAME --from-run RUN` appends a run's agent notes (`memory/<agent>/`) to the
-  project's, which every later session injects into that role's prompt.
+  every later session of the project (the runtime registers `vbt.projects.utilities.utility_tools` of the
+  configuration's project).
+- A **data spec or plugin**: `Runtime.reload_data_layer` rebuilds the session's catalog and plugin registry, hands
+  them to the running gateway (`DataGateway.reload_catalog`) and restarts the data child with the new settings, so
+  the `mcp__data__*` tools serve the new tables in the next turn (`vbt.projects.reload`). If any step fails, the tool
+  result says the item is served from the next session of the project, which builds everything from the project
+  directory.
+- **Project notes**: at the close of a session in a project, the run's new agent notes (`memory/<agent>/` lines the
+  project does not have) are offered: `vbt chat`/`vbt run` print how many and the command that adds them,
+  `vbt project memory NAME --from-run RUN` (`projects.notes_at_close: offer`); `add` appends them at once, `off`
+  does nothing. Every later session injects the project's notes into that role's prompt.
+- **Pinning**: the run's pinned configuration records the project (`name`, `dir`) and digests of what it adds
+  (`catalog_sha256` over its descriptors and overlays, its approved plugin modules, its utilities' source hashes).
 
 ## Configuration (`projects.*`)
 
@@ -221,19 +236,17 @@ the trace has `project_registration` and `project_utility_call` events.
 | `max_import_bytes` | null | largest data import (null: half of the free disk space beyond 1 GiB) |
 | `check_depth` | `standard` | the `vbt ds check` depth a data spec must pass (`deep` on big hosts for full scans) |
 | `runs_in_project` | true | run records under `<project>/runs` |
+| `notes_at_close` | `offer` | a run's new agent notes at the session's close: `offer` \| `add` \| `off` |
 
 The defaults live in `vbt.projects.model.PROJECT_DEFAULTS`; a `projects:` block in a profile or the host
 configuration overrides them.
 
 ## Status and limits
 
-- `vbt project ...` is implemented (`vbt.projects.cli.add_project_parser`) and runs today as
-  `python -m vbt.projects ...`; registering it under `vbt` and adding `--project` to `vbt chat|run|setup`
-  (`add_project_argument`, `apply_project`) is a three-line change in `src/vbt/cli.py` that this package did not
-  own. Until then a project is activated with its `profile.yaml`.
-- The profile copies the shipped `paths.skills`/`read_roots`/`data.plugins.paths` lists as written in the
-  configuration files (`${...}` kept); `vbt project check` reports a stale profile and `vbt project profile NAME`
-  rewrites it.
-- The run's pinned configuration does not yet record the project; the trace and the registration receipts do.
+- The profile copies the shipped `paths.skills`/`read_roots` lists as written in the configuration files (`${...}`
+  kept); `vbt project check` reports a stale profile and `vbt project profile NAME` rewrites it.
+- Approved project plugins run in the harness process as well as the data child: the gateway calls statistic,
+  identifier, layout and envelope plugins itself. The safeguards are the review (`plugin_review: human` by default)
+  and the provenance check before every import.
 - Overlays only matter for MCP servers the owners add to their configuration; project data is normally served by
   the native data tools, which need no overlay.

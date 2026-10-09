@@ -41,7 +41,8 @@ def add_acquire_parsers(ds: Any) -> None:
                    help="the tables the readiness cache reports missing, partial or stale")
     a.add_argument("--pending", action="store_true",
                    help="the tables data.acquisition.auto queued for approval")
-    a.add_argument("--dest", metavar="ROOT", help="acquisition root (default: data.acquisition.root)")
+    a.add_argument("--dest", metavar="ROOT", help="acquisition root (default: data.acquisition.root; a source the "
+                                                  "active project added: <project>/data)")
     a.add_argument("--plan", action="store_true", help="print the plan and stop")
     a.add_argument("--offline", action="store_true", help="plan from the declared sizes, without listing")
     a.add_argument("--max-gb", type=float, help="refuse when more than this would be transferred")
@@ -107,7 +108,8 @@ def cmd_acquire(args: Any, config: Mapping[str, Any]) -> int:
             print(f"note: {n}")
         print("nothing to acquire")
         return 0
-    root = Path(args.dest).expanduser().resolve() if args.dest else settings.root
+    # without --dest a project's sources go into the project (A.source_root), the others under data.acquisition.root
+    root = Path(args.dest).expanduser().resolve() if args.dest else None
     try:
         plan = A.plan_acquisition(catalog, targets.wanted, settings, root=root, offline=args.offline,
                                   write_index=not args.plan)

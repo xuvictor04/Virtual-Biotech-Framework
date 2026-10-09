@@ -40,6 +40,7 @@ from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 import yaml
 
+from ..datalayer.descriptor.load import approved_project_plugins
 from . import ledger
 from .model import ITEM_NAME_RE, Project, ProjectError, ProjectSettings, now_iso, write_profile
 from .sandbox import run_sandboxed, runner_argv
@@ -423,6 +424,7 @@ class Author:
             return self._finish(_refused("plugin", name, "the plugin name must be a lowercase identifier"), why)
         own_file = self.project.plugins_dir / kind / f"{name}.py"
         settings = DataSettings.from_config({**self.config, "data": {**dict(self.config.get("data") or {}),
+                                                                     "project_dir": None,     # the shipped ones
                                                                      "plugins": _shipped_plugins(self.config,
                                                                                                  self.project)}})
         try:
@@ -443,8 +445,9 @@ class Author:
                 stage.mkdir(parents=True)
                 staged = stage / f"{name}.py"
                 staged.write_text(module_text, encoding="utf-8")
-                others = [p for p in self.project.plugin_files() if Path(p) != own_file]
+                others = [p for p in approved_project_plugins(self.project.root)[0] if Path(p) != own_file]
                 data = dict(self.config.get("data") or {})
+                data["project_dir"] = None                 # the approved project plugins are listed in paths
                 data["plugins"] = {**dict(data.get("plugins") or {}),
                                    "paths": [*_shipped_plugins(self.config, self.project)["paths"], *others,
                                              str(staged)]}
@@ -618,16 +621,18 @@ def _install(project: Project, plan: Mapping[str, Path], replace_dir: str | None
 
 
 def _staged_config(config: Mapping[str, Any], project: Project, stage: Path) -> dict[str, Any]:
-    """The configuration the staged project is validated with: ``VBT_PROJECT_DIR`` at the staging copy and the
-    project's plugins discoverable."""
+    """The configuration the staged project is validated with: the staging copy as the project directory
+    (``data.project_dir``, ``VBT_PROJECT_DIR``) and the project's approved plugins (registered and unchanged:
+    ``approved_project_plugins``) listed as plugin paths, since the copy holds only the catalog."""
     from ..datalayer.descriptor.load import PROJECT_ENV
 
     cfg = json.loads(json.dumps(dict(config), default=str))
     cfg.setdefault("tool_env", {})[PROJECT_ENV] = str(stage)
     data = cfg.setdefault("data", {})
+    data["project_dir"] = str(stage)
     plugins = data.setdefault("plugins", {})
     paths = [p for p in plugins.get("paths") or [] if not str(p).startswith(str(project.plugins_dir) + os.sep)]
-    plugins["paths"] = [*paths, *project.plugin_files()]
+    plugins["paths"] = [*paths, *approved_project_plugins(project.root)[0]]
     return cfg
 
 

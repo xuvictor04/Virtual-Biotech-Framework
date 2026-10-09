@@ -42,6 +42,7 @@ class ToolReads:
     # table -> argument names every read of it depends on (empty: read unconditionally at least once)
     reads: dict[str, set[str]] = field(default_factory=dict)
     lines: dict[str, int] = field(default_factory=dict)
+    loaders: dict[str, set[str]] = field(default_factory=dict)      # table -> the loader functions that read it
 
 
 def _table(loader: str, name: str) -> str:
@@ -61,7 +62,7 @@ class _Scanner:
     def __init__(self, funcs: dict[str, ast.FunctionDef | ast.AsyncFunctionDef], params: tuple[str, ...]) -> None:
         self.funcs = funcs
         self.params = set(params)
-        self.found: list[tuple[str, frozenset[str], int]] = []
+        self.found: list[tuple[str, frozenset[str], int, str]] = []
 
     def scan(self, name: str, conds: frozenset[str], stack: tuple[str, ...] = ()) -> None:
         if name in stack or name not in self.funcs:
@@ -81,7 +82,7 @@ class _Scanner:
             f = node.func
             if isinstance(f, ast.Attribute) and f.attr in LOADERS and node.args \
                     and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                self.found.append((_table(f.attr, node.args[0].value), conds, node.lineno))
+                self.found.append((_table(f.attr, node.args[0].value), conds, node.lineno, f.attr))
             if isinstance(f, ast.Name) and f.id in self.funcs:
                 self.scan(f.id, conds, stack)
         for child in ast.iter_child_nodes(node):
@@ -120,10 +121,11 @@ def upstream_reads() -> list[ToolReads]:
             sc = _Scanner(funcs, params)
             sc.scan(name, frozenset())
             tr = ToolReads(server, name, params)
-            for table, conds, line in sc.found:
+            for table, conds, line, loader in sc.found:
                 prev = tr.reads.get(table)
                 tr.reads[table] = set(conds) if prev is None else (prev & set(conds))
                 tr.lines.setdefault(table, line)
+                tr.loaders.setdefault(table, set()).add(loader)
             tools.append(tr)
     return tools
 
@@ -179,3 +181,33 @@ def test_binding_reads_cover_upstream_reads(tr: ToolReads, catalog) -> None:
         when = reads[table].when or {}
         assert set(when) & conds, (f"{tr.server}.{tr.tool}: {table} is read only when {sorted(conds)} say so "
                                    f"(upstream line {tr.lines[table]}); its ReadSpec needs `when` on that argument")
+
+
+@pytest.mark.skipif(not TOOLS, reason="the upstream checkout is missing (git submodule update --init)")
+@pytest.mark.parametrize("tr", TOOLS, ids=lambda t: f"{t.server}.{t.tool}")
+def test_whole_table_loads_are_not_declared_projections(tr: ToolReads, catalog) -> None:
+    """``get_dataset`` loads the whole table into pandas (``to_table().to_pandas()``, every column), so a read the
+    tool makes only through it is ``full_table``, whatever columns the tool then uses: admission sizes
+    ``full_table`` reads and not ``projection`` ones. The target server's ``get_chemical_probes`` and
+    ``get_genetic_constraint`` were declared projections, admitted at a 3,000 MB limit and the server was
+    OOM-killed loading the whole 25.09 target table (``vbt validate``, D3)."""
+    reads = catalog.contract(tr.server, tr.tool).binding.reads
+    wrong = sorted(t for t, loaders in tr.loaders.items()
+                   if loaders == {"get_dataset"} and t in reads and reads[t].access == "projection")
+    assert not wrong, (f"{tr.server}.{tr.tool} loads {wrong} whole (get_dataset, upstream line "
+                       f"{', '.join(str(tr.lines[t]) for t in wrong)}) but declares a projection: use full_table")
+
+
+@pytest.mark.skipif(not TOOLS, reason="the upstream checkout is missing (git submodule update --init)")
+def test_functional_genomics_loads_target_essentiality_whole(catalog) -> None:
+    """Every functional_genomics tool on ``target_essentiality`` calls ``get_dataset`` (no Arrow scan): its ``off``
+    calls were OOM-killed at a 4,400 MB limit while the overlay declared a bounded scan, which admission sizes as a
+    transient slice."""
+    by = {(t.server, t.tool): t for t in TOOLS}
+    tools = [t for (server, _tool), t in by.items() if server == "functional_genomics"
+             and "open_targets.target_essentiality" in t.reads]
+    assert len(tools) == 5
+    for t in tools:
+        assert t.loaders["open_targets.target_essentiality"] == {"get_dataset"}
+        rs = catalog.contract(t.server, t.tool).binding.reads["open_targets.target_essentiality"]
+        assert rs.access == "full_table", t.tool

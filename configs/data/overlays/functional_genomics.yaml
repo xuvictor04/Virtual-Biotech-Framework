@@ -10,7 +10,7 @@ sources: [open_targets, tahoe_100m]
 upstream_commit: ${vars.upstream_commit:-71f9da68c95c5ee0ef4c1d9b8f45f10693de022d}   # the commit these bindings were reviewed against
 tools:
   query_gene_essentiality:
-    reads: {open_targets.target_essentiality: {access: bounded_scan}}
+    reads: {open_targets.target_essentiality: {access: full_table}}
     args:
       gene_id: {binds: open_targets.target_essentiality.id, accepts: [ensembl_gene, hgnc_symbol]}
       disease: {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource"}   # an exact vocabulary value
@@ -40,7 +40,7 @@ tools:
          where: "functional_genomics_mcp/tools.py:195-211", effect: silent_wrong}
 
   find_essential_genes:
-    reads: {open_targets.target_essentiality: {access: bounded_scan}}
+    reads: {open_targets.target_essentiality: {access: full_table}}
     args:
       disease:              {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource"}   # exact vocabulary value
       min_effect_threshold: {role: family_param}                 # essential: geneEffect <= threshold (inclusive)
@@ -65,7 +65,7 @@ tools:
          where: "functional_genomics_mcp/tools.py:313-345", effect: silent_wrong}
 
   compare_essentiality_across_diseases:
-    reads: {open_targets.target_essentiality: {access: bounded_scan}}
+    reads: {open_targets.target_essentiality: {access: full_table}}
     args:
       gene_id:  {binds: open_targets.target_essentiality.id, accepts: [ensembl_gene, hgnc_symbol]}
       diseases: {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource", op: in}   # exact values: no overlapping groups
@@ -88,7 +88,7 @@ tools:
          where: "functional_genomics_mcp/tools.py:598-613", effect: silent_wrong}
 
   find_selective_dependencies:
-    reads: {open_targets.target_essentiality: {access: bounded_scan}}
+    reads: {open_targets.target_essentiality: {access: full_table}}
     args:
       target_disease:        {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource"}
       comparison_disease:    {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource"}   # one group each: exact values
@@ -114,7 +114,7 @@ tools:
          where: "functional_genomics_mcp/tools.py:736-739", effect: silent_wrong}
 
   query_cell_line_dependency:
-    reads: {open_targets.target_essentiality: {access: bounded_scan}}
+    reads: {open_targets.target_essentiality: {access: full_table}}
     args:
       cell_line_name:       {binds: "open_targets.target_essentiality.geneEssentiality[].depMapEssentiality[].screens[].depmapId",
                              accepts: ["open_targets:depmap_cell_line"], item_filter: true}   # name resolved to one ACH ID

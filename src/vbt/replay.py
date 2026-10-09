@@ -164,6 +164,15 @@ def _replay_config(pinned: Mapping[str, Any], *, model: str | None, runs_dir: st
     if extra:
         overrides = deep_merge(overrides, dict(extra))
     config = load_config(profs, overrides)
+    spec = pinned.get("project")
+    if isinstance(spec, Mapping) and spec.get("dir") and not (config.get("project") or {}).get("dir"):
+        # the run was made in a project (--project): replay it in the same project, while it exists
+        from .projects import Project, ProjectError, activate
+
+        try:
+            config = activate(config, Project.load(spec["dir"]), runs=False if runs_dir is not None else None)
+        except ProjectError:
+            pass
     if model:
         from .cli import resolve_model
         m = resolve_model(config, model)

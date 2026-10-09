@@ -15,8 +15,8 @@
   is quarantined, a tool whose binding references a table or id_type a quarantined descriptor declares
   (or may declare, when its YAML does not parse), and a tool on the generic guard while a generic
   overlay of its server is quarantined. :meth:`Catalog.lint` reports each file as an error.
-* Projects (docs/PROJECTS.md): the active project's ``descriptors/`` and ``overlays/``
-  (:func:`~.descriptor.load.project_search_dirs`) are loaded after the shipped directories and can only add.
+* Projects (docs/PROJECTS.md): the active project's ``descriptors/`` and ``overlays/`` (``data.project_dir``, else
+  :func:`~.descriptor.load.project_search_dirs`) are loaded after the shipped directories and can only add.
   A project file that would replace or widen what is shipped is refused on its own
   (``Catalog.project_refused``; never ``quarantined``, so it cannot take a shipped tool down): a source or
   server the core declares, a generic overlay, a ``same_as`` naming another server's tool, a descriptor whose
@@ -40,6 +40,8 @@ from typing import Any, Mapping, Sequence
 from .descriptor.columns import is_container
 from .descriptor.load import digest as _digest
 from .descriptor.load import (
+    PROJECT_DESCRIPTORS,
+    PROJECT_OVERLAYS,
     DescriptorError,
     Quarantined,
     load_descriptors,
@@ -768,7 +770,9 @@ def build_catalog(settings: Any, registry: Any = None, *, variables: Mapping[str
     quarantined: list[Quarantined] | None = [] if quarantine else None
     descriptors = load_descriptors(Path(settings.descriptors_dir), variables, run, quarantine=quarantined)
     overlays, generic = load_overlays(Path(settings.overlays_dir), variables, quarantine=quarantined)
-    project = project_search_dirs(variables)
+    own = getattr(settings, "project_dir", None)
+    project = (Path(own) / PROJECT_DESCRIPTORS, Path(own) / PROJECT_OVERLAYS) if own and Path(own).is_dir() \
+        else project_search_dirs(variables)
     added: tuple[set[str], set[str], list[Quarantined]] = (set(), set(), [])
     if project is not None:
         added = _add_project(project, descriptors, overlays, quarantined, variables, run)

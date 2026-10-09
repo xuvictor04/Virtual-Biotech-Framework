@@ -93,6 +93,7 @@ from ..ipc import (
 from ..launch import build_launch_spec
 from ..memory import AdmissionController, MemoryEstimator, ResidencyLedger, TableRead, crash_decision, read_status
 from ..memory.host import host_budget_mb
+from ..memory.sizing import is_auto
 from ..predicate import And, Cmp, Eq, In, IsNull, Not, Predicate, TextMatch, map_columns, to_json
 from ..record import (
     DataProvenance,
@@ -353,6 +354,28 @@ class DataGateway:
 
     # ================================================================== wiring
 
+    def reload_catalog(self, catalog: Catalog, registry: Any = None, *, settings: DataSettings | None = None) -> None:
+        """Serve ``catalog`` (and ``registry``) from now on: a project registered a descriptor, an overlay or a
+        plugin in the running session (docs/PROJECTS.md). The readiness cache and the resolver take the new
+        catalog; what was derived from the old one (tool schemas, vocabularies, table statistics, index
+        fingerprints and failed builds) is dropped and derived again on use. Resident tables, admission and the
+        recorded check results of unchanged tables stay: a table's results are keyed by its fingerprint."""
+        if settings is not None:
+            self.settings = settings
+        self.catalog = catalog
+        self.registry = registry if registry is not None else getattr(catalog, "registry", None)
+        self.readiness.catalog = catalog
+        self.readiness.registry = self.registry
+        self.resolver = Resolver(self.registry, catalog, self._index_provider, remote=self._remote,
+                                 settings=self.settings)
+        self._schemas.clear()
+        self._vocab.clear()
+        self._stats.clear()
+        self._index_fp.clear()
+        self._index_failed.clear()
+        self._index_retry_at.clear()
+        self._check_failed_until.clear()
+
     def bind_bridge(self, bridge: Any) -> None:
         self.bridge = bridge
         self.service.bind(bridge)
@@ -376,9 +399,12 @@ class DataGateway:
         svc = self.settings.service
         # the harness tool env (data paths such as OPEN_TARGETS_DATA_PATH) expands descriptor roots
         env = {**base_tool_env(dict(self.config or {})), "VBT_DATA_SETTINGS": self.settings.to_json()}
+        configured = ((self.settings.raw or {}).get("service") or {}).get("mem_limit_mb")
+        # an 'auto' limit stays 'auto' for the launcher, which plans it from the host (launch.server_limit_mb)
+        limit: int | str = "auto" if is_auto(configured) else int(svc.mem_limit_mb)
         return [{"name": DATA_SERVER, "command": python, "args": ["-E", str(script)],
                  "env": env, "timeout_s": float(svc.timeout_s),
-                 "max_concurrency": int(svc.max_concurrency), "mem_limit_mb": int(svc.mem_limit_mb)}]
+                 "max_concurrency": int(svc.max_concurrency), "mem_limit_mb": limit}]
 
     def launch_spec(self, cfg: Any) -> LaunchSpec | None:
         log_root = getattr(self.bridge, "log_root", None) if self.bridge is not None else None

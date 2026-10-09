@@ -54,6 +54,7 @@ Config (in-code defaults): ``orchestration.review_policy`` (``research``),
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -190,6 +191,8 @@ class CSOSession:
         self.last_turn: dict[str, Any] | None = None
         self._acquisition: asyncio.Future | None = None   # the between-turns acquisition (data.acquisition.auto)
         self.last_acquisition: dict[str, Any] | None = None
+        #: In a project: the run's new agent notes offered to it (or added) at close (vbt.projects.notes)
+        self.project_notes: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------ properties
 
@@ -259,11 +262,22 @@ class CSOSession:
             log.info("closing with a between-turns acquisition still running")
         try:
             await self.rt.cancel_outstanding()
+            self._offer_project_notes()
         finally:
             try:
                 self.run.close()
             finally:
                 await self.rt.aclose()
+
+    def _offer_project_notes(self) -> None:
+        """In a project, the run's new agent notes are offered to it (or added: ``projects.notes_at_close``;
+        :func:`vbt.projects.notes.offer_at_close`); ``project_notes`` holds the outcome for the CLI to print."""
+        from .projects.notes import offer_at_close
+
+        self.project_notes = offer_at_close(self.config, self.run.dir, run_id=getattr(self.run, "run_id", None))
+        if self.project_notes:
+            with contextlib.suppress(Exception):
+                self.run.trace("project_notes", **self.project_notes)
 
     # ------------------------------------------------------------------ turn
 

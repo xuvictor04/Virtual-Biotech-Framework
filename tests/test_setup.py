@@ -201,23 +201,44 @@ def test_sizing_keeps_the_shipped_defaults_on_a_small_host(base_config):
     z = hostconfig.size_host(_facts(16094, 4), base_config)
     assert z["service_mem_limit_mb"] == 3000 and z["workspace_mb"] == 8000 and z["service_max_concurrency"] == 4
     assert z["host_budget_mb"] == int(0.75 * 16094 - 2048)
-    assert z["default_server_mb"] == z["host_budget_mb"] < 12000      # never above what the host can give
+    assert z["default_server_mb"] == int(0.8 * (0.75 * 16094 - 2048)) < 12000   # never above what the host gives
     assert "limit_kind" not in z and z["bwrap"] is False
+
+
+def test_sizing_is_the_rule_auto_applies_at_run_time(base_config):
+    """``vbt setup`` writes the numbers the harness's ``auto`` gives on the same host (one rule:
+    vbt.datalayer.memory.sizing), not a rule of its own (it gave 128,000 MB per server on 512 GB, the rule 293,601)."""
+    from vbt.datalayer.memory import sizing
+
+    for ram in (16 * GiB_MB, 64 * GiB_MB, 512 * GiB_MB):
+        z = hostconfig.size_host(_facts(ram, 32), base_config)
+        memory = base_config["data"]["memory"]
+        assert z["host_budget_mb"] == int(sizing.host_budget_for(ram, memory))
+        assert z["default_server_mb"] == sizing.server_limit_for(ram, memory)
+        assert z["service_mem_limit_mb"] == sizing.data_child_for(ram)
+    assert hostconfig.size_host(_facts(512 * GiB_MB, 32), base_config)["default_server_mb"] == 293601
+    shared = {**base_config, "data": {**base_config["data"],
+                                      "memory": {**base_config["data"]["memory"], "host_mb": 64 * GiB_MB}}}
+    z = hostconfig.size_host(_facts(512 * GiB_MB, 32), shared)
+    assert z["default_server_mb"] == 36700 and z["ram_mb"] == 64 * GiB_MB and "host_mb" in z["notes"][0]
 
 
 def test_sizing_scales_to_a_large_host_and_to_the_measured_loads(base_config):
     ram = 1024 * GiB_MB
     z = hostconfig.size_host(_facts(ram, 96, cgroup=True, bwrap=True), base_config)
     assert z["host_budget_mb"] == int(0.75 * ram - 0.05 * ram)
-    assert z["default_server_mb"] == int(0.25 * ram)
+    assert z["default_server_mb"] == int(0.8 * (0.75 * ram - 0.05 * ram))
     assert z["service_mem_limit_mb"] == 32768 and z["service_max_concurrency"] == 16
     parallel = int(base_config["limits"]["max_parallel_agents"])
     assert z["workspace_mb"] == min(65536, int(0.25 * ram / parallel))
     assert z["limit_kind"] == "cgroup" and z["bwrap"] is True
     need = {"genetics": 80434.0, "target": 3474.0}
     z = hostconfig.size_host(_facts(ram, 96), base_config, server_need_mb=need)
-    assert z["default_server_mb"] == int(80434 * 1.3 + 1) and z["largest_server"]["server"] == "genetics"
-    z = hostconfig.size_host(_facts(128 * GiB_MB, 32), base_config, server_need_mb=need)
+    assert z["default_server_mb"] == int(0.8 * (0.75 * ram - 0.05 * ram)) and z["largest_server"]["server"] == \
+        "genetics"                                          # the rule's limit already admits the largest load
+    z = hostconfig.size_host(_facts(160 * GiB_MB, 32), base_config, server_need_mb={"genetics": 80434.0})
+    assert z["default_server_mb"] == int(80434 * 1.3 + 1) < z["host_budget_mb"]   # above 0.8 x budget: raised to it
+    z = hostconfig.size_host(_facts(96 * GiB_MB, 32), base_config, server_need_mb=need)
     assert z["default_server_mb"] == z["host_budget_mb"]
     assert any("genetics" in n and "too_large" in n for n in z["notes"])
 
