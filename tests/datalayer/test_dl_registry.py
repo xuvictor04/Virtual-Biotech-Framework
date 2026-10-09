@@ -72,12 +72,13 @@ def _settings(**plugins) -> DataSettings:
     return DataSettings.from_config({"data": {"plugins": plugins}})
 
 
-def test_kinds_are_exactly_five():
-    assert set(KINDS) == {"format", "layout", "statistic", "identifier", "envelope"}
+def test_kinds_are_exactly_six():
+    # ASN-5 added `derived` (the computations of derived serves)
+    assert set(KINDS) == {"format", "layout", "statistic", "identifier", "envelope", "derived"}
     assert KINDS["format"] is FormatPlugin and KINDS["layout"] is LayoutPlugin
     assert KINDS["statistic"] is StatisticPlugin and KINDS["identifier"] is IdentifierPlugin
     assert KIND_PACKAGES == {"format": "formats", "layout": "layouts", "statistic": "statistics",
-                             "identifier": "identifiers", "envelope": "envelopes"}
+                             "identifier": "identifiers", "envelope": "envelopes", "derived": "derived"}
     assert entry_point_group("format") == "vbt.datalayer.format"
     assert set(CAPABILITIES) == set(KINDS) and API_VERSION == 1
     assert {"canonical_prefix_case", "strip_suffix", "strip_version"} <= NORMALIZE_STEPS

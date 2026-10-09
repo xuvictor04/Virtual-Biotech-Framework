@@ -121,7 +121,9 @@ tools:
       # unit guard: each gene is compared within the unit of its target-tissue value; a blank unit is excluded;
       # a zero median of the other tissues gives fold_change null and expressed_only_in_target (no 999.9 sentinel)
       split:
-        tissue_specificity:
+        tissue_specificity:               # the derived plugin (plugins/derived/tissue_specificity.py; ASN-5)
+          args: {tissue: tissue, threshold: fold_change_threshold}
+          defaults: {threshold: 2.0}
           columns: {gene: id, tissue_id: "tissues[].efo_code", tissue_label: "tissues[].label",
                     value: "tissues[].rna.value", unit: "tissues[].rna.unit", zscore: "tissues[].rna.zscore"}
       envelope: {success: true, tissue: "{tissue}", fold_change_threshold: "{fold_change_threshold}", num_results: null}

@@ -748,6 +748,81 @@ async def test_a_plugin_registers_only_after_its_conformance_suite_passes(rt, pr
     assert "exactly one @register class" in msg
 
 
+MEAN_BY_GROUP = '''"""mean_by_group: the mean of one column per group of another (a derived computation)."""
+from typing import Any, ClassVar, Mapping
+
+from vbt.datalayer.plugins.base import DerivedBase, DerivedOptionsError
+from vbt.datalayer.plugins.registry import register
+
+
+@register
+class MeanByGroup(DerivedBase):
+    name: ClassVar[str] = "mean_by_group"
+    version: ClassVar[str] = "1.0"
+
+    def validate_options(self, options: Mapping[str, Any]) -> list[str]:
+        cols = options.get("columns")
+        if not isinstance(cols, Mapping) or not cols.get("group") or not cols.get("value"):
+            return ["columns needs group and value"]
+        return []
+
+    def columns(self, options: Mapping[str, Any]) -> list[str]:
+        return [options["columns"]["group"], options["columns"]["value"]]
+
+    def read(self, view: Any, request: Mapping[str, Any], options: Mapping[str, Any]) -> list:
+        rows, _t, _e = view.rows(None, columns=self.columns(options), order=[], limit=None,
+                                 budget=request.get("budget_bytes"))
+        return rows
+
+    def serve(self, view: Any, request: Mapping[str, Any], options: Mapping[str, Any]) -> dict:
+        problems = self.validate_options(options)
+        if problems:
+            raise DerivedOptionsError("; ".join(problems))
+        g, v = options["columns"]["group"], options["columns"]["value"]
+        groups: dict = {}
+        for r in self.read(view, request, options):
+            x = r.get(v)
+            if isinstance(x, (int, float)) and not isinstance(x, bool):
+                groups.setdefault(r.get(g), []).append(float(x))
+        out = sorted(({"group": k, "n": len(xs), "mean": sum(sorted(xs)) / len(xs)} for k, xs in groups.items()),
+                     key=lambda r: str(r["group"]))
+        limit = request.get("limit")
+        shown = out[: int(limit)] if limit is not None else out
+        return self.response(shown, total=len(out), truncated=len(shown) < len(out), key_columns=["group"])
+
+    @classmethod
+    def conformance_cases(cls) -> Any:
+        from vbt.datalayer.plugins.conformance.derived import DerivedCase, DerivedCases
+
+        opts = {"columns": {"group": "g", "value": "v"}}
+        rows = [{"g": "a", "v": 1.0, "w": 0}, {"g": "a", "v": 3.0, "w": 0}, {"g": "b", "v": 2.0, "w": 0},
+                {"g": "b", "v": None, "w": 0}]
+        return DerivedCases(valid_options=(opts,), invalid_options=({}, {"columns": {"group": "g"}}),
+                            cases=(DerivedCase("means", rows, opts, {}, total=2, first={"group": "a", "mean": 2.0}),))
+'''
+
+# reads every column of the table without the request's byte budget: the suite's D-4 refuses it
+GREEDY = MEAN_BY_GROUP.replace('"mean_by_group"', '"mean_greedy"').replace(
+    "rows, _t, _e = view.rows(None, columns=self.columns(options), order=[], limit=None,\n"
+    "                                 budget=request.get(\"budget_bytes\"))",
+    "rows, _t, _e = view.rows(None, columns=None, order=[], limit=None, budget=None)")
+
+
+async def test_a_project_adds_a_derived_computation_as_a_plugin(rt, project, pconfig):
+    """ASN-5: a derived computation is a plugin kind, so a project registers one through RegisterPlugin, checked
+    by the derived conformance suite (a plugin that reads every column without the byte budget is refused)."""
+    assert "budget=None" in GREEDY
+    rt.config["projects"]["plugin_review"] = "none"
+    out = await _call(rt, "RegisterPlugin", kind="derived", content=MEAN_BY_GROUP, why="per-group means")
+    assert out["status"] == "registered", out
+    rec = ledger.read_record(project, "plugin", "mean_by_group")
+    assert rec["plugin_kind"] == "derived" and rec["validation"]["conformance"]["exit_code"] == 0
+    assert _discovered(rt.config).has("derived", "mean_by_group")
+    msg = await _refused(rt, "RegisterPlugin", kind="derived", content=GREEDY, why="x")
+    assert "conformance suite failed" in msg
+    assert not (project.plugins_dir / "derived" / "mean_greedy.py").exists()
+
+
 async def test_plugins_wait_for_a_human_by_default(rt, project, pconfig):
     """A plugin is imported by the harness and the data child, outside the sandbox: by default
     (projects.plugin_review: human) it is installed only once a person approves it, after its suite passed."""

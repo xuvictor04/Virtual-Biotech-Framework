@@ -89,7 +89,7 @@ BUILTINS = ["gcs", "http", "huggingface", "json_index", "s3", "zip_member"]
 
 
 def test_acquisition_is_a_harness_side_kind():
-    assert set(KINDS) == {"format", "layout", "statistic", "identifier", "envelope"}
+    assert set(KINDS) == {"format", "layout", "statistic", "identifier", "envelope", "derived"}
     assert list(HARNESS_KINDS) == ["acquisition"]
     reg = discover_harness(entry_points=False)
     assert reg.names("acquisition") == BUILTINS

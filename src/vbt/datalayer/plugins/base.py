@@ -13,7 +13,12 @@ plugins, never protocol methods.
 Format plugins import pyarrow only inside the methods that read data (the Arrow types below are
 plain ``Any`` aliases), so the harness can import any plugin module.
 
-A sixth kind, ``acquisition`` (:class:`AcquisitionPlugin`), runs on the harness side only: the transports of
+``derived`` (:class:`DerivedPlugin`, ASN-5) computes the answer of a ``serve: derived`` binding whose
+``derived.split`` names it (``split: {<plugin name>: <options>}``) from the rows of the request's table: grouped
+statistics that reproduce one upstream tool's result shape. Everything specific to that tool (its columns, argument
+names and defaults) is in the overlay's options, so a project adds one through ``RegisterPlugin``.
+
+A seventh kind, ``acquisition`` (:class:`AcquisitionPlugin`), runs on the harness side only: the transports of
 ``vbt data acquire`` (an HTTPS server with a directory index or a checksum list, a Hugging Face dataset
 repository, a public S3 or GCS bucket, a JSON index such as a Zenodo record or a figshare article, members of a
 remote zip). It is discovered like the others but kept out of :data:`~vbt.datalayer.plugins.KINDS`, so the data
@@ -50,11 +55,11 @@ __all__ = [
     "IdentifierBase", "EnvelopeBase",
     "plugin_key", "ArrowSchema", "ArrowTable", "ArrowRecordBatch",
     "RemoteFile", "AcquisitionError", "AcquisitionPlugin", "AcquisitionBase", "HARNESS_CAPABILITIES",
-    "CHECKSUM_ALGOS",
+    "CHECKSUM_ALGOS", "DerivedPlugin", "DerivedOptionsError", "DerivedBase",
 ]
 
 API_VERSION = 1
-KIND_NAMES = ("format", "layout", "statistic", "identifier", "envelope")
+KIND_NAMES = ("format", "layout", "statistic", "identifier", "envelope", "derived")
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +325,8 @@ CAPABILITIES: dict[str, frozenset[str]] = {
     "statistic": frozenset({"test", "paired", "veto_labels"}),
     "identifier": frozenset({"label", "union", "options"}),
     "envelope": frozenset({"rows", "totals", "nested_errors", "http_status"}),
+    # derived: ``modes`` the options select one of several computations (``options.mode``)
+    "derived": frozenset({"modes"}),
 }
 
 #: Capabilities of the harness-side kinds (:data:`~vbt.datalayer.plugins.HARNESS_KINDS`), kept apart from
@@ -338,6 +345,7 @@ CAPABILITY_METHODS: dict[str, dict[str, tuple[str, ...]]] = {
     "statistic": {"test": ("test",), "paired": ("aggregate_pair",), "veto_labels": ("vetoed_companions",)},
     "identifier": {},
     "envelope": {},
+    "derived": {},
     "acquisition": {},
 }
 
@@ -349,6 +357,7 @@ REQUIRED_METHODS: dict[str, tuple[str, ...]] = {
     "statistic": ("sort_key", "predicate", "bounds", "validate", "aggregate", "comparable", "describe", "family"),
     "identifier": ("configure", "normalize", "normalize_stored", "looks_like", "label_key", "describe"),
     "envelope": ("decode",),
+    "derived": ("validate_options", "columns", "serve"),
     "acquisition": ("listing", "fetch", "describe"),
 }
 
@@ -358,6 +367,7 @@ REQUIRED_ATTRS: dict[str, tuple[str, ...]] = {
     "statistic": ("kind", "name", "version", "capabilities"),
     "identifier": ("kind", "name", "version", "id_type", "canonical", "examples"),
     "envelope": ("kind", "name", "version", "capabilities"),
+    "derived": ("kind", "name", "version", "capabilities"),
     "acquisition": ("kind", "name", "version", "capabilities"),
 }
 
@@ -528,6 +538,41 @@ class EnvelopePlugin(Protocol):
     def conformance_cases(cls) -> Any: ...
 
 
+class DerivedOptionsError(ValueError):
+    """The overlay's options for a derived plugin are wrong, or the call asks for what they do not provide (the
+    data child reports it as a service error; a refusal the agent can fix is a ``GatewayError`` instead)."""
+
+
+class DerivedPlugin(Protocol):
+    """A derived computation (ASN-5): the answer of a ``serve: derived`` binding whose ``derived.split`` names the
+    plugin, computed from the rows of the request's table.
+
+    ``view`` is the table's long view in the data child: ``view.rows(predicate, columns=[...], order=[],
+    limit=None, budget=<bytes>) -> (rows, total, extra)`` reads rows (dicts keyed by the column paths) and
+    ``view.column(path)`` returns a column's spec (``cutoff`` for a measure) or None. ``request`` is the serve
+    request (``params``: the call's arguments, ``predicate``: the gateway's predicate as JSON, ``limit``,
+    ``budget_bytes``) and ``options`` the overlay's ``split.<name>`` mapping. The result is a ServeResponse
+    mapping (``rows``, ``total``, ``truncated``, ``key_columns``, ``sections``, ``served_by: derived``).
+
+    A plugin is generic over tables: column paths, argument names and their defaults come from ``options``
+    (``validate_options`` lists what is missing or wrong, for lint); it never reads files or the network itself.
+    """
+
+    kind: ClassVar[str] = "derived"
+    name: ClassVar[str]
+    version: ClassVar[str]
+    api: ClassVar[int] = API_VERSION
+    capabilities: ClassVar[frozenset[str]]
+    requires: ClassVar[tuple[str, ...]] = ()
+
+    def validate_options(self, options: Mapping[str, Any]) -> list[str]: ...
+    def columns(self, options: Mapping[str, Any]) -> list[str]: ...      # the column paths serve reads
+    def serve(self, view: Any, request: Mapping[str, Any], options: Mapping[str, Any]) -> dict[str, Any]: ...
+
+    @classmethod
+    def conformance_cases(cls) -> Any: ...
+
+
 class AcquisitionPlugin(Protocol):
     """A transport of ``vbt data acquire`` (harness side): lists what a source publishes and streams one file.
 
@@ -582,6 +627,32 @@ class PluginBase:
 
     def __repr__(self) -> str:
         return f"<{type(self).__name__} {self.kind}/{self.name} {self.version}>"
+
+
+class DerivedBase(PluginBase):
+    """Defaults for derived plugins: :meth:`param` reads a call argument through the overlay's argument names
+    (``options.args``) and defaults (``options.defaults``), and :meth:`response` builds the ServeResponse
+    mapping."""
+
+    kind: ClassVar[str] = "derived"
+
+    @staticmethod
+    def param(request: Mapping[str, Any], options: Mapping[str, Any], name: str) -> Any:
+        """The call's value of the argument the overlay maps ``name`` to (``args: {name: <tool argument>}``,
+        default: ``name`` itself), else ``defaults[name]`` (None when the overlay gives none)."""
+        params = dict(request.get("params") or {})
+        args = dict(options.get("args") or {})
+        value = params.get(args.get(name, name))
+        return (dict(options.get("defaults") or {})).get(name) if value is None else value
+
+    @staticmethod
+    def response(rows: Any, *, total: int | None, key_columns: Sequence[str] = (), truncated: bool = False,
+                 sections: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        from ..errors import json_value
+        from ..ipc import ServeResponse
+
+        return ServeResponse(rows=json_value(rows), total=total, truncated=truncated, served_by="derived",
+                             key_columns=list(key_columns), sections=dict(sections or {})).model_dump(mode="json")
 
 
 class IdentifierBase(PluginBase):

@@ -883,3 +883,56 @@ def test_lint_requires_the_samples_seed():
     found = lint_overlay(Overlay.model_validate(raw), Catalog(sources, {}, [], registry=discover(entry_points=False)),
                          discover(entry_points=False))
     assert any("declares no seed" in str(f) and f.level == "error" for f in found)
+
+
+# --------------------------------------------------------------------------- ASN-5: derived computations are plugins
+
+
+def test_the_derived_computations_are_plugins_not_core_handlers():
+    from vbt.datalayer.plugins import KINDS
+    from vbt.datalayer.service.verbs import enrich  # noqa: F401 - registers the remaining serve extensions
+    from vbt.datalayer.service.verbs.hierarchy import _EXTENSIONS
+
+    assert "derived" in KINDS
+    reg = discover(entry_points=False)
+    assert {"essentiality", "tissue_specificity"} <= set(reg.names("derived"))
+    assert not {"essentiality", "tissue_specificity"} & {name for name, _c, _f in _EXTENSIONS}
+    # the shipped plugins pass their kind's conformance suite: tests/datalayer/test_dl_conformance_derived.py
+
+
+def test_a_derived_request_is_served_by_the_plugin_it_names():
+    from types import SimpleNamespace
+
+    from vbt.datalayer.service.verbs.hierarchy import derived_plugin_for
+
+    reg = discover(entry_points=False)
+    ctx = SimpleNamespace(registry=reg)
+    plugin, options = derived_plugin_for(ctx, {"split": {"essentiality": {"mode": "by_gene"}}})
+    assert plugin.name == "essentiality" and options == {"mode": "by_gene"}
+    assert derived_plugin_for(ctx, {"split": {"enrich": {"x": 1}}}) is None       # a serve extension decides
+    assert derived_plugin_for(ctx, {"split": {"essentiality": {}}}) is None
+    assert derived_plugin_for(SimpleNamespace(registry=None), {"split": {"essentiality": {"a": 1}}}) is None
+
+
+def test_lint_checks_a_derived_plugins_options_and_the_arguments_it_maps():
+    import yaml
+
+    from pathlib import Path
+
+    from vbt.datalayer.catalog import Catalog
+    from vbt.datalayer.descriptor.lint import lint_overlay
+    from vbt.datalayer.descriptor.load import load_descriptors
+    from vbt.datalayer.descriptor.overlay import Overlay
+
+    repo = Path(__file__).resolve().parents[2]
+    raw = yaml.safe_load((repo / "configs" / "data" / "overlays" / "functional_genomics.yaml").read_text())
+    selective = raw["tools"]["find_selective_dependencies"]["derived"]["split"]["essentiality"]
+    assert selective["args"]["target"] == "target_disease"           # the tool's names live in the overlay
+    del selective["args"]["comparison"]
+    raw["tools"]["find_essential_genes"]["derived"]["split"]["essentiality"]["args"]["min_cell_lines"] = "min_lines"
+    reg = discover(entry_points=False)
+    sources = load_descriptors(repo / "configs" / "data" / "sources")
+    found = [str(f) for f in lint_overlay(Overlay.model_validate(raw), Catalog(sources, {}, [], registry=reg), reg)
+             if f.level == "error"]
+    assert any("needs args.comparison" in f for f in found), found
+    assert any("'min_lines' is not an argument of the binding" in f for f in found), found

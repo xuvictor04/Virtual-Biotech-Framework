@@ -25,8 +25,10 @@ tools:
       verb: find
       table: open_targets.target_essentiality_screens
       split:
-        essentiality:
+        essentiality:                     # the derived plugin (plugins/derived/essentiality.py; ASN-5)
           mode: by_tissue
+          args: {gene: gene_id}
+          screen_order: depmapId
           columns: {gene: id, effect: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect", disease: "geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource", cell_line: "geneEssentiality[].depMapEssentiality[].screens[].cellLineName",
                     tissue_id: "geneEssentiality[].depMapEssentiality[].tissueId", tissue_name: "geneEssentiality[].depMapEssentiality[].tissueName",
                     essential_flag: "geneEssentiality[].isEssential"}
@@ -56,7 +58,7 @@ tools:
     derived:
       verb: find
       table: open_targets.target_essentiality_screens
-      split: {essentiality: {mode: by_gene, columns: {gene: id, effect: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect", disease: "geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource", cell_line: "geneEssentiality[].depMapEssentiality[].screens[].cellLineName",
+      split: {essentiality: {mode: by_gene, args: {min_effect_threshold: min_effect_threshold, min_cell_lines: min_cell_lines}, defaults: {min_cell_lines: 1}, columns: {gene: id, effect: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect", disease: "geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource", cell_line: "geneEssentiality[].depMapEssentiality[].screens[].cellLineName",
                     tissue_id: "geneEssentiality[].depMapEssentiality[].tissueId", tissue_name: "geneEssentiality[].depMapEssentiality[].tissueName",
                     essential_flag: "geneEssentiality[].isEssential"}}}
       envelope: {disease: "{disease}", num_results: null}
@@ -79,7 +81,7 @@ tools:
     derived:
       verb: find
       table: open_targets.target_essentiality_screens
-      split: {essentiality: {mode: by_disease, columns: {gene: id, effect: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect", disease: "geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource", cell_line: "geneEssentiality[].depMapEssentiality[].screens[].cellLineName",
+      split: {essentiality: {mode: by_disease, defaults: {min_cell_lines: 1}, columns: {gene: id, effect: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect", disease: "geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource", cell_line: "geneEssentiality[].depMapEssentiality[].screens[].cellLineName",
                     tissue_id: "geneEssentiality[].depMapEssentiality[].tissueId", tissue_name: "geneEssentiality[].depMapEssentiality[].tissueName",
                     essential_flag: "geneEssentiality[].isEssential"}}}
       envelope: {gene_id: "{gene_id}", found: true, num_diseases_compared: null}
@@ -105,7 +107,9 @@ tools:
     derived:
       verb: find
       table: open_targets.target_essentiality_screens
-      split: {essentiality: {mode: selective, groups: [target_disease, comparison_disease], columns: {gene: id, effect: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect", disease: "geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource", cell_line: "geneEssentiality[].depMapEssentiality[].screens[].cellLineName",
+      split: {essentiality: {mode: selective, groups: [target_disease, comparison_disease],
+                             args: {target: target_disease, comparison: comparison_disease, min_effect_difference: min_effect_difference, min_cell_lines: min_cell_lines},
+                             defaults: {min_cell_lines: 1, min_effect_difference: 0.3}, columns: {gene: id, effect: "geneEssentiality[].depMapEssentiality[].screens[].geneEffect", disease: "geneEssentiality[].depMapEssentiality[].screens[].diseaseFromSource", cell_line: "geneEssentiality[].depMapEssentiality[].screens[].cellLineName",
                     tissue_id: "geneEssentiality[].depMapEssentiality[].tissueId", tissue_name: "geneEssentiality[].depMapEssentiality[].tissueName",
                     essential_flag: "geneEssentiality[].isEssential"}}}
       envelope: {target_disease: "{target_disease}", comparison_disease: "{comparison_disease}", num_results: null}

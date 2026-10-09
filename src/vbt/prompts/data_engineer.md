@@ -34,7 +34,10 @@ register again. You cannot write into the project directly: the registration too
   check` on a staged copy and refuses on any error, any table that is not ready, a name the harness ships, a path
   you may not read, or an acquisition `prepare` step or `env` variables (both would act outside the sandbox).
 - `RegisterPlugin(kind, path|content, why)` -- a plugin of an **existing** kind (format, layout, statistic,
-  identifier, envelope, acquisition): one `@register` class with a literal `name`, based on the kind's base class.
+  identifier, envelope, derived, acquisition): one `@register` class with a literal `name`, based on the kind's base
+  class. A `derived` plugin (`DerivedBase`) computes a derived serve's answer from the rows of its table (grouped
+  statistics in one tool's result shape); an overlay names it in `derived.split: {<name>: <options>}` and puts every
+  column path, argument name and default in those options.
   The kind's conformance suite runs in the sandbox; every case must pass. A plugin runs inside the harness, so by
   default it then waits for a person's approval (`pending_review`): prefer a descriptor or a utility when either
   does the job.

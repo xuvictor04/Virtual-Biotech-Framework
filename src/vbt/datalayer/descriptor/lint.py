@@ -1166,7 +1166,7 @@ class _OverlayLinter:
         if b.on_contradiction == "derived" and b.derived is None and b.serve == "pass" and b.witness:
             pass  # without `derived` a contradiction becomes tool_defect (§8.2); not an error
         if b.derived is not None:
-            self.lint_derived(b.derived, f"{w}.derived")
+            self.lint_derived(b.derived, f"{w}.derived", list(b.args))
         if b.leakage_filter is not None and b.leakage_filter.arg not in args:
             self.add("error", f"{w}.leakage_filter", f"{b.leakage_filter.arg!r} is not an argument", "binding",
                      b.leakage_filter.arg)
@@ -1295,12 +1295,25 @@ class _OverlayLinter:
                 self.add("error", where, f"digits-only kind {q!r} accepted next to other kinds; set options."
                          "input_requires_prefix or accept it alone", "digits_kind", q)
 
-    def lint_derived(self, d: DerivedSpec, where: str) -> None:
+    def lint_derived(self, d: DerivedSpec, where: str, args: Sequence[str] | None = None) -> None:
         self.table_of(d.table, f"{where}.table")
         for sname, sec in d.sections.items():
             self.table_of(sec.table, f"{where}.sections.{sname}")
         for i, sub in enumerate(d.compose):
-            self.lint_derived(sub, f"{where}.compose[{i}]")
+            self.lint_derived(sub, f"{where}.compose[{i}]", args)
+        # a derived plugin named by split.<name> (ASN-5): its own option checks, and the tool arguments it maps
+        for name, opts in (d.split or {}).items() if isinstance(d.split, dict) else ():
+            plugin = self.registry.find("derived", str(name)) if self.registry is not None and \
+                callable(getattr(self.registry, "find", None)) else None
+            if plugin is None or not isinstance(opts, dict):
+                continue
+            for problem in plugin.validate_options(opts):
+                self.add("error", f"{where}.split.{name}", problem, "plugin", str(name))
+            mapped = (opts.get("args") or {}) if isinstance(opts.get("args"), dict) else {}
+            for key, arg in mapped.items():
+                if args is not None and arg not in args:
+                    self.add("error", f"{where}.split.{name}.args.{key}", f"{arg!r} is not an argument of the "
+                             "binding", "binding", str(arg))
 
     def lint_result(self, tool: str, b: ToolBinding) -> None:
         w = f"tools.{tool}.result"

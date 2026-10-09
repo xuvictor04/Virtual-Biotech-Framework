@@ -50,7 +50,10 @@ Conventions in this document:
 3. **Four plugin kinds**: `format`, `layout`, `statistic`, `identifier`. Each kind has a Python
    `Protocol`, an entry-point group and a conformance suite that runs automatically against every
    plugin of that kind. Adding a plugin of an existing kind is a new module and nothing else. The
-   core changes only to add a new **kind** (phase 4 adds `envelope` as the worked example). Optional
+   core changes only to add a new **kind** (phase 4 adds `envelope` as the worked example; a later round
+   added `derived`, the grouped computations a `serve: derived` binding names in `derived.split`, so the
+   DepMap essentiality and tissue-specificity answers are shipped plugins configured by the overlays and a
+   project can add its own; the harness-side `acquisition` kind holds the transports). Optional
    protocol capabilities that later phases need (live requests, matrix slicing, set tests, paired
    aggregation) are declared in phase 1, so later phases add plugins, not protocol methods (rev 2).
 4. **One gateway inside `MCPBridge.call`.** Every MCP call passes through it, including

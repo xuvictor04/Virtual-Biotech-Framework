@@ -56,6 +56,7 @@ from .public import _invalid, compile_where, guarded, header, long_view, table_a
 __all__ = [
     "Closure", "closure_for", "hierarchy_of", "expand", "descendant_predicate", "rewrite_include_descendants",
     "propagated_members", "members", "expand_verb", "serve_extension", "base_serve", "member_column",
+    "derived_plugin_for",
     "HierarchySource", "VERBS",
 ]
 
@@ -84,8 +85,21 @@ def _install() -> None:
 
     @functools.wraps(base)
     def serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
+        from ...plugins.base import DerivedOptionsError
         from ..reader import BudgetExceeded
 
+        derived = derived_plugin_for(ctx, payload)
+        if derived is not None:
+            plugin, options = derived
+            try:
+                return plugin.serve(long_view(ctx, str(payload.get("table"))), payload, options)
+            except BudgetExceeded as exc:
+                return ServeResponse(rows=[], total=None, truncated=True,
+                                     reason=f"too_large: {exc.reason}").model_dump(mode="json")
+            except GatewayError as exc:
+                return ServeResponse(rows=[], total=None, error=exc.envelope()).model_dump(mode="json")
+            except DerivedOptionsError as exc:
+                raise ServiceError(f"derived plugin {plugin.name}: {exc}") from exc
         for _name, claims, fn in _EXTENSIONS:
             try:
                 claimed = claims(payload)
@@ -104,6 +118,21 @@ def _install() -> None:
     serve._phase3 = True  # type: ignore[attr-defined]
     serve._base = base  # type: ignore[attr-defined]
     _serve_module.VERBS[VERB_SERVE] = serve
+
+
+def derived_plugin_for(ctx: Any, payload: Mapping[str, Any]) -> tuple[Any, Mapping[str, Any]] | None:
+    """The derived plugin a serve request names (ASN-5): the first ``split`` key that is a registered ``derived``
+    plugin, with its options; None when the request names none (the serve extensions and ``_serve`` decide)."""
+    split = payload.get("split")
+    registry = getattr(ctx, "registry", None)
+    if not isinstance(split, Mapping) or registry is None:
+        return None
+    for name, options in split.items():
+        if isinstance(options, Mapping) and options:
+            plugin = registry.find("derived", str(name))
+            if plugin is not None:
+                return plugin, options
+    return None
 
 
 def base_serve(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:

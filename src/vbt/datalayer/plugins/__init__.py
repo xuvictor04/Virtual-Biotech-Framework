@@ -5,7 +5,9 @@ Adding a plugin of an existing kind is a new module (decorated with
 ``vbt.datalayer.<kind>``). Adding a **kind** is the only core change: one entry here, a
 protocol in ``base.py``, a conformance suite module and the descriptor field that names it.
 Phase 4 did this for ``envelope`` (``base.EnvelopePlugin``, ``conformance/envelope.py``, builtins
-in ``envelopes/``, named by an overlay's ``result.codec``).
+in ``envelopes/``, named by an overlay's ``result.codec``). ASN-5 added ``derived`` the same way
+(``base.DerivedPlugin``, ``conformance/derived.py``, builtins in ``derived/``, named by a derived binding's
+``split.<name>``): the grouped computations a derived serve answers with, which a project can add.
 
 The ``acquisition`` kind (``base.AcquisitionPlugin``, ``conformance/acquisition.py``, builtins in
 ``acquisition/``, named by a descriptor's ``acquisition.transport``) is the transports of ``vbt data acquire``.
@@ -18,6 +20,7 @@ from __future__ import annotations
 from .base import (
     API_VERSION,
     AcquisitionPlugin,
+    DerivedPlugin,
     EnvelopePlugin,
     FormatPlugin,
     IdentifierPlugin,
@@ -29,10 +32,10 @@ __all__ = ["KINDS", "KIND_PACKAGES", "HARNESS_KINDS", "HARNESS_KIND_PACKAGES", "
 
 KINDS: dict[str, type] = {"format": FormatPlugin, "layout": LayoutPlugin,
                           "statistic": StatisticPlugin, "identifier": IdentifierPlugin,
-                          "envelope": EnvelopePlugin}
+                          "envelope": EnvelopePlugin, "derived": DerivedPlugin}
 
-#: In-tree builtins live in ``vbt.datalayer.plugins.<kind>s``.
-KIND_PACKAGES: dict[str, str] = {kind: f"{kind}s" for kind in KINDS}
+#: In-tree builtins live in ``vbt.datalayer.plugins.<kind>s`` (``derived``: ``vbt.datalayer.plugins.derived``).
+KIND_PACKAGES: dict[str, str] = {kind: ("derived" if kind == "derived" else f"{kind}s") for kind in KINDS}
 
 #: Kinds the harness uses outside the data child: ``acquisition`` (transports of ``vbt data acquire``).
 HARNESS_KINDS: dict[str, type] = {"acquisition": AcquisitionPlugin}

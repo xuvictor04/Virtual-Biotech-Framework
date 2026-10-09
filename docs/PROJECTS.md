@@ -51,7 +51,8 @@ registers it; the CSO then re-delegates the analysis to a specialist, who uses t
   profile.yaml        generated: activates the project for any vbt command (vbt --profile <it> ...)
   descriptors/        <source>.yaml   data sources the project added (acquisition sections inside)
   overlays/           <server>.yaml   bindings of MCP servers the core ships no overlay for
-  plugins/<kind>/     <name>.py       plugins of existing kinds (format, layout, statistic, identifier, ...)
+  plugins/<kind>/     <name>.py       plugins of existing kinds (format, layout, statistic, identifier, envelope,
+                                      derived, acquisition)
   utilities/<name>/   utility.py, test_utility.py, utility.json, fixtures/   -> the tool util__<name>
   skills/<name>/      SKILL.md        project skills
   memory/<agent>/     MEMORY.md       project notes injected into that role's prompt in every session
