@@ -1399,8 +1399,10 @@ def graduation_checklist(config: Mapping[str, Any], servers: Iterable[str] | Non
     every tool is reviewed, every blocked tool names an alternative, and recorded runs give retro-audit
     evidence (calls observed, calls the gateway would now refuse or qualify, and how many of those a
     claim cited). ``graduated`` is True only when every item passed; ``observe_evidence`` is None (not
-    passed) without recorded runs."""
+    passed) without recorded runs, and not applicable (passed) for the harness's own data child, whose calls
+    retro-audit does not re-classify."""
     from .descriptor.lint import lint_overlay
+    from .gateway.service_client import DATA_SERVER
     from .retro_audit import retro_audit
 
     if catalog is None or registry is None:
@@ -1443,6 +1445,14 @@ def graduation_checklist(config: Mapping[str, Any], servers: Iterable[str] | Non
         cited = [c for c in changed if c.get("cited_by")]
         if not audits:
             items["observe_evidence"] = {"ok": None, "detail": "no recorded runs given (vbt ds graduate --run R)"}
+        elif server == DATA_SERVER:
+            # the harness's own data child answers from the descriptors (the source of truth, data.yaml): retro-audit
+            # has nothing upstream to re-classify, so there is no evidence to wait for
+            native = sum(int(a.get("n_native_calls") or 0) for a in audits)
+            items["observe_evidence"] = {
+                "ok": True, "calls": native, "changed": 0, "cited_changed": 0,
+                "detail": f"not applicable: the harness's own data child, served from the descriptors "
+                          f"({native} recorded call(s))"}
         else:
             items["observe_evidence"] = {
                 "ok": bool(calls), "calls": len(calls), "changed": len(changed), "cited_changed": len(cited),
@@ -1574,7 +1584,11 @@ def _add_common(p: argparse.ArgumentParser, *flags: str) -> None:
 
 
 def add_datasource_parsers(sub: Any) -> Any:
-    """Register ``vbt datasource`` (alias ``vbt ds``) on an argparse subparsers object."""
+    """Register ``vbt datasource`` (alias ``vbt ds``) on an argparse subparsers object. The commands that read a
+    recorded run (``retro-audit``, ``replay``, ``graduate``, ``status``) take ``--project``: a project's runs are under
+    ``<project>/runs`` and its calls may read the project's own tables."""
+    from ..projects.cli import add_project_argument
+
     d = sub.add_parser("datasource", aliases=list(ALIASES),
                        help="data layer: descriptors, overlays, readiness, resolution (docs/DATA_LAYER.md)")
     ds = d.add_subparsers(dest="ds_cmd", required=True)
@@ -1646,12 +1660,14 @@ def add_datasource_parsers(sub: Any) -> Any:
     p = ds.add_parser("retro-audit", help="re-classify a recorded run's data calls offline")
     p.add_argument("run", help="run id, prefix, path or 'latest'")
     _add_common(p, "json")
+    add_project_argument(p)
     p.set_defaults(handler=cmd_retro_audit)
 
     p = ds.add_parser("status", help="per-server memory from reaper status files, host budget, calibrations")
     p.add_argument("run", nargs="?", help="run id, prefix, path or 'latest' (reads <run>/logs/mcp)")
     p.add_argument("--log-dir", help="a directory of <server>.status.json files")
     _add_common(p, "json")
+    add_project_argument(p)
     p.set_defaults(handler=cmd_status)
 
     p = ds.add_parser("calibrate", help="sample-and-scale memory calibration of tables (runs the data child)")
@@ -1680,6 +1696,7 @@ def add_datasource_parsers(sub: Any) -> Any:
                         "the reaper's memory limit; inprocess: the data child's verbs in this process, with no "
                         "memory limit (opt-in, for debugging)")
     _add_common(p, "json")
+    add_project_argument(p)
     p.set_defaults(handler=cmd_replay)
 
     p = ds.add_parser("diff-release", help="role columns, types, encodings, vocabularies and matrix axes between "
@@ -1704,5 +1721,6 @@ def add_datasource_parsers(sub: Any) -> Any:
     p.add_argument("server", nargs="*", help="servers (default: every overlay)")
     p.add_argument("--run", action="append", help="recorded run (observe mode) to retro-audit (repeatable)")
     _add_common(p, "json")
+    add_project_argument(p)
     p.set_defaults(handler=cmd_graduate)
     return d

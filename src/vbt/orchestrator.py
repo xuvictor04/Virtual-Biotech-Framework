@@ -1013,18 +1013,17 @@ async def open_session(config: dict[str, Any], *, provider=None, on_event=None, 
             run.mark_degraded(degraded)
             rt.emit("warning", message="Running without reference data for: " + ", ".join(sorted(degraded)))
         if start_mcp:
-            failures = await rt.start_mcp()
+            readiness = None
+            if tool_scoped:
+                from .preflight import last_data_check
+                readiness = last_data_check(config)
+            # The session's gateway decides calls from the preflight's check, handed over before the servers list
+            # their tools: the listing would otherwise send the data child a second full check, which a later
+            # hand-over cancels only in the harness while the child keeps computing it for minutes.
+            failures = await (rt.start_mcp(readiness=readiness) if readiness else rt.start_mcp())
             if failures:
                 rt.emit("warning", message=f"MCP servers unavailable: {', '.join(sorted(failures))}")
-            if tool_scoped and rt.gateway is not None:
-                from .preflight import last_data_check
-                response = last_data_check(config)
-                if response:
-                    try:
-                        rt.gateway.set_readiness(response)   # the session's gateway decides calls from the same check
-                    except Exception:  # noqa: BLE001 - the gateway re-checks on its own
-                        log.warning("handing the preflight readiness check to the gateway failed", exc_info=True)
-            elif checks and rt.gateway is not None:
+            if not tool_scoped and checks and rt.gateway is not None:
                 degraded = await _data_degraded(rt, run, degraded)
         from .preflight import provider_server_info
         server = await provider_server_info(rt.provider)  # engine version, served models, max_model_len

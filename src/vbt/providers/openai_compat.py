@@ -103,6 +103,15 @@ IMAGE_TOKENS = 1600
 
 SERVE_HINT = ("is the inference server running? Start it with `vbt local serve --profile <h100|h200|rtxpro6000|5090>` "
               "(see deploy/local/README.md) and check provider.options.base_url / VBT_LLM_BASE_URL")
+#: ``vbt local serve`` starts vLLM: a llama.cpp provider is told how to start its own server instead.
+LLAMACPP_SERVE_HINT = ("is the inference server running? Start llama-server with the model and --jinja "
+                       "(docs/E2E_RUN.md; scripts/dev/cpu_server.sh --engine llamacpp) and check "
+                       "provider.options.base_url / VBT_LLM_BASE_URL")
+
+
+def serve_hint(provider_name: str) -> str:
+    """How to start the server a provider of this name talks to."""
+    return LLAMACPP_SERVE_HINT if provider_name == "llamacpp" else SERVE_HINT
 
 _TEMPLATE_BUG_RE = re.compile(
     r"Unexpected reasoning effort|System message must be at the beginning|No user query found|"
@@ -1040,7 +1049,7 @@ class OpenAICompatProvider(LLMProvider):
             if raise_errors:
                 raise ProviderError(f"{self.name}: cannot reach {redact_url(api)}/models "
                                     f"({type(exc).__name__}: {exc}); "
-                                    f"{SERVE_HINT}") from None
+                                    f"{serve_hint(self.name)}") from None
             raise
         if resp.status_code >= 400:
             if raise_errors:
@@ -1103,7 +1112,7 @@ class OpenAICompatProvider(LLMProvider):
                     why = f"cannot connect to {redact_url(root)} ({type(exc).__name__}: {exc})"
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise ProviderError(f"{self.name} server not ready: {why}; {SERVE_HINT}")
+                    raise ProviderError(f"{self.name} server not ready: {why}; {serve_hint(self.name)}")
                 await asyncio.sleep(min(5.0, remaining))
             served = await self._discover(api, raise_errors=True)
             ids = [str(d["id"]) for d in served]
@@ -1556,7 +1565,7 @@ class OpenAICompatProvider(LLMProvider):
             raise
         except httpx.ConnectError as exc:
             raise RetryableProviderError(f"{self.name}: cannot connect to {redact_url(api)} "
-                                         f"({type(exc).__name__}: {exc}); {SERVE_HINT}") from None
+                                         f"({type(exc).__name__}: {exc}); {serve_hint(self.name)}") from None
         except httpx.TimeoutException as exc:
             raise RetryableProviderError(f"{self.name}: timed out talking to {redact_url(api)} ({type(exc).__name__}; "
                                          f"read timeout {self.read_timeout_s}s between chunks)") from None

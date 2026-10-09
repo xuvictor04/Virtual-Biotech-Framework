@@ -483,6 +483,7 @@ class _Loop:
     empty_nudged: bool = False         # the empty-reply nudge was sent (once per invocation)
     call_mode: str | None = None       # None | 'force' | 'none': tool_choice of the next call
     budget_forced: BudgetExceeded | None = None  # the budget-exempt forced call was granted for this
+    overflow_error: str = ""           # the provider's last context-overflow message (what did not fit)
 
     @property
     def specs(self):
@@ -724,10 +725,15 @@ class Runtime:
                 self.gateway_refused = reason
             return None
 
-    async def start_mcp(self, servers: list[str] | None = None) -> dict[str, str]:
+    async def start_mcp(self, servers: list[str] | None = None, *,
+                        readiness: Mapping[str, Any] | None = None) -> dict[str, str]:
         """Launch configured MCP servers (optionally a subset) behind the data gateway
         (when enabled; its own servers, such as the ``data`` child, are added unless the
-        config names them). Returns failures."""
+        config names them). Returns failures.
+
+        ``readiness``: the session preflight's data check (``preflight.last_data_check``), handed to the
+        gateway before any server lists its tools, so the gateway decides calls from it and the data child
+        never starts a second session check."""
         raw_specs = [dict(s) for s in (self.config.get("mcp_servers") or {}).get("servers", [])
                      if isinstance(s, Mapping)]
         gateway = self._build_gateway()
@@ -760,6 +766,11 @@ class Runtime:
         seam: dict[str, Any] = {"on_tools_changed": self._on_tools_changed}
         if gateway is not None:
             seam["gateway"] = gateway
+            if readiness:
+                try:
+                    gateway.set_readiness(readiness)
+                except Exception:  # noqa: BLE001 - the gateway then checks on its own
+                    log.warning("handing the preflight readiness check to the gateway failed", exc_info=True)
         seam = _accepted_kwargs(MCPBridge, seam)  # a bridge without the seam gets neither
         self.gateway = gateway
         self.mcp = MCPBridge(specs, extra_env=self.tool_env(), log_dir=self.run.dir / "logs" / "mcp",
@@ -1214,7 +1225,7 @@ class Runtime:
                 r.status = r.stop_reason = "context_exceeded"
                 r.text = st.report or (st.segments[-1] if st.segments else "")
                 if not r.text:
-                    r.text = "[The conversation no longer fits the model's context window; no report was written.]"
+                    r.text = self._overflow_text(st)
                 return
             st.messages.append(resp.message)
             self._absorb_text(st, resp.message.text)
@@ -1446,6 +1457,7 @@ class Runtime:
                                                  settings=self._call_settings(st), system=st.system,
                                                  messages=st.messages, tools=st.specs, **kwargs)
             except ContextOverflowError as exc:
+                st.overflow_error = str(exc)[:500]
                 self._trace("context_overflow", agent=st.agent.name, error=str(exc)[:500], recovered=not overflowed)
                 if overflowed or not await self._recover_overflow(st):
                     return None
@@ -1459,6 +1471,31 @@ class Runtime:
                     self.emit("message_end", invocation_id=st.inv, agent=st.agent.name)
                     continue  # the truncated response is discarded and the request re-sent
             return resp
+
+    def _overflow_text(self, st: _Loop) -> str:
+        """The report of an agent whose request could not be made to fit the window. When the fixed part (system
+        prompt and tool definitions, which compaction never removes) alone takes most of the window, it says so and
+        names the remedies, since compacting the conversation cannot help (observed on a 32K CPU server: one
+        specialist's first request was 117,265 tokens, nearly all of it tool definitions)."""
+        from .context import estimate_tokens
+
+        try:
+            window = int(self.context.window_for(st.settings) or 0)
+        except Exception:  # noqa: BLE001 - the report must never fail
+            window = 0
+        specs = st.specs
+        tools = sum(estimate_tokens(json.dumps({"name": sp.name, "description": sp.description,
+                                                "parameters": sp.input_schema}, default=str)) for sp in specs)
+        system = estimate_tokens(st.system or "")
+        seen = f" The server reported: {st.overflow_error}" if st.overflow_error else ""
+        if window and system + tools >= 0.7 * window:
+            self._trace("context_fixed_part", agent=st.agent.name, system_tokens=system, tool_tokens=tools,
+                        tools=len(specs), window=window)
+            return (f"[No request of this agent fits the model's context window: its system prompt (~{system:,} "
+                    f"tokens) and its {len(specs)} tool definitions (~{tools:,} tokens) take most of the "
+                    f"{window:,}-token window before any conversation, and compaction cannot remove them. Serve the "
+                    f"model with a larger window or grant this agent fewer tools; no report was written.{seen}]")
+        return f"[The conversation no longer fits the model's context window; no report was written.{seen}]"
 
     def _account(self, st: _Loop, resp: ModelResponse, thinking_streamed: bool) -> None:
         r = st.result
