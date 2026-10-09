@@ -23,12 +23,12 @@ the model name, the data paths and the host's memory come from the environment, 
 
 | Piece | What |
 |---|---|
-| Model server | `llama-server` 0.5.0-dev (llama.cpp commit `0c1e570`, the copy vendored in the `llama-cpp-python` 0.3.36 sdist, built with CMake/GCC 13, `-DGGML_NATIVE=ON`), 2 slots of 65,536 tokens (`-c 131072 -np 2`), `--jinja --reasoning-format deepseek --cache-ram 2048` |
+| Model server | `llama-server` 0.5.0-dev (llama.cpp commit `0c1e570`, the copy vendored in the `llama-cpp-python` 0.3.36 sdist, built with CMake/GCC 13, `-DGGML_NATIVE=ON`), 2 slots of 65,536 tokens (`-c 131072 -np 2`), `--jinja --reasoning-format deepseek --cache-ram 2048` (1024 after the restart of section 3) |
 | Model | `unsloth/Qwen3.5-2B-GGUF` at revision `f6d5376be1edb4d416d56da11e5397a961aca8ae`, file `Qwen3.5-2B-Q4_K_M.gguf` (1,280,835,840 bytes, sha256 `aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223`, the Hub's LFS id), served as `qwen3.5-2b`; the adapter resolves it to the `qwen3_6` family (the Qwen3.5/3.6 dialect, same `qwen3_coder` tool-call format and chat template structure as the default Qwen3.8 model) |
 | Harness profile | `configs/profiles/e2e-cpu.yaml` (provider `llamacpp`, every tier on the small model with thinking off, 64K windows, small turn limits, orientation and review on, web off, the seven Open Targets servers) |
 | Upstream servers | `target`, `disease`, `drug`, `association`, `genetics`, `interaction`, `pathway` from `third_party/TheVirtualBiotech` at `71f9da68`, unmodified, each launched through the reaper |
 | Data | Open Targets 25.09: the 31 tables already downloaded (697 Parquet files, 1.9 GB on disk), `OPEN_TARGETS_DATA_PATH` pointing at them; the 7 large tables not downloaded (`evidence`, `variant`, `credible_set`, `colocalisation_coloc`, `colocalisation_ecaviar`, `interval`, `literature`) make 11 of the 49 granted data tools unready |
-| Data layer | gateway `enforce` for every server, the data child (`src/vbt/datalayer/service/server.py`) under the reaper, memory limits `auto` scaled from `VBT_HOST_MEMORY_MB=6000` (the harness's share of a host whose model server holds ~3 GB) |
+| Data layer | gateway `enforce` for every server, the data child (`src/vbt/datalayer/service/server.py`) under the reaper, memory limits `auto` scaled from `VBT_HOST_MEMORY_MB=6000` (the harness's share of a host whose model server held 3.5 to 5 GB) |
 | Host | 4 vCPUs (AVX-512), 15.7 GiB RAM (16,094 MiB) in a 13,680 MiB memory cgroup, no GPU, no swap |
 
 ## 2. Commands
@@ -94,7 +94,7 @@ PCSK99, and asked for review and claims. Turn 2 answered the CSO's clarification
 | Run | What happened | Wall time |
 |---|---|---|
 | `20261009_085747_87706d42` | Orientation ran: the Chief of Staff's brief (7 calls, stopped at its 6-turn limit with its brief) and the CSO's clarification interview. Turn 2 answered "proceed with the analysis exactly as specified"; the CSO repeated its interview instead of delegating. The data child spent the session start computing a second readiness check (section 6). | 753 s |
-| `20261009_091119_39e04cc2` | With the interview answered option by option, the CSO wrote a 3-step plan (`write_plan`) and called `Task` for the genomics analyst three times; each ended `context_exceeded` before any call: the analyst's first request was 117,265 tokens against a 32,768-token slot (section 6). Stopped by hand. | 1,576 s |
+| `20261009_091119_39e04cc2` | With the interview answered option by option, the CSO wrote a 3-step plan (`write_plan`) and called `Task` for the genomics analyst three times; each ended `context_exceeded` before any call: the analyst's first request was 117,265 tokens against a 32,768-token slot (section 6). Earlier in this run the model server had stopped (this sandbox's 30-minute limit on that background command); the provider's 8 retries carried turn 1 across its restart. Stopped (SIGTERM) after the third `context_exceeded`. | 1,576 s |
 | `20261009_093814_0235427f` | The full run, below. | 9,339 s |
 
 The full served-model run (`20261009_093814_0235427f`, after the listing fix, with 64K slots):
@@ -109,9 +109,10 @@ The full served-model run (`20261009_093814_0235427f`, after the listing fix, wi
   `mcp__data__search` (ENSG00000169174) and read its Reactome pathways (`pathway.get_gene_pathways`, 4 rows, `ok`).
   The gateway's typed refusals: `not_found` for `drug.search_known_drugs(disease_id="hypercholesterolaemia")` (the
   British spelling is neither an Open Targets disease id nor a disease name; the refusal lists the ten
-  resolutions it tried and suggests HP_0003124 "Hypercholesterolemia", edit distance 1); `too_large` 22 times (11 `over_limit`: whole-table loads such as `target.get_target_info`
-  needing ~3,930 MB, `genetics.query_l2g_predictions` ~15,034 MB, `interaction.get_interactions` ~12,803 MB against
-  the 2,048 MB server limit of a 6,000 MB share; 11 `host_busy`: the bug of section 6, fixed after this run);
+  resolutions it tried and suggests HP_0003124 "Hypercholesterolemia", edit distance 1); `too_large` 22 times
+  (11 `over_limit`: whole-table loads such as `target.get_target_info` needing ~3,930 MB,
+  `genetics.query_l2g_predictions` ~15,034 MB and `interaction.get_interactions` ~12,803 MB against the 2,048 MB
+  server limit of a 6,000 MB share; 11 `host_busy`: the bug of section 6, fixed after this run);
   `not_ready` for `genetics.query_gwas_associations` (`credible_set` is not downloaded here); `service_unavailable`
   for `pathway.get_go_enrichment` (the derived serve needs the GO ontology file, which is not on this host); `empty`
   and `partial` results with their totals ("top 10 of 16"). Four calls the harness refused before they ran: the
@@ -132,9 +133,11 @@ The full served-model run (`20261009_093814_0235427f`, after the listing fix, wi
 Peak memory of the harness's process tree: 4,056 MB (data child 2,089 MB at most, each idle upstream server about
 172 MB, the association server 739 MB after its one admitted whole-table call).
 
-**The same session driven by the scripted model over the real stack** (`scratchpad/D4/drive_real.py 1`, run
-`20261009_094151_882f50d7`): the steps the small model did not reach, on the same release, servers, gateway,
-data child and project, with the scripted provider named so that the session preflight runs as for a served model.
+**The same session driven by the scripted model over the real stack** (run `20261009_094151_882f50d7`): the steps
+the small model did not reach, on the same release, servers, gateway, data child and project. A small script outside
+the repository opened the session exactly as `vbt --profile e2e-cpu run --project e2e` does, with the scripted
+provider of `tests/test_e2e_stack.py` (named so that the session preflight runs as for a served model) and that
+file's session rules adapted to the real release; section 7's fixture tests are its repository form.
 Session start 7.8 s, the turn 26.7 s, peak tree RSS 2,380 MB.
 
 * `target.get_target_info(target_id="PCSK99")`: `not_found`, with what was tried (`ensembl_gene`, then the
@@ -155,10 +158,26 @@ sha256 `36ea1e52...a1206`, 14,211 rows x 9 columns, 484 exact duplicate rows) in
 directory and asked which conditions ClinVar associates with PCSK9, asking for the data engineer to register it with
 a small tested helper utility and the genomics analyst to answer with both.
 
-S2B_PLACEHOLDER
+**Served model** (run `20261009_121711_f6caab8d`, a fresh project `e2e-b` made with `vbt project init` so that
+the scripted run's registrations below could not pre-empt it; 3,130 s, peak tree RSS 1,594 MB). The two test suites
+ran at low priority on the same cores during part of it.
 
-**Driven by the scripted model over the real stack** (`drive_real.py 2`, run `20261009_104536_5d78baac`, project
-`e2e`; session start 8.6 s, the turn 12.2 s, peak tree RSS 1,778 MB):
+* Orientation (turn 1, 17 min): the Chief of Staff's brief (7 calls; it read the file and counted its rows with
+  `Bash`) and the CSO's interview.
+* Turn 2: the CSO delegated to the data engineer (`Task`, after a `TodoWrite`). The engineer (first request 16,435
+  tokens) never called `InspectDataset`: over its 24-turn budget it read the file, wrote YAML files of its own
+  invention (`kind: acquisition`, `kind: descriptor` with made-up fields) under its work directory, and called
+  `RegisterDataSpec` once with a data path it had invented (`work/data-engineer/incoming/...`), which the tool
+  refused ("no such file or directory to import"). It stopped at its turn limit; the CSO sent it back with the same
+  task, and the second attempt repeated the exploration. The turn was then interrupted with one SIGINT (Ctrl-C), 35
+  minutes into turn 2: it was recorded `interrupted`, the agents `cancelled`, and the run record and `audit.html`
+  were written (`verify --data`: `interrupted_turn`, `degraded_run`, no claims; 27 s, 1,061 MB).
+
+The 2B model cannot drive the data engineer's steps, so they were driven by the scripted model over the same real
+stack:
+
+**Driven by the scripted model over the real stack** (the same script with the test file's session-2 rules, run
+`20261009_104536_5d78baac`, project `e2e`; session start 8.6 s, the turn 12.2 s, peak tree RSS 1,778 MB):
 
 * The data engineer: `ProjectInfo`, `InspectDataset` on the real file (14,211 rows profiled, `#GeneID` int64 with
   5,179 distinct values, `SourceName` 8 values, key drafted as (`#GeneID`, `DiseaseName`, `SourceID`) with
@@ -228,6 +247,11 @@ Each was fixed at its root and has a regression test in `tests/test_e2e_stack.py
   what the harness owes whatever the model does: every tool call has its end in the trace, no turn failed, the run
   record has no audit error and `audit.html` is written. A weak model's own failures (no delegation, a refused call,
   a turn limit) are not test failures.
+
+On this host the offline file ran 16 passed, 1 skipped in 103 s (another test shared the cores; peak 1,788 MB). The
+served-model test passed against the 2B model in 582 s (peak 1,644 MB): the Chief of Staff's brief (7 calls) and the
+CSO's interview, then the second turn, where the CSO answered without delegating, as in the first served run of
+section 3.
 
 ```bash
 python -m pytest -q -p no:cacheprovider tests/test_e2e_stack.py                       # offline
