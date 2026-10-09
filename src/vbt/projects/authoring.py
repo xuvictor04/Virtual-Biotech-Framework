@@ -31,6 +31,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import shutil
 import uuid
 from dataclasses import dataclass, field
@@ -44,7 +45,7 @@ from .model import ITEM_NAME_RE, Project, ProjectError, ProjectSettings, now_iso
 from .sandbox import run_sandboxed, runner_argv
 
 __all__ = ["Outcome", "Review", "Author", "UTILITY_TOOL_PREFIX", "DATA_SPEC_KINDS", "UTILITY_MODES",
-           "utility_manifest", "approve_pending", "reject_pending", "pending_items"]
+           "utility_manifest", "approve_pending", "reject_pending", "pending_items", "unsafe_spec"]
 
 UTILITY_TOOL_PREFIX = "util__"
 DATA_SPEC_KINDS = ("descriptor", "overlay", "acquisition")
@@ -149,7 +150,7 @@ class Author:
     async def _review(self, kind: str, name: str, why: str, files: Mapping[str, str],
                       validation: Mapping[str, Any]) -> Review | None:
         """None: no review needed. A ``human`` review is answered with ``pending``."""
-        mode = self.settings.review
+        mode = self.settings.review_for(kind)
         if mode == "none":
             return None
         if mode == "human" or self.reviewer is None:
@@ -168,17 +169,19 @@ class Author:
         rec = {"schema": ledger.ITEM_SCHEMA, "kind": kind, "name": name, "version": version, "status": status,
                "files": dict(sorted(files.items())), "source_hash": ledger.files_hash(files), "who": self.who,
                "when": now_iso(), "why": why, "validation": dict(validation),
-               "review": ({"mode": self.settings.review, "verdict": review.verdict, "by": review.by,
+               "review": ({"mode": self.settings.review_for(kind), "verdict": review.verdict, "by": review.by,
                            "notes": review.notes[:4000], "invocation_id": review.invocation_id, "at": now_iso()}
                           if review is not None else {"mode": "none"}),
                "previous": previous, **extra}
         return rec
 
     def _commit(self, kind: str, name: str, plan: Mapping[str, Path], record: dict[str, Any], *,
-                replace_dir: str | None = None) -> None:
-        """Copy ``plan`` ({project-relative destination: source file}) into the project and write the record; an
+                replace_dir: str | None = None, remove: Sequence[str] = (), move: bool = False) -> None:
+        """Put ``plan`` ({project-relative destination: source file}) into the project and write the record; an
         item pending review goes under ``provenance/pending/<kind>/<name>/`` instead (the registered version, if
-        any, stays current until ``vbt project approve``)."""
+        any, stays current until ``vbt project approve``). ``remove``: project paths replaced whole (a re-imported
+        data directory); ``move``: the sources are staging copies, moved rather than copied again."""
+        put = shutil.move if move else shutil.copyfile
         if record["status"] == "pending_review":
             base = self.project.provenance_dir / "pending" / kind / name
             if base.exists():
@@ -186,19 +189,22 @@ class Author:
             for rel, src in plan.items():
                 dest = self.project.inside(base / "files" / rel)
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(src, dest)
+                put(str(src), str(dest))
             (base / "pending.json").write_text(json.dumps({"record": record, "files": sorted(plan),
-                                                           "replace_dir": replace_dir}, indent=1, default=str))
+                                                           "replace_dir": replace_dir, "remove": list(remove)},
+                                                          indent=1, default=str))
             return
-        _install(self.project, plan, replace_dir)
+        _install(self.project, plan, replace_dir, remove=remove, move=move)
         ledger.write_record(self.project, record)
 
     # ------------------------------------------------------------------ data specs
 
     async def register_data_spec(self, kind: str, text: str, *, why: str, source: str | None = None,
-                                 files: Sequence[Path] = ()) -> Outcome:
+                                 files: Sequence[Path] | Mapping[str, Path] = ()) -> Outcome:
         """Register a descriptor, an overlay, or an acquisition spec (merged into project descriptor ``source``).
-        ``files`` are data files copied into ``data/<source>/`` (descriptors only)."""
+        ``files`` are data files copied into ``data/<source>/`` (descriptors only): paths (each keeps its name) or
+        ``{path under data/<source>/: file}`` (a directory's files under its name; importing a directory again
+        replaces it whole)."""
         kind = str(kind or "").strip()
         if kind not in DATA_SPEC_KINDS:
             return _refused(kind, "?", f"kind must be one of {', '.join(DATA_SPEC_KINDS)}")
@@ -213,10 +219,14 @@ class Author:
             return self._finish(_refused(kind, source or "?", f"not YAML: {exc}"), why)
         if not isinstance(data, dict):
             return self._finish(_refused(kind, source or "?", "the spec must be a YAML mapping"), why)
+        try:
+            imports = _import_map(files)
+        except ValueError as exc:
+            return self._finish(_refused(kind, source or "?", str(exc)), why)
         async with _locked(self.project):
             if kind == "acquisition":
                 return await self._acquisition(data, why=why, source=source)
-            return await self._data_spec(kind, text, data, why=why, files=files)
+            return await self._data_spec(kind, text, data, why=why, files=imports)
 
     def _shipped_names(self) -> tuple[set[str], set[str]]:
         from ..datalayer.descriptor.load import load_descriptors, load_overlays
@@ -244,12 +254,12 @@ class Author:
         if not isinstance(spec, dict):
             return self._finish(_refused("acquisition", name, "the acquisition spec must be a mapping"), why)
         merged_text = _merge_acquisition(current.read_text(encoding="utf-8"), existing, spec)
-        outcome = await self._data_spec("descriptor", merged_text, yaml.safe_load(merged_text), why=why, files=(),
+        outcome = await self._data_spec("descriptor", merged_text, yaml.safe_load(merged_text), why=why, files={},
                                         change="acquisition")
         outcome.details.setdefault("merged_into", f"descriptors/{name}.yaml")
         return outcome
 
-    async def _data_spec(self, kind: str, text: str, data: dict[str, Any], *, why: str, files: Sequence[Path],
+    async def _data_spec(self, kind: str, text: str, data: dict[str, Any], *, why: str, files: Mapping[str, Path],
                          change: str = "spec") -> Outcome:
         key = "source" if kind == "descriptor" else "server"
         name = str(data.get(key) or "").strip()
@@ -265,6 +275,10 @@ class Author:
                                                      "binds only servers the core does not"), why)
         if files and kind != "descriptor":
             return self._finish(_refused(kind, name, "files can only be imported with a descriptor"), why)
+        full = _disk_problem(self.project, sum(f.stat().st_size for f in files.values()), self.settings)
+        if full:
+            return self._finish(_refused(kind, name, full), why)
+        tops = {Path(rel).parts[0] for rel in files}         # what the import replaces under data/<name>/
         stage = self.project.staging_dir / f"{kind}-{name}-{uuid.uuid4().hex[:8]}"
         try:
             imported = await asyncio.to_thread(_stage_project, self.project, stage, kind, name, text, files)
@@ -277,10 +291,12 @@ class Author:
             for rel, src in imported.items():
                 plan[rel] = src
             hashes = await asyncio.to_thread(lambda: {rel: ledger.sha256_file(src) for rel, src in plan.items()})
-            if kind == "descriptor":                  # data files imported earlier stay part of the source
+            if kind == "descriptor":                  # data imported earlier and not replaced stays with the source
                 prev = ledger.read_record(self.project, kind, name) or {}
                 for rel, digest in (prev.get("files") or {}).items():
-                    if rel.startswith(f"data/{name}/") and rel not in hashes and (self.project.root / rel).is_file():
+                    parts = Path(rel).parts
+                    if parts[:2] == ("data", name) and len(parts) > 2 and parts[2] not in tops and \
+                            rel not in hashes and (self.project.root / rel).is_file():
                         hashes[rel] = digest
             validation = {"lint": report["lint"], "check": report["check"]}
             review = await self._review(kind, name, why, {f"{sub}/{name}.yaml": text}, validation)
@@ -290,7 +306,8 @@ class Author:
             status = "pending_review" if review is not None and review.verdict == "pending" else "registered"
             record = self._record(kind, name, hashes, why, validation, review, status, change=change,
                                   tables=report.get("tables"))
-            await asyncio.to_thread(self._commit, kind, name, plan, record)
+            remove = [f"data/{name}/{t}" for t in sorted(tops) if (self.project.data_dir / name / t).is_dir()]
+            await asyncio.to_thread(lambda: self._commit(kind, name, plan, record, remove=remove, move=True))
             msg = (f"{kind} {name} {'registered' if status == 'registered' else 'staged for review'} "
                    f"(version {record['version']})")
             return self._finish(Outcome(True, status, kind, name, msg, record,
@@ -327,10 +344,14 @@ class Author:
                 errors.append(f"{q.file}: {q.summary}")
         if errors:
             return {"errors": errors, "lint": lint, "check": check}
+        desc: Any = None
         if kind == "descriptor":
             desc = catalog.sources.get(name)
             if desc is None:
                 return {"errors": [f"{name}.yaml did not load"], "lint": [], "check": {}}
+            unsafe = unsafe_spec(desc, self.policy, self.project, stage)     # before the check reads anything
+            if unsafe:
+                return {"errors": unsafe, "lint": [], "check": {}}
             findings = lint_descriptor(desc, registry, None, catalog.sources)
             tables = [f"{name}.{t}" for t, spec in desc.tables.items() if spec.items_of is None]
             acquirable = set((desc.acquisition.tables if desc.acquisition is not None else {}) or {})
@@ -364,8 +385,8 @@ class Author:
                                      for c in failed]}
             table = ref.split(".", 1)[1]
             if status == "missing" and table in acquirable:
-                check[ref]["note"] = (f"files not present yet: `vbt data acquire --source {name}` fetches them "
-                                      "(the acquisition spec is part of the descriptor)")
+                check[ref]["note"] = (f"files not present yet: `{_acquire_command(desc, self.project, stage)}` "
+                                      "fetches them (the acquisition spec is part of the descriptor)")
                 continue
             if status != "ready":
                 errors.append(f"check {ref}: {status}" + (f" ({'; '.join(check[ref]['failed'][:5])})"
@@ -557,8 +578,18 @@ def utility_manifest(name: str, description: str, entry: str, mode: str, schema:
             "input_schema": dict(schema), **({"timeout_s": float(timeout_s)} if timeout_s else {})}
 
 
-def _install(project: Project, plan: Mapping[str, Path], replace_dir: str | None) -> None:
-    """Copy the files into the project; ``replace_dir`` (a utility directory) is swapped in whole."""
+def _install(project: Project, plan: Mapping[str, Path], replace_dir: str | None, *, remove: Sequence[str] = (),
+             move: bool = False) -> None:
+    """Copy (``move``: move) the files into the project; ``replace_dir`` (a utility directory) is swapped in whole,
+    and the ``remove`` paths (re-imported data directories) are deleted first."""
+    put = shutil.move if move else shutil.copyfile
+    for rel in remove:
+        target = project.root / rel
+        project.inside(target.parent)
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+        elif target.is_dir():
+            shutil.rmtree(target)
     if replace_dir:
         target = project.inside(replace_dir)
         tmp = target.with_name(target.name + ".new")
@@ -567,7 +598,7 @@ def _install(project: Project, plan: Mapping[str, Path], replace_dir: str | None
         for rel, src in plan.items():
             dest = project.inside(tmp / Path(rel).relative_to(replace_dir))
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(src, dest)
+            put(str(src), str(dest))
         old = target.with_name(target.name + ".old")
         if old.exists():
             shutil.rmtree(old)
@@ -582,7 +613,7 @@ def _install(project: Project, plan: Mapping[str, Path], replace_dir: str | None
         if Path(src).resolve() == dest:
             continue
         tmp = dest.with_name(dest.name + ".tmp")
-        shutil.copyfile(src, tmp)
+        put(str(src), str(tmp))
         tmp.replace(dest)
 
 
@@ -600,6 +631,142 @@ def _staged_config(config: Mapping[str, Any], project: Project, stage: Path) -> 
     return cfg
 
 
+_URL = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+#: Directory entries scanned for links that lead out of a named directory (a bound for the registration's time).
+MAX_LINK_SCAN = 1_000_000
+
+
+def _named_paths(desc: Any) -> list[tuple[str, str]]:
+    """``(what, path)`` of every local file or directory a descriptor names: its root, each table's and manifest's
+    path under it, and any other absolute path anywhere in it (layout and format options). URLs are left out."""
+    root = str(desc.root or "")
+    remote_root = bool(_URL.match(root))
+    out: list[tuple[str, str]] = []
+    if root and not remote_root:
+        out.append(("root", root))
+    named = [(f"table {t}", spec.path) for t, spec in desc.tables.items()] + \
+        [(f"manifest {i}", m.path) for i, m in enumerate(desc.manifests)]
+    for what, path in named:
+        if path and not _URL.match(path) and not (remote_root and not os.path.isabs(path)):
+            out.append((what, path if os.path.isabs(path) or not root else os.path.join(root, path)))
+    seen = {p for _, p in out}
+
+    def walk(value: Any, where: str) -> None:
+        if isinstance(value, str):
+            if value.startswith("/") and value not in seen:
+                seen.add(value)
+                out.append((where or "a field", value))
+        elif isinstance(value, Mapping):
+            for k, v in value.items():
+                walk(v, f"{where}.{k}" if where else str(k))
+        elif isinstance(value, (list, tuple)):
+            for v in value:
+                walk(v, where)
+
+    walk(desc.model_dump(mode="json", by_alias=True, exclude={"acquisition"}), "")
+    return out
+
+
+def _path_problem(what: str, raw: str, policy: Any, project: Project) -> str | None:
+    """Why the registering agent may not have the data layer read ``raw`` (None: it may). A project descriptor
+    reads the project's own files and what its author may read itself (``paths.read_roots``, never
+    ``paths.blocked_read``); both the path as written and where its links lead are checked."""
+    lexical = os.path.normpath(raw)
+    if not os.path.isabs(lexical):
+        return (f"{what}: {raw!r} is relative, so it would be read from the data child's working directory; give "
+                "the descriptor an absolute root (`${VBT_PROJECT_DIR}/data/<source>` for imported files)")
+    proj = str(project.root.resolve())
+    for form in dict.fromkeys([lexical, os.path.realpath(lexical)]):
+        blocked = policy is not None and policy.is_blocked(form)
+        if not blocked and (form == proj or form.startswith(proj + os.sep)):
+            continue
+        why = (policy.read_denial(form) if policy is not None else f"{form} is outside the project")
+        if why:
+            return (f"{what} names {form}, which the registering agent may not read ({why}); a project descriptor "
+                    "reads the project's own data (import files with `files`) and paths its author can read")
+    return None
+
+
+def _link_problems(what: str, raw: str, policy: Any, project: Project) -> list[str]:
+    """Links inside a named directory that lead where the agent may not read (the data layer follows them)."""
+    base = os.path.realpath(raw)
+    if not os.path.isdir(base):
+        return []
+    problems: list[str] = []
+    seen = 0
+    for dirpath, dirnames, filenames in os.walk(base):
+        for name in [*dirnames, *filenames]:
+            seen += 1
+            full = os.path.join(dirpath, name)
+            if os.path.islink(full):
+                why = _path_problem(f"{what} (link {os.path.relpath(full, base)})", os.path.realpath(full), policy,
+                                    project)
+                if why:
+                    problems.append(why)
+                    if len(problems) >= 5:
+                        return problems
+        if seen >= MAX_LINK_SCAN:
+            problems.append(f"{what}: more than {MAX_LINK_SCAN:,} entries under {raw}; its links cannot be "
+                            "verified, so it is not registered (point the root at a narrower directory)")
+            break
+    return problems
+
+
+def unsafe_spec(desc: Any, policy: Any, project: Project, stage: Path) -> list[str]:
+    """What a project descriptor may not do, checked before the data child reads anything:
+
+    * name a path its author may not read (:func:`_path_problem`; links included): the data child would serve it;
+    * declare ``acquisition.prepare`` (a command ``vbt data acquire`` runs as the operator, outside the sandbox) or
+      ``acquisition.env`` (variables ``vbt setup`` writes into ``host.env``, which every ``vbt`` command loads);
+    * acquire into a directory other than the one its root reads (``vbt data acquire --dest <project>/data`` would
+      put the files where the descriptor never looks)."""
+    problems: list[str] = []
+    for what, raw in _named_paths(desc):
+        why = _path_problem(what, raw, policy, project)
+        if why:
+            problems.append(why)
+        elif what != "root":                  # the layouts read under each table's location, not the whole root
+            problems += _link_problems(what, raw, policy, project)
+    acq = desc.acquisition
+    if acq is not None:
+        if acq.prepare:
+            problems.append(f"acquisition.prepare ({', '.join(acq.prepare)}): a prepare step is a command `vbt data "
+                            "acquire` runs as the operator, outside the sandbox, so a project descriptor cannot "
+                            "declare one; read the downloaded files as they are (a format or layout plugin) or "
+                            "transform them with a utility")
+        if acq.env:
+            problems.append(f"acquisition.env ({', '.join(acq.env)}): these variables are written into the host "
+                            "configuration every vbt command loads, so a project descriptor cannot set any; its root "
+                            "names the project's data directory instead (`${VBT_PROJECT_DIR}/data/<source>`)")
+        home = _acquired_into(desc, stage)
+        root = os.path.normpath(str(desc.root or ""))
+        data = os.path.normpath(str(stage / "data"))
+        if acq.mode != "remote" and home is not None and root.startswith(data + os.sep) and home != root:
+            want, got = os.path.relpath(root, data), os.path.relpath(home, data)
+            problems.append(f"acquisition: `vbt data acquire {desc.source} --dest {project.data_dir}` puts the files in "
+                            f"data/{got}, but the root reads data/{want}: set `dir: {want}` (and `downloads: .`)")
+    return problems
+
+
+def _acquired_into(desc: Any, stage: Path) -> str | None:
+    """Where ``vbt data acquire --dest <project>/data`` puts the source's files (in the staged copy)."""
+    try:
+        from ..data.acquire import source_home
+    except ImportError:                                    # pragma: no cover - part of the harness
+        return None
+    acq = desc.acquisition
+    return os.path.normpath(str(source_home(desc, stage / "data") / (acq.downloads if acq is not None else ".")))
+
+
+def _acquire_command(desc: Any, project: Project, stage: Path) -> str:
+    """The command that fetches a project source's files to where its descriptor reads them (validated against
+    the staged copy, whose ``data/`` stands for the project's)."""
+    root = os.path.normpath(str(desc.root or ""))
+    data = os.path.normpath(str(stage / "data"))
+    dest = f" --dest {project.data_dir}" if root == data or root.startswith(data + os.sep) else ""
+    return f"vbt --profile {project.profile_path} data acquire {desc.source}{dest}"
+
+
 def _shipped_plugins(config: Mapping[str, Any], project: Project) -> dict[str, Any]:
     """``data.plugins`` without the project's own plugin files."""
     plugins = dict(((config.get("data") or {}).get("plugins") or {}))
@@ -608,11 +775,42 @@ def _shipped_plugins(config: Mapping[str, Any], project: Project) -> dict[str, A
     return plugins
 
 
+def _import_map(files: Sequence[Path] | Mapping[str, Path]) -> dict[str, Path]:
+    """``{path under data/<source>/: file}``; a plain list keeps each file's name."""
+    pairs = list(files.items()) if isinstance(files, Mapping) else [(Path(f).name, Path(f)) for f in files]
+    out: dict[str, Path] = {}
+    for rel, src in pairs:
+        parts = Path(str(rel)).parts
+        if not parts or Path(str(rel)).is_absolute() or any(x in ("..", ".", "") for x in parts):
+            raise ValueError(f"import name {rel!r} must be a relative path inside data/<source>/")
+        if not Path(src).is_file():
+            raise ValueError(f"no such file to import: {src}")
+        out[Path(str(rel)).as_posix()] = Path(src)
+    return out
+
+
+def _disk_problem(project: Project, need: int, settings: ProjectSettings) -> str | None:
+    """Why importing ``need`` bytes into the project is refused: above ``projects.max_import_bytes``, or more than
+    half of what is free on the project's file system beyond 1 GiB (the rest stays for the analyses)."""
+    if not need:
+        return None
+    if settings.max_import_bytes and need > settings.max_import_bytes:
+        return (f"the import is {need:,} bytes, more than projects.max_import_bytes ({settings.max_import_bytes:,}): "
+                "keep the data where it is and name it with the descriptor's root (a directory you can read)")
+    free = shutil.disk_usage(project.root).free
+    allowed = max(0, (free - (1 << 30)) // 2)
+    if need > allowed:
+        return (f"the import is {need:,} bytes and an import may take at most half of the free space beyond 1 GiB "
+                f"({allowed:,} of {free:,} bytes free on the project's file system): keep the data where it is and "
+                "name it with the descriptor's root (a directory you can read), or free space")
+    return None
+
+
 def _stage_project(project: Project, stage: Path, kind: str, name: str, text: str,
-                   files: Sequence[Path]) -> dict[str, Path]:
+                   files: Mapping[str, Path]) -> dict[str, Path]:
     """A staging copy of the project's catalog with the candidate in place. ``data/`` links to the project's data
-    directories; files imported for the candidate source are copied into the staged ``data/<name>/``. Returns
-    ``{project-relative destination: staged file}`` of the imported files."""
+    directories; files imported for the candidate source are copied into the staged ``data/<name>/`` (an imported
+    directory replaces the one there). Returns ``{project-relative destination: staged file}`` of the imports."""
     stage.mkdir(parents=True)
     for sub in ("descriptors", "overlays"):
         (stage / sub).mkdir()
@@ -634,15 +832,15 @@ def _stage_project(project: Project, stage: Path, kind: str, name: str, text: st
         own = data / name
         own.mkdir()
         existing = real / name
+        tops = {Path(rel).parts[0] for rel in files}
         for p in sorted(existing.iterdir()) if existing.is_dir() else []:
-            os.symlink(p, own / p.name)
-        for f in files:
-            f = Path(f)
-            dest = own / f.name
-            if dest.is_symlink() or dest.exists():
-                dest.unlink()
+            if p.name not in tops:
+                os.symlink(p, own / p.name)
+        for rel, f in files.items():
+            dest = own / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(f, dest)
-            imported[f"data/{name}/{f.name}"] = dest
+            imported[f"data/{name}/{rel}"] = dest
     if project.plugins_dir.is_dir():
         os.symlink(project.plugins_dir, stage / "plugins")
     return imported
@@ -800,7 +998,7 @@ def approve_pending(project: Project, kind: str, name: str, *, by: str, notes: s
         digest = (record.get("files") or {}).get(rel)
         if digest and ledger.sha256_file(src) != digest:
             raise ProjectError(f"{rel} changed after validation; it was not installed")
-    _install(project, plan, data.get("replace_dir"))
+    _install(project, plan, data.get("replace_dir"), remove=data.get("remove") or (), move=True)
     record["status"] = "registered"
     record["review"] = {**dict(record.get("review") or {}), "verdict": "approve", "by": by, "notes": notes,
                         "at": now_iso()}

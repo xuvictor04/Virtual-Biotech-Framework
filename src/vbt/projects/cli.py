@@ -113,13 +113,31 @@ def cmd_show(args: argparse.Namespace, config: Mapping[str, Any]) -> int:
     return 0
 
 
+def config_policy(config: Mapping[str, Any], project: Project, run_dir: Path) -> Any:
+    """The read policy an agent of ``config`` has in a session of ``project`` (``paths.read_roots`` plus the
+    project, never ``paths.blocked_read``): what the project's descriptors may name outside a session."""
+    from ..config import resolve_path
+    from ..tools.policy import PathPolicy, default_blocked_read
+
+    paths = dict(config.get("paths") or {})
+    roots = [str(Path(resolve_path(str(r))).resolve()) for r in paths.get("read_roots") or [] if r]
+    blocked = paths.get("blocked_read")
+    blocked = default_blocked_read(dict(config)) if blocked is None else blocked
+    return PathPolicy(run_dir=run_dir, workspace=run_dir / "work" / "_project", agent="_project",
+                      read_roots=[*roots, str(project.root)], blocked=[str(b) for b in blocked])
+
+
 def check_project(project: Project, config: Mapping[str, Any]) -> dict[str, Any]:
-    """Records against files, lint of the project's catalog files, and the profile."""
+    """Records against files, the project's descriptors against what a project descriptor may do (the paths it
+    names, acquisition steps and variables), lint of the project's catalog files, and the profile."""
+    import tempfile
+
     from ..datalayer.catalog import build_catalog
     from ..datalayer.descriptor.lint import lint_descriptor, lint_overlay
     from ..datalayer.descriptor.load import variables_from_config
     from ..datalayer.plugins.registry import discover
     from ..datalayer.settings import DataSettings
+    from .authoring import unsafe_spec
 
     problems: list[str] = []
     for rec in ledger.records(project):
@@ -140,6 +158,11 @@ def check_project(project: Project, config: Mapping[str, Any]) -> dict[str, Any]
         for q in catalog.quarantined:
             if str(project.root) in q.path:
                 problems.append(f"quarantined {q.kind} {q.file}: {q.summary}")
+        with tempfile.TemporaryDirectory(prefix="vbt-project-check-") as tmp:
+            policy = config_policy(cfg, project, Path(tmp))
+            for name in sorted(catalog.project_sources):
+                problems += [f"descriptor {name}: {p}" for p in
+                             unsafe_spec(catalog.sources[name], policy, project, project.root)]
         for name in sorted(catalog.project_sources):
             lint += [str(f) for f in lint_descriptor(catalog.sources[name], registry, None, catalog.sources)]
         for name in sorted(catalog.project_servers):
@@ -308,15 +331,24 @@ def _add_commands(ps: Any) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """``python -m vbt.projects [--profile P ...] <command> ...`` (the commands of ``vbt project``)."""
-    from ..config import load_config
+    """``python -m vbt.projects [--profile P ...] <command> ...`` (the commands of ``vbt project``). The host
+    configuration applies as for a plain ``vbt`` command (:func:`vbt.cli.apply_host_config`: ``host.env`` and the
+    profiles ``vbt setup`` recorded), so projects are created under the same projects directory, and their profiles
+    generated from the same configuration, as the sessions that will use them."""
+    from ..cli import apply_host_config
+    from ..config import ProfileError, load_config
 
     parser = argparse.ArgumentParser(prog="python -m vbt.projects", description="Virtual Biotech projects "
                                                                                 "(docs/PROJECTS.md)")
     parser.add_argument("--profile", action="append", default=[])
     _add_commands(parser.add_subparsers(dest="project_cmd", required=True))
     args = parser.parse_args(argv)
-    config = load_config(args.profile)
+    apply_host_config(args)
+    try:
+        config = load_config(args.profile)
+    except (ProfileError, FileNotFoundError) as exc:
+        _err(f"error: {exc}")
+        return 2
     config["profiles"] = list(args.profile)
     try:
         return int(args.handler(args, config))

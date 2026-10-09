@@ -63,11 +63,14 @@ SANDBOX_MODES = ("auto", "bwrap", "none")
 PROJECT_DEFAULTS: dict[str, Any] = {
     "root": None,              # default: the deployment layout's projects directory
     "review": "none",          # none | reviewer (the scientific reviewer approves) | human (`vbt project approve`)
+    # plugins run inside the harness and the data child (not in the sandbox): the stricter of this and `review`
+    "plugin_review": "human",
     "sandbox": "auto",         # auto: bwrap when it works here, else the reaper's memory limit (+ no network)
     "test_timeout_s": 600,     # a utility's tests or a plugin's conformance suite
     "call_timeout_s": 1800,    # one call of a registered utility
     "test_network": False,     # tests and conformance suites run without network
     "max_source_bytes": 2_000_000,   # largest descriptor, overlay, plugin or utility file accepted
+    "max_import_bytes": None,        # largest data import (null: bounded by the free disk space only)
     "check_depth": "standard",       # `vbt ds check` depth a data spec must pass
     "runs_in_project": True,   # runs of an active project go to <project>/runs
 }
@@ -88,11 +91,13 @@ class ProjectSettings:
     """The effective ``projects`` settings for one project."""
 
     review: str = "none"
+    plugin_review: str = "human"
     sandbox: str = "auto"
     test_timeout_s: float = 600
     call_timeout_s: float = 1800
     test_network: bool = False
     max_source_bytes: int = 2_000_000
+    max_import_bytes: int | None = None
     check_depth: str = "standard"
     runs_in_project: bool = True
 
@@ -106,15 +111,28 @@ class ProjectSettings:
             review = str(own["review"])               # the project may ask for more review, never less
         if review not in REVIEW_MODES:
             raise ProjectError(f"projects.review must be one of {', '.join(REVIEW_MODES)} (got {review!r})")
+        plugin_review = str(raw.get("plugin_review") or "human")
+        if plugin_review not in REVIEW_MODES:
+            raise ProjectError(f"projects.plugin_review must be one of {', '.join(REVIEW_MODES)} "
+                               f"(got {plugin_review!r})")
         sandbox = str(raw.get("sandbox") or "auto")
         if sandbox not in SANDBOX_MODES:
             raise ProjectError(f"projects.sandbox must be one of {', '.join(SANDBOX_MODES)} (got {sandbox!r})")
-        return cls(review=review, sandbox=sandbox, test_timeout_s=float(raw.get("test_timeout_s") or 600),
+        return cls(review=review, plugin_review=plugin_review, sandbox=sandbox,
+                   test_timeout_s=float(raw.get("test_timeout_s") or 600),
                    call_timeout_s=float(raw.get("call_timeout_s") or 1800),
                    test_network=bool(raw.get("test_network")),
                    max_source_bytes=int(raw.get("max_source_bytes") or 2_000_000),
+                   max_import_bytes=int(raw["max_import_bytes"]) if raw.get("max_import_bytes") else None,
                    check_depth=str(raw.get("check_depth") or "standard"),
                    runs_in_project=bool(raw.get("runs_in_project", True)))
+
+    def review_for(self, kind: str) -> str:
+        """The review an item of ``kind`` needs: ``review``, and for a plugin (code the harness and the data child
+        import, outside the sandbox) at least ``plugin_review``."""
+        if kind == "plugin" and _REVIEW_RANK[self.plugin_review] > _REVIEW_RANK[self.review]:
+            return self.plugin_review
+        return self.review
 
 
 @dataclass

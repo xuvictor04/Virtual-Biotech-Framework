@@ -23,8 +23,10 @@ existing item is wrong, register a new version under the same name (the previous
 
 ## 1. Inspect
 
-- A data file (CSV, TSV, Parquet): `InspectDataset(path, source=..., table=...)`. It returns per-column types,
-  nulls, distinct counts, uniqueness, examples, sample rows and a **draft descriptor**.
+- A data file (CSV, TSV, Parquet) or a directory of them (one table in shards, e.g. `part-*.parquet`):
+  `InspectDataset(path, source=..., table=...)`. It returns per-column types, nulls, distinct counts, uniqueness,
+  examples, sample rows and a **draft descriptor** (`layout: sharded_dir` for a directory; `column_types` for CSV
+  columns whose type the first MiB of a file, or one shard, does not show).
 - Look further with `Bash` (pandas/pyarrow) when the draft cannot know: what one row is, the units, whether an
   empty cell means "not measured" or "zero", whether the file is the complete release or an extract.
 - Other formats: check whether a shipped format plugin reads it (`mcp__data__describe` of a similar source, or the
@@ -38,9 +40,17 @@ Write the files in **your workspace** (e.g. `drafts/<source>.yaml`, `utilities/<
   that identify a row; must be unique), every column's `role`, and `coverage` (`absence_means: unknown` unless
   the source documents completeness). Identifiers need an `id_type`: a shipped one when the column holds those
   IDs (`open_targets:ensembl_gene`, ...), else a `local_key` with `options.canonical` (a regex every key matches).
-  Put the data under the project: `root: ${VBT_PROJECT_DIR}/data/<source>` and pass the file(s) as `files` when
-  registering (they are copied into `data/<source>/`). For data to be downloaded, add an `acquisition:` section
-  (transport plugin, files, sizes, checksums) instead — `vbt data acquire --source <source>` then fetches it.
+  Where the data lives:
+  - **import** it: `root: ${VBT_PROJECT_DIR}/data/<source>` and pass the files or directories as `files` when
+    registering (copied into `data/<source>/`; a directory of shards keeps its name and is the table's `path`
+    with `layout: sharded_dir`; importing it again replaces it);
+  - **in place**, for large data you can already read (a reference-data directory, a shared disk): `root:` that
+    directory, no `files`;
+  - **to be downloaded**: an `acquisition:` section (transport plugin, files, sizes, checksums, `dir: <source>`).
+    The registration answer gives the command that fetches it into the project
+    (`vbt --profile <project>/profile.yaml data acquire <source> --dest <project>/data`).
+  A project descriptor names only paths you can read yourself, and declares no `acquisition.prepare` (a command
+  run outside the sandbox) and no `acquisition.env` (host variables): transform files with a utility instead.
 - **Utility**: one function with a docstring (what it computes, its arguments, what it returns), a JSON schema
   whose `required` lists every parameter without a default, and tests with known answers on small inputs.
 - **Plugin**: one `@register` class of an existing kind with a literal `name` (never a shipped plugin's name).
@@ -52,7 +62,7 @@ Write the files in **your workspace** (e.g. `drafts/<source>.yaml`, `utilities/<
 | descriptor | `RegisterDataSpec(kind="descriptor", path=..., files=[...], why=...)` | model + `vbt ds lint` + `vbt ds check` (every table ready) |
 | acquisition spec | `RegisterDataSpec(kind="acquisition", source=..., path=..., why=...)` | merged into the project descriptor, then as above; a table whose files are not downloaded yet passes |
 | overlay | `RegisterDataSpec(kind="overlay", path=..., why=...)` | lint + check of the tables it binds; only for servers the core ships no overlay for |
-| plugin | `RegisterPlugin(kind=..., path=..., why=...)` | the kind's conformance suite in the sandbox |
+| plugin | `RegisterPlugin(kind=..., path=..., why=...)` | the kind's conformance suite in the sandbox; then, by default, a person's approval (`projects.plugin_review`: a plugin runs inside the harness, outside the sandbox) |
 | utility | `RegisterUtility(name=..., description=..., input_schema=..., directory=..., why=...)` | static checks + its tests in the sandbox |
 
 `why` is recorded: name the user request or the gap (e.g. "genomics-analyst could not read the user's assay

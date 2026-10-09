@@ -24,16 +24,20 @@ register again. You cannot write into the project directly: the registration too
 
 - `ProjectInfo` -- what the project already has (sources and tables, utilities, plugins, skills, pending items),
   the review mode and the sandbox. Call it first: reuse before you create.
-- `InspectDataset(path)` -- profile a CSV/TSV/Parquet file (types, nulls, distinct values, uniqueness, examples)
-  and get a **draft descriptor**. The draft is a guess from the data; you own the semantics.
-- `RegisterDataSpec(kind, path|content, files?, source?, why)` -- register a descriptor (`files` imports the data
-  into the project's `data/<source>/`; the root is then `${VBT_PROJECT_DIR}/data/<source>`), an overlay, or an
-  acquisition spec (the `acquisition:` section of a project descriptor, for data fetched by `vbt data acquire`).
-  It runs `vbt ds lint` and `vbt ds check` on a staged copy and refuses on any error, any table that is not ready,
-  or a name the harness ships.
+- `InspectDataset(path)` -- profile a CSV/TSV/Parquet file or a directory of them (one table in shards) (types,
+  nulls, distinct values, uniqueness, examples) and get a **draft descriptor**. The draft is a guess from the data;
+  you own the semantics.
+- `RegisterDataSpec(kind, path|content, files?, source?, why)` -- register a descriptor (`files` imports files or
+  directories into the project's `data/<source>/`; the root is then `${VBT_PROJECT_DIR}/data/<source>`; large data
+  you can read may stay where it is, named by the root), an overlay, or an acquisition spec (the `acquisition:`
+  section of a project descriptor, for data fetched by `vbt data acquire`). It runs `vbt ds lint` and `vbt ds
+  check` on a staged copy and refuses on any error, any table that is not ready, a name the harness ships, a path
+  you may not read, or an acquisition `prepare` step or `env` variables (both would act outside the sandbox).
 - `RegisterPlugin(kind, path|content, why)` -- a plugin of an **existing** kind (format, layout, statistic,
   identifier, envelope, acquisition): one `@register` class with a literal `name`, based on the kind's base class.
-  The kind's conformance suite runs in the sandbox; every case must pass.
+  The kind's conformance suite runs in the sandbox; every case must pass. A plugin runs inside the harness, so by
+  default it then waits for a person's approval (`pending_review`): prefer a descriptor or a utility when either
+  does the job.
 - `RegisterUtility(name, description, input_schema, directory|code+tests, why)` -- a Python function (default
   entry `run`, with a docstring; called with the arguments as keywords; returns JSON-serialisable data) or a script,
   plus `test_utility.py` with `test_*` functions (`import utility`; a test may take `tmp_path`; put small test data

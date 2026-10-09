@@ -32,6 +32,18 @@ tables:
 
 Write regular expressions in single quotes in YAML (`'^A\d+$'`); in double quotes a backslash is an escape.
 
+## A table in shards (a directory of files)
+
+```yaml
+defaults: {format: parquet, layout: sharded_dir, missing: unknown}   # every *.parquet under the table's path
+tables:
+  screens:
+    path: screens                     # the directory (imported with files=["screens"], or under an in-place root)
+```
+
+`_SUCCESS`, hidden and `*.part` files and `_`/`.`-prefixed directories are never read. Other suffixes need the
+pattern: `layout: {plugin: sharded_dir, options: {pattern: "*.csv.gz"}}`.
+
 ## Column roles (most used)
 
 | role | for | notes |
@@ -61,5 +73,8 @@ exist"), or `censored`. `statement` says in one sentence what the table covers.
 | `R1 ... missing` | `root`/`path` do not point at the file: import it with `files` or fix `path` |
 | `schema_drift` / `R3` | a declared column is not in the file, or its type differs: fix the column names |
 | lint `[reference]` | a role names a column that does not exist |
+| `... names <path>, which the registering agent may not read` | the root or a path is outside your read roots (or a link leads out): import the files with `files`, or ask for the directory to be made readable |
+| `acquisition.prepare` / `acquisition.env` | a project descriptor declares neither: read the files as downloaded, transform with a utility |
+| `acquisition: ... puts the files in data/x/v1, but the root reads data/x` | set `dir: x` (the acquisition's directory under the project's `data/`) |
 
 `vbt ds lint` and `vbt ds check --table <source>.<table>` run the same validation by hand.

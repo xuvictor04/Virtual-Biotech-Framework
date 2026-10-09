@@ -140,6 +140,19 @@ def test_settings_merge_and_review_only_tightens(pconfig, project):
         ProjectSettings.from_config(pconfig, project)
 
 
+def test_plugins_need_at_least_the_plugin_review(pconfig, project):
+    """Plugins run inside the harness and the data child, outside the sandbox: they need the stricter of
+    projects.review and projects.plugin_review (default human); other items need projects.review."""
+    s = ProjectSettings.from_config(pconfig, project)
+    assert (s.review_for("utility"), s.review_for("descriptor"), s.review_for("plugin")) == ("none", "none", "human")
+    pconfig["projects"].update(review="reviewer", plugin_review="none")
+    s = ProjectSettings.from_config(pconfig, project)
+    assert (s.review_for("utility"), s.review_for("plugin")) == ("reviewer", "reviewer")
+    pconfig["projects"]["plugin_review"] = "never"
+    with pytest.raises(ProjectError, match="projects.plugin_review"):
+        ProjectSettings.from_config(pconfig, project)
+
+
 # ---------------------------------------------------------------------------- activation
 
 
@@ -385,6 +398,51 @@ def test_cli_init_list_show_check_profile(pconfig, tmp_path, capsys, monkeypatch
     assert "no provenance record" in capsys.readouterr().out
     os.remove(p.profile_path)
     assert project_main(["profile", "alpha"]) == 0 and p.profile_path.is_file()
+
+
+def test_cli_applies_the_host_configuration(tmp_path, monkeypatch, capsys):
+    """`python -m vbt.projects` reads the host configuration as a plain `vbt` command does (host.env, then the
+    profiles `vbt setup` recorded): a project is created under the host's projects directory, not the checkout's,
+    and its profile keeps the host profile's lists before the project's entries."""
+    state = tmp_path / "state"
+    state.mkdir()
+    host_profile = state / "host.yaml"
+    host_profile.write_text("paths:\n  skills: [skills, /srv/site-skills]\n")
+    (state / "host.env").write_text(f"VBT_PROJECTS_DIR={tmp_path / 'hostprojects'}\n"
+                                    f"VBT_PROFILES='mock {host_profile}'\n")
+    monkeypatch.delenv("VBT_NO_HOST_ENV", raising=False)
+    monkeypatch.setenv("VBT_STATE_DIR", str(state))
+    for key in ("VBT_PROJECTS_DIR", "VBT_PROFILES", "VBT_BASE_PROFILES"):
+        monkeypatch.setenv(key, "")                  # restored after the test (apply_host_config sets them)
+    assert project_main(["init", "hosted"]) == 0
+    p = Project.load(tmp_path / "hostprojects" / "hosted")
+    skills = yaml.safe_load(p.profile_path.read_text())["paths"]["skills"]
+    assert skills == ["skills", "/srv/site-skills", "${vars.project_dir}/skills"]
+    capsys.readouterr()
+    assert project_main(["show", "hosted", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["dir"] == str(p.root)
+    monkeypatch.setenv("VBT_NO_HOST_ENV", "1")
+    monkeypatch.setenv("VBT_PROJECTS_DIR", str(tmp_path / "elsewhere"))
+    assert project_main(["show", "hosted"]) == 2                     # without the host config: not found
+    assert "no project 'hosted'" in capsys.readouterr().err
+
+
+def test_check_applies_the_registration_rules_to_every_project_descriptor(pconfig, project, tmp_path):
+    """A descriptor placed (or registered before the rules) that names a path its project's agents may not read, or
+    declares an acquisition step, is reported by `vbt project check`."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "assays.csv").write_text(ASSAYS)
+    _place(project)
+    assert not any("may not read" in p for p in check_project(project, pconfig)["problems"])
+    (project.descriptors_dir / "lab_assays.yaml").write_text(
+        DESCRIPTOR.replace("${VBT_PROJECT_DIR}/data/lab_assays", str(outside)))
+    problems = check_project(project, pconfig)["problems"]
+    assert any(p.startswith("descriptor lab_assays: root names") and "may not read" in p for p in problems), problems
+    (project.descriptors_dir / "lab_assays.yaml").write_text(DESCRIPTOR + (
+        "acquisition:\n  release: v1\n  transport: {plugin: http, options: {base: 'https://example.org/'}}\n"
+        "  dir: lab_assays\n  env: {PATH: '{home}'}\n  tables:\n    assays: {files: [assays.csv]}\n"))
+    assert any("acquisition.env (PATH)" in p for p in check_project(project, pconfig)["problems"])
 
 
 def test_check_reports_changed_files(pconfig, project):

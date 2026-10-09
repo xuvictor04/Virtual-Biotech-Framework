@@ -9,6 +9,7 @@ by :func:`vbt.projects.sandbox.run_sandboxed`; the harness reads the last ``@@VB
     runner.py script <dir>                   run <dir>/utility.py as __main__ (args JSON on stdin), stdout is the result
     runner.py conformance <kind> <file> <name> <settings.json>
                                              the kind's conformance suite, restricted to plugin <name> of <file>
+    runner.py inspect <path> [sample_rows]   InspectDataset's profile of a file or directory (pyarrow)
 
 The utility module is loaded as ``utility`` (tests ``import utility`` or ``from utility import ...``) and test
 modules by file, so nothing in the directory can shadow a standard module. A test function may take
@@ -168,6 +169,16 @@ def cmd_conformance(kind: str, plugin_file: str, name: str, settings_file: str) 
         return _emit({"exit_code": 3, "error": f"{type(exc).__name__}: {exc}", "traceback": _tb()}, 1)
 
 
+def cmd_inspect(path: str, sample_rows: int) -> int:
+    try:
+        from vbt.tools.utilities import inspect_dataset
+
+        info = inspect_dataset(Path(path), sample_rows=sample_rows)
+        return _emit({"ok": True, "info": info})
+    except BaseException as exc:  # noqa: BLE001 - an unreadable file is the answer
+        return _emit({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, 1)
+
+
 def main(argv: list[str]) -> int:
     if len(argv) >= 2 and argv[0] == "test":
         return cmd_test(Path(argv[1]))
@@ -177,6 +188,8 @@ def main(argv: list[str]) -> int:
         return cmd_script(Path(argv[1]))
     if len(argv) >= 5 and argv[0] == "conformance":
         return cmd_conformance(argv[1], argv[2], argv[3], argv[4])
+    if len(argv) >= 2 and argv[0] == "inspect":
+        return cmd_inspect(argv[1], int(argv[2]) if len(argv) > 2 else 5)
     print(__doc__, file=sys.stderr)
     return 2
 
