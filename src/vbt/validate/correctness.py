@@ -171,20 +171,21 @@ def release_memory() -> None:
 
 
 def _upstream_reads(catalog: Any, binding: Any) -> tuple[list[str], list[str]]:
-    """``(whole, scanned)``: the physical tables a tool's upstream call loads whole (``access: full_table``) and those
-    it scans with a filter (``bounded_scan``)."""
+    """``(whole, scanned)``: the physical tables a tool's upstream call loads whole and those it scans with a filter
+    (``bounded_scan``). A ``projection`` read counts as whole: the unmodified loaders read every column (the 25.09
+    target server's get_chemical_probes loads the whole target table and was killed at a 3,000 MB limit)."""
     whole: list[str] = []
     scanned: list[str] = []
     for ref, rs in (getattr(binding, "reads", None) or {}).items():
         access = getattr(rs, "access", None)
-        if access not in ("full_table", "bounded_scan"):
+        if access not in ("full_table", "projection", "bounded_scan"):
             continue
         try:
             t = catalog.table(str(ref))
             name = str(t.physical) if t.is_item_table else str(ref)
         except Exception:  # noqa: BLE001
             name = str(ref)
-        (whole if access == "full_table" else scanned).append(name)
+        (scanned if access == "bounded_scan" else whole).append(name)
     return whole, scanned
 
 
