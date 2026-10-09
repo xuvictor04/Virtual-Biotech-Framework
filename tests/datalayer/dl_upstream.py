@@ -32,7 +32,10 @@ from typing import Any
 
 import pytest
 
-from stubs import CLINICALTRIALS_WRAPPER
+if str(Path(__file__).resolve().parents[1]) not in sys.path:     # tests/ (netgate) for a bare `import dl_upstream`
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+from netgate import network_enabled  # noqa: E402
+from stubs import CLINICALTRIALS_WRAPPER  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 UPSTREAM = REPO / "third_party" / "TheVirtualBiotech"
@@ -98,25 +101,62 @@ UPSTREAM_PYCACHE_AT_START = upstream_pycache()
 
 MODES = ("off", "enforce")
 def real_data_root() -> Path | None:
-    """The shared real-data root ``VBT_DL_REAL_DATA`` names (``data/real``: ``open_targets/25.09``,
-    ``tahoe/<revision>``, ...). The variable may also name the Open Targets 25.09 directory inside it; every
-    opt-in real-data module reads the same value through this and :func:`real_ot_dir` (RR-8)."""
+    """The shared real-data root ``VBT_DL_REAL_DATA`` names, laid out ``<source dir>/<release>/`` as the descriptors'
+    ``acquisition.dir`` says: ``$VBT_HOME/data/sources`` on a host ``vbt setup`` / ``vbt data acquire`` filled (the
+    variable may name ``$VBT_HOME/data``, whose ``sources/`` is used), or this project's ``data/real``. It may also
+    name the Open Targets 25.09 directory inside it; every opt-in real-data module reads the same value through
+    this, :func:`real_ot_dir` and :func:`real_source_home` (RR-8, DEP-4)."""
     raw = os.environ.get("VBT_DL_REAL_DATA", "").strip()
     if not raw:
         return None
     p = Path(raw)
     if p.name == "25.09" and p.parent.name == "open_targets":
         return p.parent.parent
+    if (p / "sources").is_dir() and not (p / "open_targets").is_dir():
+        return p / "sources"
     return p
 
 
+def acquisition_home(source: str) -> tuple[str, str | None]:
+    """``(acquisition.dir with its release filled, release)`` of the shipped descriptor of ``source`` (its id or
+    file name: ``open_targets`` -> ``open_targets/25.09``, ``tahoe_100m`` -> ``tahoe/<revision>``)."""
+    import yaml
+
+    raw: dict[str, Any] = {}
+    for f in sorted((REPO / "configs" / "data" / "sources").glob("*.yaml")):
+        doc = yaml.safe_load(f.read_text()) or {}
+        if f.stem == source or doc.get("source") == source:
+            raw = doc
+            break
+    acq = dict(raw.get("acquisition") or {})
+    release = acq.get("release")
+    home = str(acq.get("dir") or source).replace("{release}", str(release or "current"))
+    return home, (str(release) if release is not None else None)
+
+
+def real_source_home(source: str) -> Path | None:
+    """Where the real data of descriptor ``source`` is under :func:`real_data_root`: the acquisition home
+    (``<root>/<acquisition.dir>`` at the pinned release, where ``vbt data acquire`` puts it), else the older
+    ``<root>/<source dir>/current`` of a hand-made layout; None without ``VBT_DL_REAL_DATA`` or when neither is
+    there."""
+    root = real_data_root()
+    if root is None:
+        return None
+    home, _release = acquisition_home(source)
+    for candidate in (root / home, root / home.split("/")[0] / "current"):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def real_ot_dir() -> Path | None:
-    """The Open Targets 25.09 output directory: ``<root>/open_targets/25.09``, or the value itself."""
+    """The Open Targets 25.09 output directory: the acquisition home under :func:`real_data_root`
+    (``<root>/open_targets/25.09``), or the value itself."""
     raw = os.environ.get("VBT_DL_REAL_DATA", "").strip()
     if not raw:
         return None
-    nested = Path(raw) / "open_targets" / "25.09"
-    return nested if nested.is_dir() else Path(raw)
+    home = real_source_home("open_targets")
+    return home if home is not None else Path(raw)
 
 
 HAVE_ARROW = all(importlib.util.find_spec(m) is not None for m in ("pyarrow", "pandas"))
@@ -282,7 +322,7 @@ OFFLINE_BASES = {"VBT_CBIOPORTAL_BASE": "http://127.0.0.1:9/cbioportal/api",
 def offline_bases() -> dict[str, str]:
     """The live bases the data child gets: :data:`OFFLINE_BASES` offline, none (the real ones) under
     ``VBT_DL_NETWORK=1``. The upstream servers keep their own stubs (``DataEnv.env``)."""
-    return {} if os.environ.get("VBT_DL_NETWORK") == "1" else dict(OFFLINE_BASES)
+    return {} if network_enabled() else dict(OFFLINE_BASES)
 
 
 def harness_config(*, gateway: bool, tmp_path: Path, env: DataEnv | Mapping[str, str] | None = None,

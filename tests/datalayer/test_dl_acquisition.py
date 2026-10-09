@@ -43,6 +43,7 @@ import yaml
 pa = pytest.importorskip("pyarrow")
 pq = pytest.importorskip("pyarrow.parquet")
 
+from netgate import network_enabled  # noqa: E402
 from vbt.data import acquire as A  # noqa: E402
 from vbt.data import ondemand, targets  # noqa: E402
 from vbt.data.manifest import load_manifest, local_files  # noqa: E402
@@ -836,7 +837,7 @@ def test_the_cli_plans_acquires_and_reports(site, tmp_path, capsys, monkeypatch)
 
 # ---------------------------------------------------------------------------- opt-in: the network and real data
 
-NETWORK = os.environ.get("VBT_DL_NETWORK", "").strip() not in ("", "0")
+NETWORK = network_enabled()
 
 
 @pytest.mark.skipif(not NETWORK, reason="set VBT_DL_NETWORK=1 to list the real sources")

@@ -2,6 +2,7 @@
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -88,6 +89,21 @@ def test_upstream_env_file_is_loaded(monkeypatch, tmp_path):
     assert cfg["tool_env"]["OPEN_TARGETS_DATA_PATH"] == "/data/from-upstream-env"
     assert "/data/from-upstream-env" in cfg["paths"]["read_roots"]
     assert vconfig.env_files(cfg)[-1] == up / ".env"
+
+
+def test_the_checkouts_env_file_is_skipped_under_vbt_no_dotenv(monkeypatch):
+    """DEP-8: README step 2's .env (OPEN_TARGETS_DATA_PATH) must not reach the suite, which sets VBT_NO_DOTENV; an
+    operator without it still gets the checkout's .env."""
+    loaded: list[Path] = []
+    monkeypatch.setattr(vconfig, "load_env_file", lambda path: loaded.append(Path(path)) or False)
+    dotenv = vconfig.PROJECT_ROOT / ".env"
+    assert os.environ.get(vconfig.NO_DOTENV)                      # the suite's conftest sets it
+    load_config([])
+    assert dotenv not in loaded and dotenv not in vconfig.env_files()
+    monkeypatch.delenv(vconfig.NO_DOTENV)
+    loaded.clear()
+    load_config([])
+    assert loaded[0] == dotenv and vconfig.env_files()[0] == dotenv
 
 
 def test_resolve_path_resolves_absolute_symlinks(tmp_path):

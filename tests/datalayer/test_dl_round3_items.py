@@ -830,7 +830,7 @@ def _real_ot() -> Path | None:
 
 REAL = _real_ot()
 needs_real = pytest.mark.skipif(REAL is None, reason="VBT_DL_REAL_DATA=<dir> with the Open Targets 25.09 tables needed")
-needs_network = pytest.mark.skipif(__import__("os").environ.get("VBT_DL_NETWORK", "") in ("", "0"),
+needs_network = pytest.mark.skipif(not __import__("netgate").network_enabled(),
                                    reason="VBT_DL_NETWORK=1 needed (EBI FTP over HTTPS)")
 
 

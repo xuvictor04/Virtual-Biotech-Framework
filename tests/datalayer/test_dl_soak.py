@@ -1,7 +1,7 @@
 """Calibration, soak and enforce graduation (§18 F23, §21 "Soak and calibration"). Slow: ``VBT_DL_SLOW=1``.
 
-Runs on the real Open Targets 25.09 subset at ``OPEN_TARGETS_DATA_PATH`` when it is set (a release
-directory with a download manifest), else on the generated fixture; the memory test needs real data,
+Runs on the real Open Targets 25.09 release under ``VBT_DL_REAL_DATA`` when it is set (a release directory with
+a download manifest, found as every opt-in real-data module finds it), else on the generated fixture; the memory test needs real data,
 because on a few hundred rows the interpreter's own allocations dwarf the table.
 
 * Memory: a sample-and-scale calibration (three row groups) predicts the peak RSS of an upstream-style
@@ -33,7 +33,7 @@ from typing import Any
 import pytest
 import yaml
 
-from dl_upstream import REPO, needs_arrow
+from dl_upstream import REPO, needs_arrow, real_ot_dir
 
 pytestmark = [
     pytest.mark.slow, needs_arrow,
@@ -49,14 +49,13 @@ TOLERANCE = 0.30
 
 
 def _real_root() -> Path | None:
-    raw = os.environ.get("OPEN_TARGETS_DATA_PATH")
-    if not raw:
+    root = real_ot_dir()        # VBT_DL_REAL_DATA, never the shell's OPEN_TARGETS_DATA_PATH (the suite pops it: DEP-8)
+    if root is None:
         return None
-    root = Path(raw)
     return root if (root / "target").is_dir() and (root / ".download-manifest.json").is_file() else None
 
 
-#: Read once at import, before any fixture points OPEN_TARGETS_DATA_PATH at the generated fixture.
+#: Read once at import.
 REAL_ROOT = _real_root()
 
 

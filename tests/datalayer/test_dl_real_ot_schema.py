@@ -44,6 +44,7 @@ import pyarrow as pa  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 
 from dl_upstream import real_ot_dir  # noqa: E402
+from netgate import network_mode  # noqa: E402
 from vbt.datalayer.descriptor.columns import is_container  # noqa: E402
 from vbt.datalayer.descriptor.load import load_descriptors  # noqa: E402
 from vbt.datalayer.plugins.base import Fragment  # noqa: E402
@@ -54,7 +55,7 @@ REPO = Path(__file__).resolve().parents[2]
 SNAP = REPO / "tests" / "datalayer" / "real" / "ot_25_09"
 BASE = "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/"
 RETRIEVED = "2026-10-08"
-NETWORK = os.environ.get("VBT_DL_NETWORK", "").strip().lower()
+NETWORK = network_mode()
 REAL = real_ot_dir()
 UPDATE = os.environ.get("VBT_UPDATE_REAL_SNAPSHOT", "") == "1"
 _TEXT = 40                                             # recorded string bounds are cut to this length

@@ -13,6 +13,7 @@ all offline.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -263,3 +264,38 @@ def test_one_real_data_value_serves_every_module(tmp_path: Path, monkeypatch, va
     assert real_data_root() == tmp_path / root and real_ot_dir() == tmp_path / ot
     monkeypatch.delenv("VBT_DL_REAL_DATA")
     assert real_data_root() is None and real_ot_dir() is None
+
+
+@pytest.mark.parametrize("value", ["data", "data/sources"])
+def test_real_data_is_found_where_vbt_data_acquire_puts_it(tmp_path: Path, monkeypatch, value: str) -> None:
+    """DEP-4: on a host `vbt setup` filled, the releases are at $VBT_HOME/data/sources/<acquisition.dir>; the tests
+    found only this project's hand-made data/real layout and skipped everything else (green, checking nothing)."""
+    from dl_upstream import acquisition_home, real_source_home
+
+    sources = tmp_path / "data" / "sources"
+    for source in ("open_targets", "gene_ontology", "tahoe_100m"):
+        (sources / acquisition_home(source)[0]).mkdir(parents=True)
+    monkeypatch.setenv("VBT_DL_REAL_DATA", str(tmp_path / value))
+    assert real_data_root() == sources
+    assert real_ot_dir() == sources / "open_targets" / "25.09"
+    assert real_source_home("gene_ontology") == sources / "gene_ontology" / acquisition_home("gene_ontology")[1]
+    assert real_source_home("tahoe_100m") == sources / "tahoe" / acquisition_home("tahoe_100m")[1]
+    assert real_source_home("depmap") is None                       # not acquired here
+    # the older hand-made <source>/current layout is still found
+    (sources / "cell_ontology" / "current").mkdir(parents=True)
+    assert real_source_home("cell_ontology") == sources / "cell_ontology" / "current"
+
+
+def test_a_strict_real_data_run_that_finds_no_data_fails(tmp_path: Path) -> None:
+    """DEP-4: with VBT_DL_REAL_DATA_STRICT=1 (the real-data workflow) a data directory the tests cannot use is a failed
+    run, not a run of skips; without it the same run passes as before."""
+    test = "tests/datalayer/test_dl_real_tahoe_depmap.py::test_real_ontologies_are_ready"
+    env = {**os.environ, "VBT_DL_REAL_DATA": str(tmp_path)}
+    env.pop("VBT_DL_REAL_DATA_STRICT", None)
+    loose = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", test], cwd=REPO, env=env,
+                           capture_output=True, text=True, timeout=300)
+    assert loose.returncode == 0, loose.stdout[-2000:]
+    env["VBT_DL_REAL_DATA_STRICT"] = "1"
+    strict = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", test], cwd=REPO,
+                            env=env, capture_output=True, text=True, timeout=300)
+    assert strict.returncode == 1 and "none passed" in strict.stdout, strict.stdout[-2000:]

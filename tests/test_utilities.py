@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from conftest import scripted_provider
+from netgate import network_enabled
 from vbt.projects import ledger
 from vbt.projects.authoring import approve_pending, pending_items
 from vbt.projects.model import ProjectError, activate, init_project
@@ -847,7 +848,7 @@ async def test_human_review_keeps_the_item_pending_until_approved(pconfig, proje
 # ---------------------------------------------------------------------------- opt-in: real files, live sources
 
 REAL = os.environ.get("VBT_DL_REAL_DATA", "").strip()
-NETWORK = os.environ.get("VBT_DL_NETWORK", "").strip() == "1"
+NETWORK = network_enabled()
 
 
 @pytest.mark.skipif(not (REAL and HAVE_ARROW), reason="set VBT_DL_REAL_DATA=<data/real> to run on the real files")

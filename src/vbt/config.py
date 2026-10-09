@@ -142,7 +142,7 @@ def _variables(cfg: dict[str, Any]) -> dict[str, str]:
 
 def env_files(config: dict[str, Any] | None = None) -> list[Path]:
     """The .env files load_config reads, in order (existing or not)."""
-    files = [PROJECT_ROOT / ".env"]
+    files = [] if os.environ.get(NO_DOTENV) else [PROJECT_ROOT / ".env"]
     up = ((config or {}).get("vars") or {}).get("upstream")
     if up:
         files.append(resolve_path(up) / ".env")
@@ -179,8 +179,13 @@ def check_profile_requirement(cfg: dict[str, Any], profile: str, required: str |
             f"--profile {profile}` or `--profile paper --profile {profile}`)")
 
 
+#: Set (non-empty) to skip the checkout's own ``.env`` (the test suite sets it: an operator's .env must not reach it).
+NO_DOTENV = "VBT_NO_DOTENV"
+
+
 def load_config(profiles: list[str] | None = None, overrides: dict | None = None) -> dict[str, Any]:
-    load_env_file(PROJECT_ROOT / ".env")
+    if not os.environ.get(NO_DOTENV):
+        load_env_file(PROJECT_ROOT / ".env")
     if "data" not in CODE_DEFAULTS:
         _install_data_defaults()
     cfg = deep_merge(CODE_DEFAULTS, _load_yaml(CONFIG_DIR / "default.yaml"))

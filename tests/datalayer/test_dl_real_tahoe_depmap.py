@@ -13,10 +13,12 @@ URL and how it was read):
 * ``ontology/``: whole stanzas of go-basic.obo and cl-basic.obo, three Hallmark lines, and their counts.
 
 Offline, the excerpts are laid out as the descriptors expect and checked with the data child's readiness
-code in process. With ``VBT_DL_REAL_DATA=<dir>`` (the shared ``data/real`` layout: ``tahoe/<rev>/{metadata,
-sample_prepared,footer_stats}``, ``depmap/24Q4``, ``gene_ontology/current``, ``cell_ontology/current``,
-``msigdb/2024.1.Hs``) the full files are checked, and the Zenodo facts are recomputed on the archive
-(``VBT_ZENODO_DIR``, ``<dir>/../zenodo`` or ``data/zenodo``). With ``VBT_DL_NETWORK=1`` one DE footer, the figshare listing and
+code in process. With ``VBT_DL_REAL_DATA=<dir>`` the full files are checked where ``vbt data acquire`` puts them
+(``$VBT_HOME/data`` or its ``sources/``: each descriptor's ``acquisition.dir`` at the pinned release,
+``tahoe/<rev>/{metadata,prepared}``, ``depmap/24Q4``, ``gene_ontology/2026-08-05``, ``cell_ontology/2026-06-08``,
+``msigdb/2024.1.Hs``; a hand-made ``<source>/current`` is accepted too). The DE footers are read from the
+downloaded shards (or a recorded ``tahoe/<rev>/footer_stats/shards.jsonl``), and the Zenodo facts are recomputed
+on the archive (``VBT_ZENODO_DIR``, ``zenodo/<record>``, ``<dir>/../zenodo`` or ``data/zenodo``) (DEP-4). With ``VBT_DL_NETWORK=1`` one DE footer, the figshare listing and
 the Hallmark file are read live.
 """
 
@@ -36,7 +38,8 @@ import pytest
 pa = pytest.importorskip("pyarrow")
 pq = pytest.importorskip("pyarrow.parquet")
 
-from dl_upstream import real_data_root  # noqa: E402
+from dl_upstream import real_data_root, real_source_home  # noqa: E402
+from netgate import network_enabled  # noqa: E402
 from vbt.datalayer.catalog import build_catalog  # noqa: E402
 from vbt.datalayer.descriptor.load import load_yaml  # noqa: E402
 from vbt.datalayer.plugins.base import Normalized  # noqa: E402
@@ -53,7 +56,7 @@ FIX = Path(__file__).resolve().parent / "real"
 REGISTRY = discover(entry_points=False)
 REV = "2dc57900b7981cfcf5e211527169a0b006546a95"
 REAL = real_data_root()                                # data/real, also when VBT_DL_REAL_DATA names open_targets/25.09
-NETWORK = os.environ.get("VBT_DL_NETWORK") == "1"
+NETWORK = network_enabled()
 needs_real = pytest.mark.skipif(REAL is None, reason="set VBT_DL_REAL_DATA=<dir> to check the real files")
 needs_network = pytest.mark.skipif(not NETWORK, reason="set VBT_DL_NETWORK=1 to read the live sources")
 ARROW = {"string": pa.string(), "float": pa.float32(), "double": pa.float64(), "int64": pa.int64()}
@@ -393,10 +396,38 @@ def real_path(*parts: str) -> Path:
     return p
 
 
+def real_home(source: str, *parts: str) -> Path:
+    """``<acquisition home of source>/<parts>`` under VBT_DL_REAL_DATA (skips when it is not there)."""
+    home = real_source_home(source)
+    if home is None:
+        pytest.skip(f"no {source} data under {REAL}")
+    p = home.joinpath(*parts)
+    if not p.exists():
+        pytest.skip(f"{p} is not there")
+    return p
+
+
+def _shard_footers(home: Path) -> list[dict]:
+    """``{shard, rows, row_groups, schema_sha}`` of each DE shard: the recorded ``footer_stats/shards.jsonl``, else
+    read from the downloaded shards' footers (``metadata/pseudobulk_differential_expression``)."""
+    recorded = home / "footer_stats" / "shards.jsonl"
+    if recorded.is_file():
+        return [json.loads(line) for line in recorded.read_text().splitlines() if line.strip()]
+    files = sorted((home / "metadata" / "pseudobulk_differential_expression").glob("*.parquet"))
+    if not files:
+        pytest.skip(f"neither {recorded} nor the DE shards under {home / 'metadata'} are there")
+    out = []
+    for i, f in enumerate(files):
+        md = pq.ParquetFile(f).metadata
+        schema = hashlib.sha256(str(md.schema.to_arrow_schema()).encode()).hexdigest()[:16]
+        out.append({"shard": i, "rows": md.num_rows, "row_groups": md.num_row_groups, "schema_sha": schema})
+    return out
+
+
 @needs_real
 def test_real_tahoe_metadata_matches_the_record():
     meta = fixture("tahoe", "metadata.json")
-    d = real_path("tahoe", REV, "metadata")
+    d = real_home("tahoe_100m", "metadata")
     for name in ("gene", "drug", "cell_line", "sample"):
         path = d / f"{name}_metadata.parquet"
         t = pq.read_table(path)
@@ -408,7 +439,7 @@ def test_real_tahoe_metadata_matches_the_record():
 def test_real_tahoe_drug_targets_split_on_the_declared_delimiter():
     """``targets`` split on the declared ``list_delimiter`` with elements stripped: no token keeps a comma."""
     delim = descriptor("tahoe")["tables"]["drug_metadata"]["columns"]["targets"]["list_delimiter"]
-    rows = pq.read_table(real_path("tahoe", REV, "metadata", "drug_metadata.parquet")).to_pylist()
+    rows = pq.read_table(real_home("tahoe_100m", "metadata", "drug_metadata.parquet")).to_pylist()
     facts = fixture("tahoe", "metadata.json")["drug"]["facts"]
     values = {r["drug"]: r["targets"] for r in rows if r["targets"] is not None}
     assert len(rows) - len(values) == facts["targets_null"]
@@ -423,8 +454,7 @@ def test_real_tahoe_drug_targets_split_on_the_declared_delimiter():
 @needs_real
 def test_real_tahoe_footer_stats_match_the_record():
     de = fixture("tahoe", "de_shards.json")
-    lines = real_path("tahoe", REV, "footer_stats", "shards.jsonl").read_text().splitlines()
-    shards = [json.loads(line) for line in lines if line.strip()]
+    shards = _shard_footers(real_home("tahoe_100m"))
     assert len({s["shard"] for s in shards}) == de["shards"]
     assert sum(s["rows"] for s in shards) == de["rows"] and sum(s["row_groups"] for s in shards) == de["row_groups"]
     assert len({s["schema_sha"] for s in shards}) == 1
@@ -432,7 +462,11 @@ def test_real_tahoe_footer_stats_match_the_record():
 
 @needs_real
 def test_real_tahoe_prepared_sample_is_ready(tmp_path):
-    root = real_path("tahoe", REV, "sample_prepared")
+    home = real_home("tahoe_100m")
+    # the acquisition's prepare step writes <home>/prepared; a hand-made sample of it is sample_prepared
+    root = next((home / d for d in ("prepared", "sample_prepared") if (home / d).is_dir()), None)
+    if root is None:
+        pytest.skip(f"no prepared Tahoe directory under {home} (vbt data acquire tahoe_100m runs prepare_tahoe)")
     ctx = make_ctx(tmp_path, {"TAHOE_DATA_PATH": str(root)})
     checked(ctx, [f"tahoe_100m.{t}" for t in ("de_permissive", "de_significant", "de_high_quality", "drug_metadata",
                                                "cell_line_metadata", "gene_metadata", "sample_metadata")])
@@ -441,7 +475,7 @@ def test_real_tahoe_prepared_sample_is_ready(tmp_path):
 @needs_real
 def test_real_depmap_is_ready(tmp_path):
     """The 24Q4 files (the two 400 MB matrices take about three minutes each)."""
-    root = real_path("depmap", "24Q4")
+    root = real_home("depmap")
     facts = fixture("depmap", "facts.json")
     with open(root / "CRISPRGeneEffect.csv", newline="") as fh:
         header = next(csv.reader(fh))
@@ -453,9 +487,9 @@ def test_real_depmap_is_ready(tmp_path):
 @needs_real
 def test_real_ontologies_are_ready(tmp_path):
     src = fixture("ontology", "source.json")
-    go = real_path("gene_ontology", "current")
-    cl = real_path("cell_ontology", "current", "cl-basic.obo")
-    msig = real_path("msigdb", "2024.1.Hs")
+    go = real_home("gene_ontology")
+    cl = real_home("cell_ontology", "cl-basic.obo")
+    msig = real_home("msigdb")
     ctx = make_ctx(tmp_path, {"GO_DATA_PATH": str(go), "MSIGDB_DATA_PATH": str(msig), "VBT_CL_OBO": str(cl)})
     out = checked(ctx, ["gene_ontology.term", "cell_ontology.term", "msigdb.hallmark"])
     if sha256(cl) == src["cl"]["sha256"]:
@@ -469,7 +503,8 @@ def test_real_zenodo_resolved_facts_hold():
     """ontology.leaf is false for every term; ancestors/descendants are the closures; phase codes; X ranges."""
     ds = pytest.importorskip("pyarrow.dataset")
     assert REAL is not None
-    roots = [os.environ.get("VBT_ZENODO_DIR"), REAL.parent / "zenodo", REPO / "data" / "zenodo"]
+    roots = [os.environ.get("VBT_ZENODO_DIR"), real_source_home("zenodo"), REAL.parent / "zenodo",
+             REPO / "data" / "zenodo"]
     found = [Path(r) / "virtualbiotech_submission" for r in roots if r]
     zen = next((z for z in found if (z / "clinical_trials" / "data").is_dir()), None)
     if zen is None:

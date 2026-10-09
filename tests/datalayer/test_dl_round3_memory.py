@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from netgate import network_enabled
 from vbt.datalayer.errors import GatewayError
 from vbt.datalayer.launch import build_launch_spec, server_limit_mb
 from vbt.datalayer.memory import AdmissionController, ResidencyLedger, TableRead, sizing
@@ -37,7 +38,7 @@ from vbt.datalayer.settings import DataSettings
 from vbt.tools.mcp_bridge import MCPServerConfig
 
 REPO = Path(__file__).resolve().parents[2]
-NETWORK = os.environ.get("VBT_DL_NETWORK") == "1"
+NETWORK = network_enabled()
 linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the reaper is Linux-only")
 
 GB = 1024

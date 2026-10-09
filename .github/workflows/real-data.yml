@@ -2,7 +2,9 @@
 #   network:   VBT_DL_NETWORK=1 -- live ClinicalTrials.gov, cBioPortal, E-utilities, Census, the Open Targets release
 #              integrity list and footers; runs on a GitHub-hosted runner
 #   real data: VBT_DL_REAL_DATA=<dir> -- the downloaded releases; runs on a self-hosted runner that holds them
-#              (e.g. the deployment host: <dir> = $VBT_HOME/data, laid out <source>/<release>/ by `vbt setup`)
+#              (e.g. the deployment host: <dir> = $VBT_HOME/data/sources, where `vbt setup` / `vbt data acquire`
+#              put each source at its descriptor's acquisition.dir, <source>/<release>/). The run fails when no
+#              real-data test passed (VBT_DL_REAL_DATA_STRICT), so a wrong directory is not a green run of skips.
 name: real-data
 
 on:
@@ -16,7 +18,7 @@ on:
       data_dir:
         description: "real data root on the self-hosted runner (VBT_DL_REAL_DATA)"
         type: string
-        default: /srv/vbt/data
+        default: /srv/vbt/data/sources
       runner:
         description: "labels of the self-hosted runner with the data (JSON list)"
         type: string
@@ -72,4 +74,5 @@ jobs:
       - name: real releases
         env:
           VBT_DL_REAL_DATA: ${{ inputs.data_dir }}
-        run: python -m pytest -q -p no:cacheprovider ${{ inputs.tests }}
+          VBT_DL_REAL_DATA_STRICT: "1"
+        run: python -m pytest -q -rs -p no:cacheprovider ${{ inputs.tests }}
