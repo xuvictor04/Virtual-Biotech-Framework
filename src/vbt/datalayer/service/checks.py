@@ -423,6 +423,32 @@ def _file_hash(path: str, algo: str) -> str | None:
     return done[algo]
 
 
+def r2_format_release(run: CheckRun) -> None:
+    """``release.from: format.<key>`` (an OBO file's ``data-version``) against ``release.match``, the text the
+    pinned release must show there: a file of another release is ``stale``, never ready as the pinned one
+    (DEP-3: the 14-term test fixture served as the Cell Ontology release). Gene Ontology sets none: its
+    data-version (releases/2026-07-26) is not the release directory it is fetched from (2026-08-05)."""
+    desc = run.table.descriptor
+    parts = desc.release.from_ if isinstance(desc.release.from_, list) else [desc.release.from_]
+    keys = [str(p)[len("format."):] for p in parts if isinstance(p, str) and str(p).startswith("format.")]
+    want = desc.release.match
+    if not keys or not want or run.reader is None:
+        return
+    try:
+        frags = run.reader.fragments()
+        header = dict(run.reader.fmt.metadata(frags[0])) if frags else {}
+    except Exception:  # noqa: BLE001 - a format without a header names no release here
+        return
+    got = next((header.get(k) for k in keys if header.get(k)), None)
+    if got is None:
+        return
+    if str(want) in str(got):
+        run.add("R2:release", True, f"{keys[0]} {got} is the pinned release {want}")
+    else:
+        run.add("R2:release", False, f"{keys[0]} {got} is not the pinned release {want}; "
+                f"`vbt data acquire {desc.source} --env-file <file>` fetches it", status="stale")
+
+
 def r2_manifest_checks(run: CheckRun) -> None:
     """Inline manifests checked by whole-file hash; ``ManifestSpec.checks`` (manifest row counts, recorded
     filters) compared with the data."""
@@ -2981,6 +3007,7 @@ def check_table(ctx: ServiceContext, ref: str, depth: str = "standard", *,
             return run.model()
         run.stats, run.rows, _ = aggregate_stats(run.reader)
         r2_manifest_checks(run)
+        r2_format_release(run)
         if is_matrix(run.reader):
             r4_r5_matrix(run)                       # the long view's keys are axis members, not columns
             if depth != "standard_files" and not any(c.name in ("R4", "R5") and not c.ok and c.level == "error"

@@ -436,6 +436,8 @@ def test_run_steps_records_resumes_and_stops_on_failure(tmp_path, base_config, m
                          "ds estimate": (0, ESTIMATE_OUT, ""), "ds check": (0, check, ""),
                          "index build": (1, INDEX_OUT, "")})
     ctx = _ctx(tmp_path, base_config, runner)
+    # data fetched earlier is found at its acquisition home (DEP-9: a home that is not there names no root)
+    (ctx.layout.data / "sources" / "open_targets" / "25.09").mkdir(parents=True)
     rc = run_steps(ctx, select_steps(skip="smoke"))
     assert rc == 0
     st = SetupState(ctx.layout.state)
@@ -523,15 +525,29 @@ def test_smoke_defers_until_the_model_server_answers(tmp_path, base_config):
     assert run_steps(ctx, ["smoke"]) == 1
 
 
-def test_smoke_fails_on_an_incomplete_analysis_stack(tmp_path, base_config):
+def test_smoke_fails_on_an_incomplete_analysis_stack(tmp_path, base_config, monkeypatch):
     doctor = ("[ok] analysis: python import scanpy: 1.11.5\n[!!] data: open_targets.variant: missing\n"
               "[!!] analysis: python import rpy2: ModuleNotFoundError: No module named 'rpy2'\nFAIL\n")
+    rbin = tmp_path / "rbin"                                             # a host with R: rpy2 missing is a failure
+    rbin.mkdir()
+    (rbin / "Rscript").write_text("#!/bin/sh\nexit 0\n")
+    (rbin / "Rscript").chmod(0o755)
+    path = os.environ.get("PATH", "")
+    monkeypatch.setenv("PATH", f"{rbin}{os.pathsep}{path}")
     runner = FakeRunner({"run -q": (0, "hello", ""), "doctor": (1, doctor, "")})
     ctx = _ctx(tmp_path, base_config, runner, llm_url="http://127.0.0.1:9/v1", no_analysis=False)
     assert run_steps(ctx, ["probe", "configure", "smoke"]) == 1
     rec = SetupState(ctx.layout.state).steps["smoke"]
-    assert "rpy2" in rec["detail"] and rec["data"]["analysis"] == {
+    assert "rpy2" in rec["detail"] and "--no-analysis" in rec["detail"] and rec["data"]["analysis"] == {
         "ok": 1, "failed": ["python import rpy2: ModuleNotFoundError: No module named 'rpy2'"]}
+    # DEP-11: a pip-only install has no R by design: the same report is a warning, the step is not failed
+    monkeypatch.setenv("PATH", os.pathsep.join(d for d in path.split(os.pathsep)
+                                               if d and not (Path(d) / "Rscript").exists()))
+    runner = FakeRunner({"run -q": (0, "hello", ""), "doctor": (1, doctor, "")})
+    ctx = _ctx(tmp_path, base_config, runner, llm_url="http://127.0.0.1:9/v1", no_analysis=False)
+    assert run_steps(ctx, ["smoke"]) == 0
+    rec = SetupState(ctx.layout.state).steps["smoke"]
+    assert rec["status"] == "deferred" and "pip-only" in rec["data"]["analysis"]["warning"]
 
 
 def test_smoke_confirms_a_reported_missing_r_package_before_failing(tmp_path, base_config, monkeypatch):
@@ -585,13 +601,23 @@ def test_acquire_writes_the_reported_roots_and_resumes(tmp_path, base_config, mo
     assert runner3.ran("data acquire")
 
 
-def test_data_roots_keep_a_set_variable_else_use_the_layout(tmp_path, base_config, monkeypatch):
+def test_data_roots_keep_a_set_variable_else_use_the_acquisition_home(tmp_path, base_config, monkeypatch):
+    """DEP-9: the fallback is the descriptor's acquisition home and env template (Tahoe: tahoe/<rev>/prepared, where
+    `vbt data acquire tahoe_100m` puts it), and only for a home on this host: a source the host lacks gets no
+    variable (doctor reports it absent instead of failing a path setup invented)."""
     monkeypatch.delenv("OPEN_TARGETS_DATA_PATH", raising=False)
+    monkeypatch.delenv("TAHOE_DATA_PATH", raising=False)
     ctx = _ctx(tmp_path, base_config, FakeRunner())
     ctx.needs = compute_needs(base_config)
+    assert "TAHOE_DATA_PATH" not in data_roots(ctx) and "OPEN_TARGETS_DATA_PATH" not in data_roots(ctx)
+    tahoe_rev = yaml.safe_load((PROJECT_ROOT / "configs/data/sources/tahoe.yaml").read_text())["acquisition"]["release"]
+    ot = ctx.layout.data / "sources" / "open_targets" / "25.09"
+    prepared = ctx.layout.data / "sources" / "tahoe" / tahoe_rev / "prepared"
+    ot.mkdir(parents=True)
+    prepared.mkdir(parents=True)
     roots = data_roots(ctx)
-    assert roots["OPEN_TARGETS_DATA_PATH"] == str(ctx.layout.data / "sources" / "open_targets" / "25.09")
-    assert roots["TAHOE_DATA_PATH"] == str(ctx.layout.data / "sources" / "tahoe_100m" / "current")
+    assert roots["OPEN_TARGETS_DATA_PATH"] == str(ot)
+    assert roots["TAHOE_DATA_PATH"] == str(prepared)
     monkeypatch.setenv("OPEN_TARGETS_DATA_PATH", "/mnt/ot")
     assert data_roots(ctx)["OPEN_TARGETS_DATA_PATH"] == "/mnt/ot"
 
@@ -792,7 +818,7 @@ def test_compose_file_is_valid_for_docker_compose(tmp_path):
         pytest.skip("docker compose not available")
     vllm = hostconfig.render_compose_vllm({"serving_profile": "h100"})
     (tmp_path / "compose.vllm.yaml").write_text(yaml.safe_dump(vllm))
-    env = {**os.environ, "VBT_HOME": str(tmp_path)}
+    env = {**os.environ, "VBT_HOME": str(tmp_path), "SEARXNG_SECRET": "test-secret"}
     res = subprocess.run(["docker", "compose", "--project-directory", str(FULL), "-f", str(FULL / "compose.yaml"),
                           "-f", str(tmp_path / "compose.vllm.yaml"), "--profile", "setup", "config", "--services"],
                          capture_output=True, text=True, timeout=60, env=env)

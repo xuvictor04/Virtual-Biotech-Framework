@@ -22,6 +22,8 @@
 #                       an authenticating reverse proxy (TLS) in front of it for remote users.
 #   VBT_UID / VBT_GID   user the harness runs as (default 10001, the image's `vbt`); must own $VBT_HOME
 #   SEARXNG_IMAGE       pin a SearxNG release in production (default searxng/searxng:latest)
+#   SEARXNG_SECRET      SearxNG's secret_key (overrides the placeholder in deploy/local/searxng/settings.yml);
+#                       deploy.sh generates one into the secrets file when it is missing
 
 name: vbt
 
@@ -80,6 +82,8 @@ services:
       - ../local/searxng/settings.yml:/etc/searxng/settings.yml:ro
     environment:
       SEARXNG_BASE_URL: http://searxng:8080/
+      # a per-host secret, never the committed placeholder (DEP-17): deploy.sh passes it from the secrets file
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?SearxNG needs SEARXNG_SECRET (deploy.sh generates it into the secrets file)}
       # the image listens on [::] by default, which fails on hosts with IPv6 disabled (os error 97)
       GRANIAN_HOST: 0.0.0.0
     healthcheck:

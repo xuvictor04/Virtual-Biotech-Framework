@@ -248,7 +248,7 @@ def _coverage(ctx: _Ctx, res: StepResult) -> StepResult:
         return res
     if res.name == "check":
         statuses = ctx.statuses()
-        needed = needs.local_tables()
+        needed = needs.local_tables(optional=False)      # an optional dependency's absence only degrades a tool
         absent = sorted(t for t in needed if statuses.get(t, "missing") in _ABSENT)
         res.summary += (f"; the enabled roster ({len(needs.tools)} tools on {len(needs.servers)} servers) reads "
                         f"{len(needed)} local table(s), {len(absent)} absent")

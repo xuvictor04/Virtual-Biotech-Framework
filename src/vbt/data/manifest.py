@@ -147,7 +147,6 @@ def write_manifest(spec: Any, downloads: Path, listing: Sequence[RemoteFile], *,
     previous = load_manifest(path)
     old = previous.get("files") if previous.get("release") == release and previous.get("base") == base else None
     old = old if isinstance(old, dict) else {}
-    algos_seen: set[str] = set()
     entries: dict[str, dict[str, Any]] = {}
     for g in names:
         include, exclude = pats.get(g, ([], []))
@@ -185,9 +184,10 @@ def write_manifest(spec: Any, downloads: Path, listing: Sequence[RemoteFile], *,
             if pub and digests[pub[0]] != pub[1]:
                 bad = f"{rel}: {pub[0]} {digests[pub[0]]} differs from the listing ({pub[1]})"
                 break
-            if pub:
-                algos_seen.add(pub[0])
-            entry = {"bytes": size, "sha256": digests["sha256"], "url": remote.url}
+            # what this file was checked against (ACC-3): the listing's checksum, else only its size; the sha256
+            # of a size-only file is recorded after the download, not verified
+            verified_by = pub[0] if pub else ("size" if remote.size is not None else "none")
+            entry = {"bytes": size, "sha256": digests["sha256"], "url": remote.url, "verified_by": verified_by}
             if pub and pub[0] != "sha256":
                 entry[pub[0]] = digests[pub[0]]
             mine[rel] = entry
@@ -208,14 +208,21 @@ def write_manifest(spec: Any, downloads: Path, listing: Sequence[RemoteFile], *,
             entries[rel] = dict(entry)
             report.tables[owner] = report.tables.get(owner, 0) + 1
     covered = sorted({g for g in declared for rel in entries if pats[g][0] and matches(rel, *pats[g])})
-    algo = ", ".join(sorted(algos_seen)) or "size"
     index = dict(about or {})
     against = str(index.get("url") or "the listing").split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
     report.verified_by = against
+    by: dict[str, int] = {}
+    for entry in entries.values():
+        if isinstance(entry, dict):
+            key = str(entry.get("verified_by") or "unrecorded")
+            by[key] = by.get(key, 0) + 1
+    # per kind of check, never "sha256 of every file" for a source that mixes checksummed and size-only files
+    verified = "; ".join(f"{'size only' if k == 'size' else k} for {n} file{'s' if n != 1 else ''}"
+                         for k, n in sorted(by.items())) + f" against {against}" if by else f"nothing against {against}"
     listed_all = sum(1 for p in by_path if any(matches(p, *pats[g]) for g in declared if pats[g][0]))
     data = {"release": release, "base": base, "expected_files": len(entries), "complete": bool(entries),
             "files": dict(sorted(entries.items())), "tables": covered, "archive_files": listed_all,
-            "verified": f"{algo} of every file against {against}", "integrity": index,
+            "verified": verified, "integrity": index,
             "written_by": written_by, "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     atomic_write(path, (json.dumps(data, indent=2, default=str) + "\n").encode())
     report.files = len(entries)

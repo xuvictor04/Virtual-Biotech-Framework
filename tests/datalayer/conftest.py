@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import atexit
+import os
 import shutil
 import sys
 import tempfile
@@ -52,6 +53,14 @@ def pytest_configure(config: pytest.Config) -> None:
 _EMPTY_ZENODO = tempfile.mkdtemp(prefix="vbt-no-zenodo-")
 atexit.register(shutil.rmtree, _EMPTY_ZENODO, ignore_errors=True)
 
+# The shipped Cell Ontology descriptor no longer falls back to the 14-term test fixture (DEP-3) and pins the release
+# (release.match): the data-layer tests read a copy of the fixture whose data-version names the pinned release.
+_CL_DIR = tempfile.mkdtemp(prefix="vbt-mini-cl-")
+atexit.register(shutil.rmtree, _CL_DIR, ignore_errors=True)
+MINI_CL = Path(_CL_DIR) / "mini_cl.obo"
+MINI_CL.write_text((Path(__file__).resolve().parents[1] / "fixtures" / "mini_cl.obo").read_text()
+                   .replace("data-version: mini-cl/test", "data-version: cl/releases/2026-06-08/mini-cl-test", 1))
+
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
@@ -62,6 +71,8 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
     (``test_replicate``, ``test_analysis_fidelity``) still see the real extract."""
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("VBT_ZENODO_DIR", _EMPTY_ZENODO)
+        if not os.environ.get("VBT_CL_OBO"):
+            mp.setenv("VBT_CL_OBO", str(MINI_CL))
         yield
 
 

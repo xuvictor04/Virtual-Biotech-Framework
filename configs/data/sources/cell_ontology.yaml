@@ -1,10 +1,12 @@
 # The Cell Ontology (CL) from an OBO file (docs/DATA_LAYER.md §6.8 S7, §11.5; phase 2, strict: true).
 #
 # Case studies 2 and 3 harmonise CELLxGENE cell types along the CL `is_a` hierarchy
-# (src/vbt/analysis/ontology.py). The file is ${VBT_CL_OBO} (cl-basic.obo from the OBO Foundry for
-# real data); without it the test fixture tests/fixtures/mini_cl.obo is read, so the source is
-# always checkable. Hierarchy expansion uses `is_a` only. Obsolete terms stay in the table and resolve
-# through `replaced_by`.
+# (src/vbt/analysis/ontology.py). The file is ${VBT_CL_OBO} (cl-basic.obo from the OBO Foundry;
+# `vbt data acquire cell_ontology --env-file <file>` fetches the pinned release and writes the variable),
+# else <project>/data/cell_ontology/cl-basic.obo. Without either the table is missing (never the 14-term
+# test fixture, which the tests name through VBT_CL_OBO: DEP-3), and a file whose data-version is not the
+# pinned release is stale (R2:release). Hierarchy expansion uses `is_a` only. Obsolete terms stay in the
+# table and resolve through `replaced_by`.
 #
 # Checked on the real cl-basic.obo (http://purl.obolibrary.org/obo/cl/cl-basic.obo, data-version
 # cl/releases/2026-06-08, read 2026-10-08; vbt ds check --depth deep): 3,540 terms (205 obsolete, 9 of them
@@ -16,7 +18,7 @@
 schema: vbt.datasource/1
 source: cell_ontology
 title: Cell Ontology (CL)
-release: {from: format.data-version}
+release: {from: format.data-version, match: "2026-06-08"}    # the pinned acquisition.release
 defaults: {format: obo, layout: single_file, missing: unknown}
 strict: true
 
@@ -32,7 +34,7 @@ id_types:
 tables:
   term:
     kind: ontology
-    path: ${VBT_CL_OBO:-${vars.project_root}/tests/fixtures/mini_cl.obo}
+    path: ${VBT_CL_OBO:-${vars.project_root}/data/cell_ontology/cl-basic.obo}
     grain: one Cell Ontology term (current or obsolete) of one release
     key: {columns: [id], check: full}
     coverage: {statement: "Every term of the loaded Cell Ontology release, obsolete terms included (existence only).",

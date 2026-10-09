@@ -797,3 +797,40 @@ def test_the_network_gate_means_the_same_everywhere(monkeypatch, value, on):
     monkeypatch.setenv("VBT_DL_NETWORK", value)
     assert netgate.network_enabled() is on
     assert netgate.network_mode() == (value.strip().lower() if on else "")
+
+
+# --------------------------------------------------------------------------- DEP-3
+
+
+def test_the_cell_ontology_is_never_the_test_fixture(tmp_path, monkeypatch):
+    """Without VBT_CL_OBO the table is missing (the shipped default used to be tests/fixtures/mini_cl.obo, served
+    as the release); a file whose data-version is not the pinned release is stale, the pinned one is ready."""
+    from pathlib import Path
+
+    from vbt.datalayer.catalog import build_catalog
+    from vbt.datalayer.service import ServiceContext
+    from vbt.datalayer.service.checks import check_table
+    from vbt.datalayer.settings import DataSettings
+
+    repo = Path(__file__).resolve().parents[2]
+    settings = DataSettings.from_dict({"descriptors_dir": str(repo / "configs" / "data" / "sources"),
+                                       "overlays_dir": str(repo / "configs" / "data" / "overlays"),
+                                       "cache_dir": str(tmp_path / "cache")}, project_root=tmp_path)
+    reg = discover(entry_points=False)
+
+    def status(env: dict[str, str]) -> Any:
+        variables = {"project_root": str(tmp_path), **{f"env.{k}": v for k, v in env.items()}}
+        ctx = ServiceContext(settings, catalog=build_catalog(settings, reg, variables=variables), registry=reg)
+        return check_table(ctx, "cell_ontology.term", "standard")
+
+    monkeypatch.delenv("VBT_CL_OBO", raising=False)
+    assert status({}).status == "missing"
+    fixture = repo / "tests" / "fixtures" / "mini_cl.obo"
+    stale = status({"VBT_CL_OBO": str(fixture)})
+    assert stale.status == "stale"
+    assert any(c.name == "R2:release" and not c.ok and "mini-cl/test" in c.detail for c in stale.checks)
+    pinned = tmp_path / "cl-basic.obo"
+    pinned.write_text(fixture.read_text().replace("data-version: mini-cl/test",
+                                                  "data-version: cl/releases/2026-06-08/cl-basic.owl", 1))
+    ready = status({"VBT_CL_OBO": str(pinned)})
+    assert ready.status == "ready" and any(c.name == "R2:release" and c.ok for c in ready.checks)

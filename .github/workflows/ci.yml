@@ -47,6 +47,7 @@ jobs:
       - name: compose files
         env:
           VBT_HOME: /tmp/vbt-home
+          SEARXNG_SECRET: ci-placeholder            # deploy.sh generates a per-host one into the secrets file
         run: |
           mkdir -p "$VBT_HOME"
           docker compose -f deploy/full/compose.yaml config --quiet

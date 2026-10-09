@@ -330,8 +330,8 @@ def _add_serve_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("--allow-unauthenticated", action="store_true",
                    help="allow a non-loopback --host/--bind: vLLM's --api-key covers only /v1, so prefer an SSH "
                         "tunnel or an authenticating reverse proxy (deploy/local/README.md)")
-    p.add_argument("--hf-cache", metavar="DIR", help="docker: Hugging Face cache to mount (default $HF_HOME or "
-                                                     "~/.cache/huggingface)")
+    p.add_argument("--hf-cache", metavar="DIR", help="docker: Hugging Face cache to mount (default $HF_HOME, else "
+                                                     "$HF_CACHE, else $VBT_HOME/models, else ~/.cache/huggingface)")
     p.add_argument("--name", help="docker: container name (default vbt-vllm)")
     p.add_argument("--detach", action="store_true", help="docker: run in the background (-d)")
     p.add_argument("--vllm-arg", action="append", default=[], metavar="ARG",

@@ -78,7 +78,7 @@ agent_overrides: {}
 
 # ---------------------------------------------------------------- paths
 paths:
-  runs_dir: runs
+  runs_dir: ${VBT_RUNS_DIR:-runs}                    # $VBT_HOME/runs when VBT_HOME is set (vbt setup's layout)
   prompts_dir: ${vars.upstream}/src/agents          # upstream system prompts (Supplementary Text X)
   local_prompts_dir: src/vbt/prompts
   skills:                                           # searched in order by the Skill tool;

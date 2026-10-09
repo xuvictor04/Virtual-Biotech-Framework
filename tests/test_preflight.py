@@ -84,7 +84,7 @@ def test_missing_open_targets_raises_with_fix(monkeypatch, tmp_path):
         with pytest.raises(DataReadinessError) as exc:
             require_ready(cfg, per_turn=per_turn)
         msg = str(exc.value)
-        assert "OPEN_TARGETS_DATA_PATH" in msg and "download_open_targets.py" in msg
+        assert "OPEN_TARGETS_DATA_PATH" in msg and "vbt data acquire open_targets" in msg
         assert msg.endswith(TURN_NOT_SENT)
         assert any(not r.ok and r.kind == "data" for r in exc.value.results)
 

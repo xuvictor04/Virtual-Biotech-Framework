@@ -370,19 +370,48 @@ def _serving_line(ctx: SetupContext) -> str:
 
 def data_roots(ctx: SetupContext) -> dict[str, str]:
     """The root variable of every local source the needs read: what the acquisition reported, else the current
-    value, else ``<data>/sources/<source>/<release or current>`` (the home ``vbt data acquire`` uses by default:
-    ``data.acquisition.root`` = ``${VBT_DATA_DIR}/sources``)."""
+    value, else what the descriptor's acquisition section makes of the home ``vbt data acquire`` uses
+    (``<data>/sources/<acquisition.dir>``, and its ``env`` template: ``TAHOE_DATA_PATH=<home>/prepared``) when that
+    directory is on this host. A source the host does not have gets no variable, so ``vbt doctor`` reports it as
+    absent instead of failing a path setup invented (DEP-9: ``tahoe_100m/current`` matched no acquisition home)."""
     roots: dict[str, str] = {}
     acquired = ((ctx.state.step("acquire").get("data") or {}).get("roots") or {})
+    homes = _acquisition_roots(ctx)
     for source, rec in sorted((ctx.needs.sources if ctx.needs else {}).items()):
         var = rec.get("root_var")
         if rec.get("kind") != "local" or not var:
             continue
         value = acquired.get(var) or os.environ.get(var) or ""
         if not value.strip():
-            value = str(Path(ctx.layout.data) / "sources" / source / (rec.get("release") or "current"))
-        roots[var] = value
+            value = homes.get(var, "")
+        if value.strip():
+            roots[var] = value
     return roots
+
+
+def _acquisition_roots(ctx: SetupContext) -> dict[str, str]:
+    """``{variable: path}`` from each descriptor's acquisition section under ``<data>/sources`` (the default
+    ``data.acquisition.root``), for the homes that exist on this host."""
+    try:
+        from ..data.acquire import source_env, source_home
+        from ..preflight import data_catalog
+
+        _settings, catalog, _registry = data_catalog(ctx.config)
+    except Exception:  # noqa: BLE001 - no data layer: no fallback roots
+        return {}
+    out: dict[str, str] = {}
+    root = Path(ctx.layout.data) / "sources"
+    for source in sorted(catalog.sources):
+        desc = catalog.source(source)
+        if getattr(desc, "acquisition", None) is None:
+            continue
+        home = source_home(desc, root)
+        if not home.is_dir():
+            continue
+        for var, path in source_env(desc, home).items():
+            if Path(path).exists():
+                out.setdefault(var, path)
+    return out
 
 
 def ensure_configured(ctx: SetupContext, *, write: bool) -> list[Path]:
@@ -742,6 +771,15 @@ class CalibrateStep(_DataStep):
         return StepResult("done", f"{len(present)} table(s) calibrated in {took:,.0f} s")
 
 
+_R_ONLY = re.compile(r"\brpy2\b|\bRscript\b|\bR package|\bR librar|\bR\b")
+
+
+def no_r_by_design(failed: list[str], which: Any = shutil.which) -> bool:
+    """Every failed analysis check is about R (rpy2, Rscript, R packages) and this host has no ``Rscript``: a
+    pip-only install, where R is absent by design (DEP-11)."""
+    return bool(failed) and which("Rscript") is None and all(_R_ONLY.search(f) for f in failed)
+
+
 class SmokeStep(Step):
     name = "smoke"
     help = "offline mock session, `vbt doctor` (with --smoke when the model server answers), analysis stack"
@@ -777,9 +815,16 @@ class SmokeStep(Step):
         if mock.returncode != 0:
             return StepResult("failed", f"the offline mock session failed: {results['mock_session']['tail']}",
                               results)
+        if analysis_failed and no_r_by_design(analysis_failed):
+            # a pip-only install has no R by design (README): the R-based analyses are unavailable, which is a
+            # warning, not a failed setup (DEP-11); the conda environment (environment.yml) provides them
+            results["analysis"]["warning"] = ("no R on this host (pip-only install): the R-based analyses are "
+                                              "unavailable; use the conda environment or pass --no-analysis")
+            analysis_failed = []
         if analysis_failed:
             return StepResult("failed", f"the analysis stack is incomplete ({len(analysis_failed)}): "
-                                        + "; ".join(analysis_failed[:4]), results)
+                                        + "; ".join(analysis_failed[:4]) + " (a pip-only install has no R: "
+                                        "`vbt setup --no-analysis` skips this check)", results)
         if not server.get("up"):
             return StepResult("deferred", f"offline checks passed; the model server ({server.get('url')}) does not "
                                           "answer yet: run `vbt setup --only smoke` once it serves", results)

@@ -73,11 +73,19 @@ def deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
+#: Variables that, unset, follow ``$VBT_HOME`` (the deployment root ``vbt setup`` lays out: ``<home>/data``,
+#: ``<home>/runs``): before the first setup, ``vbt data acquire`` and ``vbt run`` used to write under the checkout
+#: while ``vbt setup --plan`` reported the home (DEP-13). After setup, host.env sets them explicitly.
+HOME_FOLLOWERS = {"VBT_DATA_DIR": "data", "VBT_RUNS_DIR": "runs"}
+
+
 def _lookup(key: str, variables: dict[str, str]) -> str | None:
     if key.startswith("vars."):
         v = variables.get(key[5:])
     else:
         v = os.environ.get(key)
+        if (v is None or not v.strip()) and key in HOME_FOLLOWERS and os.environ.get("VBT_HOME", "").strip():
+            v = os.path.join(os.environ["VBT_HOME"].strip(), HOME_FOLLOWERS[key])
     return None if v is None else str(v)
 
 

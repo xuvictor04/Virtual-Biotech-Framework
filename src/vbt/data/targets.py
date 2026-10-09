@@ -48,6 +48,15 @@ def tool_tables(catalog: Any, server: str, tool: str) -> list[str]:
     if b.derived is not None:
         refs.append(b.derived.table)
         refs.extend(s.table for s in b.derived.sections.values())
+        # the derived serve's dependencies, the optional ones included (small: the GO hierarchy get_go_enrichment
+        # propagates over is 32 MB; without it the tool runs degraded: DEP-10)
+        try:
+            from ..datalayer.gateway.readiness import derived_dependencies
+
+            required, optional = derived_dependencies(contract, catalog)
+            refs.extend([*required, *optional])
+        except Exception:  # noqa: BLE001
+            pass
     refs.append(b.result.rows_of or "")
     refs.extend(s.table for s in b.result.sections.values())
     out: list[str] = []
@@ -130,6 +139,16 @@ def agent_tools(config: Mapping[str, Any], agents: Iterable[str]) -> tuple[dict[
     return found, unknown
 
 
+def unknown_source(catalog: Any, source: str) -> str:
+    """Why ``source`` is not in the catalog: its descriptor file does not load (quarantined, with the loader's
+    error), or there is no such source (RR-7: a quarantined descriptor read as 'unknown source')."""
+    for q in getattr(catalog, "quarantined", ()) or ():
+        stem = str(getattr(q, "path", "")).rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        if getattr(q, "kind", None) == "descriptor" and source in (getattr(q, "name", None), stem):
+            return f"the descriptor {q.path} does not load (quarantined): {q.summary}"
+    return f"unknown source {source!r}"
+
+
 @dataclass
 class Targets:
     """``wanted``: ``{source: [tables or extra groups]}``; ``why``: ``{source.name: [reasons]}``; ``notes``: what
@@ -145,7 +164,7 @@ class Targets:
         try:
             desc = catalog.source(source)
         except Exception:  # noqa: BLE001
-            self.errors.append(f"{ref}: unknown source {source!r}")
+            self.errors.append(f"{ref}: {unknown_source(catalog, source)}")
             return
         acq = desc.acquisition
         if desc.kind == "remote" or (acq is not None and acq.mode == "remote"):
@@ -180,7 +199,7 @@ def resolve_targets(catalog: Any, config: Mapping[str, Any], names: Sequence[str
             try:
                 desc = catalog.source(source)
             except Exception:  # noqa: BLE001
-                out.errors.append(f"{name}: unknown source")
+                out.errors.append(f"{name}: {unknown_source(catalog, source)}")
                 continue
             acq = desc.acquisition
             if desc.kind == "remote" or (acq is not None and acq.mode == "remote"):

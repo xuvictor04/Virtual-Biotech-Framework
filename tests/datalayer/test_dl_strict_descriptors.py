@@ -21,6 +21,7 @@ import ast
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -177,7 +178,7 @@ def deep_check(ot_root: Path, tahoe_root: Path, tmp_path_factory: pytest.TempPat
         mp.setenv("OPEN_TARGETS_DATA_PATH", str(ot_root))
         mp.setenv("TAHOE_DATA_PATH", str(tahoe_root))
         mp.setenv("VBT_DATA_DIR", str(cache))
-        mp.delenv("VBT_CL_OBO", raising=False)
+        mp.setenv("VBT_CL_OBO", os.environ["VBT_CL_OBO"])   # the data-layer conftest's pinned fixture copy (DEP-3)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             assert cli.main(["--profile", "mock", "ds", "check", "--depth", "deep", "--json"]) == 0
@@ -270,7 +271,10 @@ def test_hierarchies_and_propagation(catalog) -> None:
     assert go.retired.replaced_by == "term.replaced_by" and go.retired.consider == "term.consider"
     cl = catalog.source("cell_ontology")
     assert cl.id_types["cell_ontology"].hierarchy.predicates == ["is_a"]
-    assert cl.tables["term"].path.endswith("tests/fixtures/mini_cl.obo")
+    # the shipped default is the acquisition's file, never the test fixture (DEP-3); the tests name theirs
+    raw = (REPO / "configs" / "data" / "sources" / "cell_ontology.yaml").read_text()
+    assert "tests/fixtures" not in raw and "data/cell_ontology/cl-basic.obo" in raw
+    assert cl.release.match == "2026-06-08"
     # indirect associations are already propagated over the disease DAG (§11.5); direct ones are not
     for name, spec in ot.tables.items():
         if name.startswith("association_by_"):

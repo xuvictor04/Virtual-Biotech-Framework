@@ -191,7 +191,9 @@ class AdmissionController:
     def limit_origin(self, server: str, limit_mb: float, need_mb: float) -> tuple[str, dict[str, Any]]:
         """Where ``limit_mb`` comes from on this host, in words, and the payload keys that say it: ``host_mb`` (the
         memory the limits are planned from), ``limit_source`` (``auto`` when the limit is the host-scaled one, else
-        ``configured``) and, for ``auto``, ``host_mb_needed`` (the host whose auto limit admits ``need_mb``)."""
+        ``configured``) and, for ``auto``, ``host_mb_needed`` (the host whose auto limit admits ``need_mb``; the
+        caller passes the load x safety plus the server's idle baseline, so the host is sized for both: ACC-4) and
+        ``need_with_baseline_mb``."""
         raw = getattr(self.settings, "raw", None) or {}
         memory = raw.get("memory") if isinstance(raw, Mapping) else None
         memory = memory if isinstance(memory, Mapping) else {}
@@ -200,10 +202,12 @@ class AdmissionController:
         extra: dict[str, Any] = {"host_mb": round(plan) if plan else None}
         if auto is not None and abs(float(limit_mb) - auto) < 1.0:
             needed = sizing.plan_for_server(need_mb, memory)
-            extra.update({"limit_source": "auto", "host_mb_needed": round(needed)})
+            extra.update({"limit_source": "auto", "host_mb_needed": round(needed),
+                          "need_with_baseline_mb": round(float(need_mb))})
             return (f"data.memory.default_server_mb is auto: 0.8 x the host budget of this {plan:,.0f} MB host; a "
-                    f"host with about {needed / 1024:,.0f} GB admits it, or set the server's mem_limit_mb in "
-                    "configs/mcp_servers.yaml"), extra
+                    f"host with about {needed / 1024:,.0f} GB ({needed:,.0f} MB, sized for {float(need_mb):,.0f} MB: "
+                    "the load with its safety factor plus the server's idle baseline) admits it, or set the server's "
+                    "mem_limit_mb in configs/mcp_servers.yaml"), extra
         extra["limit_source"] = "configured"
         host = f" on this {plan:,.0f} MB host" if plan else ""
         return (f"the limit is configured{host}: data.memory.default_server_mb or the server's mem_limit_mb in "

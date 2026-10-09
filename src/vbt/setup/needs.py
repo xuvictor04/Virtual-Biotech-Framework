@@ -37,10 +37,12 @@ class Needs:
         return {"tools": list(self.tools), "tables": self.tables, "sources": self.sources,
                 "servers": self.servers, "errors": list(self.errors)}
 
-    def local_tables(self) -> list[str]:
-        """Tables of local sources (files on this host), sorted."""
+    def local_tables(self, *, optional: bool = True) -> list[str]:
+        """Tables of local sources (files on this host), sorted; ``optional=False`` leaves out the tables only a
+        derived serve's optional dependency names (its tool degrades without them)."""
         return sorted(t for t, rec in self.tables.items()
-                      if self.sources.get(t.split(".", 1)[0], {}).get("kind") == "local")
+                      if self.sources.get(t.split(".", 1)[0], {}).get("kind") == "local"
+                      and (optional or not rec.get("optional")))
 
     def server_full_loads(self) -> dict[str, list[str]]:
         """``{server: [tables some tool of that server loads whole]}`` (what the server's memory must hold)."""
@@ -106,17 +108,30 @@ def compute_needs(config: dict[str, Any]) -> Needs:
         needs.tools.append(f"{server}.{tool}")
         needs.servers.setdefault(server, []).append(tool)
         full = {str(t) for t in contract.full_table_reads}
-        for ref in contract.tables:
+        # a derived serve's own dependencies too: required (a compare_with table) and optional (the GO hierarchy
+        # get_go_enrichment propagates over; without it the tool answers in its degraded mode: DEP-10)
+        try:
+            from ..datalayer.gateway.readiness import derived_dependencies
+
+            dep_required, dep_optional = derived_dependencies(contract, catalog)
+        except Exception:  # noqa: BLE001
+            dep_required, dep_optional = [], []
+        refs = [(r, False) for r in contract.tables] + [(r, False) for r in dep_required] + \
+            [(r, True) for r in dep_optional]
+        for ref, optional in refs:
             try:
                 ct = catalog.table(ref)
             except Exception as exc:  # noqa: BLE001
                 needs.errors.append(f"{server}.{tool}: table {ref}: {exc}")
                 continue
             physical = str(ct.physical) if ct.is_item_table else str(ref)
-            rec = needs.tables.setdefault(physical, {"servers": [], "tools": [], "full_load_servers": []})
+            rec = needs.tables.setdefault(physical, {"servers": [], "tools": [], "full_load_servers": [],
+                                                     "optional": optional})
+            rec["optional"] = bool(rec.get("optional")) and optional       # required by any tool: required
             if server not in rec["servers"]:
                 rec["servers"].append(server)
-            rec["tools"].append(f"{server}.{tool}")
+            if f"{server}.{tool}" not in rec["tools"]:
+                rec["tools"].append(f"{server}.{tool}")
             if (str(ref) in full or physical in full) and server not in rec["full_load_servers"]:
                 rec["full_load_servers"].append(server)
     for table in needs.tables:

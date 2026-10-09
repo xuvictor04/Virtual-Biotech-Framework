@@ -89,6 +89,9 @@ class ReleaseSpec(Strict):
     from_: str | list[str] = Field(alias="from")       # literal | as_of | manifest.<jsonpath> | format.<key> | ...
     resolve: dict[str, str] | None = None              # {result: "$.<field>"} or {table, column}
     per: dict[str, str] | None = None                  # per-record release: {table, column}
+    # text the release read through `from: format.<key>` must contain (the pinned release, e.g. "2026-06-08" in
+    # data-version cl/releases/2026-06-08/cl-basic.owl): a file of another release is stale (R2:release, DEP-3)
+    match: str | None = None
 
     @field_validator("expect", mode="before")
     @classmethod

@@ -877,6 +877,16 @@ class _DescriptorLinter:
 
     def lint_source(self) -> None:
         d = self.desc
+        acq = getattr(d, "acquisition", None)
+        transport = getattr(acq, "transport", None) if acq is not None else None
+        plugin = getattr(transport, "plugin", None) if transport is not None else None
+        if plugin and self.registry is not None:
+            # the harness-side kind (vbt data acquire / vbt setup): a typo used to pass lint and fail only when the
+            # acquisition ran (RR-7)
+            known = _acquisition_plugins(self.registry)
+            if known is not None and plugin not in known:
+                self.add("error", "acquisition.transport.plugin", f"unknown acquisition plugin {plugin!r} "
+                         f"(registered: {', '.join(sorted(known))})", "plugin", plugin)
         if d.leakage is not None:
             if d.leakage.ceiling_from not in CEILING_SOURCES:
                 self.add("error", "leakage.ceiling_from", f"{d.leakage.ceiling_from!r} is not a ceiling the run sets "
@@ -913,6 +923,19 @@ class _DescriptorLinter:
             except ScopeError:
                 continue
         return False
+
+
+def _acquisition_plugins(registry: Any) -> set[str] | None:
+    """The registered acquisition (transport) plugin names: the registry's own when it holds the harness kinds,
+    else the harness registry's builtins and entry points; None when it cannot be built."""
+    try:
+        if "acquisition" in set(getattr(registry, "kinds", ()) or ()):
+            return set(registry.names("acquisition"))
+        from ..plugins.registry import discover_harness
+
+        return set(discover_harness().names("acquisition"))
+    except Exception:  # noqa: BLE001 - lint without the harness registry checks the other kinds only
+        return None
 
 
 def _gateway_languages() -> frozenset[str]:

@@ -32,7 +32,8 @@ os.environ["VBT_NO_DOTENV"] = "1"
 os.environ["VBT_HOST_MEMORY_MB"] = "16384"
 for _var in ("VBT_LLM_BASE_URL", "VBT_LLM_API_KEY", "OPEN_TARGETS_DATA_PATH", "TAHOE_DATA_PATH", "DEPMAP_DATA_PATH",
              "GO_DATA_PATH", "MSIGDB_DATA_PATH", "VBT_CL_OBO", "VBT_ZENODO_DIR", "VBT_DATA_DIR", "VBT_HOME",
-             "VBT_STATE_DIR", "VBT_PROJECTS_DIR", "VBT_LITERATURE_MAXDATE", "VBT_SECRETS_FILE", "SEARXNG_URL"):
+             "VBT_STATE_DIR", "VBT_PROJECTS_DIR", "VBT_LITERATURE_MAXDATE", "VBT_SECRETS_FILE", "SEARXNG_URL",
+             "VBT_RUNS_DIR", "HF_CACHE"):
     os.environ.pop(_var, None)
 
 from netgate import network_enabled  # noqa: E402
@@ -104,7 +105,22 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         _REAL["skipped"].append(f"{report.nodeid}: {report.longrepr[-1] if isinstance(report.longrepr, tuple) else ''}")
 
 
+def _doctor_dirs() -> set[str]:
+    import glob
+    import tempfile
+
+    return set(glob.glob(os.path.join(tempfile.gettempdir(), "vbt-doctor-*")))
+
+
+#: ``vbt doctor --smoke`` working directories that existed before the session (never touched).
+_DOCTOR_BEFORE = _doctor_dirs()
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    import shutil
+
+    for leftover in _doctor_dirs() - _DOCTOR_BEFORE:  # a smoke test that failed on purpose keeps its logs (RR-9)
+        shutil.rmtree(leftover, ignore_errors=True)
     if not (os.environ.get("VBT_DL_REAL_DATA") and os.environ.get("VBT_DL_REAL_DATA_STRICT") == "1"):
         return
     if _REAL["passed"] == 0:

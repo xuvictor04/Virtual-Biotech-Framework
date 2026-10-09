@@ -76,6 +76,18 @@ secret_value() {  # KEY's value in $VBT_SECRETS_FILE (KEY=VALUE lines, optionall
     tail -n 1 | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"
 }
 
+searxng_secret() {  # SEARXNG_SECRET from the environment, else the secrets file, else a new one written there
+  [ -n "${SEARXNG_SECRET:-}" ] && return 0
+  SEARXNG_SECRET="$(secret_value SEARXNG_SECRET)"
+  if [ -z "$SEARXNG_SECRET" ] && [ "${READ_ONLY:-0}" != 1 ]; then
+    # a per-host secret instead of the placeholder settings.yml carries (DEP-17); the file stays mode 600
+    SEARXNG_SECRET="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+    (umask 077; printf 'SEARXNG_SECRET=%s\n' "$SEARXNG_SECRET" >> "$VBT_SECRETS_FILE")
+    echo "deploy.sh: generated SEARXNG_SECRET into $VBT_SECRETS_FILE" >&2
+  fi
+  export SEARXNG_SECRET="${SEARXNG_SECRET:-read-only-plan-placeholder}"
+}
+
 compose() {
   local files=() line key
   while IFS= read -r line; do files+=("$line"); done < <(compose_files)
@@ -84,6 +96,7 @@ compose() {
   for key in HF_TOKEN VLLM_API_KEY; do
     [ -n "${!key:-}" ] || export "$key=$(secret_value "$key")"
   done
+  searxng_secret
   docker compose --project-directory "$HERE" "${files[@]}" "$@"
 }
 
@@ -224,7 +237,7 @@ case "$sub" in
   setup) cmd_setup "$@" ;;
   up) cmd_up ;;
   smoke) cmd_smoke ;;
-  down|ps|logs|config) need_home; compose "$sub" "$@" ;;
+  down|ps|logs|config) READ_ONLY=1; need_home; compose "$sub" "$@" ;;   # these generate no secret
   backup) cmd_backup "$@" ;;
   upgrade) cmd_upgrade ;;
   ""|-h|--help|help) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' ;;

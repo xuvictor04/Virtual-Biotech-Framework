@@ -161,3 +161,199 @@ def test_ds_estimate_decides_with_admissions_rule(monkeypatch) -> None:
     assert tool["upstream_mb"] == pytest.approx(3022.8, abs=0.1)              # MiB, not 3,169.6 decimal MB
     assert tool["need_mb"] == pytest.approx(3022.8 * 1.3 + 300, abs=0.2)
     assert tool["limit_mb"] == 3500 and tool["admissible"] is False           # admission refuses it too
+
+
+# --------------------------------------------------------------------------- RR-7
+
+
+def test_lint_reports_an_unknown_acquisition_plugin(tmp_path) -> None:
+    import yaml
+
+    from vbt.config import PROJECT_ROOT
+    from vbt.datalayer.descriptor.lint import lint_descriptor
+    from vbt.datalayer.descriptor.models import SourceDescriptor
+    from vbt.datalayer.plugins.registry import discover
+
+    raw = yaml.safe_load((PROJECT_ROOT / "configs" / "data" / "sources" / "msigdb.yaml").read_text())
+    raw["acquisition"]["transport"]["plugin"] = "nosuch_transport"
+    found = [f for f in lint_descriptor(SourceDescriptor.model_validate(raw), discover(entry_points=False))
+             if f.level == "error"]
+    assert any("nosuch_transport" in str(f) and "acquisition.transport.plugin" in str(f) for f in found), found
+    raw["acquisition"]["transport"]["plugin"] = "http"
+    ok = lint_descriptor(SourceDescriptor.model_validate(raw), discover(entry_points=False))
+    assert not [f for f in ok if "acquisition" in str(f) and f.level == "error"]
+
+
+def test_a_quarantined_source_is_named_as_such_by_data_acquire() -> None:
+    from types import SimpleNamespace
+
+    from vbt.data.targets import unknown_source
+
+    q = SimpleNamespace(kind="descriptor", name="msigdb", path="configs/data/sources/msigdb.yaml",
+                        summary="acquisition: mode download needs a transport")
+    catalog = SimpleNamespace(quarantined=[q])
+    assert "does not load (quarantined)" in unknown_source(catalog, "msigdb")
+    assert unknown_source(catalog, "nosuch") == "unknown source 'nosuch'"
+
+
+# --------------------------------------------------------------------------- RR-9
+
+
+def test_doctor_smoke_removes_its_working_directory_unless_a_check_failed(tmp_path, monkeypatch) -> None:
+    import asyncio
+    import glob
+    import tempfile
+
+    from vbt import preflight
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    cfg = load_config(["mock"], overrides={"data": {"enabled": False}})
+    cfg["mcp_servers"] = {"servers": [{"name": "broken", "command": str(tmp_path / "no-such-python"),
+                                       "args": ["x.py"]}]}
+    clean = asyncio.run(preflight.smoke_mcp(cfg, servers=[]))
+    assert clean == [] and glob.glob(str(tmp_path / "vbt-doctor-*")) == []
+    failed = asyncio.run(preflight.smoke_mcp(cfg, servers=["broken"]))
+    kept = glob.glob(str(tmp_path / "vbt-doctor-*"))
+    assert any(not r.ok for r in failed) and len(kept) == 1
+    assert any("kept" in r.label and kept[0] in r.detail for r in failed)
+    asyncio.run(preflight.smoke_mcp(cfg, servers=["broken"], log_dir=tmp_path / "logs"))
+    assert glob.glob(str(tmp_path / "vbt-doctor-*")) == kept          # with log_dir nothing more is left
+
+
+# --------------------------------------------------------------------------- DEP-10
+
+
+def test_a_derived_serves_optional_dependency_is_acquired_and_needed() -> None:
+    """`vbt data acquire --for-tools pathway.get_go_enrichment` and setup's needs include the GO hierarchy the
+    enrichment propagates over (optional: without it the tool degrades to direct annotations only)."""
+    from vbt.data.targets import resolve_targets
+    from vbt.preflight import data_catalog
+    from vbt.setup.needs import compute_needs
+
+    cfg = load_config([])
+    _settings, catalog, _registry = data_catalog(cfg)
+    t = resolve_targets(catalog, cfg, tools=["pathway.get_go_enrichment"])
+    assert "term" in t.wanted.get("gene_ontology", []), t.wanted
+    needs = compute_needs(cfg)
+    rec = needs.tables.get("gene_ontology.term")
+    assert rec is not None and "pathway.get_go_enrichment" in rec["tools"] and rec["optional"] is True
+    assert "gene_ontology.term" in needs.local_tables() and "gene_ontology.term" not in needs.local_tables(
+        optional=False)
+
+
+# --------------------------------------------------------------------------- DEP-11
+
+
+def test_a_pip_only_install_without_r_is_a_smoke_warning_not_a_failure() -> None:
+    from vbt.setup.steps import no_r_by_design
+
+    r_lines = ["rpy2 is not importable (No module named 'rpy2')", "Rscript not found on PATH"]
+    assert no_r_by_design(r_lines, which=lambda name: None)
+    assert not no_r_by_design(r_lines, which=lambda name: "/usr/bin/Rscript")         # R installed: a real failure
+    assert not no_r_by_design([*r_lines, "scanpy is not importable"], which=lambda name: None)
+    assert not no_r_by_design([], which=lambda name: None)
+
+
+# --------------------------------------------------------------------------- DEP-13
+
+
+def test_data_and_runs_follow_vbt_home_before_setup(monkeypatch, tmp_path) -> None:
+    from vbt.data.acquire import AcquisitionSettings as AcquireSettings
+
+    monkeypatch.setenv("VBT_HOME", str(tmp_path / "home"))
+    cfg = load_config(["mock"])
+    assert cfg["paths"]["runs_dir"] == str(tmp_path / "home" / "runs")
+    assert AcquireSettings.from_config(cfg).root == tmp_path / "home" / "data" / "sources"
+    monkeypatch.setenv("VBT_DATA_DIR", str(tmp_path / "elsewhere"))           # an explicit value still wins
+    assert AcquireSettings.from_config(load_config(["mock"])).root == tmp_path / "elsewhere" / "sources"
+    monkeypatch.delenv("VBT_HOME")
+    monkeypatch.delenv("VBT_DATA_DIR")
+    assert load_config(["mock"])["paths"]["runs_dir"] == "runs"
+
+
+def test_the_served_weights_go_to_the_layouts_models_directory() -> None:
+    from vbt.local.profiles import default_hf_cache
+
+    assert default_hf_cache({"VBT_HOME": "/srv/vbt"}) == "/srv/vbt/models"
+    assert default_hf_cache({"VBT_HOME": "/srv/vbt", "HF_CACHE": "/big/models"}) == "/big/models"
+    assert default_hf_cache({"VBT_HOME": "/srv/vbt", "HF_HOME": "/hf"}) == "/hf"
+    assert default_hf_cache({}) == "~/.cache/huggingface"
+
+
+# --------------------------------------------------------------------------- DEP-17
+
+
+def test_deploy_generates_a_per_host_searxng_secret(tmp_path) -> None:
+    import os
+    import stat
+    import subprocess
+
+    from vbt.config import PROJECT_ROOT
+
+    script = PROJECT_ROOT / "deploy" / "full" / "deploy.sh"
+    funcs = ('source <(sed -n -e "/^secret_value()/,/^}/p" -e "/^searxng_secret()/,/^}/p" "$1"); '
+             'searxng_secret; echo "$SEARXNG_SECRET"')
+    secrets = tmp_path / "secrets.env"
+    env = {"PATH": os.environ["PATH"], "VBT_SECRETS_FILE": str(secrets)}
+    first = subprocess.run(["bash", "-c", funcs, "_", str(script)], env=env, capture_output=True, text=True,
+                           timeout=30)
+    assert first.returncode == 0, first.stderr
+    secret = first.stdout.strip()
+    assert len(secret) == 64 and secret != "vbt-local-searxng-change-me"
+    assert f"SEARXNG_SECRET={secret}" in secrets.read_text()
+    assert stat.S_IMODE(secrets.stat().st_mode) == 0o600
+    again = subprocess.run(["bash", "-c", funcs, "_", str(script)], env=env, capture_output=True, text=True,
+                           timeout=30)
+    assert again.stdout.strip() == secret and secrets.read_text().count("SEARXNG_SECRET=") == 1
+    compose = (PROJECT_ROOT / "deploy" / "full" / "compose.yaml").read_text()
+    assert "SEARXNG_SECRET: ${SEARXNG_SECRET:?" in compose
+
+
+# --------------------------------------------------------------------------- ACC-3
+
+
+def test_the_manifest_says_what_each_file_was_verified_against(tmp_path) -> None:
+    """Cell Ontology: cl-basic.obo has a published sha256, uberon-basic.obo only a size; the manifest used to claim
+    'sha256 of every file against the listing'."""
+    import hashlib
+
+    import yaml
+
+    from vbt.config import PROJECT_ROOT
+    from vbt.data.manifest import load_manifest, write_manifest
+    from vbt.datalayer.descriptor.models import AcquisitionSpec
+    from vbt.datalayer.plugins.base import RemoteFile
+
+    raw = yaml.safe_load((PROJECT_ROOT / "configs" / "data" / "sources" / "cell_ontology.yaml").read_text())
+    spec = AcquisitionSpec.model_validate(raw["acquisition"])
+    cl, uberon = b"format-version: 1.2\n", b"format-version: 1.4\n"
+    (tmp_path / "cl-basic.obo").write_bytes(cl)
+    (tmp_path / "uberon-basic.obo").write_bytes(uberon)
+    listing = [RemoteFile("cl-basic.obo", "https://x/cl-basic.obo", len(cl),
+                          {"sha256": hashlib.sha256(cl).hexdigest()}),
+               RemoteFile("uberon-basic.obo", "https://x/uberon-basic.obo", len(uberon))]
+    report = write_manifest(spec, tmp_path, listing, release="2026-06-08", base="https://x/",
+                            about={"url": "https://x/listing"})
+    man = load_manifest(report.path)
+    assert man["files"]["cl-basic.obo"]["verified_by"] == "sha256"
+    assert man["files"]["uberon-basic.obo"]["verified_by"] == "size"
+    assert man["verified"] == "sha256 for 1 file; size only for 1 file against listing"
+
+
+# --------------------------------------------------------------------------- ACC-4
+
+
+def test_the_too_large_payload_says_the_needed_host_includes_the_baseline(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from vbt.datalayer.memory import sizing
+    from vbt.datalayer.memory.admission import AdmissionController
+
+    monkeypatch.setenv("VBT_HOST_MEMORY_MB", "13680")
+    limit = sizing.server_limit_for(13680)
+    need = 14734.0 + 300.0                                  # the l2g load x 1.3, plus the idle baseline
+    fake = SimpleNamespace(settings=SimpleNamespace(raw={"memory": {}}))
+    where, extra = AdmissionController.limit_origin(fake, "genetics", limit, need)
+    assert extra["limit_source"] == "auto" and extra["need_with_baseline_mb"] == round(need)
+    assert extra["host_mb_needed"] == round(sizing.plan_for_server(need))
+    assert "baseline" in where and f"{extra['host_mb_needed']:,}" in where

@@ -302,7 +302,7 @@ def _basic_reference_files(value: str) -> dict[str, list[Path]]:
         raise ValueError(f"OPEN_TARGETS_DATA_PATH is not a directory: {root}")
     files = sorted(root.rglob("*.parquet"))
     if not files:
-        raise ValueError(f"no Parquet files under {root}; rerun the data downloader")
+        raise ValueError(f"no Parquet files under {root}; vbt data acquire open_targets fetches them")
     return {"(all)": files}
 
 
@@ -338,8 +338,7 @@ def check_credentials(config: dict[str, Any], provider: Any = None) -> CheckResu
 
 def check_open_targets(config: dict[str, Any]) -> CheckResult:
     value = _env_value(config, "OPEN_TARGETS_DATA_PATH")
-    hint = ("download the Open Targets 25.09 release: python third_party/TheVirtualBiotech/tools/"
-            "download_open_targets.py <dir> --workers 8, then set OPEN_TARGETS_DATA_PATH in .env")
+    hint = OPEN_TARGETS_HINT
     if not value:
         return CheckResult("Open Targets reference data (OPEN_TARGETS_DATA_PATH)", False, hint=hint,
                            detail="OPEN_TARGETS_DATA_PATH is not set", kind="data")
@@ -367,8 +366,7 @@ def check_tahoe(config: dict[str, Any]) -> CheckResult | None:
     missing += [d + "/" for d in TAHOE_DIRS if not (root / d).is_dir() or not any((root / d).glob("*.parquet"))]
     missing += [f"metadata/{m}_metadata.parquet" for m in TAHOE_METADATA
                 if not (root / "metadata" / f"{m}_metadata.parquet").is_file()]
-    hint = ("prepare the Tahoe-100M pseudobulk DE files (third_party/TheVirtualBiotech/docs/TAHOE_SETUP.md, "
-            "tools/prepare_tahoe.py) or unset TAHOE_DATA_PATH")
+    hint = TAHOE_HINT
     if missing:
         return CheckResult("Tahoe-100M data (TAHOE_DATA_PATH)", False, hint=hint,
                            detail=f"{value}: missing {', '.join(missing)}", kind="data")
@@ -485,21 +483,30 @@ DATA_CHECK_TIMEOUT_S = 1800.0
 DATA_TOOLS_LABEL = "data tools ready"
 OPEN_TARGETS_LABEL = "Open Targets reference data (OPEN_TARGETS_DATA_PATH)"
 TAHOE_LABEL = "Tahoe-100M data (TAHOE_DATA_PATH)"
-OPEN_TARGETS_HINT = ("download the Open Targets 25.09 release: python third_party/TheVirtualBiotech/tools/"
-                     "download_open_targets.py <dir> --workers 8, then set OPEN_TARGETS_DATA_PATH in .env")
-TAHOE_HINT = ("prepare the Tahoe-100M pseudobulk DE files (third_party/TheVirtualBiotech/docs/TAHOE_SETUP.md, "
-              "tools/prepare_tahoe.py) or unset TAHOE_DATA_PATH")
+# the acquisition engine's commands (the not_ready payload names the same; DEP-16): they fetch the pinned release
+# into the acquisition home and write the root variable
+OPEN_TARGETS_HINT = ("fetch the pinned Open Targets release: vbt data acquire open_targets --env-file .env "
+                     "(or --for-agents to fetch only what the enabled agents read)")
+TAHOE_HINT = ("fetch and prepare Tahoe-100M (about 83 GiB): vbt data acquire tahoe_100m --env-file .env, "
+              "or unset TAHOE_DATA_PATH (Tahoe is optional)")
 #: Sources whose data is optional: unset, their findings are informational (as the legacy Tahoe check).
 OPTIONAL_SOURCES = {"tahoe_100m": "TAHOE_DATA_PATH"}
 _READY = frozenset({"ready", "awaiting_producer", "unbound"})
 _STATUS_HINTS = {
-    "missing": "the table's files are absent: download or prepare them, then rerun `vbt ds check`",
-    "partial": "a partial download or unreadable fragment: complete the download, then rerun `vbt ds check`",
+    "missing": "the table's files are absent: `vbt data acquire {source}.{table} --env-file <file>` fetches them "
+               "(then rerun `vbt ds check`)",
+    "partial": "a partial download or unreadable fragment: `vbt data acquire {source}.{table}` completes it, then "
+               "rerun `vbt ds check`",
     "schema_drift": "the columns differ from the descriptor: update the descriptor or the data",
     "encoding_drift": "stored codes differ from the descriptor's encoding",
     "key_violation": "the declared key is not unique or has nulls",
-    "stale": "the release differs from the one the descriptor expects",
+    "stale": "the release differs from the one the descriptor pins: `vbt data acquire {source}.{table}` fetches it",
 }
+
+
+def _status_hint(status: str, source: str, table: str) -> str:
+    """The fix for a table status, naming the acquisition command for the table (DEP-16)."""
+    return _STATUS_HINTS.get(status, "run `vbt ds check`").format(source=source, table=table)
 #: Tables whose ``_check`` failed in this process, with their signature (a per-turn check skips them).
 _CHECK_ERRORS: dict[tuple[str, str], tuple[str | None, str]] = {}
 
@@ -997,7 +1004,7 @@ def data_findings(config: dict[str, Any], dr: DataReadiness) -> list[CheckResult
                 names = sorted(t.split("__", 2)[-1] for t in tools)
                 verb = "partial for" if part is not None else "unready"
                 detail += f" -- {verb}: {', '.join(names[:6])}" + (f" (+{len(names) - 6})" if len(names) > 6 else "")
-            hint = next((c.hint for c in checks if c.hint), "") or _STATUS_HINTS.get(status, "run `vbt ds check`")
+            hint = next((c.hint for c in checks if c.hint), "") or _status_hint(status, source, table)
             scope: dict[str, Any] = {"source": source, "table": table}
             if col:
                 scope["column"] = col
@@ -1012,7 +1019,7 @@ def data_findings(config: dict[str, Any], dr: DataReadiness) -> list[CheckResult
             out.append(CheckResult(f"data: {ref} ({len(cols)} column{'s' if len(cols) > 1 else ''})", False,
                                    required=False, kind="data",
                                    detail=f"{status}: {listed} -- no enabled tool's calls read them",
-                                   hint=_STATUS_HINTS.get(status, "run `vbt ds check`"),
+                                   hint=_status_hint(status, source, table),
                                    scope={"source": source, "table": table, "columns": cols}))
     for ref, err in sorted(dr.errors.items()):
         if ref in used:
@@ -1400,7 +1407,8 @@ def _smoke_call(raw: Mapping[str, Any], name: str, mode: str, controls: list[dic
 
 
 async def smoke_mcp(config: dict[str, Any], *, log_dir: str | os.PathLike | None = None,
-                    servers: Iterable[str] | None = None, mode: str = "gateway") -> list[CheckResult]:
+                    servers: Iterable[str] | None = None, mode: str = "gateway",
+                    keep: bool = False) -> list[CheckResult]:
     """Start every enabled MCP server and make cheap calls.
 
     ``mode="gateway"`` (the default; with the data layer): the servers start behind the data
@@ -1415,6 +1423,10 @@ async def smoke_mcp(config: dict[str, Any], *, log_dir: str | os.PathLike | None
 
     A server fails when it does not start, advertises no tools, or a call fails (an error, or a
     failed control).
+
+    The working directory (``vbt-doctor-*``: the run directory, the MCP output and, without ``log_dir``, the
+    servers' logs) is removed afterwards, unless ``keep`` or a check failed without ``log_dir``: then the logs the
+    hints name stay and a line says where (RR-9: every run used to leave one behind).
     """
     from .tools.base import ToolFailure
     from .tools.mcp_bridge import MCPBridge, MCPServerConfig
@@ -1512,7 +1524,11 @@ async def smoke_mcp(config: dict[str, Any], *, log_dir: str | os.PathLike | None
             except Exception:  # noqa: BLE001
                 pass
         await bridge.aclose()
-        if log_dir:  # otherwise the server logs stay in `tmp` for the hints above
+        failed = any(not r.ok for r in results)
+        if keep or (failed and not log_dir):
+            results.append(CheckResult("MCP smoke: working directory kept", True, required=False, kind="mcp",
+                                       detail=f"the servers' logs and outputs are in {tmp} (remove it when done)"))
+        else:
             shutil.rmtree(tmp, ignore_errors=True)
     return results
 

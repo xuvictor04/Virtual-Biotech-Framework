@@ -457,8 +457,9 @@ def test_plan_execute_manifest_and_rerun(site, tmp_path):
     man = load_manifest(sp.home / ".download-manifest.json")
     assert man["release"] == "1.0" and man["base"] == f"{site.root}/1.0/out/" and man["complete"] is True
     assert man["tables"] == ["alpha", "beta"] and man["expected_files"] == len(man["files"]) == 3
-    assert man["archive_files"] == 4 and man["verified"] == "sha1 of every file against list"
+    assert man["archive_files"] == 4 and man["verified"] == "sha1 for 3 files against list"
     entry = man["files"]["beta/x=1/part-0.parquet"]
+    assert entry["verified_by"] == "sha1"                    # per file, what it was checked against (ACC-3)
     assert entry["sha1"] == hashlib.sha1(rel.files["beta/x=1/part-0.parquet"]).hexdigest()
     assert entry["sha256"] == hashlib.sha256(rel.files["beta/x=1/part-0.parquet"]).hexdigest()
     lock = load_manifest(sp.home / A.LOCK)
@@ -840,9 +841,34 @@ def test_the_cli_plans_acquires_and_reports(site, tmp_path, capsys, monkeypatch)
 NETWORK = network_enabled()
 
 
+#: Groups with more files than this are checked on a sample (first, last and three between) instead of every file.
+HEAD_ALL_FILES = 120
+
+
+def _remote_size(url: str) -> int | None:
+    """The server's own size of ``url``: HEAD Content-Length, else the total of a one-byte range read. The bytes on
+    the wire are not the file's when the server compresses them (the MSigDB GMT: 20,551 gzip bytes for a
+    48,690-byte file), so no encoding is accepted."""
+    import httpx
+
+    headers = {"Accept-Encoding": "identity"}
+    with httpx.Client(follow_redirects=True, timeout=60, headers=headers) as client:
+        r = client.head(url)
+        if r.status_code < 400 and r.headers.get("content-length") and not r.headers.get("content-encoding"):
+            return int(r.headers["content-length"])
+        r = client.get(url, headers={"Range": "bytes=0-0"})
+        total = (r.headers.get("content-range") or "").rpartition("/")[2]
+        return int(total) if total.isdigit() else None
+
+
 @pytest.mark.skipif(not NETWORK, reason="set VBT_DL_NETWORK=1 to list the real sources")
 def test_live_listings_match_the_declared_sizes(shipped, tmp_path):
-    """Every shipped download source listed live; the files of each declared group are what it declares."""
+    """Every shipped download source listed live; the files of each declared group are what it declares, and their
+    sizes are the servers' own (ACC-2): the Open Targets listing (a checksum list) carries no sizes and a per-file
+    http transport reports the descriptor's declared bytes, so each file is sized by HEAD (every file of a group up
+    to HEAD_ALL_FILES, whose sum must be the declared bytes; a sample beyond). An unknown size fails the test."""
+    from concurrent.futures import ThreadPoolExecutor
+
     st = _settings(tmp_path, retries=2)
     wanted = {s: list(d.acquisition.tables) + list(d.acquisition.extra)
               for s, d in shipped.sources.items() if d.acquisition is not None and d.acquisition.mode == "download"}
@@ -854,12 +880,23 @@ def test_live_listings_match_the_declared_sizes(shipped, tmp_path):
         acq = sp.desc.acquisition
         for g in sp.groups:
             entry = acq.tables.get(g) or acq.extra.get(g)
-            mine = [f for f in sp.files if g in f.groups]
+            mine = sorted((f for f in sp.files if g in f.groups), key=lambda f: f.remote.path)
             assert len(mine) == entry.count, (sp.source, g, len(mine))
-            sizes = [f.remote.size for f in mine]
-            if all(s is not None for s in sizes):
-                assert sum(sizes) == entry.bytes, (sp.source, g, sum(sizes))
             assert group_patterns(acq, g, sp.release)[0]
+            if not mine or mine[0].remote.member:          # members of an archive have no URL of their own
+                continue
+            every = len(mine) <= HEAD_ALL_FILES
+            picked = mine if every else [mine[i] for i in sorted({0, len(mine) // 4, len(mine) // 2,
+                                                                   3 * len(mine) // 4, len(mine) - 1})]
+            with ThreadPoolExecutor(8) as pool:
+                sizes = list(pool.map(lambda f: _remote_size(f.remote.url), picked))
+            unknown = [f.remote.path for f, s in zip(picked, sizes) if not s]
+            assert not unknown, (sp.source, g, unknown[:3])
+            for f, size in zip(picked, sizes):
+                if f.remote.size is not None:
+                    assert size == f.remote.size, (sp.source, f.remote.path, size, f.remote.size)
+            if every:
+                assert sum(sizes) == entry.bytes, (sp.source, g, sum(sizes), entry.bytes)
 
 
 @pytest.mark.skipif(not NETWORK, reason="set VBT_DL_NETWORK=1 to acquire two small real tables")

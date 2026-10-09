@@ -611,6 +611,20 @@ def select_docker_tag(docker: Mapping[str, Any], driver: str | None, *, engine: 
 DOCKER_SHM_SIZE = "16g"
 
 
+def default_hf_cache(environ: Any = None) -> str:
+    """Where the weights go: ``$HF_HOME``, else the deployment layout's models directory (``$HF_CACHE``, else
+    ``$VBT_HOME/models``: DEPLOYMENT plans 40-200 GB there and compose.vllm.yaml mounts it), else
+    ``~/.cache/huggingface`` (DEP-13: a bare-metal serve with VBT_HOME set filled the small root filesystem)."""
+    env = os.environ if environ is None else environ
+    if (env.get("HF_HOME") or "").strip():
+        return str(env["HF_HOME"]).strip()
+    if (env.get("HF_CACHE") or "").strip():
+        return str(env["HF_CACHE"]).strip()
+    if (env.get("VBT_HOME") or "").strip():
+        return os.path.join(str(env["VBT_HOME"]).strip(), "models")
+    return "~/.cache/huggingface"
+
+
 def docker_run_argv(spec: ServeSpec, *, driver: str | None = None, hf_cache: str | None = None,
                     name: str = "vbt-vllm", bind: str = "127.0.0.1", gpus: str = "all",
                     detach: bool = False) -> tuple[list[str], list[str]]:
@@ -618,12 +632,12 @@ def docker_run_argv(spec: ServeSpec, *, driver: str | None = None, hf_cache: str
 
     The container listens on 0.0.0.0:<container_port>; the host publishes it on
     ``bind:port`` (loopback by default: vLLM has no authentication unless
-    ``VLLM_API_KEY`` is set). ``hf_cache`` (default ``$HF_HOME`` or
-    ``~/.cache/huggingface``) is mounted as the container's Hugging Face cache.
+    ``VLLM_API_KEY`` is set). ``hf_cache`` (default :func:`default_hf_cache`) is mounted as the container's
+    Hugging Face cache.
     """
     tag, note = select_docker_tag(spec.docker, driver, engine=spec.engine, version=spec.engine_version)
     image = f"{spec.docker.get('image', 'vllm/vllm-openai')}:{tag}"
-    cache = os.path.expanduser(hf_cache or os.environ.get("HF_HOME") or "~/.cache/huggingface")
+    cache = os.path.expanduser(hf_cache or default_hf_cache())
     argv = ["docker", "run", "--rm"]
     if detach:
         argv.append("-d")
