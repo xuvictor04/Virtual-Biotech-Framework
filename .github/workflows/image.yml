@@ -1,0 +1,52 @@
+# Build the harness image (deploy/full/Dockerfile) and smoke-test it; publish it to the GitHub container registry
+# for version tags. Runs by hand, on version tags, and when the image's inputs change on the default branch.
+name: image
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+    branches: [main]
+    paths:
+      - deploy/full/**
+      - pyproject.toml
+      - .dockerignore
+      - third_party/**
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: free disk for a ~4 GB image
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+      - name: build
+        run: |
+          deploy/full/deploy.sh build
+          docker image ls vbt-harness
+      - name: smoke-test the image
+        run: |
+          home="$(mktemp -d)"; chmod 777 "$home"
+          run() { docker run --rm -v "$home:/srv/vbt" -e VBT_BASE_PROFILES=mock vbt-harness:latest "$@"; }
+          run setup --plan --no-network
+          run --profile mock --skip-preflight run -q "smoke test"
+          ls "$home/runs"                     # the session record is on the volume
+          # probe, configure and smoke: a mock session, `vbt doctor` and the analysis stack (Python and R). Without a
+          # model server the smoke step ends `deferred` (exit 0); a missing package fails it (exit 1).
+          run setup --no-network --only probe,configure,smoke
+          docker run --rm --entrypoint python vbt-harness:latest -m pytest -q -p no:cacheprovider \
+            /opt/vbt/tests/test_setup.py
+      - name: publish (version tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/vbt-harness:${GITHUB_REF_NAME}"
+          docker tag vbt-harness:latest "$image"
+          docker push "$image"

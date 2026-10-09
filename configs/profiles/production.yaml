@@ -1,0 +1,47 @@
+# An operated deployment (deploy/full, docs/DEPLOYMENT.md): the policies of a long-running, shared installation.
+# Host-specific values (paths, memory limits scaled to the host, the sandbox) are NOT here: `vbt setup` writes them
+# to <state>/host.yaml, layered after this profile. The model comes from the serving profile's harness profile
+# (local-h100, local-h200, ...; or claude / paper), layered before it:
+#
+#   vbt --profile local-h200 --profile production --profile $VBT_HOME/state/host.yaml web ...
+#   deploy/full/vbt-host web ...          # the same, from host.env's VBT_PROFILES (the image's entrypoint)
+#
+# Every value restates or tightens a default, so an upgrade that changes a default does not silently change a
+# production installation.
+
+# Sessions refuse to start (exit 2) when a credential, the model server or every granted data tool is missing;
+# never start degraded without the operator saying so (--allow-missing-data per command).
+preflight:
+  skip: false
+  allow_missing_data: false
+orchestration:
+  require_reference_data: true
+
+# The data layer guards every reviewed server; a guarded call is refused (never answered unguarded) while the
+# data child is down; readiness is checked at standard depth before a session.
+data:
+  enabled: true
+  gateway:
+    mode: enforce
+    when_service_down: strict
+    profile: safe
+  readiness:
+    per_turn_depth: shallow
+    session_depth: standard
+
+# MCP servers never inherit the harness's environment (provider keys stay out of them and of agents' Bash).
+mcp:
+  inherit_env: false
+  max_restarts: 3
+
+# Every run lands in runs/INDEX.md; reports keep the fast integrity check (a full re-hash on every save would
+# re-read multi-GB artifacts each turn: `vbt verify <run>` does the full check).
+audit:
+  render_reports: true
+  report_verify: fast
+  update_index: true
+
+web_ui:
+  start_mcp: true
+  login_max_failures: 10
+  login_lockout_s: 900

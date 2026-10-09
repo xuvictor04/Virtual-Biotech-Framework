@@ -1,0 +1,71 @@
+# Apptainer definition of the harness image, for HPC sites without Docker. It installs the same pinned environment
+# with the same scripts as deploy/full/Dockerfile (install-env.sh, install-harness.sh) and keeps the layout of the
+# upstream definition (third_party/TheVirtualBiotech/vbt.def): Ubuntu 22.04, micromamba, one conda env under
+# /opt/conda/envs/vbt.
+#
+# Build at the root of a clean clone with the submodule checked out (git submodule update --init):
+#   apptainer build vbt-harness.sif deploy/full/vbt-harness.def
+# or convert the Docker image instead of rebuilding:
+#   apptainer build vbt-harness.sif docker-daemon://vbt-harness:latest
+# Behind a proxy, export HTTPS_PROXY (and SSL_CERT_FILE for a TLS-intercepting proxy's CA) before building.
+#
+# Run: the image is read-only, so bind the deployment home (data/, runs/, projects/, state/) at /srv/vbt:
+#   apptainer run --bind /scratch/$USER/vbt:/srv/vbt vbt-harness.sif setup --plan
+#   apptainer run --bind /scratch/$USER/vbt:/srv/vbt vbt-harness.sif setup
+#   apptainer run --bind /scratch/$USER/vbt:/srv/vbt vbt-harness.sif web --host 127.0.0.1 --port 7860
+# `run` goes through deploy/full/vbt-host, which loads the host configuration `vbt setup` wrote. The model server
+# runs as its own job (apptainer run --nv docker://vllm/vllm-openai:<tag> ...; docs/DEPLOYMENT.md, "HPC").
+
+Bootstrap: docker
+From: mambaorg/micromamba:2.3.2
+Stage: micromamba
+
+Bootstrap: docker
+From: ubuntu:22.04
+Stage: final
+
+%labels
+    Description "Virtual Biotech harness: agents, data layer and the unmodified upstream MCP servers"
+    Source deploy/full/vbt-harness.def
+
+%files from micromamba
+    /bin/micromamba /usr/local/bin/micromamba
+    /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
+%files
+    # the parts of the checkout the harness runs from (data, runs and VCS metadata stay out)
+    pyproject.toml /opt/vbt/pyproject.toml
+    README.md /opt/vbt/README.md
+    src /opt/vbt/src
+    configs /opt/vbt/configs
+    skills /opt/vbt/skills
+    scripts /opt/vbt/scripts
+    deploy /opt/vbt/deploy
+    third_party /opt/vbt/third_party
+
+%environment
+    export PATH=/opt/conda/envs/vbt/bin:/usr/local/bin:$PATH
+    export CONDA_PREFIX=/opt/conda/envs/vbt
+    export PYTHONDONTWRITEBYTECODE=1
+    export PYTHONUNBUFFERED=1
+    export FASTMCP_SHOW_CLI_BANNER=false
+    export VBT_HOME=${VBT_HOME:-/srv/vbt}
+
+%post
+    set -eu
+    export MAMBA_ROOT_PREFIX=/opt/conda
+    bash /opt/vbt/deploy/full/install-env.sh env --prefix /opt/conda/envs/vbt --spec-dir /opt/vbt/deploy/full
+    bash /opt/vbt/deploy/full/install-harness.sh --prefix /opt/conda/envs/vbt --src /opt/vbt
+    rm -rf /opt/vbt/third_party/TheVirtualBiotech/.git
+    mkdir -p /srv/vbt/data /srv/vbt/runs /srv/vbt/projects /srv/vbt/state /srv/vbt/models
+    chmod 0755 /opt/vbt/deploy/full/vbt-host
+    # the clone-relative defaults (paths.runs_dir: runs, data/...) land on the bind mounts, not in the read-only image
+    ln -s /srv/vbt/runs /opt/vbt/runs
+    ln -s /srv/vbt/data /opt/vbt/data
+
+%runscript
+    exec /opt/vbt/deploy/full/vbt-host "$@"
+
+%test
+    /opt/conda/envs/vbt/bin/python -c "import vbt.cli, vbt.setup, fastmcp, pyarrow, pandas, cellxgene_census, scanpy, rpy2; print('imports OK')"
+    /opt/vbt/deploy/full/vbt-host --profile mock tools --no-mcp >/dev/null && echo "vbt tools OK"

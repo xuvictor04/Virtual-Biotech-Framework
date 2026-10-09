@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Run `vbt` with the host configuration `vbt setup` wrote. The harness image's entrypoint; on a host without
+# containers, use it in place of `vbt`:
+#
+#   deploy/full/vbt-host chat               # = vbt --profile <harness> --profile <base...> --profile <state>/host.yaml chat
+#   deploy/full/vbt-host setup --plan       # vbt setup with the base profiles only
+#
+# Configuration directory: $VBT_STATE_DIR, else $VBT_HOME/state, else <checkout>/data/.vbt-setup. From it:
+#   host.env    KEY=VALUE lines written by `vbt setup` (data roots, directories, VBT_PROFILES, model server URL).
+#               A variable already set to a non-empty value in the environment wins, as with .env files.
+#   VBT_PROFILES (in host.env)  the profiles sessions use, host.yaml last; before the first setup, VBT_BASE_PROFILES.
+# VBT_BASE_PROFILES (environment, e.g. "production") are the operator's profiles; `vbt setup` records them.
+# Arguments after the subcommand are passed through, so `--profile X` given here is applied last.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
+if [ -n "${VBT_STATE_DIR:-}" ]; then
+  STATE="$VBT_STATE_DIR"
+elif [ -n "${VBT_HOME:-}" ]; then
+  STATE="$VBT_HOME/state"
+else
+  STATE="$ROOT/data/.vbt-setup"
+fi
+
+load_env() {
+  local line key
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    key="${line%%=*}"
+    case "$key" in *[!A-Za-z0-9_]*|'') continue ;; esac
+    if [ -z "${!key:-}" ]; then
+      eval "export $line"
+    fi
+  done < "$1"
+}
+
+if [ -f "$STATE/host.env" ]; then
+  load_env "$STATE/host.env"
+fi
+
+# A writable HOME: numba and matplotlib cache there (scanpy, decoupler and liana fail to import when numba has no
+# writable cache), and the container may run under another uid than the image's user (compose VBT_UID).
+if [ -z "${HOME:-}" ] || [ ! -w "$HOME" ]; then
+  HOME="${TMPDIR:-/tmp}/vbt-home-$(id -u)"
+  export HOME
+  mkdir -p "$HOME"
+fi
+
+if command -v vbt >/dev/null 2>&1; then
+  VBT=(vbt)
+else
+  VBT=("${PYTHON:-python3}" -m vbt.cli)
+  export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+fi
+
+profiles=()
+if [ "${1:-}" = "setup" ]; then
+  for p in ${VBT_BASE_PROFILES:-}; do profiles+=(--profile "$p"); done
+else
+  for p in ${VBT_PROFILES:-${VBT_BASE_PROFILES:-}}; do profiles+=(--profile "$p"); done
+fi
+exec "${VBT[@]}" "${profiles[@]}" "$@"

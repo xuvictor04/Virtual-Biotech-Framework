@@ -4,7 +4,8 @@ Sessions: ``vbt chat | run | replay | tools``; records: ``vbt verify | list |
 index | export | audit | show`` (``vbt.audit.cli``); ``vbt doctor``
 (``vbt.preflight``); ``vbt web`` (``vbt.web``); ``vbt bulk``; case studies
 ``vbt case1 | scenario | data`` (``vbt.case_studies``); the local inference
-server ``vbt local profiles | serve | check | bench`` (``vbt.local``).
+server ``vbt local profiles | serve | check | bench`` (``vbt.local``); host
+bring-up ``vbt setup`` (``vbt.setup``, docs/DEPLOYMENT.md).
 
 The default model is local (vLLM serving Qwen3.8-27B, ``configs/default.yaml``);
 ``--profile claude`` / ``--profile paper`` use the Anthropic API. A session
@@ -1106,6 +1107,7 @@ def build_parser() -> argparse.ArgumentParser:
     from .datalayer.cli import add_datasource_parsers
     from .local import add_local_parsers
     from .preflight import add_doctor_parser
+    from .setup import add_setup_parser
     from .web import add_web_parser
     add_audit_parsers(sub)      # verify, list, index, export, audit, show
     add_doctor_parser(sub)      # doctor [--smoke[=gateway|upstream]] [--analysis] [--data]
@@ -1114,6 +1116,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_bulk_parser(sub)
     add_case_parsers(sub)       # case1, scenario, data (P9)
     add_local_parsers(sub)      # local profiles | serve | check | bench (local inference server)
+    add_setup_parser(sub)       # setup [--plan | --probe | --status] (host bring-up, docs/DEPLOYMENT.md)
     return p
 
 

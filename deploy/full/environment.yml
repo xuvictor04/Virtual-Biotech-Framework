@@ -1,0 +1,61 @@
+# The harness image's environment (deploy/full/Dockerfile, deploy/full/vbt-harness.def): one conda env for the
+# harness, the agents' Bash and the UNMODIFIED upstream MCP servers.
+#
+# This is the INPUT of the lock. Images install the lock, never this file:
+#   deploy/full/conda-linux-64.lock    explicit conda packages (URL + md5)
+#   deploy/full/requirements.lock      pip packages (exact versions)
+# Regenerate both after editing this file or requirements.in:
+#   deploy/full/deploy.sh lock          (docker build --target lock, writes the two files)
+#
+# Versions: where third_party/TheVirtualBiotech/environment.yml pins a package (the upstream servers and skills
+# import it), this file pins the same version. The harness-only additions (R glmmTMB/betareg/MuMIn, gseapy,
+# PyDESeq2, tiledbsoma, the web UI) are pinned by the lock. The root environment.yml is the same environment
+# with ranges, for a conda install from a clone; tests/test_setup.py checks that every package it names is here.
+name: vbt
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pip
+  # Core scientific stack (upstream pins)
+  - numpy=1.26.3
+  - pandas=2.3.3
+  - scipy=1.12.0
+  - scikit-learn=1.8.0
+  - statsmodels=0.14.6
+  - matplotlib-base=3.10.8   # upstream: matplotlib=3.10.8 (same library; no Qt GUI toolkit in a server image)
+  - seaborn=0.13.2
+  # Single-cell analysis (upstream pins)
+  - anndata=0.12.7
+  - scanpy=1.11.5
+  - h5py=3.15.1
+  - harmonypy=0.2.0
+  - loompy=3.0.8
+  - pronto=2.6.0
+  - pycirclize=1.10.1
+  - pillow=12.1.0
+  # Harness additions (single-cell / statistics used by skills and the reference analyses)
+  - gseapy>=1.1
+  - pypdf
+  - jsonschema
+  # One BLAS for numpy, scipy, R and torch: OpenBLAS (upstream pins libopenblas for rpy2); MKL would add ~600 MB
+  - libblas=*=*openblas
+  # R and the mixed-effects / beta-regression packages (upstream: r-base, lme4, lmerTest, rpy2)
+  - libopenblas=0.3.34
+  - rpy2=3.6.4
+  - r-base=4.4.3
+  - r-lme4=1.1_38
+  - r-lmertest=3.2_1
+  - r-glmmtmb
+  - r-tmb=1.9.19          # the TMB glmmTMB 1.1.14 was built with (a newer TMB makes glmmTMB warn of a mismatch)
+  - r-betareg
+  - r-mumin
+  # CELLxGENE Census (upstream pin) and its storage engine
+  - cellxgene-census=1.17.0   # brings its storage engine, tiledbsoma-py (conda-forge has no `tiledbsoma` package)
+  # MCP data-server dependencies (upstream pins)
+  - pyarrow=20.0.0
+  - requests=2.32.5
+  # Image tooling
+  - bubblewrap            # bash.sandbox.os: bwrap (vbt setup enables it when the container allows namespaces)
+  - tini                  # PID 1: reaps the MCP servers' and agents' orphaned children
