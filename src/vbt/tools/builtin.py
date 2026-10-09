@@ -1151,8 +1151,17 @@ def _update_memory(ctx: ToolContext, a: dict[str, Any]) -> str:
 
 def builtin_tools(skill_roots: Iterable[Any] | None = None) -> list[Tool]:
     """The built-in tool surface. ``skill_roots`` puts the skill catalog in the Skill
-    tool's description (the runtime's ``skill_roots`` are used at call time)."""
+    tool's description (the runtime's ``skill_roots`` are used at call time). The project authoring tools
+    (``vbt.tools.utilities``) are always registered; the active project's utilities (``util__<name>``) are found
+    from its skill root (``vbt.projects.utilities.project_tools_for_roots``)."""
+    from ..projects.utilities import project_tools_for_roots
+    from .utilities import authoring_tools
+
     roots = [Path(r) for r in skill_roots] if skill_roots is not None else None
+    return [*_core_tools(roots), *authoring_tools(), *project_tools_for_roots(roots)]
+
+
+def _core_tools(roots: list[Path] | None) -> list[Tool]:
     path = {"type": "string", "description": "Absolute path, or relative: work/... inputs/... evidence/... "
                                              "report/... logs/... .claude/... resolve to the run directory, other "
                                              "relative paths to your workspace"}

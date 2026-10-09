@@ -15,6 +15,14 @@
   is quarantined, a tool whose binding references a table or id_type a quarantined descriptor declares
   (or may declare, when its YAML does not parse), and a tool on the generic guard while a generic
   overlay of its server is quarantined. :meth:`Catalog.lint` reports each file as an error.
+* Projects (docs/PROJECTS.md): the active project's ``descriptors/`` and ``overlays/``
+  (:func:`~.descriptor.load.project_search_dirs`) are loaded after the shipped directories and can only add.
+  A project file that would replace or widen what is shipped is refused on its own
+  (``Catalog.project_refused``; never ``quarantined``, so it cannot take a shipped tool down): a source or
+  server the core declares, a generic overlay, a ``same_as`` naming another server's tool, and a project file
+  that does not load without a project-only name. Other project files that do not load are quarantined like
+  shipped ones (only the project's own tools depend on them). ``Catalog.project_sources`` and
+  ``project_servers`` name what the project added.
 """
 
 from __future__ import annotations
@@ -23,13 +31,21 @@ import dataclasses
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .descriptor.columns import is_container
 from .descriptor.load import digest as _digest
-from .descriptor.load import Quarantined, load_descriptors, load_overlays, variables_from_config
+from .descriptor.load import (
+    DescriptorError,
+    Quarantined,
+    load_descriptors,
+    load_overlays,
+    project_search_dirs,
+    variables_from_config,
+)
 from .descriptor.models import IdTypeSpec, SourceDescriptor, TableSpec, id_type_identity, plugin_name
 from .descriptor.overlay import ArgBinding, GenericSpec, Overlay, ToolBinding
 from .errors import ErrorKind, GatewayError, invalid_argument_payload
@@ -403,6 +419,12 @@ class Catalog:
         self.registry = registry
         self.quarantined: list[Quarantined] = sorted(quarantined, key=lambda q: (q.path, q.error))
         self._tables: dict[TableRef, CatalogTable] = {}
+        #: The active project's additions (set by :func:`build_catalog`): its sources and servers, and the
+        #: project files refused because they would replace or widen what is shipped.
+        self.project_dir: Path | None = None
+        self.project_sources: frozenset[str] = frozenset()
+        self.project_servers: frozenset[str] = frozenset()
+        self.project_refused: list[Quarantined] = []
 
     # -- collections -------------------------------------------------------
 
@@ -706,6 +728,8 @@ class Catalog:
         reg = registry if registry is not None else self.registry
         findings: list[Any] = [Finding("error", q.path, f"does not load, quarantined: {q.summary}", rule="quarantined")
                                for q in self.quarantined]
+        findings += [Finding("error", q.path, f"project file refused: {q.summary}", rule="project")
+                     for q in self.project_refused]
         for d in self._sources.values():
             findings.extend(lint_descriptor(d, reg, strict, self._sources))
         for ov in list(self._overlays.values()) + self._generic:
@@ -743,15 +767,90 @@ def build_catalog(settings: Any, registry: Any = None, *, variables: Mapping[str
     quarantined: list[Quarantined] | None = [] if quarantine else None
     descriptors = load_descriptors(Path(settings.descriptors_dir), variables, run, quarantine=quarantined)
     overlays, generic = load_overlays(Path(settings.overlays_dir), variables, quarantine=quarantined)
+    project = project_search_dirs(variables)
+    added: tuple[set[str], set[str], list[Quarantined]] = (set(), set(), [])
+    if project is not None:
+        added = _add_project(project, descriptors, overlays, quarantined, variables, run)
     aliases = dict(getattr(getattr(settings, "sources", None), "alias", {}) or {})
     catalog = Catalog(descriptors, overlays, generic, aliases=aliases, registry=registry,
                       quarantined=quarantined or ())
+    if project is not None:
+        catalog.project_dir = project[0].parent
+        catalog.project_sources, catalog.project_servers = frozenset(added[0]), frozenset(added[1])
+        catalog.project_refused = sorted(added[2], key=lambda q: (q.path, q.error))
+    for q in catalog.project_refused:
+        if (q.path, q.error) not in _WARNED:
+            _WARNED.add((q.path, q.error))
+            log.warning("data catalog: project %s %s refused (the shipped catalog is unchanged): %s",
+                        q.kind, q.path, q.summary)
     for q in catalog.quarantined:
         if (q.path, q.error) not in _WARNED:
             _WARNED.add((q.path, q.error))
             log.warning("data catalog: %s %s quarantined (only the tools that depend on it are refused): %s",
                         q.kind, q.path, q.summary)
     return catalog
+
+
+#: A name a project file that does not load can be quarantined under (anything else is refused).
+_NAME = re.compile(r"^[A-Za-z_][\w-]*$")
+
+
+def _refuse(path: Path | str, kind: str, name: str | None, error: str) -> Quarantined:
+    return Quarantined(str(path), kind, name, error)
+
+
+def _add_project(dirs: tuple[Path, Path], descriptors: dict[str, SourceDescriptor], overlays: dict[str, Overlay],
+                 quarantined: list[Quarantined] | None, variables: Mapping[str, str],
+                 run: Mapping[str, Any] | None) -> tuple[set[str], set[str], list[Quarantined]]:
+    """Load the project's descriptors and overlays into ``descriptors``/``overlays`` (in place) after the shipped
+    ones. Returns ``(sources added, servers added, refused files)``; with ``quarantined`` None (strict loading)
+    the first refused or broken project file raises :class:`DescriptorError`."""
+    ddir, odir = dirs
+    shipped_sources = set(descriptors) | {q.name for q in quarantined or () if q.kind == "descriptor" and q.name}
+    shipped_servers = set(overlays) | {q.name for q in quarantined or () if q.kind == "overlay" and q.name}
+    own: list[Quarantined] = []
+    p_desc = load_descriptors(ddir, variables, run, quarantine=own)
+    p_over, p_generic = load_overlays(odir, variables, quarantine=own)
+    refused: list[Quarantined] = []
+    for q in own:
+        shipped = shipped_sources if q.kind == "descriptor" else shipped_servers
+        if q.kind == "generic" or not _NAME.match(q.name or "") or q.name in shipped:
+            # it could only matter to what is shipped: refused, so no shipped tool is marked quarantined
+            refused.append(q)
+        elif quarantined is not None:
+            quarantined.append(q)
+        else:
+            raise DescriptorError(q.path, q.error)
+    for ov in p_generic:
+        refused.append(_refuse(odir, "generic", ov.server, "a project cannot change the generic guard (an overlay "
+                                                           "file starting with '_')"))
+    sources: set[str] = set()
+    for name, desc in p_desc.items():
+        if name in shipped_sources:
+            refused.append(_refuse(ddir / f"{name}.yaml", "descriptor", name,
+                                   f"source {name!r} is shipped (data.descriptors_dir); a project adds sources and "
+                                   "never redefines one: choose another source name"))
+            continue
+        descriptors[name] = desc
+        sources.add(name)
+    servers: set[str] = set()
+    for name, ov in p_over.items():
+        if name in shipped_servers:
+            refused.append(_refuse(odir / f"{name}.yaml", "overlay", name,
+                                   f"server {name!r} has a shipped overlay (data.overlays_dir); a project overlay "
+                                   "binds only servers the core does not"))
+            continue
+        foreign = sorted(n for b in ov.tools.values() for n in b.same_as if n.split(".", 1)[0] != name)
+        if foreign:
+            refused.append(_refuse(odir / f"{name}.yaml", "overlay", name,
+                                   f"same_as names other servers' tools ({', '.join(foreign)}); a project overlay "
+                                   "binds only its own server's tools"))
+            continue
+        overlays[name] = ov
+        servers.add(name)
+    if quarantined is None and refused:
+        raise DescriptorError(refused[0].path, refused[0].error)
+    return sources, servers, refused
 
 
 def load_catalog(config: Mapping[str, Any] | None = None, registry: Any = None, *,
