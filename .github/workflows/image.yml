@@ -36,6 +36,9 @@ jobs:
           home="$(mktemp -d)"; chmod 777 "$home"
           run() { docker run --rm -v "$home:/srv/vbt" -e VBT_BASE_PROFILES=mock vbt-harness:latest "$@"; }
           run setup --plan --no-network
+          # the production plan runs the real acquisition-plan child against a fresh state (no host.yaml yet): its
+          # exit code fails the step when any step's plan fails
+          docker run --rm -v "$home:/srv/vbt" -e VBT_BASE_PROFILES=production vbt-harness:latest setup --plan --no-network
           run --profile mock --skip-preflight run -q "smoke test"
           ls "$home/runs"                     # the session record is on the volume
           # probe, configure and smoke: a mock session, `vbt doctor` and the analysis stack (Python and R). Without a

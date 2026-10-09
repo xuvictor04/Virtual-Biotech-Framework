@@ -1181,7 +1181,7 @@ def apply_host_config(args, environ: dict[str, str] | None = None) -> Path | Non
     env = os.environ if environ is None else environ
     if env.get(NO_HOST_ENV):
         return None
-    from .setup.hostconfig import HOST_ENV, read_env_file
+    from .setup.hostconfig import HOST_ENV, read_env_file, read_secrets_file, secrets_path
     from .setup.layout import resolve_layout
 
     loaded = None
@@ -1191,13 +1191,31 @@ def apply_host_config(args, environ: dict[str, str] | None = None) -> Path | Non
             if key.isidentifier() and not env.get(key):
                 env[key] = value
         loaded = path
+    secrets = secrets_path(env)
+    if secrets is not None and secrets.is_file():
+        # where DEPLOYMENT says secrets live: a bare-metal `vbt web` never saw VBT_WEB_PASSWORD there (DEP-7)
+        try:
+            values = read_secrets_file(secrets)
+        except ValueError as exc:
+            raise ProfileError(str(exc)) from None
+        for key, value in values.items():
+            if not env.get(key):
+                env[key] = value
     cmd = getattr(args, "cmd", None)
     explicit = list(getattr(args, "profile", None) or [])
     if not explicit and (getattr(args, "resume", None) or cmd == "replay"):
         return loaded
     names = env.get("VBT_BASE_PROFILES", "") if cmd == "setup" else \
         (env.get("VBT_PROFILES") or env.get("VBT_BASE_PROFILES") or "")
-    host = [n for n in names.split() if n]
+    host = []
+    for n in names.split():
+        if ("/" in n or n.endswith((".yaml", ".yml"))) and not Path(n).expanduser().is_file():
+            # a recorded profile file that is gone (host.yaml moved or deleted): every command crashed with a
+            # traceback, vbt doctor included (RR-4); it is skipped and named
+            print(f"warning: {n} (recorded in {path}) does not exist; skipped. Rerun `vbt setup` to "
+                  "write it again.", file=sys.stderr)
+            continue
+        host.append(n)
     if host and hasattr(args, "profile"):
         args.profile = list(dict.fromkeys(host + explicit))
     return loaded
@@ -1213,7 +1231,8 @@ def main(argv: list[str] | None = None) -> int:
         config = build_config(args)
         if args.cmd == "replay" and getattr(args, "replay_model", None):
             resolve_model(config, args.replay_model)
-    except (ModelResolutionError, ProfileError, ProjectError) as exc:
+    except (ModelResolutionError, ProfileError, ProjectError, FileNotFoundError) as exc:
+        # FileNotFoundError: a --profile file that does not exist (config/profile not found), never a traceback
         print(f"error: {exc}", file=sys.stderr)
         return 2
     from .preflight import DataReadinessError, ProviderNotReadyError

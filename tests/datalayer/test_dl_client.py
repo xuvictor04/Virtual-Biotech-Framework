@@ -10,7 +10,8 @@
   unguarded and its record says so.
 * ``Run.register_artifact(derived_from=...)`` records the inputs (found or not in this run), and the
   ``mcp__provenance__register_artifact`` tool passes them through.
-* Bash commands run under the reaper with ``RLIMIT_DATA = data.memory.workspace_mb`` (Linux).
+* Bash commands run under the reaper with ``data.memory.workspace_mb`` as their limit, contained like the servers
+  (``rss`` unless ``data.memory.limit_kind`` says otherwise; Linux).
 * The ``child`` backend starts the real data child through an ``MCPBridge``.
 """
 
@@ -279,7 +280,9 @@ def test_bash_runs_under_the_workspace_memory_limit(tmp_path, monkeypatch) -> No
     from vbt.tools.builtin import WORKSPACE_MB, _strip_exit_marker, _workspace_limit
 
     probe = [sys.executable, "-c", "import resource; print(resource.getrlimit(resource.RLIMIT_DATA)[0])"]
-    limit, argv, status = _workspace_limit({"data": {"memory": {"workspace_mb": 3000}}}, probe, tmp_path, "tu_1")
+    # limit_kind rlimit_data (no longer the default: RR-1) caps the child's data segment
+    limit, argv, status = _workspace_limit({"data": {"memory": {"workspace_mb": 3000, "limit_kind": "rlimit_data"}}},
+                                           probe, tmp_path, "tu_1")
     assert limit == 3000 and argv is not None and status is not None
     out = subprocess.run(argv, capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
@@ -293,7 +296,7 @@ def test_bash_runs_under_the_workspace_memory_limit(tmp_path, monkeypatch) -> No
     monkeypatch.setenv("VBT_HOST_MEMORY_MB", "6000")
     assert _workspace_limit({"data": {"memory": {"workspace_mb": "auto"}}}, probe, tmp_path, "tu_5")[0] == 3000
     big = {"limits": {"max_parallel_agents": 8}, "data": {"memory": {"host_mb": 1024 * 1024}}}
-    assert _workspace_limit(big, probe, tmp_path, "tu_6")[0] == 32768
+    assert _workspace_limit(big, probe, tmp_path, "tu_6")[0] == 28672     # one budget with the servers (DEP-14)
     assert _workspace_limit({"data": {"memory": {"workspace_mb": 0}}}, probe, tmp_path, "tu_3") == (None, None, None)
     assert _workspace_limit({"data": {"enabled": False}}, probe, tmp_path, "tu_4") == (None, None, None)
 
@@ -314,6 +317,34 @@ def test_workspace_limit_follows_limit_kind(tmp_path) -> None:
         assert argv.index("--containment") < argv.index("--")
     argv = _workspace_limit(cfg("rlimit_data"), probe, tmp_path, "k3")[1]
     assert argv is not None and "--containment" not in argv
+    # RR-1: rss (the shipped kind, and what unset or a typo means) reaches the reaper as for the servers
+    for i, memory in enumerate(({"workspace_mb": 3000, "limit_kind": "rss"}, {"workspace_mb": 3000},
+                                {"workspace_mb": 3000, "limit_kind": "rsss"})):
+        argv = _workspace_limit({"data": {"memory": memory}}, probe, tmp_path, f"r{i}")[1]
+        assert argv is not None and argv[argv.index("--containment") + 1] == "rss", memory
+
+
+def test_the_shipped_workspace_runs_without_rlimit_data(tmp_path) -> None:
+    """RR-1: under the shipped configuration a Bash child is contained by RSS, not RLIMIT_DATA (TileDB's Census reads
+    crashed with std::bad_alloc under it): the child's RLIMIT_DATA is unlimited and the status names rss."""
+    import json as _json
+    import resource
+    import subprocess
+
+    from vbt.config import load_config
+    from vbt.tools.builtin import _workspace_limit
+
+    if not sys.platform.startswith("linux"):
+        pytest.skip("the reaper is Linux-only")
+    probe = [sys.executable, "-c", "import resource; print(resource.getrlimit(resource.RLIMIT_DATA)[0])"]
+    limit, argv, status = _workspace_limit(load_config(["mock"]), probe, tmp_path, "shipped")
+    assert limit and argv is not None and argv[argv.index("--containment") + 1] == "rss"
+    out = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr[-2000:]
+    first = out.stdout.strip().splitlines()[0]
+    assert int(first) == resource.RLIM_INFINITY
+    got = _json.loads(status.read_text())
+    assert got.get("rlimit_data") is False and got.get("containment") != "rlimit_data", got
 
 
 # ---------------------------------------------------------------------------- the child backend

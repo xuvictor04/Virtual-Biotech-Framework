@@ -22,7 +22,7 @@ pq = pytest.importorskip("pyarrow.parquet")
 from vbt.validate import STEPS, Options, run_validate  # noqa: E402
 from vbt.validate.cases import Case, complete_cases, judge, judge_off, oracle_queries, plan_cases, table_source  # noqa: E402
 from vbt.validate.contained import Outcome, run_oracle  # noqa: E402
-from vbt.validate.report import FAIL, PASS, SKIPPED, StepResult, ValidationReport, percentile  # noqa: E402
+from vbt.validate.report import FAIL, PASS, SKIPPED, WARN, StepResult, ValidationReport, percentile  # noqa: E402
 
 linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the reaper is Linux-only")
 DEAD = {"VBT_CBIOPORTAL_BASE": "http://127.0.0.1:9/cbioportal/api", "VBT_CTGOV_BASE": "http://127.0.0.1:9/ctgov/api/v2",
@@ -44,7 +44,11 @@ def test_percentile_and_the_report(tmp_path):
     rep = ValidationReport(started="t0", host={"hostname": "h", "platform": "p", "cpus": 4, "plan_mb": 13680})
     rep.steps += [StepResult("host", "Host", PASS, "plans with 13,680 MB", rows=[{"setting": "a|b", "value": 1.5}]),
                   StepResult.skipped("model", "Model server", "no model server answers at http://x")]
-    assert rep.ok and rep.counts() == {"pass": 1, "skipped": 1}
+    # RR-8: a substantive step skipped for want of its prerequisite leaves the host uncertified (non-zero exit)
+    assert not rep.ok and rep.verdict == "incomplete" and rep.counts() == {"pass": 1, "skipped": 1}
+    assert "# vbt validate: INCOMPLETE" in rep.to_markdown() and "model skipped" in rep.to_markdown()
+    rep.steps[1] = StepResult.skipped("model", "Model server", "no model server answers at http://x", applies=False)
+    assert rep.ok and rep.verdict == "pass"
     md, js = rep.write(tmp_path)
     text = md.read_text()
     assert "# vbt validate: PASS" in text and "| Host | PASS |" in text and "a\\|b" in text
@@ -301,8 +305,10 @@ def test_the_cli_runs_the_host_and_lint_steps(tmp_path, capsys):
     report = json.loads((tmp_path / "v" / "validate.json").read_text())
     assert [s["name"] for s in report["steps"]] == ["host", "lint"]
     host = report["steps"][0]
-    assert host["status"] == PASS and host["details"]["sizing"]["settings"]["memory.default_server_mb"]["configured"] \
-        == "auto"
+    # the suite plans with 16,384 MB: there the 8 agents' 8,000 MB workspace floors are over the plan (DEP-14: WARN)
+    assert host["status"] in (PASS, WARN) and \
+        host["details"]["sizing"]["settings"]["memory.default_server_mb"]["configured"] == "auto"
+    assert "at full load" in host["summary"] and report["verdict"] == "pass"
     assert "Host and host-scaled limits" in out.out
     assert cli.main(["--profile", "mock", "validate", "--only", "nope"]) == 2
     assert set(STEPS) >= {"host", "lint", "check", "correctness", "latency", "memory", "live", "replication", "model"}
@@ -327,7 +333,12 @@ def test_validate_end_to_end_on_the_fixtures(tmp_path, monkeypatch, ot_fixture):
                                                 servers=["target", "drug"], depth="standard", max_tools=8,
                                                 out=tmp_path / "out", timeout_s=180))
     steps = {s.name: s for s in report.steps}
-    assert steps["check"].status == PASS, steps["check"].rows
+    # the fixture holds only some of the tables target's and drug's tools read: the coverage says which (DEP-5)
+    assert steps["check"].status in (PASS, WARN), steps["check"].rows
+    coverage = steps["check"].details["coverage"]
+    assert coverage["needed"] and set(coverage["absent"]) <= set(coverage["needed"])
+    assert (steps["check"].status == WARN) == bool(coverage["absent"])
+    assert report.verdict == ("incomplete" if coverage["absent"] else "pass"), report.incomplete()
     corr = steps["correctness"]
     assert corr.status == PASS, [r for r in corr.rows if r["enforce"] == "wrong"]
     by_test = corr.details["by_test"]

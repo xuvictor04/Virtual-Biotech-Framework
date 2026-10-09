@@ -32,6 +32,7 @@ def test_a_plain_vbt_applies_the_host_configuration(tmp_path):
     state = tmp_path / "state"
     _write_env(state, VBT_PROFILES=f"production {state}/host.yaml", OPEN_TARGETS_DATA_PATH="/d/ot/25.09",
                VBT_LLM_BASE_URL="http://gpu:8000/v1")
+    (state / "host.yaml").write_text("{}\n")                                 # a profile named by path exists
     env = {"VBT_STATE_DIR": str(state), "VBT_LLM_BASE_URL": "http://mine:8000/v1", "TAHOE_DATA_PATH": ""}
     args = SimpleNamespace(cmd="chat", profile=["no-web"], resume=None)
     assert cli.apply_host_config(args, env) == state / "host.env"

@@ -9,10 +9,16 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-__all__ = ["PASS", "FAIL", "WARN", "SKIPPED", "ERROR", "StepResult", "ValidationReport", "percentile"]
+__all__ = ["PASS", "FAIL", "WARN", "SKIPPED", "ERROR", "INCOMPLETE", "SUBSTANTIVE", "StepResult", "ValidationReport",
+           "percentile"]
 
 PASS, FAIL, WARN, SKIPPED, ERROR = "pass", "fail", "warn", "skipped", "error"
-_MARK = {PASS: "PASS", FAIL: "FAIL", WARN: "WARN", SKIPPED: "SKIPPED", ERROR: "ERROR"}
+#: The overall verdict when nothing failed but the host was not certified: a substantive step was skipped (its
+#: prerequisite is missing), or a step found the roster's needs uncovered (RR-8, DEP-5). The exit status is 1.
+INCOMPLETE = "incomplete"
+#: The steps whose skip leaves a host uncertified (an operator who leaves them out with --only/--skip is not).
+SUBSTANTIVE = ("correctness", "live", "model")
+_MARK = {PASS: "PASS", FAIL: "FAIL", WARN: "WARN", SKIPPED: "SKIPPED", ERROR: "ERROR", INCOMPLETE: "INCOMPLETE"}
 
 
 def percentile(values: Iterable[float], q: float) -> float | None:
@@ -44,8 +50,12 @@ class StepResult:
     peak_mb: float | None = None
 
     @classmethod
-    def skipped(cls, name: str, title: str, reason: str) -> "StepResult":
-        return cls(name, title, SKIPPED, summary=reason, reason=reason)
+    def skipped(cls, name: str, title: str, reason: str, *, applies: bool = True) -> "StepResult":
+        """A skipped step. ``applies=False``: the step has nothing to certify on this configuration (no local model
+        provider, no remote source, a prerequisite step the operator left out), so the skip does not make the run
+        incomplete."""
+        return cls(name, title, SKIPPED, summary=reason, reason=reason,
+                   details={} if applies else {"not_applicable": True})
 
 
 @dataclass
@@ -58,8 +68,25 @@ class ValidationReport:
     seconds: float = 0.0
 
     @property
+    def verdict(self) -> str:
+        """``fail`` when a step failed or broke; ``incomplete`` when a substantive step that was asked for was
+        skipped, or a step says the enabled roster is not covered (``details.incomplete``); else ``pass``."""
+        if any(s.status in (FAIL, ERROR) for s in self.steps):
+            return FAIL
+        if self.incomplete():
+            return INCOMPLETE
+        return PASS
+
+    def incomplete(self) -> list[str]:
+        """Why the run does not certify the host (empty when it does)."""
+        out = [f"{s.name} skipped: {s.reason or s.summary}" for s in self.steps
+               if s.status == SKIPPED and s.name in SUBSTANTIVE and not s.details.get("not_applicable")]
+        out += [f"{s.name}: {s.details['incomplete']}" for s in self.steps if s.details.get("incomplete")]
+        return out
+
+    @property
     def ok(self) -> bool:
-        return not any(s.status in (FAIL, ERROR) for s in self.steps)
+        return self.verdict == PASS
 
     def counts(self) -> dict[str, int]:
         out: dict[str, int] = {}
@@ -68,17 +95,20 @@ class ValidationReport:
         return out
 
     def to_json(self) -> dict[str, Any]:
-        return {"schema": "vbt.validate/1", "ok": self.ok, "started": self.started, "finished": self.finished,
+        return {"schema": "vbt.validate/1", "ok": self.ok, "verdict": self.verdict, "incomplete": self.incomplete(),
+                "started": self.started, "finished": self.finished,
                 "seconds": round(self.seconds, 1), "host": self.host, "profiles": self.profiles,
                 "counts": self.counts(), "steps": [asdict(s) for s in self.steps]}
 
     def to_markdown(self) -> str:
-        lines = [f"# vbt validate: {'PASS' if self.ok else 'FAIL'}", "",
-                 f"Started {self.started}, finished {self.finished or '-'} ({self.seconds:,.0f} s). "
-                 f"Host: {self.host.get('hostname')} ({self.host.get('platform')}), "
-                 f"{self.host.get('cpus')} CPUs, plan memory {_mb(self.host.get('plan_mb'))}"
-                 + (f", profiles {', '.join(self.profiles)}" if self.profiles else "") + ".", "",
-                 "| Step | Status | Summary | Time |", "|---|---|---|---:|"]
+        lines = [f"# vbt validate: {_MARK[self.verdict]}", ""]
+        if self.verdict == INCOMPLETE:
+            lines += ["The host is not certified: " + "; ".join(self.incomplete()) + ".", ""]
+        lines += [f"Started {self.started}, finished {self.finished or '-'} ({self.seconds:,.0f} s). "
+                  f"Host: {self.host.get('hostname')} ({self.host.get('platform')}), "
+                  f"{self.host.get('cpus')} CPUs, plan memory {_mb(self.host.get('plan_mb'))}"
+                  + (f", profiles {', '.join(self.profiles)}" if self.profiles else "") + ".", "",
+                  "| Step | Status | Summary | Time |", "|---|---|---|---:|"]
         for s in self.steps:
             lines.append(f"| {s.title} | {_MARK.get(s.status, s.status)} | {_cell(s.summary)} | {s.seconds:,.1f} s |")
         for s in self.steps:

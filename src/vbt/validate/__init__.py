@@ -25,7 +25,9 @@ model          with a model server answering: ``vbt local check``
 =============  =====================================================================================================
 
 The report is written as ``validate.md`` and ``validate.json`` under ``--out`` (default ``<state>/validate/<UTC
-time>``, the ``vbt setup`` state directory). The exit status is 1 when a step failed, else 0.
+time>``, the ``vbt setup`` state directory). The verdict is FAIL when a step failed, INCOMPLETE when nothing failed
+but the host was not certified (a correctness, live or model step that applies was skipped, or the enabled roster
+needs tables or servers the run did not cover: RR-8, DEP-5), else PASS; the exit status is 0 only for PASS.
 """
 
 from __future__ import annotations
@@ -41,7 +43,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from .report import ERROR, FAIL, PASS, WARN, StepResult, ValidationReport, host_facts, percentile
+from .report import ERROR, FAIL, PASS, SKIPPED, WARN, StepResult, ValidationReport, host_facts, percentile
 
 __all__ = ["STEPS", "Options", "run_validate", "add_validate_parser", "cmd_validate"]
 
@@ -126,6 +128,22 @@ def step_host(ctx: _Ctx) -> StepResult:
                f"cgroup limit {host['cgroup_limit_mb'] or 'none'}); containment {containment.get('limit_kind')}"
                if host.get("plan_mb") else "the host's memory is unknown: the shipped limits apply")
     status = PASS if host.get("plan_mb") else WARN
+    load = desc.get("full_load")
+    if load:
+        # every limit at once against the plan (DEP-14), and limits pinned for a bigger plan than this one (DEP-6:
+        # host.yaml's numbers after VBT_HOST_MEMORY_MB lowered the plan)
+        summary += (f"; at full load host budget {load['host_budget_mb']:,} + data child {load['data_child_mb']:,} + "
+                    f"workspace {load['workspace_mb']:,} x {load['parallel']} = {load['sum_mb']:,} of "
+                    f"{load['plan_mb']:,} MB")
+        if load["left_mb"] < 0:
+            summary += f" (over the plan by {-load['left_mb']:,} MB: lower the pinned limits or the parallelism)"
+            status = WARN
+    from ..datalayer.launch import LIMIT_KINDS
+
+    problems = sizing.memory_problems(dict((ctx.settings.raw or {}).get("memory") or {}), LIMIT_KINDS)
+    if problems:
+        summary += "; " + "; ".join(problems)
+        status = FAIL
     return StepResult("host", "Host and host-scaled limits", status, summary, rows=rows,
                       details={"sizing": desc, "containment": containment, "disk": disks, "cpus": os.cpu_count()})
 
@@ -134,7 +152,12 @@ def step_lint(ctx: _Ctx) -> StepResult:
     from ..datalayer.descriptor.lint import Finding
     from ..datalayer.launch import LIMIT_KINDS
 
+    from ..datalayer.memory.sizing import memory_problems
+
     findings = list(ctx.catalog.lint(ctx.registry, strict=None))
+    memory = ((ctx.config.get("data") or {}).get("memory") or {})
+    findings += [Finding("error", "data.memory", problem, rule="memory")
+                 for problem in memory_problems(memory if isinstance(memory, Mapping) else {}, LIMIT_KINDS)]
     for spec in (ctx.config.get("mcp_servers") or {}).get("servers") or []:
         kind = spec.get("limit_kind") if isinstance(spec, Mapping) else None
         if kind is not None and kind not in LIMIT_KINDS:
@@ -201,12 +224,63 @@ def step_check(ctx: _Ctx) -> StepResult:
                       details={"absent": absent, "not_ready": bad, "errors": errors, "containment": status})
 
 
+def _roster_needs(ctx: _Ctx) -> Any:
+    """What the enabled roster needs (``vbt setup``'s needs: tools granted to enabled agents on enabled servers and the
+    tables they read), restricted to ``--servers``; None when it cannot be computed."""
+    try:
+        from ..setup.needs import compute_needs
+
+        needs = compute_needs(dict(ctx.config))
+    except Exception:  # noqa: BLE001 - the coverage line is left out
+        return None
+    if ctx.opts.servers:
+        wanted = set(ctx.opts.servers)
+        needs.servers = {s: v for s, v in needs.servers.items() if s in wanted}
+        needs.tables = {t: rec for t, rec in needs.tables.items() if wanted & set(rec.get("servers") or [])}
+    return needs
+
+
+def _coverage(ctx: _Ctx, res: StepResult) -> StepResult:
+    """DEP-5: the check and correctness steps against what the enabled roster needs. A needed local table that is
+    absent, or a needed server with local tables that got no correctness case, leaves the host uncertified."""
+    needs = _roster_needs(ctx)
+    if needs is None or res.status == SKIPPED:
+        return res
+    if res.name == "check":
+        statuses = ctx.statuses()
+        needed = needs.local_tables()
+        absent = sorted(t for t in needed if statuses.get(t, "missing") in _ABSENT)
+        res.summary += (f"; the enabled roster ({len(needs.tools)} tools on {len(needs.servers)} servers) reads "
+                        f"{len(needed)} local table(s), {len(absent)} absent")
+        res.details["coverage"] = {"needed": needed, "absent": absent, "tools": len(needs.tools),
+                                   "servers": sorted(needs.servers)}
+        if absent:
+            res.details["incomplete"] = (f"{len(absent)} table(s) the enabled agents' tools read are not on this host "
+                                         f"({', '.join(absent[:8])}{', ...' if len(absent) > 8 else ''}); "
+                                         "`vbt data acquire --for-agents` fetches them")
+            if res.status == PASS:
+                res.status = WARN
+    elif res.name == "correctness":
+        local = {s for t in needs.local_tables() for s in (needs.tables.get(t) or {}).get("servers") or []
+                 if s in needs.servers}
+        covered = {s for s, rec in (res.details.get("servers") or {}).items() if (rec or {}).get("cases")}
+        uncovered = sorted(local - covered)
+        res.summary += f"; {len(covered & local)} of {len(local)} servers the roster needs certified"
+        res.details["coverage"] = {"needed_servers": sorted(local), "certified": sorted(covered & local),
+                                   "uncovered": uncovered}
+        if uncovered:
+            res.details["incomplete"] = f"no correctness case on {', '.join(uncovered)}"
+            if res.status == PASS:
+                res.status = WARN
+    return res
+
+
 def step_correctness(ctx: _Ctx) -> StepResult:
     from .correctness import run_correctness
 
     if ctx.check is None:
         return StepResult.skipped("correctness", "The six correctness tests (off vs enforce)",
-                                  "needs the check step (which tables are ready)")
+                                  "needs the check step (which tables are ready)", applies=False)
     if not ctx.ready():
         return StepResult.skipped("correctness", "The six correctness tests (off vs enforce)",
                                   "no declared table is ready on this host")
@@ -301,7 +375,8 @@ def step_model(ctx: _Ctx) -> StepResult:
     title = "Model server (vbt local check)"
     provider = (ctx.config.get("provider") or {}).get("name")
     if provider in (None, "mock", "anthropic"):
-        return StepResult.skipped("model", title, f"the provider is {provider!r}: no local model server to check")
+        return StepResult.skipped("model", title, f"the provider is {provider!r}: no local model server to check",
+                                  applies=False)
     from ..local.check import options_from_config, run_checks
 
     opts = options_from_config(ctx.config)
@@ -381,6 +456,11 @@ def run_validate(config: Mapping[str, Any], opts: Options | None = None, *,
         except Exception as exc:  # noqa: BLE001 - a broken step is reported, the next steps still run
             res = StepResult(name, title, ERROR, f"{type(exc).__name__}: {exc}"[:500],
                              details={"traceback": traceback.format_exc()[-4000:]})
+        if name in ("check", "correctness") and res.status not in (ERROR,):
+            try:
+                res = _coverage(ctx, res)
+            except Exception as exc:  # noqa: BLE001 - coverage is a summary; the step's own verdict stands
+                res.details["coverage_error"] = f"{type(exc).__name__}: {exc}"
         res.seconds = res.seconds or (time.monotonic() - t0)
         report.steps.append(res)
         if progress:
@@ -453,4 +533,4 @@ def cmd_validate(args: argparse.Namespace, config: dict[str, Any]) -> int:
     else:
         print(report.to_markdown())
     print(f"report: {out / 'validate.md'} and {out / 'validate.json'}", file=sys.stderr)
-    return 0 if report.ok else 1
+    return 0 if report.ok else 1                       # FAIL and INCOMPLETE are both non-zero (RR-8)

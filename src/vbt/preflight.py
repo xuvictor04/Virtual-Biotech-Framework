@@ -1125,8 +1125,16 @@ def check_mcp_commands(config: dict[str, Any]) -> list[CheckResult]:
     from .tools.mcp_bridge import MCPBridge, MCPServerConfig, _ConfigError
 
     from .datalayer.launch import LIMIT_KINDS
+    from .datalayer.memory.sizing import memory_problems
 
     out = []
+    data = config.get("data") if isinstance(config.get("data"), dict) else {}
+    memory = data.get("memory") if isinstance(data.get("memory"), dict) else {}
+    for problem in memory_problems(memory, LIMIT_KINDS):
+        # an unparsable size or containment would otherwise be ignored without a word (RR-5)
+        out.append(CheckResult("data.memory settings", False, detail=problem,
+                               hint="use auto, off or a size such as 6144 or '6 GB'; limit_kind one of "
+                                    + ", ".join(LIMIT_KINDS), kind="mcp"))
     for s in _servers(config):
         cfg = MCPServerConfig(**{k: v for k, v in s.items() if k in MCPServerConfig.__dataclass_fields__})
         if cfg.limit_kind is not None and cfg.limit_kind not in LIMIT_KINDS:

@@ -10,6 +10,9 @@
 #               A variable already set to a non-empty value in the environment wins, as with .env files.
 #   VBT_PROFILES (in host.env)  the profiles sessions use, host.yaml last; before the first setup, VBT_BASE_PROFILES.
 # VBT_BASE_PROFILES (environment, e.g. "production") are the operator's profiles; `vbt setup` records them.
+# Secrets: ${VBT_SECRETS_FILE:-$VBT_HOME/secrets.env} (VBT_WEB_PASSWORD, ANTHROPIC_API_KEY, NCBI_*, VLLM_API_KEY ...),
+#   KEY=VALUE lines (optionally `export`, optionally quoted), read without evaluation; a set variable wins. A file
+#   other users can read is refused (chmod 600 it).
 # Arguments after the subcommand are passed through, so `--profile X` given here is applied last.
 set -euo pipefail
 
@@ -35,8 +38,35 @@ load_env() {
   done < "$1"
 }
 
+load_secrets() {  # never evaluated: a secret may hold $, quotes or backticks
+  local line key value perm
+  perm="$(stat -c %a "$1" 2>/dev/null || echo 600)"
+  case "${perm: -2}" in
+    00) ;;
+    *) echo "vbt-host: $1 is readable by other users (mode $perm); chmod 600 $1" >&2; exit 1 ;;
+  esac
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    case "$line" in ''|'#'*) continue ;; esac
+    line="${line#export }"
+    key="${line%%=*}"
+    case "$key" in *[!A-Za-z0-9_]*|'') continue ;; esac
+    [ -z "${!key:-}" ] || continue
+    value="${line#*=}"
+    case "$value" in
+      \"*\") value="${value#\"}"; value="${value%\"}" ;;
+      \'*\') value="${value#\'}"; value="${value%\'}" ;;
+    esac
+    export "$key=$value"
+  done < "$1"
+}
+
 if [ -f "$STATE/host.env" ]; then
   load_env "$STATE/host.env"
+fi
+SECRETS="${VBT_SECRETS_FILE:-${VBT_HOME:+$VBT_HOME/secrets.env}}"
+if [ -n "$SECRETS" ] && [ -f "$SECRETS" ]; then
+  load_secrets "$SECRETS"
 fi
 
 # A writable HOME: numba and matplotlib cache there (scanpy, decoupler and liana fail to import when numba has no

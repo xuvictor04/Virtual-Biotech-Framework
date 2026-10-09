@@ -3,7 +3,8 @@
 # GPUs, SearxNG, the harness web UI, and the data / runs / projects / state volumes under $VBT_HOME.
 #
 #   export VBT_HOME=/srv/vbt                 # host directory: data/ runs/ projects/ state/ models/ (created)
-#   printf 'VBT_WEB_PASSWORD=...\n' > "$VBT_HOME/secrets.env"; chmod 600 "$VBT_HOME/secrets.env"
+#   mkdir -p "$VBT_HOME" && install -m 600 /dev/null "$VBT_HOME/secrets.env"
+#   printf 'VBT_WEB_PASSWORD=...\n' >> "$VBT_HOME/secrets.env"
 #   deploy/full/deploy.sh up                 # build (if needed) + setup + compose up + smoke: one command
 #
 # Subcommands:
@@ -45,7 +46,9 @@ need_home() {
   local uid="${VBT_UID:-10001}" gid="${VBT_GID:-10001}" d
   for d in data runs projects state; do
     if [ "$(stat -c %u "$VBT_HOME/$d")" != "$uid" ]; then
-      if [ "$(id -u)" = 0 ]; then
+      if [ "${READ_ONLY:-0}" = 1 ]; then
+        :                                    # setup --plan/--probe/--status changes no ownership
+      elif [ "$(id -u)" = 0 ]; then
         chown "$uid:$gid" "$VBT_HOME/$d"
       else
         echo "deploy.sh: note: $VBT_HOME/$d is not owned by uid $uid (the harness user); chown it or set VBT_UID" >&2
@@ -134,13 +137,26 @@ gpu_info() {
   fi
 }
 
+read_only_setup() {  # setup --plan / --probe / --status only look: no service is started, no ownership changed
+  local a
+  for a in "$@"; do
+    case "$a" in --plan|--probe|--status) return 0 ;; esac
+  done
+  return 1
+}
+
 cmd_setup() {
+  if read_only_setup "$@"; then READ_ONLY=1; fi
   need_home
+  # the host's nvidia-smi output in state/ is the one file a --plan writes: the harness container sees no GPU,
+  # and the plan's serving profile depends on it
   gpu_info
-  # SearxNG first, so the probe's reachability check of SEARXNG_URL sees the real service (search is optional:
-  # setup goes on without it)
-  compose up -d --wait --wait-timeout 120 searxng ||
-    echo "deploy.sh: note: searxng did not report healthy; WebSearch will not work until it does" >&2
+  if [ "${READ_ONLY:-0}" != 1 ]; then
+    # SearxNG first, so the probe's reachability check of SEARXNG_URL sees the real service (search is optional:
+    # setup goes on without it)
+    compose up -d --wait --wait-timeout 120 searxng ||
+      echo "deploy.sh: note: searxng did not report healthy; WebSearch will not work until it does" >&2
+  fi
   compose --profile setup run --rm --no-deps setup setup --deploy compose "$@"
 }
 

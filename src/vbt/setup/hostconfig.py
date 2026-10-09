@@ -71,10 +71,14 @@ def size_host(facts: Mapping[str, Any], config: Mapping[str, Any], *,
     safety = float(memory_cfg.get("estimate_safety") or 1.3)
     parallel = int(((config.get("limits") or {}).get("max_parallel_agents")) or 8)
     out: dict[str, Any] = {"ram_mb": ram, "cpus": cpus, "notes": []}
-    own = memory_cfg.get("host_mb")
-    if not _sizing.is_auto(own) and isinstance(own, (int, float)) and not isinstance(own, bool) and own > 0:
-        ram = out["ram_mb"] = own                      # the harness's share of a host it shares
-        out["notes"].append(f"sized from data.memory.host_mb ({own:,} MB), not the host's memory")
+    # the plan the runtime uses (sizing.plan_mb): data.memory.host_mb, else $VBT_HOST_MEMORY_MB, else the probed
+    # memory. The harness's share of a host it shares (a model server next to it) is honoured here too (DEP-6).
+    planned = _sizing.plan_mb(memory_cfg, measured=float(ram) if ram else None)
+    source = _sizing.plan_source(memory_cfg, measured=float(ram) if ram else None)
+    if planned and source != "measured":
+        ram = out["ram_mb"] = planned
+        out["notes"].append(f"sized from {source} ({planned:,.0f} MB), not the host's memory")
+    out["plan_from"] = source if planned else None
     if not ram:
         out["notes"].append("host memory unknown: the shipped memory settings are kept")
         return out
@@ -83,13 +87,17 @@ def size_host(facts: Mapping[str, Any], config: Mapping[str, Any], *,
     out["host_budget_mb"] = budget
     rule = _sizing.server_limit_for(ram, memory_cfg)
     if server_need_mb:
+        # admission's rule: the whole-table peaks (MiB, `vbt ds estimate`) x safety, plus an idle server's baseline
+        from ..datalayer.memory.ledger import DEFAULT_BASELINE_MB
+
         largest_server, largest = max(server_need_mb.items(), key=lambda kv: kv[1])
-        need = math.ceil(largest * safety)
+        need = math.ceil(largest * safety + DEFAULT_BASELINE_MB)
         out["largest_server"] = {"server": largest_server, "estimate_mb": round(largest), "with_safety_mb": need}
         server_mb = max(rule, min(budget, need))
         if need > budget:
             out["notes"].append(
-                f"server {largest_server} loads ~{largest:,.0f} MB of tables whole (x{safety} safety = {need:,} MB), "
+                f"server {largest_server} loads ~{largest:,.0f} MB of tables whole (x{safety} safety + "
+                f"{DEFAULT_BASELINE_MB:.0f} MB baseline = {need:,} MB), "
                 f"more than this host's budget of {budget:,} MB: its largest tools are refused too_large here")
         total = sum(server_need_mb.values()) * safety
         if total > budget:
@@ -102,7 +110,14 @@ def size_host(facts: Mapping[str, Any], config: Mapping[str, Any], *,
     out["service_mem_limit_mb"] = _sizing.data_child_for(ram)
     out["service_max_resident_mb"] = int(out["service_mem_limit_mb"] * 2 / 3)
     out["service_max_concurrency"] = _clamp(cpus // 2, 4, 16)
-    out["workspace_mb"] = _sizing.workspace_for(ram, parallel)     # the rule `auto` applies at run time
+    out["workspace_mb"] = _sizing.workspace_for(ram, parallel, memory_cfg)   # the rule `auto` applies at run time
+    out["full_load"] = _sizing.full_load(ram, host_budget=budget, data_child=out["service_mem_limit_mb"],
+                                         workspace=out["workspace_mb"], parallel=parallel,
+                                         reserve=_sizing._reserve(ram, memory_cfg))
+    if out["full_load"]["left_mb"] < 0:
+        out["notes"].append(f"at full load (host budget, data child, {parallel} agent commands) the limits add up "
+                            f"to {out['full_load']['sum_mb']:,} MB, over the {ram:,.0f} MB plan: the floors of a "
+                            "small host; lower limits.max_parallel_agents or data.memory.workspace_mb")
     kind = (facts.get("containment") or {}).get("limit_kind")
     if kind == "cgroup":
         out["limit_kind"] = "cgroup"
@@ -271,6 +286,41 @@ def read_env_file(path: Path) -> dict[str, str]:
         except ValueError:
             parts = [raw]
         out[key.strip()] = parts[0] if parts else ""
+    return out
+
+
+SECRETS_ENV = "secrets.env"
+
+
+def secrets_path(environ: Mapping[str, str]) -> Path | None:
+    """``$VBT_SECRETS_FILE``, else ``$VBT_HOME/secrets.env`` (DEPLOYMENT §7.4); None without either."""
+    if environ.get("VBT_SECRETS_FILE"):
+        return Path(environ["VBT_SECRETS_FILE"]).expanduser()
+    if environ.get("VBT_HOME"):
+        return Path(environ["VBT_HOME"]).expanduser() / SECRETS_ENV
+    return None
+
+
+def read_secrets_file(path: Path) -> dict[str, str]:
+    """``KEY=VALUE`` lines of the operator's secrets file (optionally ``export``, optionally quoted), read as text and
+    never evaluated (a secret may hold ``$``, quotes or backticks), as deploy.sh and vbt-host read it. A file other
+    users can read is refused (ValueError)."""
+    path = Path(path)
+    if path.stat().st_mode & 0o077:
+        raise ValueError(f"{path} is readable by other users (mode {path.stat().st_mode & 0o777:o}); chmod 600 it")
+    out: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        key, sep, value = line.partition("=")
+        if not sep or not key.isidentifier():
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        out[key] = value
     return out
 
 

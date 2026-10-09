@@ -911,7 +911,7 @@ def workspace_mb(config: Mapping[str, Any]) -> int:
             return WORKSPACE_MB
         plan = sizing.plan_mb(memory)
         parallel = int((config.get("limits") or {}).get("max_parallel_agents") or 8)
-        return sizing.workspace_for(plan, parallel) if plan else WORKSPACE_MB
+        return sizing.workspace_for(plan, parallel, memory) if plan else WORKSPACE_MB
     try:
         return int(value or 0)
     except (TypeError, ValueError):
@@ -922,7 +922,7 @@ def _workspace_limit(config: Mapping[str, Any], argv: list[str], run_dir: Path, 
                      ) -> tuple[int | None, list[str] | None, Path | None]:
     """``(limit MB, argv under the reaper)`` when ``data.memory.workspace_mb`` > 0 and the data layer's
     stdlib launcher is available (Linux; ``launch/reaper.py`` present): Bash commands, and the notebooks
-    and scripts they run, get ``RLIMIT_DATA`` like the MCP servers (§14.2), so an agent's pandas load cannot
+    and scripts they run, are contained like the MCP servers (§14.2), so an agent's pandas load cannot
     take the harness host down; the reaper's status file names the child's process group. ``(None, None,
     None)``: run as configured."""
     import sys
@@ -930,21 +930,22 @@ def _workspace_limit(config: Mapping[str, Any], argv: list[str], run_dir: Path, 
     data = config.get("data") if isinstance(config.get("data"), Mapping) else {}
     memory = data.get("memory") if isinstance(data.get("memory"), Mapping) else {}
     limit = workspace_mb(config)
-    kind = str(memory.get("limit_kind") or "rlimit_data")
-    if limit <= 0 or kind == "none" or not sys.platform.startswith("linux") or data.get("enabled") is False:
+    if limit <= 0 or not sys.platform.startswith("linux") or data.get("enabled") is False:
         return None, None, None
     try:
-        from ..datalayer.launch import REAPER
+        from ..datalayer.launch import REAPER, containment_args, global_limit_kind
     except Exception:  # noqa: BLE001 - no data layer in this checkout: run unlimited
         return None, None, None
-    if not Path(REAPER).is_file():
+    # the shipped containment, as for the servers (build_launch_spec): rss unless data.memory.limit_kind says
+    # otherwise. RLIMIT_DATA (the reaper's own default) made a notebook's Census read crash in TileDB (RR-1).
+    kind = global_limit_kind(memory.get("limit_kind"))
+    if kind == "none" or not Path(REAPER).is_file():
         return None, None, None
     status = run_dir / "logs" / "tool_outputs" / f"bash_{_safe_id(call_id)}.status.json"
     status.parent.mkdir(parents=True, exist_ok=True)
     status.unlink(missing_ok=True)
-    # the containment mirrors build_launch_spec: rlimit_data is the reaper's default, and the allow-listed
-    # child environment never carries $VBT_REAPER_CONTAINMENT, so cgroup/watchdog go on the command line
-    containment = ["--containment", kind] if kind in ("cgroup", "watchdog") else []
+    # the allow-listed child environment never carries $VBT_REAPER_CONTAINMENT, so it goes on the command line
+    containment = containment_args(kind)
     return limit, [sys.executable, "-E", str(REAPER), "--limit-mb", str(limit), "--status", str(status),
                    "--server", "workspace", *containment, "--", *argv], status
 

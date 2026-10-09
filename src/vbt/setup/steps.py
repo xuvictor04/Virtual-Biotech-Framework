@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, TextIO
 
+import yaml
+
 from . import hostconfig
 from .needs import Needs, compute_needs
 from .state import SetupState, fingerprint
@@ -87,6 +89,9 @@ class SetupContext:
     pending_env: dict[str, str] | None = None
     #: bytes the acquisition plan will add (the data steps' time estimates include them)
     planned_fetch_bytes: int = 0
+    #: ``--plan``: a scratch directory for the planned host.yaml and the plan children's logs (the state directory
+    #: is not touched; the planning children read the host.yaml that would be written, not a missing one)
+    plan_dir: Path | None = None
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -171,7 +176,7 @@ class SetupContext:
         env.update(self.host_env())
         src = str(Path(__file__).resolve().parents[2])
         env["PYTHONPATH"] = src + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-        logs = Path(self.layout.state) / "logs"
+        logs = (self.plan_dir if self.plan_dir is not None else Path(self.layout.state)) / "logs"
         logs.mkdir(parents=True, exist_ok=True)
         run = self.runner or _run
         t0 = time.monotonic()
@@ -398,7 +403,15 @@ def ensure_configured(ctx: SetupContext, *, write: bool) -> list[Path]:
     profile = hostconfig.host_profile(ctx.sizing, ctx.layout, tool_env=roots)
     deploy = opts.get("deploy") or "host"
     host_yaml = str(Path(ctx.layout.state) / hostconfig.HOST_PROFILE)
-    profiles = [p for p in ctx.profiles() if p != host_yaml] + [host_yaml]
+    named = host_yaml
+    if not write and ctx.plan_dir is not None:
+        # --plan writes nothing in the state directory: the planning children (`vbt data acquire --plan`) read the
+        # host.yaml that would be written from a scratch copy; naming the state's, which configure has not
+        # written yet, failed every fresh plan with 'config/profile not found: <state>/host.yaml' (DEP-1)
+        named = str(Path(ctx.plan_dir) / hostconfig.HOST_PROFILE)
+        Path(named).write_text(yaml.safe_dump(dict(profile), sort_keys=False, default_flow_style=False),
+                               encoding="utf-8")
+    profiles = [p for p in ctx.profiles() if p != host_yaml] + [named]
     ctx.pending_env = hostconfig.host_env(ctx.layout, ctx.serving, data_roots=roots, profiles=profiles,
                                           deploy=deploy, llm_url=opts.get("llm_url"))
     if not write:
@@ -439,8 +452,8 @@ class AcquireStep(Step):
                                                        f"{_tail(res.stderr, 2)}"}
         doc = _json_out(res.stdout)
         if res.returncode != 0 and doc is None:
-            return {"action": "run", "detail": f"the acquisition plan failed (exit {res.returncode}): "
-                                               f"{_tail(res.stderr or res.stdout, 3)}"}
+            return {"action": "failed", "detail": f"the acquisition plan failed (exit {res.returncode}): "
+                                                  f"{_tail(res.stderr or res.stdout, 3)}"}
         total = _bytes_to_fetch(doc)
         todo = _plan_pending(doc)
         # transfer rate: the one `vbt data acquire` measured on this host, else setup's, else an assumption

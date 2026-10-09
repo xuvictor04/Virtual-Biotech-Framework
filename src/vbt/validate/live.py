@@ -72,7 +72,7 @@ def run_live(ctx: Any) -> StepResult:
 
     endpoints = remote_endpoints(ctx.catalog)
     if not endpoints:
-        return StepResult.skipped("live", TITLE, "no remote source is declared")
+        return StepResult.skipped("live", TITLE, "no remote source is declared", applies=False)
     rows = []
     reachable = 0
     for source, urls in endpoints.items():

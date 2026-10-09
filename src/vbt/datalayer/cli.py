@@ -238,11 +238,15 @@ def cmd_lint(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
 
 def _server_findings(config: dict[str, Any]) -> list[Any]:
-    """The data-layer fields of the MCP server file: a ``limit_kind`` that is not one of the containment kinds."""
+    """The data-layer fields of the MCP server file: a ``limit_kind`` that is not one of the containment kinds; and
+    ``data.memory`` settings that would be ignored (a size that does not parse, an unknown limit_kind: RR-5)."""
     from .descriptor.lint import Finding
     from .launch import LIMIT_KINDS
+    from .memory.sizing import memory_problems
 
-    out = []
+    data = config.get("data") if isinstance(config.get("data"), Mapping) else {}
+    memory = data.get("memory") if isinstance(data.get("memory"), Mapping) else {}
+    out = [Finding("error", "data.memory", problem, rule="memory") for problem in memory_problems(memory, LIMIT_KINDS)]
     for spec in (config.get("mcp_servers") or {}).get("servers") or []:
         kind = spec.get("limit_kind") if isinstance(spec, Mapping) else None
         if kind is not None and kind not in LIMIT_KINDS:
@@ -943,6 +947,8 @@ def cmd_estimate(args: argparse.Namespace, config: dict[str, Any]) -> int:
     from .ipc import TableStatsModel
     from .launch import host_memory_mb, server_limit_mb
     from .memory import MemoryEstimator
+    from .memory.estimate import MB
+    from .memory.ledger import DEFAULT_BASELINE_MB
 
     settings, catalog, _registry = _catalog(config)
     tables: list[str] = []
@@ -997,30 +1003,40 @@ def cmd_estimate(args: argparse.Namespace, config: dict[str, Any]) -> int:
         scan = est.peak_arrow_scan(model)
         if ref in full or str(ref) in {str(f) for f in full}:
             total_upstream += up
+        # MB are MiB here, as in admission, the server limits and the reaper (ACC-1: decimal MB said 'admissible'
+        # for a load the gateway refused)
         doc["tables"][str(ref)] = {"rows": model.rows, "fragments": model.fragments,
-                                   "bytes_on_disk": model.bytes_on_disk, "upstream_mb": round(up / 1e6, 1),
-                                   "scan_mb": round(scan / 1e6, 1), "full_load": str(ref) in {str(f) for f in full}}
+                                   "bytes_on_disk": model.bytes_on_disk, "upstream_mb": round(up / MB, 1),
+                                   "scan_mb": round(scan / MB, 1), "full_load": str(ref) in {str(f) for f in full}}
         if not as_json:
             _out(f"{ref}: {model.rows if model.rows is not None else '?'} rows, {model.fragments} fragments, "
-                 f"{model.bytes_on_disk / 1e6:.1f} MB on disk; upstream full load ~{up / 1e6:.0f} MB, "
-                 f"projected scan ~{scan / 1e6:.0f} MB")
+                 f"{model.bytes_on_disk / MB:.1f} MB on disk; upstream full load ~{up / MB:.0f} MB, "
+                 f"projected scan ~{scan / MB:.0f} MB")
     errors = dict(stats.get("table_errors") or stats.get("errors") or {})
     doc["errors"] = {str(k): str(v) for k, v in sorted(errors.items())}
     if not as_json:
         for ref, err in sorted(errors.items()):
             _out(f"{ref}: error: {err}")
     missing = sorted(str(r) for r in errors if str(r) in {str(f) for f in full} or server is None)
+    doc["unit"] = "MiB"
     if server is not None:
-        admissible = None if missing else (not limit or total_upstream / 1e6 <= limit)
-        doc["tool"] = {"name": args.tool, "upstream_mb": None if missing else round(total_upstream / 1e6, 1),
-                       "limit_mb": limit, "admissible": admissible, "unavailable": missing}
+        # admission's rule (AdmissionController.admit): the whole-table peaks x estimate_safety must fit the server
+        # limit less an idle server's baseline
+        safety = float(est.safety)
+        need = total_upstream / MB * safety + DEFAULT_BASELINE_MB
+        admissible = None if missing else (not limit or need <= limit)
+        doc["tool"] = {"name": args.tool, "upstream_mb": None if missing else round(total_upstream / MB, 1),
+                       "need_mb": None if missing else round(need, 1), "safety": safety,
+                       "baseline_mb": DEFAULT_BASELINE_MB, "limit_mb": limit, "admissible": admissible,
+                       "unavailable": missing}
         if as_json:
             _out(json.dumps(doc, sort_keys=True, default=str))
         elif missing:
             # a table the tool loads whole could not be measured: no size, so no admission verdict
             _out(f"tool {args.tool}: not estimable ({', '.join(missing)} unavailable)")
         else:
-            _out(f"tool {args.tool}: upstream peak ~{total_upstream / 1e6:.0f} MB"
+            _out(f"tool {args.tool}: upstream peak ~{total_upstream / MB:.0f} MB; x{safety:g} safety + "
+                 f"{DEFAULT_BASELINE_MB:.0f} MB baseline = {need:,.0f} MB needed"
                  + (f"; server limit {limit} MB" if limit else "")
                  + (f"; host {host} MB" if host else "")
                  + ("; admissible" if admissible else "; NOT admissible (too_large)"))

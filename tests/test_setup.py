@@ -58,6 +58,13 @@ def _facts(ram_mb, cpus, *, cgroup=False, bwrap=False, smi=None):
             "sandbox": {"bwrap": {"works": bwrap}}, "gpu": gpu}
 
 
+@pytest.fixture(autouse=True)
+def _host_memory_from_the_facts(monkeypatch):
+    """These tests size from the probe's facts they pass in: the suite's fixed VBT_HOST_MEMORY_MB (tests/conftest.py)
+    would be the plan instead, as it is for `vbt setup` on a host that sets it (DEP-6)."""
+    monkeypatch.delenv("VBT_HOST_MEMORY_MB", raising=False)
+
+
 @pytest.fixture
 def base_config(tmp_path):
     return load_config([], overrides={"paths": {"runs_dir": str(tmp_path / "runs")}})
@@ -230,14 +237,17 @@ def test_sizing_scales_to_a_large_host_and_to_the_measured_loads(base_config):
     assert z["default_server_mb"] == int(0.8 * (0.75 * ram - 0.05 * ram))
     assert z["service_mem_limit_mb"] == 32768 and z["service_max_concurrency"] == 16
     parallel = int(base_config["limits"]["max_parallel_agents"])
-    assert z["workspace_mb"] == min(65536, int(0.25 * ram / parallel))
+    # the rules share one budget (DEP-14): what the host budget, the data child and the reserve leave, per agent
+    assert z["workspace_mb"] == int((ram - z["host_budget_mb"] - 32768 - 0.05 * ram) / parallel) == 28672
+    assert 0 <= z["full_load"]["left_mb"] and z["full_load"]["sum_mb"] <= ram
     assert z["limit_kind"] == "cgroup" and z["bwrap"] is True
     need = {"genetics": 80434.0, "target": 3474.0}
     z = hostconfig.size_host(_facts(ram, 96), base_config, server_need_mb=need)
     assert z["default_server_mb"] == int(0.8 * (0.75 * ram - 0.05 * ram)) and z["largest_server"]["server"] == \
         "genetics"                                          # the rule's limit already admits the largest load
     z = hostconfig.size_host(_facts(160 * GiB_MB, 32), base_config, server_need_mb={"genetics": 80434.0})
-    assert z["default_server_mb"] == int(80434 * 1.3 + 1) < z["host_budget_mb"]   # above 0.8 x budget: raised to it
+    # above 0.8 x budget: raised to admission's need, x1.3 safety plus an idle server's 300 MB baseline (ACC-1)
+    assert z["default_server_mb"] == int(80434 * 1.3 + 300 + 1) < z["host_budget_mb"]
     z = hostconfig.size_host(_facts(96 * GiB_MB, 32), base_config, server_need_mb=need)
     assert z["default_server_mb"] == z["host_budget_mb"]
     assert any("genetics" in n and "too_large" in n for n in z["notes"])
@@ -586,6 +596,48 @@ def test_data_roots_keep_a_set_variable_else_use_the_layout(tmp_path, base_confi
     assert data_roots(ctx)["OPEN_TARGETS_DATA_PATH"] == "/mnt/ot"
 
 
+def test_a_fresh_plan_runs_the_real_acquisition_plan_child(tmp_path, capsys, monkeypatch):
+    """DEP-1/RR-4: on a fresh state directory `vbt setup --plan` handed the planning child VBT_PROFILES ending in
+    <state>/host.yaml, which configure had not written: `the acquisition plan failed (exit 1): config/profile not
+    found`, exit 0. The real child runs here (no FakeRunner), with the host configuration applied as in production."""
+    monkeypatch.delenv("VBT_NO_HOST_ENV", raising=False)            # the child applies host.env, as vbt does
+    monkeypatch.setenv("VBT_HOME", str(tmp_path / "home"))
+    config = load_config(["production"], overrides={"paths": {"runs_dir": str(tmp_path / "runs")}})
+    rc = cmd_setup(_args(tmp_path, plan=True, json=True, only="probe,configure,acquire"), config)
+    plan = json.loads(capsys.readouterr().out)
+    row = next(r for r in plan["steps"] if r["step"] == "acquire")
+    assert row["action"] not in ("failed", "unknown"), row["detail"]
+    assert row["action"] == "run" and row["bytes"] > 0 and rc == 0
+    state = tmp_path / "home" / "state"
+    assert not (state / "host.yaml").exists() and not (state / "logs").exists()   # --plan changes nothing
+
+
+def test_a_failed_step_plan_makes_the_plan_fail(tmp_path, base_config, capsys, monkeypatch):
+    import vbt.setup.steps as steps_mod
+
+    monkeypatch.setattr(steps_mod, "_run", FakeRunner({"--plan": (1, "", "Traceback: boom")}))
+    rc = cmd_setup(_args(tmp_path, plan=True, json=True, only="probe,configure,acquire"), base_config)
+    row = next(r for r in json.loads(capsys.readouterr().out)["steps"] if r["step"] == "acquire")
+    assert rc == 1 and row["action"] == "failed" and "boom" in row["detail"]
+
+
+def test_a_recorded_profile_file_that_is_gone_is_skipped_not_a_traceback(tmp_path, monkeypatch, capsys):
+    """RR-4: host.env naming a host.yaml that was moved made every vbt command (doctor included) exit 1 with a raw
+    FileNotFoundError traceback."""
+    from vbt.cli import apply_host_config, main
+
+    state = tmp_path / "S"
+    state.mkdir()
+    (state / "host.env").write_text(f"VBT_PROFILES='mock {state / 'host.yaml'}'\n")    # quoted as setup writes it
+    env = {"VBT_STATE_DIR": str(state)}
+    args = SimpleNamespace(cmd="tools", profile=[])
+    assert apply_host_config(args, env) == state / "host.env"
+    assert args.profile == ["mock"] and "does not exist; skipped" in capsys.readouterr().err
+    monkeypatch.delenv("VBT_NO_HOST_ENV", raising=False)
+    assert main(["--profile", str(tmp_path / "nope.yaml"), "tools"]) == 2
+    assert "error:" in capsys.readouterr().err
+
+
 def test_cmd_setup_plan_json_and_status(tmp_path, base_config, capsys, monkeypatch):
     import vbt.setup.steps as steps_mod
 
@@ -792,6 +844,69 @@ def test_deploy_script_help_and_syntax():
     res = subprocess.run(["bash", str(FULL / "deploy.sh"), "setup"], capture_output=True, text=True, timeout=30,
                          env={"PATH": os.environ["PATH"]})
     assert res.returncode == 1 and "set VBT_HOME" in res.stderr
+
+
+def test_scripts_the_docs_run_directly_are_executable_in_the_index():
+    """DEP-2: deploy/full/vbt-host was committed 100644, so DEPLOYMENT §4's `deploy/full/vbt-host setup` failed with
+    Permission denied on a fresh clone (the images chmod it, the bare-metal path did not)."""
+    root = Path(__file__).resolve().parents[1]
+    if shutil.which("git") is None or not (root / ".git").exists():
+        pytest.skip("not a git checkout")
+    scripts = ["deploy/full/deploy.sh", "deploy/full/install-env.sh", "deploy/full/install-harness.sh",
+               "deploy/full/vbt-host", "deploy/local/serve_vllm.sh", "scripts/dev/cpu_server.sh"]
+    out = subprocess.run(["git", "ls-files", "-s", *scripts], cwd=root, capture_output=True, text=True, timeout=30)
+    modes = {line.split()[3]: line.split()[0] for line in out.stdout.splitlines()}
+    assert modes == {s: "100755" for s in scripts}, modes
+    docs = (root / "docs" / "DEPLOYMENT.md").read_text()
+    assert "deploy/full/vbt-host setup" in docs                  # the docs still run it directly
+
+
+def test_secrets_env_is_read_by_vbt_host_and_by_vbt_itself(tmp_path):
+    """DEP-7: DEPLOYMENT says secrets live only in $VBT_HOME/secrets.env, but only compose read it: a bare-metal
+    `vbt-host web` answered 'VBT_WEB_PASSWORD is not set'. Values are read as text (never evaluated); a variable already
+    set wins; a file other users can read is refused."""
+    from vbt.cli import apply_host_config
+    from vbt.config import ProfileError
+
+    home = tmp_path / "home"
+    home.mkdir()
+    secrets = home / "secrets.env"
+    secrets.write_text("# operator secrets\nVBT_WEB_PASSWORD='p w$(id)'\nexport NCBI_API_KEY=\"k1\"\nHF_TOKEN=hf\n")
+    secrets.chmod(0o600)
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "vbt").write_text('#!/bin/sh\nprintf "%s|%s|%s\\n" "$VBT_WEB_PASSWORD" "$NCBI_API_KEY" "$HF_TOKEN"\n')
+    (fake / "vbt").chmod(0o755)
+    env = {"PATH": f"{fake}{os.pathsep}{os.environ['PATH']}", "VBT_HOME": str(home), "HF_TOKEN": "set"}
+    res = subprocess.run(["bash", str(FULL / "vbt-host"), "web"], capture_output=True, text=True, timeout=30, env=env)
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip() == "p w$(id)|k1|set"
+    py_env = {"VBT_HOME": str(home), "HF_TOKEN": "set"}
+    apply_host_config(SimpleNamespace(cmd="web", profile=[]), py_env)
+    assert (py_env["VBT_WEB_PASSWORD"], py_env["NCBI_API_KEY"], py_env["HF_TOKEN"]) == ("p w$(id)", "k1", "set")
+    secrets.chmod(0o644)
+    res = subprocess.run(["bash", str(FULL / "vbt-host"), "web"], capture_output=True, text=True, timeout=30, env=env)
+    assert res.returncode == 1 and "chmod 600" in res.stderr
+    with pytest.raises(ProfileError, match="chmod 600"):
+        apply_host_config(SimpleNamespace(cmd="web", profile=[]), {"VBT_HOME": str(home)})
+
+
+def test_deploy_setup_plan_starts_no_service_and_changes_no_ownership(tmp_path):
+    """DEP-12: `deploy.sh setup --plan`, offered as 'see what it will do', started searxng (pull and start) and chowned
+    the home directories before planning."""
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "docker").write_text('#!/bin/sh\necho "ARGS $*" >> "$DOCKER_LOG"\n')
+    (fake / "docker").chmod(0o755)
+    home = tmp_path / "home"
+    env = {"PATH": f"{fake}{os.pathsep}{os.environ['PATH']}", "VBT_HOME": str(home),
+           "DOCKER_LOG": str(tmp_path / "docker.log"), "VBT_UID": str(os.getuid() + 1)}
+    res = subprocess.run(["bash", str(FULL / "deploy.sh"), "setup", "--plan"], capture_output=True, text=True,
+                         timeout=60, env=env)
+    assert res.returncode == 0, res.stderr
+    calls = (tmp_path / "docker.log").read_text()
+    assert "searxng" not in calls.replace("--profile setup run --rm --no-deps setup setup", "") and "--plan" in calls
+    assert all((home / d).stat().st_uid == os.getuid() for d in ("data", "runs", "projects", "state"))
 
 
 def test_deploy_script_hands_only_the_vllm_secrets_to_compose(tmp_path):

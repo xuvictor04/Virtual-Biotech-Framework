@@ -16,8 +16,10 @@ The harness runs on hosts from a 16 GB workstation to a 1 TB server, so its memo
   and the setting.
 * ``data.service.mem_limit_mb: auto``, the data child: 5% of plan, 3,000 to 32,768; ``max_resident_mb: auto`` is
   two thirds of it.
-* ``data.memory.workspace_mb: auto``, one agent command (Bash, the notebooks it runs, a utility's tests):
-  ``0.25 x plan / limits.max_parallel_agents`` within 8,000-65,536, never above half the plan (:func:`workspace_for`).
+* ``data.memory.workspace_mb: auto``, one agent command (Bash, the notebooks it runs, a utility's tests): what the
+  plan leaves after the host budget, the data child and the reserve, split over ``limits.max_parallel_agents``,
+  within 8,000-65,536 and never above half the plan (:func:`workspace_for`); the rules share one budget, so at full
+  load they add up to the plan less the reserve (:func:`full_load`, which ``vbt validate`` prints).
 * The witness and readiness budgets (``data.witness.max_scan_bytes``, ``max_inflate_bytes``, ``max_key_set``,
   ``repair_max_bytes``; ``data.readiness.vocab_budget_bytes``) at ``auto``: the shipped value times
   ``data child limit / 3,000``, never less than the shipped value.
@@ -38,9 +40,10 @@ from typing import Any, Mapping
 __all__ = [
     "AUTO", "HOST_SHARE", "DEFAULT_RESERVE_MB", "RESERVE_FRACTION", "BUDGET_FLOOR_MB", "SERVER_SHARE",
     "SERVER_FLOOR_MB", "CHILD_FRACTION", "CHILD_FLOOR_MB", "CHILD_CEILING_MB", "SCALED", "HOST_MB_ENV",
-    "WORKSPACE_FLOOR_MB", "WORKSPACE_CEILING_MB", "WORKSPACE_PLAN_SHARE", "workspace_for",
+    "WORKSPACE_FLOOR_MB", "WORKSPACE_CEILING_MB", "WORKSPACE_PLAN_SHARE", "workspace_for", "workspace_share",
+    "full_load",
     "meminfo_total_mb", "cgroup_limit_mb", "effective_memory_mb", "plan_mb", "plan_source", "is_auto",
-    "host_budget_for",
+    "host_budget_for", "memory_problems", "MEMORY_SIZES",
     "server_limit_for", "plan_for_server", "data_child_for", "witness_scale", "resolve_auto", "describe",
 ]
 
@@ -75,15 +78,55 @@ def is_auto(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() == AUTO
 
 
+_UNITS = {"": 1.0, "m": 1.0, "mb": 1.0, "mib": 1.0, "g": 1024.0, "gb": 1024.0, "gib": 1024.0,
+          "t": 1024.0 * 1024, "tb": 1024.0 * 1024, "tib": 1024.0 * 1024, "k": 1 / 1024, "kb": 1 / 1024,
+          "kib": 1 / 1024}
+
+
 def _number(value: Any) -> float | None:
+    """A memory setting in MB: a number, or a size with a unit (``6 GB``, ``6GB``, ``6144 MB``, ``1.5T``; the
+    harness's MB are MiB, so a GB is 1,024 of them); None for anything else (RR-5)."""
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
         return float(value)
+    text = str(value).strip().lower().replace(",", "").replace("_", "")
+    num = text.rstrip("abcdefghijklmnopqrstuvwxyz ").strip()
+    unit = text[len(num):].strip()
+    if unit not in _UNITS:
+        return None
     try:
-        return float(str(value).strip())
+        return float(num) * _UNITS[unit]
     except ValueError:
         return None
+
+
+#: The memory settings that take ``auto``, ``off`` (where it applies) or a positive size, and what each accepts.
+MEMORY_SIZES = {"host_mb": ("auto",), "host_budget_mb": ("auto", "off", "none"), "default_server_mb": ("auto",),
+                "workspace_mb": ("auto", "off", "none"), "harness_reserve_mb": ()}
+
+
+def memory_problems(memory: Mapping[str, Any] | None, limit_kinds: tuple[str, ...] = ()) -> list[str]:
+    """What is wrong with ``data.memory`` (``vbt ds lint``, ``vbt doctor`` and ``vbt validate`` report it): a size
+    that is neither ``auto``/``off`` nor a positive number or size (``6 GB``), and a ``limit_kind`` not in
+    ``limit_kinds``. Such a value used to be ignored without a word: ``host_mb: "6 GB"`` planned from MemTotal and
+    ``limit_kind: rsss`` ran under RLIMIT_DATA (RR-5)."""
+    out: list[str] = []
+    mem = dict(memory or {})
+    for key, words in MEMORY_SIZES.items():
+        if key not in mem or mem[key] is None:
+            continue
+        value = mem[key]
+        if isinstance(value, str) and value.strip().lower() in words:
+            continue
+        got = _number(value)
+        if got is None or got < 0 or (got == 0 and key in ("host_mb", "default_server_mb")):
+            accepted = " or ".join([*words, "a positive number of MB or a size such as '6 GB'"])
+            out.append(f"data.memory.{key} {value!r} is not {accepted}")
+    kind = mem.get("limit_kind")
+    if limit_kinds and kind not in (None, "") and str(kind) not in limit_kinds:
+        out.append(f"data.memory.limit_kind {kind!r} is not one of {', '.join(limit_kinds)}")
+    return out
 
 
 # --------------------------------------------------------------------------- the host
@@ -220,12 +263,32 @@ def data_child_for(plan: float) -> int:
     return int(max(CHILD_FLOOR_MB, min(CHILD_CEILING_MB, CHILD_FRACTION * float(plan))))
 
 
-def workspace_for(plan: float, parallel: int = 8) -> int:
-    """An agent command's limit for ``data.memory.workspace_mb: auto``: ``0.25 x plan / limits.max_parallel_agents``
-    within 8,000-65,536 MB, and never above half the plan (at least 1,024): 8,000 MB on a 16 GB host, 32,768 on
-    1 TB with 8 agents, 3,000 on a 6,000 MB share (where 8,000 was more than the harness had)."""
-    rule = max(WORKSPACE_FLOOR_MB, min(WORKSPACE_CEILING_MB, 0.25 * float(plan) / max(1, int(parallel))))
+def workspace_share(plan: float, memory: Mapping[str, Any] | None = None) -> float:
+    """What the plan leaves for agent commands once the upstream host budget, the data child and the harness
+    reserve are taken: the rules share one budget, so all of them at full load add up to the plan (DEP-14)."""
+    plan = float(plan)
+    return max(0.0, plan - host_budget_for(plan, memory) - data_child_for(plan) - _reserve(plan, memory))
+
+
+def workspace_for(plan: float, parallel: int = 8, memory: Mapping[str, Any] | None = None) -> int:
+    """An agent command's limit for ``data.memory.workspace_mb: auto``: :func:`workspace_share` split over
+    ``limits.max_parallel_agents``, within 8,000-65,536 MB, and never above half the plan (at least 1,024): 8,000 MB
+    on a 16 GB host (the floor: there the floors add up to more than the plan, which ``vbt validate`` reports),
+    28,672 on 1 TB with 8 agents, 3,000 on a 6,000 MB share (where 8,000 was more than the harness had)."""
+    share = workspace_share(plan, memory) / max(1, int(parallel))
+    rule = max(WORKSPACE_FLOOR_MB, min(WORKSPACE_CEILING_MB, share))
     return int(min(rule, max(1024.0, WORKSPACE_PLAN_SHARE * float(plan))))
+
+
+def full_load(plan: float, *, host_budget: float, data_child: float, workspace: float, parallel: int,
+              reserve: float) -> dict[str, Any]:
+    """The memory every limit allows at once (the upstream host budget, the data child, ``parallel`` agent
+    commands at the workspace limit) against the plan: ``{..., sum, plan, left}``; ``left`` below the reserve
+    means the harness itself has nothing at full load (DEP-6, DEP-14)."""
+    total = float(host_budget) + float(data_child) + float(workspace) * int(parallel)
+    return {"host_budget_mb": round(host_budget), "data_child_mb": round(data_child),
+            "workspace_mb": round(workspace), "parallel": int(parallel), "sum_mb": round(total),
+            "plan_mb": round(plan), "reserve_mb": round(reserve), "left_mb": round(float(plan) - total)}
 
 
 def witness_scale(child_mb: float) -> float:
@@ -299,10 +362,10 @@ def describe(data: Mapping[str, Any] | None, *, measured_mb: float | None = None
         "rss: a memory cgroup when one can be created, else the RSS watchdog; no RLIMIT_DATA"
         if memory.get("limit_kind") == "rss" else "as configured")
     ws = memory.get("workspace_mb", AUTO)
-    put("memory.workspace_mb", ws, workspace_for(plan, parallel) if is_auto(ws) and plan else
+    put("memory.workspace_mb", ws, workspace_for(plan, parallel, memory) if is_auto(ws) and plan else
         (WORKSPACE_FLOOR_MB if is_auto(ws) else ws),
-        "0.25 x plan / max_parallel_agents within 8,000-65,536, at most half the plan" if is_auto(ws)
-        else "as configured")
+        "(plan - host budget - data child - reserve) / max_parallel_agents within 8,000-65,536, at most half "
+        "the plan" if is_auto(ws) else "as configured")
     for key in ("mem_limit_mb", "max_resident_mb"):
         configured = _section(data, "service").get(key)
         put(f"service.{key}", configured, _section(resolved, "service").get(key),
@@ -316,4 +379,10 @@ def describe(data: Mapping[str, Any] | None, *, measured_mb: float | None = None
         put(f"mcp_servers.{name}.mem_limit_mb", limit,
             server_limit_for(plan, memory) if is_auto(limit) and plan else limit,
             "0.8 x host budget" if is_auto(limit) else "as configured")
+    if plan:
+        eff = out["settings"]
+        hb_eff, child, ws_eff = (_number(eff[k]["effective"]) for k in
+                                 ("memory.host_budget_mb", "service.mem_limit_mb", "memory.workspace_mb"))
+        out["full_load"] = full_load(plan, host_budget=hb_eff or 0.0, data_child=child or 0.0,
+                                     workspace=ws_eff or 0.0, parallel=parallel, reserve=_reserve(plan, memory))
     return out

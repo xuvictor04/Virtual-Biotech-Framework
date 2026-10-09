@@ -27,12 +27,15 @@ data child's 1.6 GB after a few finds filled the 2,452 MB budget, and every upst
 from __future__ import annotations
 
 import inspect
+import logging
 import time
 from typing import Any, Awaitable, Callable, Iterable, Mapping
 
 from ..errors import ErrorKind, GatewayError, too_large_payload
 from . import sizing
 from .ledger import ResidencyLedger
+
+log = logging.getLogger(__name__)
 
 __all__ = ["HOST_SHARE", "DEFAULT_RESERVE_MB", "HARNESS_SERVERS", "host_total_mb", "host_budget_mb", "HostBudget"]
 
@@ -71,10 +74,11 @@ def host_budget_mb(settings: Any = None, *, total_mb: float | None = None) -> fl
         if text in ("off", "none", "0", ""):
             return None
         if text != "auto":
-            try:
-                value = float(text)
-            except ValueError:
+            parsed = sizing._number(text)             # a number of MB or a size such as "4 GB" (RR-5)
+            if parsed is None:
+                log.warning("data.memory.host_budget_mb %r is not auto, off or a size: the host budget is off", value)
                 return None
+            value = parsed
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value) if value > 0 else None
     raw = _raw_memory(settings)

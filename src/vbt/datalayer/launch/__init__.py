@@ -14,6 +14,7 @@ with the bridge's log directory (``MCPBridge.log_root()``).
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,8 +22,10 @@ from typing import Any
 from ..api import LaunchSpec
 from ..memory import sizing
 
+log = logging.getLogger(__name__)
+
 __all__ = ["REAPER", "EXIT_MARKER", "CHILD_ENV", "DATA_SERVER", "LIMIT_KINDS", "DEFAULT_LIMIT_KIND",
-           "build_launch_spec", "limit_kind", "server_limit_mb", "limit_source", "host_memory_mb", "status_path"]
+           "global_limit_kind", "containment_args", "build_launch_spec", "limit_kind", "server_limit_mb", "limit_source", "host_memory_mb", "status_path"]
 
 #: The launcher script, executed by path (it never imports vbt).
 REAPER = Path(__file__).resolve().with_name("reaper.py")
@@ -80,7 +83,26 @@ def limit_kind(cfg: Any, settings: Any = None) -> str:
         if own not in LIMIT_KINDS:
             raise ValueError(f"server {getattr(cfg, 'name', cfg)!r}: limit_kind {own!r} is not one of {LIMIT_KINDS}")
         return str(own)
-    return str(getattr(getattr(settings, "memory", None), "limit_kind", None) or DEFAULT_LIMIT_KIND)
+    return global_limit_kind(getattr(getattr(settings, "memory", None), "limit_kind", None))
+
+
+def global_limit_kind(value: Any) -> str:
+    """``data.memory.limit_kind`` as the launcher and the agent workspace use it: unset is ``rss``, and so is a
+    value that is not one of :data:`LIMIT_KINDS`, with a warning (a typo such as ``rsss`` used to fall through to
+    the reaper's RLIMIT_DATA, which TileDB's Census reads fail under: RR-5). ``vbt ds lint``, ``vbt doctor`` and
+    ``vbt validate`` report it as an error."""
+    if value in (None, ""):
+        return DEFAULT_LIMIT_KIND
+    if str(value) not in LIMIT_KINDS:
+        log.warning("data.memory.limit_kind %r is not one of %s: using %s", value, ", ".join(LIMIT_KINDS),
+                    DEFAULT_LIMIT_KIND)
+        return DEFAULT_LIMIT_KIND
+    return str(value)
+
+
+def containment_args(kind: str) -> list[str]:
+    """The reaper's ``--containment`` for ``kind``: rlimit_data is its default (no flag); none sets limit 0."""
+    return ["--containment", str(kind)] if kind in ("cgroup", "watchdog", "rss") else []
 
 
 def _configured_limit(cfg: Any, settings: Any) -> tuple[bool, Any]:
@@ -151,9 +173,7 @@ def build_launch_spec(cfg: Any, settings: Any = None, log_dir: str | Path | None
     limit = server_limit_mb(cfg, settings)
     status = status_path(Path(log_dir) if log_dir is not None else Path.cwd(), name)
     args = ["-E", str(REAPER), "--limit-mb", str(limit), "--status", str(status), "--server", name]
-    kind = limit_kind(cfg, settings)
-    if kind in ("cgroup", "watchdog", "rss"):          # rlimit_data is the reaper's default; none sets limit 0
-        args += ["--containment", str(kind)]
+    args += containment_args(limit_kind(cfg, settings))
     relay_mb = float(getattr(getattr(settings, "memory", None), "relay_max_message_mb", 0) or 0)
     if relay_mb > 0:                                   # data.memory.relay_max_message_mb (off by default)
         args += ["--relay-max-mb", f"{relay_mb:g}"]

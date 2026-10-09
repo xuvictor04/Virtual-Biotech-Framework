@@ -34,10 +34,15 @@ jobs:
       - run: ruff check src tests
       - name: shell scripts and Dockerfile
         run: |
-          bash -n deploy/full/deploy.sh deploy/full/install-env.sh deploy/full/install-harness.sh deploy/full/vbt-host \
-                  deploy/local/serve_vllm.sh
-          docker run --rm -v "$PWD/deploy:/mnt:ro" koalaman/shellcheck:v0.10.0 \
-            /mnt/full/deploy.sh /mnt/full/install-env.sh /mnt/full/install-harness.sh /mnt/full/vbt-host
+          # one file per `bash -n`: extra operands are the first script's arguments, never parsed
+          for f in deploy/full/deploy.sh deploy/full/install-env.sh deploy/full/install-harness.sh \
+                   deploy/full/vbt-host deploy/local/serve_vllm.sh scripts/dev/cpu_server.sh; do
+            bash -n "$f"
+            test -x "$f" || { echo "$f is not executable (git update-index --chmod=+x $f)"; exit 1; }
+          done
+          docker run --rm -v "$PWD:/mnt:ro" koalaman/shellcheck:v0.10.0 \
+            /mnt/deploy/full/deploy.sh /mnt/deploy/full/install-env.sh /mnt/deploy/full/install-harness.sh \
+            /mnt/deploy/full/vbt-host /mnt/deploy/local/serve_vllm.sh /mnt/scripts/dev/cpu_server.sh
           docker run --rm -i hadolint/hadolint:v2.12.0 < deploy/full/Dockerfile
       - name: compose files
         env:

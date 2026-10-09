@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Mapping, TextIO
@@ -133,6 +135,9 @@ def make_plan(ctx: SetupContext, names: list[str]) -> dict[str, Any]:
     """Every selected step's plan: action, sizes, time estimate, whether it is up to date. Changes nothing."""
     steps = {s.name: s for s in STEPS}
     rows: list[dict[str, Any]] = []
+    if ctx.plan_dir is None:
+        ctx.plan_dir = Path(tempfile.mkdtemp(prefix="vbt-setup-plan-"))
+        atexit.register(shutil.rmtree, ctx.plan_dir, True)
     steps["probe"].run(ctx)
     ensure_configured(ctx, write=False)
     for name in names:
@@ -300,6 +305,11 @@ def cmd_setup(args: argparse.Namespace, config: dict[str, Any]) -> int:
             print(json.dumps(plan, indent=1, default=str))
         else:
             print_plan(plan, out)
+        failed = [r["step"] for r in plan["steps"] if r.get("action") in ("failed", "unknown")]
+        if failed:
+            # a plan that could not plan a step is not a plan to act on (DEP-1: exit 0 hid the failed acquire plan)
+            print(f"error: the plan of {', '.join(failed)} failed; see the detail above", file=sys.stderr)
+            return 1
         return 0
     try:
         return run_steps(ctx, names, force=args.force, keep_going=args.keep_going)
