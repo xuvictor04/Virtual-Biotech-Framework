@@ -65,6 +65,7 @@ def cutoff_text(spec: Any) -> str | None:
 class Essentiality(DerivedBase):
     name: ClassVar[str] = "essentiality"
     version: ClassVar[str] = "1.0"
+    records: ClassVar[tuple[str, ...]] = ("_essentiality",)
     capabilities: ClassVar[frozenset[str]] = frozenset({"modes"})
 
     def validate_options(self, options: Mapping[str, Any]) -> list[str]:

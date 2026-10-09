@@ -55,7 +55,7 @@ __all__ = [
     "IdentifierBase", "EnvelopeBase",
     "plugin_key", "ArrowSchema", "ArrowTable", "ArrowRecordBatch",
     "RemoteFile", "AcquisitionError", "AcquisitionPlugin", "AcquisitionBase", "HARNESS_CAPABILITIES",
-    "CHECKSUM_ALGOS", "DerivedPlugin", "DerivedOptionsError", "DerivedBase",
+    "CHECKSUM_ALGOS", "DerivedPlugin", "DerivedOptionsError", "DerivedBase", "derived_records",
 ]
 
 API_VERSION = 1
@@ -564,6 +564,8 @@ class DerivedPlugin(Protocol):
     api: ClassVar[int] = API_VERSION
     capabilities: ClassVar[frozenset[str]]
     requires: ClassVar[tuple[str, ...]] = ()
+    #: the ``sections`` of its answers that are records of the computation (``_<name>``), kept in provenance
+    records: ClassVar[tuple[str, ...]] = ()
 
     def validate_options(self, options: Mapping[str, Any]) -> list[str]: ...
     def columns(self, options: Mapping[str, Any]) -> list[str]: ...      # the column paths serve reads
@@ -571,6 +573,11 @@ class DerivedPlugin(Protocol):
 
     @classmethod
     def conformance_cases(cls) -> Any: ...
+
+
+def derived_records(plugin: Any) -> tuple[str, ...]:
+    """The record sections a derived plugin declares (``records``; none when it declares none)."""
+    return tuple(str(s) for s in (getattr(plugin, "records", ()) or ()))
 
 
 class AcquisitionPlugin(Protocol):
@@ -635,6 +642,7 @@ class DerivedBase(PluginBase):
     mapping."""
 
     kind: ClassVar[str] = "derived"
+    records: ClassVar[tuple[str, ...]] = ()
 
     @staticmethod
     def param(request: Mapping[str, Any], options: Mapping[str, Any], name: str) -> Any:

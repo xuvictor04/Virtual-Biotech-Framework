@@ -3509,7 +3509,7 @@ class DataGateway:
         if counters.items_removed.get("negated"):
             notes.append(f"{counters.items_removed['negated']} negated item(s) removed (pass include_negated=true "
                          "to keep them)")
-        records = _derived_records(serve)
+        records = _derived_records(serve, self.registry)
         if records:
             notes.append("the derived " + ", ".join(sorted(records)) + " record(s) are in this call's provenance")
         native = self._native_provenance(st, obj) if st.native_header else None
@@ -3959,16 +3959,24 @@ def _rank_json(o: Any) -> dict[str, Any]:
     return out
 
 
-#: ServeResponse sections that carry a derived handler's record (§10.6, F16, F18): kept in provenance.
-DERIVED_RECORDS = ("_expansion", "_propagation", "_statistics", "_network", "_essentiality", "_specificity",
-                   "_selectivity")
+#: ServeResponse sections that carry a derived handler's record (§10.6, F16, F18): kept in provenance. A derived
+#: plugin lists its own in ``records`` (ASN-5).
+DERIVED_RECORDS = ("_expansion", "_propagation", "_statistics", "_network", "_selectivity")
 
 
-def _derived_records(serve: ServeResponse | None) -> dict[str, Any]:
+def _derived_records(serve: ServeResponse | None, registry: Any = None) -> dict[str, Any]:
     """``{expansion: ..., statistics: ...}``: the records a derived handler returned beside its rows."""
     if serve is None:
         return {}
-    return {k[1:]: json_value(v) for k, v in serve.sections.items() if k in DERIVED_RECORDS and v}
+    from ..plugins.base import derived_records
+
+    names = set(DERIVED_RECORDS)
+    if registry is not None and callable(getattr(registry, "all", None)):
+        try:
+            names |= {s for p in registry.all("derived") for s in derived_records(p)}
+        except KeyError:                               # a registry without the derived kind
+            pass
+    return {k[1:]: json_value(v) for k, v in serve.sections.items() if k in names and v}
 
 
 def _record(res: Any, arg: str) -> dict[str, Any]:

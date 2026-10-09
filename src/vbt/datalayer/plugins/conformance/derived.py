@@ -9,7 +9,8 @@ any data on disk.
 - D-1 ``validate_options`` accepts the valid options (no problem listed) and lists a problem for each invalid one;
   ``serve`` with invalid options raises ``DerivedOptionsError`` and never answers.
 - D-2 recorded cases answer with the expected total, first row (the keys given), number of rows returned under the
-  case's limit, key columns and ``truncated``; every answer is ``served_by: derived``.
+  case's limit, key columns and ``truncated``; every answer is ``served_by: derived``, and every ``_``-section it
+  returns is one of the plugin's ``records`` (which the gateway keeps in provenance).
 - D-3 serving is pure: deterministic, the input rows are not modified and their order does not change the answer.
 - D-4 the plugin reads only the columns ``columns(options)`` declares, through the view, with the request's byte
   budget (never an unbounded read).
@@ -25,7 +26,7 @@ from typing import Any, Mapping, Sequence
 
 import pytest
 
-from ..base import DerivedOptionsError
+from ..base import DerivedOptionsError, derived_records
 from . import selected_plugins
 
 __all__ = ["DerivedCase", "DerivedCases", "MemoryView", "run_case"]
@@ -154,6 +155,9 @@ def test_d2_recorded_cases(plugin: Any, case: DerivedCase) -> None:
         assert bool(got.get("truncated")) == (len(rows) < got["total"]), f"{case.name}: truncated is wrong"
     if case.key_columns is not _UNSET:
         assert list(got.get("key_columns") or []) == list(case.key_columns)
+    unrecorded = [k for k in (got.get("sections") or {}) if str(k).startswith("_") and
+                  k not in derived_records(plugin)]
+    assert not unrecorded, f"{case.name}: sections {unrecorded} are not in the plugin's records (lost to provenance)"
     if case.first is not None:
         assert rows, f"{case.name}: no row"
         for k, v in case.first.items():

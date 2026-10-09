@@ -30,6 +30,7 @@ _COLUMNS = ("gene", "tissue_id", "tissue_label", "value", "unit")
 class TissueSpecificity(DerivedBase):
     name: ClassVar[str] = "tissue_specificity"
     version: ClassVar[str] = "1.0"
+    records: ClassVar[tuple[str, ...]] = ("_specificity",)
     capabilities: ClassVar[frozenset[str]] = frozenset()
 
     def validate_options(self, options: Mapping[str, Any]) -> list[str]:

@@ -936,3 +936,13 @@ def test_lint_checks_a_derived_plugins_options_and_the_arguments_it_maps():
              if f.level == "error"]
     assert any("needs args.comparison" in f for f in found), found
     assert any("'min_lines' is not an argument of the binding" in f for f in found), found
+
+
+def test_a_derived_plugins_records_are_kept_in_provenance():
+    from vbt.datalayer.gateway.gateway import _derived_records
+    from vbt.datalayer.ipc import ServeResponse
+
+    serve = ServeResponse(rows=[], total=0, served_by="derived",
+                          sections={"_essentiality": {"cutoff": "le -0.5 (inclusive)"}, "_excluded": {"n": 1}})
+    assert _derived_records(serve, discover(entry_points=False)) == {"essentiality": {"cutoff": "le -0.5 (inclusive)"}}
+    assert _derived_records(serve) == {}        # the records a plugin declares, not a core list of tool names
