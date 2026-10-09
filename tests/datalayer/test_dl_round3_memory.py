@@ -8,6 +8,11 @@
 * On a simulated 512 GB host every Open Targets server's whole-table loads are admitted (as upstream loads them);
   on a 16 GB host the largest are refused with ``too_large`` naming the auto limit and the host that would admit
   them.
+* The session check runs each large local table in a data child of its own (``preflight.check_groups``); a
+  group whose child fails marks its tables, the other groups' results stand.
+* A wide CSV matrix's statistics decode many rows per block (DepMap 24Q4 CRISPRGeneEffect.csv: 182 s to 7.7 s).
+* R6/R7/R9/R10 on a matrix's axes (contract request: the ``service/checks.py`` patch in the D3 report), skipped
+  until ``checks.matrix_axis_checks`` exists.
 * Opt-in (``VBT_DL_NETWORK=1``, ``cellxgene_census`` installed, the upstream checkout): the unmodified
   ``single_cell`` server under the default containment answers small Census pulls through ``MCPBridge`` with the
   gateway enforcing, and under ``RLIMIT_DATA`` the same pull fails with ``std::bad_alloc``.
@@ -281,6 +286,155 @@ def test_describe_lists_every_auto_setting(host):
     assert s["mcp_servers.pathway.mem_limit_mb"]["effective"] == 2048
     assert "no RLIMIT_DATA" in s["memory.limit_kind"]["rule"]
     json.dumps(out)
+
+
+def test_the_data_child_scales_by_its_own_rule_and_rss_is_the_fallback_containment(host):
+    from vbt.datalayer.launch import DEFAULT_LIMIT_KIND, limit_kind, limit_source
+
+    host(512 * GB)
+    fixed = DataSettings.from_dict({"service": {"mem_limit_mb": 2500}, "memory": {"default_server_mb": 5000}})
+    child = MCPServerConfig("data", command="python", mem_limit_mb="auto")
+    assert server_limit_mb(child, fixed) == 26214, "a data child set to auto scales as the data child, not a server"
+    assert limit_source(child, fixed) == "auto" and limit_source(MCPServerConfig("data", command="p"), fixed) == \
+        "configured"
+    assert limit_source("target", fixed) == "configured" and limit_source("target", DataSettings.from_dict(
+        {"memory": {"default_server_mb": "auto"}})) == "auto"
+    assert server_limit_mb("target", None) == 293601 and server_limit_mb("data", None) == 26214
+    assert DEFAULT_LIMIT_KIND == "rss" and limit_kind("target", None) == "rss"
+
+
+# --------------------------------------------------------------------------- the session check, grouped
+
+
+@pytest.fixture(scope="module")
+def ot_small(tmp_path_factory):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import dl_fixtures
+
+    return dl_fixtures.build_ot_fixture(tmp_path_factory.mktemp("ot") / "25.09")
+
+
+def _dir_bytes(path: Path) -> int:
+    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+
+
+def test_large_tables_are_checked_in_a_child_of_their_own(monkeypatch, ot_small):
+    import vbt.preflight as pf
+    from vbt.config import load_config
+
+    monkeypatch.setenv("OPEN_TARGETS_DATA_PATH", str(ot_small))
+    config = load_config(["mock"])
+    sizes = {p.name: _dir_bytes(p) for p in ot_small.iterdir() if p.is_dir()}
+    monkeypatch.setattr(pf, "CHECK_ISOLATE_BYTES", sizes["target"])
+    tables = ["open_targets.target", "open_targets.target_go", "open_targets.go", "open_targets.known_drug",
+              "open_targets.so"]
+    groups = pf.check_groups(config, tables)
+    flat = [t for g in groups for t in g]
+    assert sorted(flat) == sorted(tables), "every table once"
+    where = {t: i for i, g in enumerate(groups) for t in g}
+    assert where["open_targets.target_go"] == where["open_targets.target"], "an item table goes with its parent"
+    assert groups[where["open_targets.target"]] == ["open_targets.target", "open_targets.target_go"]
+    big = {f"open_targets.{n}" for n in ("go", "known_drug", "so") if sizes[n] >= sizes["target"]}
+    assert all(groups[where[t]] == [t] for t in big)
+    assert groups[-1] == sorted({"open_targets.go", "open_targets.known_drug", "open_targets.so"} - big,
+                                key=tables.index)
+    monkeypatch.setattr(pf, "CHECK_ISOLATE_BYTES", 1 << 62)
+    assert pf.check_groups(config, ["open_targets.target", "open_targets.so"]) == [["open_targets.target",
+                                                                                   "open_targets.so"]]
+
+
+def test_a_failing_group_marks_its_tables_and_keeps_the_others(monkeypatch):
+    import vbt.preflight as pf
+
+    monkeypatch.setattr(pf, "check_groups", lambda config, tables=(): [["s.big"], ["s.a", "s.b"]])
+
+    def once(config, tables, depth, timeout):
+        if tables == ["s.big"]:
+            raise pf.DataCheckUnavailable("python exited -9: killed at the data child's limit")
+        return {"tables": {t: {"status": "ready", "checks": []} for t in tables}, "depth": depth,
+                "quarantined": [{"file": "x.yaml"}]}
+
+    monkeypatch.setattr(pf, "_run_check_once", once)
+    out = pf.run_data_check({}, depth="standard")
+    assert set(out["tables"]) == {"s.a", "s.b"} and out["depth"] == "standard"
+    assert "exited -9" in out["table_errors"]["s.big"] and out["quarantined"] == [{"file": "x.yaml"}]
+    monkeypatch.setattr(pf, "_run_check_once", lambda *a, **k: (_ for _ in ()).throw(pf.DataCheckUnavailable("x")))
+    with pytest.raises(pf.DataCheckUnavailable):
+        pf.run_data_check({}, depth="standard")
+
+
+# --------------------------------------------------------------------------- wide CSV statistics
+
+
+def test_wide_csv_statistics_decode_many_rows_per_block(tmp_path, monkeypatch):
+    """A matrix-shaped CSV (wide lines) is scanned for its statistics in blocks of many rows: 1 MiB blocks decoded
+    a few lines each, and computing per-column statistics per tiny batch took minutes on DepMap's 17,917 columns."""
+    from vbt.datalayer.plugins.base import Fragment
+    from vbt.datalayer.plugins.formats import csv as csvmod
+
+    cols, rows = 3000, 300
+    path = tmp_path / "wide.csv"
+    with path.open("w") as f:
+        f.write(",".join(["id", *(f"G{i} ({i})" for i in range(cols))]) + "\n")
+        for r in range(rows):
+            f.write(",".join([f"ACH-{r:06d}", *(f"{(r * 7 + i) % 97 / 10:.4f}" for i in range(cols))]) + "\n")
+    assert path.stat().st_size > 4 * csvmod.INFER_BYTES
+    batches: list[int] = []
+    real = csvmod.stats_from_batches
+
+    def counting(it, **kw):
+        def gen():
+            for b in it:
+                batches.append(b.num_rows)
+                yield b
+        return real(gen(), **kw)
+
+    monkeypatch.setattr(csvmod, "stats_from_batches", counting)
+    fmt = csvmod.CsvFormat().configure({}, None)
+    st = os.stat(path)
+    stats = fmt._scan_stats(Fragment(uri=str(path), size=st.st_size, mtime_ns=st.st_mtime_ns))
+    assert stats.rows == rows and len(stats.columns) == cols + 1
+    assert len(batches) == 1 and batches == [rows], batches
+    assert stats.columns["G5 (5)"].max == pytest.approx(9.6) and stats.columns["G5 (5)"].null_count == 0
+
+
+# --------------------------------------------------------------------------- matrix axes (contract request)
+
+
+def _depmap_ctx(tmp_path: Path, monkeypatch) -> object:
+    import shutil
+
+    from vbt.datalayer.service import ServiceContext
+
+    for d in ("sources", "overlays", "depmap"):
+        (tmp_path / d).mkdir()
+    shutil.copy(REPO / "configs" / "data" / "sources" / "depmap.yaml", tmp_path / "sources" / "depmap.yaml")
+    monkeypatch.setenv("DEPMAP_DATA_PATH", str(tmp_path / "depmap"))
+    return ServiceContext(DataSettings.from_dict({"descriptors_dir": str(tmp_path / "sources"),
+                                                  "overlays_dir": str(tmp_path / "overlays"),
+                                                  "cache_dir": str(tmp_path / "cache")}, project_root=tmp_path))
+
+
+def test_matrix_axis_columns_get_r9_references(tmp_path, monkeypatch):
+    """R9 on the row axis of a DepMap matrix: every ModelID must name a row of the model table. Runs once
+    ``service/checks.py`` has ``matrix_axis_checks`` (D3 contract request)."""
+    from vbt.datalayer.service import checks
+
+    if not hasattr(checks, "matrix_axis_checks"):
+        pytest.skip("service/checks.py has no matrix_axis_checks yet (D3 contract request)")
+    ctx = _depmap_ctx(tmp_path, monkeypatch)
+    genes = [("RPL3", "6122"), ("TP53", "7157")]
+    (tmp_path / "depmap" / "CRISPRGeneEffect.csv").write_text(
+        "ModelID," + ",".join(f"{s} ({e})" for s, e in genes) + "\nACH-000001,-1.5,0.1\nACH-000002,-1.2,0.2\n")
+    model_header = "ModelID,CellLineName,StrippedCellLineName,OncotreeLineage,OncotreePrimaryDisease\n"
+    (tmp_path / "depmap" / "Model.csv").write_text(model_header + "ACH-000001,A,A,Lung,X\nACH-000002,B,B,Skin,Y\n")
+    model = checks.check_table(ctx, "depmap.gene_effect")
+    r9 = [c for c in model.checks if c.name.startswith("R9") and (c.column or "").startswith("@row")]
+    assert r9 and all(c.ok for c in r9), [c.detail for c in r9]
+    (tmp_path / "depmap" / "Model.csv").write_text(model_header + "ACH-000001,A,A,Lung,X\n")
+    model = checks.check_table(ctx, "depmap.gene_effect")
+    bad = [c for c in model.checks if c.name.startswith("R9") and not c.ok]
+    assert bad and "@row.ModelID" in (bad[0].column or ""), [c.detail for c in model.checks if not c.ok]
 
 
 # --------------------------------------------------------------------------- live: the Census through MCPBridge

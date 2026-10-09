@@ -87,20 +87,29 @@ async def run_correctness(ctx: Any) -> StepResult:
                                  "off": "", "enforce": "wrong", "detail": f"server failed to start: {calls.failures}"})
                     verdicts["wrong"] += 1
                 continue
+            called: set[str] = set()
             for i, c in enumerate(live):
                 binding = ctx.catalog.contract(server, c.tool).binding
-                off = await calls.call(server, c.tool, c.args, mode="off")
+                first = c.tool not in called          # the first call of a tool loads its tables (cold)
+                called.add(c.tool)
                 enf = await calls.call(server, c.tool, c.args, mode="enforce")
                 verdict, detail = judge(c, enf, binding)
                 verdicts[verdict] += 1
                 by_ct.setdefault(c.ct, Counter())[verdict] += 1
                 key = f"{server}.{c.tool}#{i}"
-                ctx.calls.append({"server": server, "tool": c.tool, "case": key, "mode": "off", "seconds": off.seconds})
                 ctx.calls.append({"server": server, "tool": c.tool, "case": key, "mode": "enforce",
-                                  "seconds": enf.seconds, "verdict": verdict})
+                                  "seconds": enf.seconds, "verdict": verdict, "first": first})
+                if enf.is_error and enf.kind == "too_large":
+                    # the gateway refused the load this host cannot hold: the same call without it would load
+                    # the tables anyway and be killed at the server's limit (or take the host with it)
+                    off_text = "not called: the enforce call was refused too_large on this host"
+                else:
+                    off = await calls.call(server, c.tool, c.args, mode="off")
+                    ctx.calls.append({"server": server, "tool": c.tool, "case": key, "mode": "off",
+                                      "seconds": off.seconds, "first": first})
+                    off_text = judge_off(c, off, binding)
                 rows.append({"test": c.ct, "tool": f"{server}.{c.tool}", "arguments": c.args,
-                             "oracle": _oracle_text(c), "off": judge_off(c, off, binding), "enforce": verdict,
-                             "detail": detail})
+                             "oracle": _oracle_text(c), "off": off_text, "enforce": verdict, "detail": detail})
             ctx.verbs.extend(calls.verb_times)
             status = calls.server_status()
             servers_out[server] = {"tables": tables, "cases": len(live), "start_s": round(calls.started_s, 1),

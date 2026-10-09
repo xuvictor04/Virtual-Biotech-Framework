@@ -64,6 +64,7 @@ class Options(argparse.Namespace):
         self.out: Path | None = kw.pop("out", None)
         self.timeout_s: float = float(kw.pop("timeout_s", 600))
         self.network: bool | None = kw.pop("network", None)
+        self.check_from: Path | None = kw.pop("check_from", None)
         for k, v in kw.items():
             setattr(self, k, v)
 
@@ -161,9 +162,16 @@ def step_check(ctx: _Ctx) -> StepResult:
                 except Exception:  # noqa: BLE001
                     continue
                 for ref, t in contract.tables.items():
-                    tables.append(str(t.physical) if t.is_item_table else str(ref))
+                    tables += [str(ref), str(t.physical)] if t.is_item_table else [str(ref)]
         tables = sorted(set(tables))
-    response, status = run_data_check_contained(ctx.config, depth=ctx.opts.depth, tables=tables, timeout=24 * 3600)
+    if ctx.opts.check_from:
+        # an earlier run's check.json (the same CheckResponse): the steps after it run without a second deep check
+        response = json.loads(Path(ctx.opts.check_from).read_text(encoding="utf-8"))
+        status = {"reused": str(ctx.opts.check_from)}
+    else:
+        response, status = run_data_check_contained(ctx.config, depth=ctx.opts.depth, tables=tables,
+                                                    timeout=24 * 3600)
+    (ctx.out / "check.json").write_text(json.dumps(response, default=str), encoding="utf-8")
     ctx.check = response
     statuses = ctx.statuses()
     absent = sorted(k for k, v in statuses.items() if v in _ABSENT)
@@ -180,8 +188,12 @@ def step_check(ctx: _Ctx) -> StepResult:
     for ref, err in sorted(errors.items()):
         rows.append({"table": ref, "status": "check failed", "findings": str(err)[:300]})
     ready = len(statuses) - len(absent) - len(bad)
-    summary = (f"depth {ctx.opts.depth}: {ready} ready, {len(bad)} present but not ready, {len(absent)} absent "
-               f"(not on this host), {len(errors)} check error(s)")
+    depth = response.get("depth") or ctx.opts.depth
+    summary = (f"depth {depth}: {ready} ready, {len(bad)} present but not ready, {len(absent)} absent "
+               f"(not on this host), {len(errors)} check error(s)"
+               + (f"; reused from {ctx.opts.check_from}" if ctx.opts.check_from else
+                  f"; {status.get('groups', 1)} data-child process(es), the largest peak "
+                  f"{float(status.get('peak_rss_mb') or 0):,.0f} MB"))
     return StepResult("check", f"Readiness (vbt ds check --depth {ctx.opts.depth})",
                       FAIL if bad or errors else PASS, summary, rows=rows, seconds=time.monotonic() - t0,
                       peak_mb=status.get("peak_rss_mb"),
@@ -214,9 +226,11 @@ def step_latency(ctx: _Ctx) -> StepResult:
         mine = [c for c in ctx.calls if c["server"] == server]
         enf = [c["seconds"] for c in mine if c["mode"] == "enforce"]
         off = [c["seconds"] for c in mine if c["mode"] == "off"]
-        pairs = {}
+        cold = [c["seconds"] for c in mine if c["mode"] == "enforce" and c.get("first")]
+        pairs: dict[str, dict[str, float]] = {}
         for c in mine:
-            pairs.setdefault(c["case"], {})[c["mode"]] = c["seconds"]
+            if not c.get("first"):             # a tool's first (enforce) call loads its tables: not overhead
+                pairs.setdefault(c["case"], {})[c["mode"]] = c["seconds"]
         over = [p["enforce"] - p["off"] for p in pairs.values() if "enforce" in p and "off" in p]
         wit = [s for (srv, _t, verb, s) in ctx.verbs if srv == server and verb.startswith("_witness")]
         allv = [s for (srv, _t, _v, s) in ctx.verbs if srv == server]
@@ -226,7 +240,9 @@ def step_latency(ctx: _Ctx) -> StepResult:
 
         rows.append({"server": server, "calls": len(enf), "enforce p50 ms": ms(percentile(enf, 50)),
                      "enforce p95 ms": ms(percentile(enf, 95)), "off p50 ms": ms(percentile(off, 50)),
-                     "off p95 ms": ms(percentile(off, 95)), "overhead p50 ms": ms(percentile(over, 50)),
+                     "off p95 ms": ms(percentile(off, 95)), "first calls": len(cold),
+                     "first call p50 ms": ms(percentile(cold, 50)), "warm pairs": len(over),
+                     "overhead p50 ms": ms(percentile(over, 50)),
                      "overhead p95 ms": ms(percentile(over, 95)), "witness requests": len(wit),
                      "witness p50 ms": ms(percentile(wit, 50)), "witness p95 ms": ms(percentile(wit, 95)),
                      "data-child requests": len(allv), "data-child p95 ms": ms(percentile(allv, 95))})
@@ -409,6 +425,8 @@ def add_validate_parser(sub: Any) -> argparse.ArgumentParser:
                    help="Case 1 replication: quick (no permutations, GLMMs or expression models), full, off")
     p.add_argument("--timeout-s", type=float, default=600, help="per tool call (default 600)")
     p.add_argument("--out", help="report directory (default <state>/validate/<UTC time>)")
+    p.add_argument("--check-from", help="reuse the check.json an earlier run wrote (its CheckResponse) instead of "
+                   "checking again")
     p.add_argument("--json", action="store_true", help="print the JSON report instead of the Markdown one")
     p.set_defaults(handler=cmd_validate)
     return p
@@ -424,7 +442,8 @@ def cmd_validate(args: argparse.Namespace, config: dict[str, Any]) -> int:
     opts = Options(steps=[s for s in steps if s not in skip], depth=args.depth,
                    servers=[s for s in (args.servers or "").split(",") if s] or None, max_tools=args.max_tools,
                    memory_tables=args.memory_tables, replicate=args.replicate,
-                   out=Path(args.out) if args.out else None, timeout_s=args.timeout_s)
+                   out=Path(args.out) if args.out else None, timeout_s=args.timeout_s,
+                   check_from=Path(args.check_from) if args.check_from else None)
     config = dict(config)
     config.setdefault("_profiles", list(getattr(args, "profile", None) or []))
     report, out = run_validate(config, opts, progress=lambda m: print(m, file=sys.stderr, flush=True))

@@ -665,8 +665,20 @@ def run_data_check(config: dict[str, Any], *, tables: Iterable[str] = (), depth:
     if len(groups) == 1:
         return _run_check_once(config, groups[0], depth, timeout)
     deadline = time.monotonic() + timeout
-    return _merge_checks([_run_check_once(config, g, depth, max(60.0, deadline - time.monotonic()))
-                          for g in groups])
+    responses: list[dict[str, Any]] = []
+    failed: list[str] = []
+    for group in groups:
+        try:
+            responses.append(_run_check_once(config, group, depth, max(60.0, deadline - time.monotonic())))
+        except DataCheckUnavailable as exc:
+            # one group's child failing (a table killed at the data child's limit) never hides the other groups'
+            # results: its tables carry the error, as a table the child could not check does
+            failed.append(str(exc))
+            responses.append({"tables": {}, "table_errors": {str(t): f"the data child checking it failed: {exc}"[:800]
+                                                             for t in group}})
+    if len(failed) == len(groups):
+        raise DataCheckUnavailable(failed[0])
+    return _merge_checks(responses)
 
 
 def _run_check_once(config: dict[str, Any], tables: Sequence[str], depth: str, timeout: float) -> dict[str, Any]:

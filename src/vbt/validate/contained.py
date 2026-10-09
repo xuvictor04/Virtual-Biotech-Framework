@@ -93,20 +93,31 @@ def run_data_check_contained(config: Mapping[str, Any], *, depth: str, tables: S
     worst: dict[str, Any] = {}
     deadline = time.monotonic() + timeout
     groups = check_groups(dict(config), tables)
+    per_group: list[dict[str, Any]] = []
+    failed: list[str] = []
     for group in groups:
         args = ["--check", "--json", "--depth", depth]
         for t in group:
             args += ["--table", str(t)]
         cmd, env = data_child_command(dict(config), *args)
+        t0 = time.monotonic()
         proc, status = run_reaped(config, cmd, env, timeout=max(60.0, deadline - time.monotonic()))
         line = next((ln for ln in reversed(proc.stdout.splitlines()) if ln.startswith("{")), None)
+        per_group.append({"tables": len(group) or "all", "first": group[:3], "seconds": round(time.monotonic() - t0, 1),
+                          "peak_rss_mb": status.get("peak_rss_mb"), "rc": proc.returncode})
         if proc.returncode != 0 or line is None:
-            raise DataCheckUnavailable(f"{cmd[0]} exited {proc.returncode}: "
-                                       f"{(proc.stderr or proc.stdout).strip()[-500:]}")
-        responses.append(json.loads(line))
+            why = f"{cmd[0]} exited {proc.returncode}: {(proc.stderr or proc.stdout).strip()[-500:]}"
+            failed.append(why)
+            responses.append({"tables": {}, "table_errors": {str(t): f"the data child checking it failed: {why}"
+                                                             for t in group}})
+        else:
+            responses.append(json.loads(line))
         if float(status.get("peak_rss_mb") or 0) >= float(worst.get("peak_rss_mb") or 0):
             worst = {**status, "tables": group[:5]}
+    if failed and len(failed) == len(groups):
+        raise DataCheckUnavailable(failed[0])
     worst["groups"] = len(groups)
+    worst["per_group"] = per_group
     return (_merge_checks(responses) if len(responses) > 1 else responses[0]), worst
 
 

@@ -212,8 +212,10 @@ data:
     unbound_empty: empty_unverified   # empty_unverified | error
   service:                        # the `data` child (service/server.py), launched through the reaper
     # The data child's limit and the witness/readiness budgets below are the floors of their host-scaled values
-    # (vbt.datalayer.memory.sizing: `auto` = 5% of the host's memory within 3,000-32,768 MB, the budgets x that /
-    # 3,000). The launcher already resolves `auto` here; the typed settings take it once DataSettings resolves it.
+    # (vbt.datalayer.memory.sizing: 5% of the host's memory within 3,000-32,768 MB, the budgets x that / 3,000;
+    # `vbt validate` prints them for this host). `vbt setup` writes this host's numbers into <state>/host.yaml; a
+    # data child whose own mem_limit_mb is `auto` gets the scaled limit from the launcher. These keys take `auto`
+    # here once DataSettings resolves it for the typed settings (vbt.datalayer.memory.sizing.resolve_auto).
     mem_limit_mb: 3000
     max_concurrency: 4
     timeout_s: 600
