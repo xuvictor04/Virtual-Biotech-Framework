@@ -135,11 +135,29 @@ def s_pubmed_count_ceiling(tmp_path: Path) -> dict[str, Any]:
     return _run(_ctx(tmp_path), "_witness", {"table": "pubmed.records", "predicate": to_json(pred)})
 
 
+def s_pubmed_term_count_ceiling(tmp_path: Path) -> dict[str, Any]:
+    """The bare engine text (``@term``, untagged) under the server's literature ceiling: the witness counts with the
+    ceiling the server applies (VBT_LITERATURE_MAXDATE), as tests/datalayer/test_dl_live_review_fixes.py replays."""
+    import os
+
+    before = os.environ.get("VBT_LITERATURE_MAXDATE")
+    os.environ["VBT_LITERATURE_MAXDATE"] = "2017/12/31"
+    try:
+        return _run(_ctx(tmp_path), "_witness", {"table": "pubmed.records",
+                                                 "predicate": to_json(TextMatch("@term", "PCSK9 AND evolocumab"))})
+    finally:
+        if before is None:
+            os.environ.pop("VBT_LITERATURE_MAXDATE", None)
+        else:
+            os.environ["VBT_LITERATURE_MAXDATE"] = before
+
+
 SCENARIOS: dict[str, Callable[[Path], dict[str, Any]]] = {
     "ctgov_count": s_ctgov_count, "ctgov_count_ceiling": s_ctgov_count_ceiling, "ctgov_find_limit": s_ctgov_find_limit,
     "ctgov_lookup_unknown": s_ctgov_lookup_unknown, "cbio_patients_paged": s_cbio_patients_paged,
     "cbio_unknown_study": s_cbio_unknown_study, "cbio_clinical": s_cbio_clinical, "cbio_study": s_cbio_study,
     "cbio_molecular": s_cbio_molecular, "pubmed_count_ceiling": s_pubmed_count_ceiling,
+    "pubmed_term_count_ceiling": s_pubmed_term_count_ceiling,
 }
 
 
@@ -534,7 +552,7 @@ def test_live_scenarios(name: str, tmp_path: Path) -> None:
         assert out["kind"] == "not_found"
     elif name == "cbio_molecular":
         assert out["find"]["rows"] and isinstance(out["witness"]["total"], int)
-    elif name in ("ctgov_count", "ctgov_count_ceiling", "pubmed_count_ceiling"):
+    elif name in ("ctgov_count", "ctgov_count_ceiling", "pubmed_count_ceiling", "pubmed_term_count_ceiling"):
         assert isinstance(out["total"], int) and out["total"] > 0 and out["total_method"] == "scan"
     elif name == "cbio_patients_paged":
         assert len(out["rows"]) == 6 and out["truncated"] and out["total"] > 6

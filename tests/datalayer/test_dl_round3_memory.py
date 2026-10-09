@@ -243,7 +243,10 @@ async def test_a_16_gb_host_refuses_the_genetics_load_naming_the_auto_limit(host
     err = exc.value
     assert err.kind.value == "too_large" and err.subkind == "over_limit"
     text = str(err)
-    assert "default_server_mb is auto" in text and "16,384 MB host" in text and "GB admits it" in text, text
+    # ACC-4: the host size it names carries the MB figure the payload holds and what it was sized for
+    need = err.payload["host_mb_needed"]
+    assert "default_server_mb is auto" in text and "16,384 MB host" in text and f"({need:,} MB, sized for" in text \
+        and ") admits it" in text, text
     assert err.payload["limit_source"] == "auto" and err.payload["host_mb"] == 16 * GB
     assert sizing.server_limit_for(err.payload["host_mb_needed"]) >= 11_564 * 1.3
     # the same refusal under a configured limit says so

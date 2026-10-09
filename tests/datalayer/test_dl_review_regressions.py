@@ -32,11 +32,12 @@ OVERLAYS = REPO / "configs" / "data" / "overlays"
 # ---------------------------------------------------------------------------- RR-1
 
 
-def _merged(tmp_path: Path, code: str) -> str:
+def _merged(tmp_path: Path, code: str, limit_kind: str | None = None) -> str:
     """The reaper's output as the Bash tool reads it: one pipe for stdout and stderr (``stderr=STDOUT``)."""
     from vbt.tools.builtin import _workspace_limit
 
-    _limit, argv, _status = _workspace_limit({"data": {"memory": {"workspace_mb": 2000}}},
+    memory: dict[str, Any] = {"workspace_mb": 2000, **({"limit_kind": limit_kind} if limit_kind else {})}
+    _limit, argv, _status = _workspace_limit({"data": {"memory": memory}},
                                              [sys.executable, "-c", code], tmp_path, "tu_rr1")
     assert argv is not None and str(REAPER) in argv
     proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
@@ -64,7 +65,9 @@ def test_merged_output_never_splits_a_line(tmp_path: Path) -> None:
 
 @linux_only
 def test_merged_output_still_names_a_memory_exit(tmp_path: Path) -> None:
-    out = _merged(tmp_path, "print('step 1', flush=True)\nb = bytearray(4000 * 2**20)\n")
+    # under RLIMIT_DATA the allocation raises MemoryError (the shipped containment is rss since RR-1 of the third
+    # review, where an untouched calloc is not resident: the address-space limit is the one this output names)
+    out = _merged(tmp_path, "print('step 1', flush=True)\nb = bytearray(4000 * 2**20)\n", "rlimit_data")
     marker = crash.parse_exit_marker(out)
     assert out.index("step 1") < out.index("MemoryError") < out.index("VBT_CHILD_EXIT")
     assert marker["reason"] == "memory_limit" and marker["cause"] == "memory_error"

@@ -208,7 +208,7 @@ def test_pubmed_witness_counts_under_the_literature_ceiling(tmp_path, monkeypatc
     (1,212 against 304 by 2017/12/31), so every search under a ceiling was a W1 tool_defect. The recorded count
     request (maxdate 2017/12/31) is the one the witness now sends for the bare engine text."""
     monkeypatch.setattr(live, "_wait_turn", lambda base, rpm: None)
-    rec = fixture("replay/pubmed_count_ceiling.json")
+    rec = fixture("replay/pubmed_term_count_ceiling.json")
     r = Replay(rec["exchanges"])
     monkeypatch.setattr(live.LiveApiLayout, "transport", staticmethod(r))
     monkeypatch.setenv("VBT_LITERATURE_MAXDATE", "2017/12/31")
@@ -221,7 +221,7 @@ async def test_search_pubmed_under_the_literature_ceiling_is_not_a_tool_defect(t
     """LIVE-3 through the gateway (the no-web profile sets 2025/01/31): upstream counts 304 by the ceiling, so does
     the witness; the data ceiling (data.leakage.ceiling) does not bound PubMed, whose server applies its own."""
     monkeypatch.setattr(live, "_wait_turn", lambda base, rpm: None)
-    r = Replay(fixture("replay/pubmed_count_ceiling.json")["exchanges"])
+    r = Replay(fixture("replay/pubmed_term_count_ceiling.json")["exchanges"])
     monkeypatch.setattr(live.LiveApiLayout, "transport", staticmethod(r))
     monkeypatch.setenv("VBT_LITERATURE_MAXDATE", "2017/12/31")
     ctx = _ctx_with(tmp_path, ["pubmed"], data={"leakage": {"ceiling": "2010-01-01"}})

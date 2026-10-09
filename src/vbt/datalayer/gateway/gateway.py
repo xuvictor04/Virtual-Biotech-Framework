@@ -276,12 +276,12 @@ def _ms(t0: float) -> float:
     return round((time.monotonic() - t0) * 1000.0, 1)
 
 
-
 def _sample_alternative(contract: Any) -> str | None:
     """The tool the overlay's ``count_first.sample.alternative`` names for a refused sample, else none."""
     cf = getattr(getattr(contract, "binding", None), "count_first", None)
-    sample = getattr(cf, "sample", None) if cf is not None else None
-    return getattr(sample, "alternative", None) if sample is not None else None
+    spec = cf.sample if cf is not None else None
+    return spec.alternative if spec is not None else None
+
 
 def _last(path: str) -> str:
     return str(path).lstrip("/").split(".")[-1].replace("[]", "")
