@@ -242,9 +242,9 @@ data:
     # validate` prints the values on this host). host_mb: auto = the smaller of MemTotal and the memory cgroup limit
     # (a container's --memory); set a number on a host the harness shares (the model server's RAM on a GPU host).
     host_mb: auto
-    # One upstream server's limit: auto = 0.8 x the host budget, at least 2,048 MB (7.8 GB on a 16 GB host; 287 GB
-    # on 512 GB, where the servers load every Open Targets table they read whole, as upstream does). A number, or a
-    # server's own mem_limit_mb in configs/mcp_servers.yaml, wins.
+    # One upstream server's limit: auto = 0.8 x the host budget, at least 2,048 MB (8,192 MB on a 16 GB host;
+    # 293,601 MB on 512 GB, where the servers load every Open Targets table they read whole, as upstream does). A
+    # number, or a server's own mem_limit_mb in configs/mcp_servers.yaml, wins.
     default_server_mb: auto
     # rss: resident memory only, in a memory cgroup when one can be created, else the RSS watchdog; no RLIMIT_DATA,
     # which TileDB's Census reads (std::bad_alloc) and Arrow's thread stacks fail under. rlimit_data | cgroup |

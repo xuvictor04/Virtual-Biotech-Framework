@@ -10,9 +10,10 @@ The harness runs on hosts from a 16 GB workstation to a 1 TB server, so its memo
   ``0.75 x plan - reserve``, ``reserve = max(data.memory.harness_reserve_mb (2,048), 5% of plan)``,
   at least 1,024.
 * ``data.memory.default_server_mb: auto``, one server's limit: ``0.8 x host budget``, at least 2,048. On a 512 GB
-  host that is 286 GB, so the unmodified servers load every Open Targets table they read whole (the genetics
-  server's ~80 GB with the x1.3 admission safety) as upstream does; on a 16 GB host it is 7.8 GB, and admission
-  refuses the tables that cannot fit with ``too_large`` naming the host and the setting.
+  host that is 293,601 MB, so the unmodified servers load every Open Targets table they read whole as upstream
+  does (genetics' whole-table loads of the full 25.09 release are about 80 GB, docs/DEPLOYMENT.md §2.2); on a
+  16 GB host it is 8,192 MB, and admission refuses the tables that cannot fit with ``too_large`` naming the host
+  and the setting.
 * ``data.service.mem_limit_mb: auto``, the data child: 5% of plan, 3,000 to 32,768; ``max_resident_mb: auto`` is
   two thirds of it.
 * The witness and readiness budgets (``data.witness.max_scan_bytes``, ``max_inflate_bytes``, ``max_key_set``,
@@ -57,7 +58,7 @@ SCALED: dict[tuple[str, str], int] = {
     ("witness", "repair_max_bytes"): 500_000_000,
     ("readiness", "vocab_budget_bytes"): 500_000_000,
 }
-#: Overrides the probe in tests and in ``vbt validate --host-mb`` (simulating another host): the MB to plan with.
+#: Overrides the probe (tests, or any ``vbt`` command simulating another host): the MB to plan with.
 HOST_MB_ENV = "VBT_HOST_MEMORY_MB"
 _UNLIMITED = 1 << 60
 
