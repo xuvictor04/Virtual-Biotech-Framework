@@ -437,6 +437,15 @@ def _declarable(name: str) -> bool:
     return not re.search(r"[`\[\]/^@]", name) and bool(name.strip())
 
 
+def _ref(name: str) -> str:
+    """A column name as the descriptor references it (key columns, nullable parts, a universe): a reference is a
+    path, so a name that is not a word (ClinVar's ``#GeneID``, a header ``Gene Symbol``) is backtick-quoted; a dotted
+    name stays as written (it is resolved to the literal column)."""
+    from ..datalayer.roles import format_name
+
+    return name if re.fullmatch(r"[\w.]+", name) else format_name(name)
+
+
 def _pattern_of(col: Any) -> str:
     """The narrowest of a few generic patterns every value of a key column matches (``local_key``'s canonical)."""
     import pyarrow.compute as pc
@@ -626,12 +635,12 @@ def draft_descriptor(info: dict[str, Any], source: str, table: str, *, release: 
     if len(key) == 1:
         doc["id_types"] = {f"{table}_key": {"plugin": "local_key",
                                             "options": {"canonical": info.get("key_pattern") or r"^.+$"},
-                                            "universe": f"{table}.{key[0]}"}}
+                                            "universe": f"{table}.{_ref(key[0])}"}}
     doc["tables"] = {table: {
         "kind": "entity", "path": path.name,
         "grain": f"one row of {path.name}" + (f", keyed by {', '.join(key)}" if key else ""),
-        "key": {"columns": key or ["<choose the column(s) that identify a row>"], "check": "full",
-                **({"nullable": list(info["key_nullable"])} if info.get("key_nullable") else {}),
+        "key": {"columns": [_ref(k) for k in key] or ["<choose the column(s) that identify a row>"], "check": "full",
+                **({"nullable": [_ref(k) for k in info["key_nullable"]]} if info.get("key_nullable") else {}),
                 **({"row_identity": info["key_identity"]} if info.get("key_identity", "key") != "key" else {})},
         "coverage": {"statement": f"The rows of {path.name} as provided ({info['rows']} rows{files}); an absent "
                                   "row is not recorded here.", "absence_means": "unknown"},

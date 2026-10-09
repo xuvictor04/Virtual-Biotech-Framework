@@ -724,10 +724,15 @@ class Runtime:
                 self.gateway_refused = reason
             return None
 
-    async def start_mcp(self, servers: list[str] | None = None) -> dict[str, str]:
+    async def start_mcp(self, servers: list[str] | None = None, *,
+                        readiness: Mapping[str, Any] | None = None) -> dict[str, str]:
         """Launch configured MCP servers (optionally a subset) behind the data gateway
         (when enabled; its own servers, such as the ``data`` child, are added unless the
-        config names them). Returns failures."""
+        config names them). Returns failures.
+
+        ``readiness``: the session preflight's data check (``preflight.last_data_check``), handed to the
+        gateway before any server lists its tools, so the gateway decides calls from it and the data child
+        never starts a second session check."""
         raw_specs = [dict(s) for s in (self.config.get("mcp_servers") or {}).get("servers", [])
                      if isinstance(s, Mapping)]
         gateway = self._build_gateway()
@@ -760,6 +765,11 @@ class Runtime:
         seam: dict[str, Any] = {"on_tools_changed": self._on_tools_changed}
         if gateway is not None:
             seam["gateway"] = gateway
+            if readiness:
+                try:
+                    gateway.set_readiness(readiness)
+                except Exception:  # noqa: BLE001 - the gateway then checks on its own
+                    log.warning("handing the preflight readiness check to the gateway failed", exc_info=True)
         seam = _accepted_kwargs(MCPBridge, seam)  # a bridge without the seam gets neither
         self.gateway = gateway
         self.mcp = MCPBridge(specs, extra_env=self.tool_env(), log_dir=self.run.dir / "logs" / "mcp",

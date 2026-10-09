@@ -1,0 +1,96 @@
+# End-to-end smoke run of the WHOLE stack on a CPU host (docs/E2E_RUN.md): a small open model from the default
+# model's family, served OpenAI-compatibly by llama.cpp, drives real sessions through the unmodified upstream MCP
+# servers that have data, the data gateway in enforce mode, the data child and the reaper. It proves the mechanics
+# (orientation, delegation, tool calls through the gateway, review, claims, the audit record, projects) before the
+# owners run the production model on their GPUs; a small model's answers are weak by design.
+#
+#   llama-server -m Qwen3.5-2B-Q4_K_M.gguf --alias qwen3.5-2b --host 127.0.0.1 --port 8012 -c 65536 -np 2 \
+#       --jinja --reasoning-format deepseek --cache-ram 2048          # or: scripts/dev/cpu_server.sh --engine llamacpp
+#   vbt --profile e2e-cpu project init e2e
+#   vbt --profile e2e-cpu run --project e2e "Is PCSK9 a genetically supported target for hypercholesterolaemia?"
+#
+# Nothing here is specific to one host: the server URL and the model name come from the environment, memory limits
+# stay `auto` (they scale with the host; on a host the model server shares, set VBT_HOST_MEMORY_MB or
+# data.memory.host_mb to the harness's share), and data paths are the usual variables (OPEN_TARGETS_DATA_PATH ...).
+# Layer it after nothing else; it is a complete harness profile like local-h100.
+
+provider:
+  name: llamacpp
+  options:
+    base_url: ${VBT_LLM_BASE_URL:-http://127.0.0.1:8012/v1}
+    read_timeout_s: 1800          # a CPU prefill of a 15K-token prompt takes minutes; nothing streams meanwhile
+    max_concurrency: 2            # = llama-server -np (slots); more requests would only queue
+    wait_ready_s: 60              # prepare() waits this long for /health
+    pricing: null
+
+model_aliases:
+  qwen: ${VBT_E2E_MODEL:-qwen3.5-2b}
+
+# One small model for every tier. Thinking off: on CPU a reasoning trace costs minutes of decoding per call, and
+# llama.cpp ignores the per-request thinking budget (only its --reasoning-budget flag applies).
+models:
+  orchestrator: {model: "${VBT_E2E_MODEL:-qwen3.5-2b}", effort: null, thinking: false, max_tokens: 2048,
+                 thinking_budget: null, context_window_tokens: 32768}
+  scientist:    {model: "${VBT_E2E_MODEL:-qwen3.5-2b}", effort: null, thinking: false, max_tokens: 2048,
+                 thinking_budget: null, context_window_tokens: 32768}
+  support:      {model: "${VBT_E2E_MODEL:-qwen3.5-2b}", effort: null, thinking: false, max_tokens: 2048,
+                 thinking_budget: null, context_window_tokens: 32768}
+  bulk:         {model: "${VBT_E2E_MODEL:-qwen3.5-2b}", effort: null, thinking: false, max_tokens: 1024,
+                 thinking_budget: null, context_window_tokens: 32768}
+
+# Small budgets: a run is minutes of CPU per model call. Agents with their own max_turns in agents.yaml are capped
+# here too (agent_overrides wins over agents.yaml).
+limits:
+  max_cso_turns: 14
+  max_specialist_turns: 8
+  max_parallel_agents: 2          # = the server's slots
+  max_turn_tokens: 1500000
+  max_item_tokens: 200000
+  tool_output_max_chars: 12000    # ~3K tokens: a 32K window holds several results
+  trace_output_chars: 10000
+agent_overrides:
+  chief-of-staff: {max_turns: 6}
+  scientific-reviewer: {max_turns: 4}
+  data-engineer: {max_turns: 24}
+  single-cell-analyst: {max_turns: 8, effort: null}
+
+context:
+  default_window_tokens: 32768
+  soft_ratio: 0.55
+  hard_ratio: 0.7
+  summary_max_tokens: 1024
+
+orchestration:
+  strategic_orientation: true     # the Chief of Staff's brief and the CSO's clarification interview
+  enforce_review: true
+  review_policy: research
+  max_review_rounds: 1
+
+# No web search backend is assumed on a smoke host; PubMed (live E-utilities) needs web or a literature ceiling.
+web:
+  enabled: false
+  fetch_max_chars: 8000
+  search: {backend: none}
+
+# The unmodified upstream servers whose data a smoke host has: the Open Targets servers (OPEN_TARGETS_DATA_PATH).
+# The full list is configs/mcp_servers.yaml; a host with every source drops these two keys.
+mcp_servers_file: null
+mcp_servers:
+  servers:
+    - {name: target, command: "${vars.mcp_python}", args: ["-E", "${vars.upstream}/src/mcp_servers/target_mcp/server.py"],
+       timeout_s: 1800, enabled: true}
+    - {name: disease, command: "${vars.mcp_python}", args: ["-E", "${vars.upstream}/src/mcp_servers/disease_mcp/server.py"],
+       timeout_s: 1800, enabled: true}
+    - {name: drug, command: "${vars.mcp_python}", args: ["-E", "${vars.upstream}/src/mcp_servers/drug_mcp/server.py"],
+       timeout_s: 1800, enabled: true}
+    - {name: association, command: "${vars.mcp_python}",
+       args: ["-E", "${vars.upstream}/src/mcp_servers/association_mcp/server.py"], timeout_s: 1800, enabled: true}
+    - {name: genetics, command: "${vars.mcp_python}", args: ["-E", "${vars.upstream}/src/mcp_servers/genetics_mcp/server.py"],
+       timeout_s: 1800, enabled: true}
+    - {name: interaction, command: "${vars.mcp_python}",
+       args: ["-E", "${vars.upstream}/src/mcp_servers/interaction_mcp/server.py"], timeout_s: 1800, enabled: true}
+    - {name: pathway, command: "${vars.mcp_python}", args: ["-E", "${vars.upstream}/src/mcp_servers/pathway_mcp/server.py"],
+       timeout_s: 1800, enabled: true}
+
+bulk:
+  default_concurrency: 2
