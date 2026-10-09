@@ -274,8 +274,8 @@ def test_one_missing_table_degrades_only_its_readers(monkeypatch, tmp_path):
     assert set(degraded_tools(cfg, results)) == KNOWN_DRUG_READERS
     assert degraded_servers(cfg, results) == {}           # drug and target keep their other tools
     assert degraded_tables(results) == {"open_targets.known_drug": "missing"}
-    ot = next(r for r in results if "OPEN_TARGETS_DATA_PATH" in r.label)
-    assert ot.ok and ot.scope == {"source": "open_targets"}            # the legacy label, now an aggregate
+    ot = next(r for r in results if r.label == "data source: open_targets")
+    assert ot.ok and ot.scope == {"source": "open_targets"}            # the per-source summary (ASN-6)
     summary = next(r for r in results if r.label == DATA_TOOLS_LABEL)
     assert summary.ok and summary.scope["ready"] == summary.scope["granted"] - 1
 

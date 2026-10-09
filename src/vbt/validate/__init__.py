@@ -20,9 +20,12 @@ memory         the memory estimate (sample-tier calibration, ``vbt ds calibrate`
                loading each present table the way upstream loads it (whole, to pandas), under the reaper
 live           the live sources (remote descriptors): their endpoints, then the servers that read them through the
                gateway with their sentinel controls
-replication    with the Zenodo archive present: the Case 1 statistics on the authors' inputs, compared row by row
 model          with a model server answering: ``vbt local check``
 =============  =====================================================================================================
+
+Further steps are extensions (ASN-6): the modules listed in ``validate.extensions`` register them with
+:func:`register_step` when imported, and they run after ``live``. The shipped default lists the paper's Case 1
+replication (:mod:`vbt.case_studies.trial_outcomes.validate_step`), which runs when the Zenodo archive is present.
 
 The report is written as ``validate.md`` and ``validate.json`` under ``--out`` (default ``<state>/validate/<UTC
 time>``, the ``vbt setup`` state directory). The verdict is FAIL when a step failed, INCOMPLETE when nothing failed
@@ -34,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib
 import json
 import os
 import shutil
@@ -45,9 +49,9 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .report import ERROR, FAIL, PASS, SKIPPED, WARN, StepResult, ValidationReport, host_facts, percentile
 
-__all__ = ["STEPS", "Options", "run_validate", "add_validate_parser", "cmd_validate"]
+__all__ = ["STEPS", "Options", "run_validate", "add_validate_parser", "cmd_validate", "register_step", "steps_for"]
 
-STEPS = ("host", "lint", "check", "correctness", "latency", "memory", "live", "replication", "model")
+STEPS = ("host", "lint", "check", "correctness", "latency", "memory", "live", "model")   # the core steps
 _NOT_READY = {"schema_drift", "encoding_drift", "key_violation", "partial", "stale", "plugin_unavailable"}
 _ABSENT = {"missing"}
 
@@ -57,7 +61,7 @@ class Options(argparse.Namespace):
 
     def __init__(self, **kw: Any) -> None:
         super().__init__()
-        self.steps: Sequence[str] = kw.pop("steps", STEPS)
+        self.steps: Sequence[str] | None = kw.pop("steps", None)      # None: every step (core and extensions)
         self.depth: str = kw.pop("depth", "deep")
         self.servers: Sequence[str] | None = kw.pop("servers", None)
         self.max_tools: int = int(kw.pop("max_tools", 40))
@@ -339,38 +343,6 @@ def step_live(ctx: _Ctx) -> StepResult:
     return run_live(ctx)
 
 
-def step_replication(ctx: _Ctx) -> StepResult:
-    title = "Paper replication (Case 1 on the Zenodo archive)"
-    if ctx.opts.replicate == "off":
-        return StepResult.skipped("replication", title, "--replicate off")
-    try:
-        from ..data.zenodo import zenodo_root
-
-        root = zenodo_root(ctx.config)
-    except Exception as exc:  # noqa: BLE001
-        return StepResult.skipped("replication", title, f"no Zenodo root ({exc})")
-    if not root or not Path(root, "clinical_trials").is_dir():
-        return StepResult.skipped("replication", title, f"the Zenodo archive is not at {root} (VBT_ZENODO_DIR; "
-                                  "`vbt data zenodo fetch --preset case1`)")
-    from ..case_studies.trial_outcomes.replicate import replicate_case1
-
-    quick = ctx.opts.replicate != "full"
-    t0 = time.monotonic()
-    try:
-        rep = replicate_case1(root, ctx.out / "case1_replication", n_perm=0 if quick else 1000,
-                              gene_perm=0 if quick else 200, mixed=not quick, expr=not quick, progress=None)
-    except FileNotFoundError as exc:
-        return StepResult.skipped("replication", title, f"the archive lacks a Case 1 input: {exc}")
-    agree = rep.agreement()
-    rows = [{k: (round(v, 6) if isinstance(v, float) else v) for k, v in r.items()} for r in agree.to_dict("records")]
-    rows_total = int(agree["rows"].sum()) if len(agree) else 0
-    matched = int(agree["matched"].sum()) if len(agree) else 0
-    status = PASS if rows_total and matched == rows_total else (WARN if matched else FAIL)
-    return StepResult("replication", title, status, f"{matched} of {rows_total} compared rows match the authors' "
-                      f"tables ({'quick: no permutations, GLMMs or expression models' if quick else 'full'})",
-                      rows=rows, seconds=time.monotonic() - t0, details={"zenodo_root": str(root)})
-
-
 def step_model(ctx: _Ctx) -> StepResult:
     title = "Model server (vbt local check)"
     provider = (ctx.config.get("provider") or {}).get("name")
@@ -426,9 +398,58 @@ _STEP_FUNCS: dict[str, tuple[str, Callable[[_Ctx], StepResult]]] = {
     "latency": ("Gateway and witness latency per server", step_latency),
     "memory": ("Memory estimate against the measured load", step_memory),
     "live": ("Live sources", step_live),
-    "replication": ("Paper replication (Case 1 on the Zenodo archive)", step_replication),
     "model": ("Model server (vbt local check)", step_model),
 }
+_EXTENSIONS: dict[str, tuple[str, Callable[[_Ctx], StepResult]]] = {}
+_EXTENSION_ERRORS: dict[str, str] = {}
+
+
+def register_step(name: str, title: str, fn: Callable[[Any], StepResult]) -> None:
+    """Add a step (an extension module calls this when imported); it runs after ``live``, in registration order.
+    The step receives the shared context (configuration, catalog, options, output directory) and returns a
+    :class:`StepResult`; a step that does not apply on this host returns ``StepResult.skipped(...)``."""
+    if name in _STEP_FUNCS:
+        raise ValueError(f"{name!r} is a core validate step")
+    _EXTENSIONS[name] = (title, fn)
+
+
+def _extension_modules(config: Mapping[str, Any]) -> list[str]:
+    raw = (config.get("validate") or {}).get("extensions") or []
+    return [str(m) for m in ([raw] if isinstance(raw, str) else list(raw))]
+
+
+def load_extensions(config: Mapping[str, Any]) -> list[str]:
+    """Import the modules ``validate.extensions`` lists (each registers its steps); returns the step names those
+    modules registered. A module that does not import is reported as an ERROR step of its own name."""
+    mods = _extension_modules(config)
+    for mod in mods:
+        try:
+            importlib.import_module(mod)
+        except Exception as exc:  # noqa: BLE001 - a broken extension is reported, the other steps run
+            _EXTENSION_ERRORS[mod] = f"{type(exc).__name__}: {exc}"[:500]
+    return [n for n, (_t, fn) in _EXTENSIONS.items() if getattr(fn, "__module__", None) in mods]
+
+
+def steps_for(config: Mapping[str, Any]) -> tuple[str, ...]:
+    """Every step this configuration runs, in order: the core steps with its extensions after ``live``."""
+    ext = [n for n in load_extensions(config) if n not in STEPS]
+    broken = [f"extension:{m}" for m in _extension_modules(config) if m in _EXTENSION_ERRORS]
+    at = STEPS.index("live") + 1
+    return (*STEPS[:at], *ext, *broken, *STEPS[at:])
+
+
+def _step(name: str) -> tuple[str, Callable[[_Ctx], StepResult]]:
+    if name in _STEP_FUNCS:
+        return _STEP_FUNCS[name]
+    if name in _EXTENSIONS:
+        return _EXTENSIONS[name]
+    module = name.split(":", 1)[-1]
+    reason = _EXTENSION_ERRORS.get(module, "not registered")
+
+    def broken(_ctx: _Ctx) -> StepResult:
+        return StepResult(name, f"Extension {module}", ERROR, f"the validate extension did not load: {reason}")
+
+    return f"Extension {module}", broken
 
 
 def run_validate(config: Mapping[str, Any], opts: Options | None = None, *,
@@ -444,10 +465,10 @@ def run_validate(config: Mapping[str, Any], opts: Options | None = None, *,
                               host=host_facts(sizing.plan_mb(_memory_raw(config))),
                               profiles=list(config.get("_profiles") or []))
     ctx = _Ctx(config, opts, out)
-    for name in STEPS:
-        if name not in opts.steps:
+    for name in steps_for(config):
+        if opts.steps is not None and name not in opts.steps:
             continue
-        title, fn = _STEP_FUNCS[name]
+        title, fn = _step(name)
         if progress:
             progress(f"[validate] {name} ...")
         t0 = time.monotonic()
@@ -493,8 +514,10 @@ def _default_out() -> Path:
 
 def add_validate_parser(sub: Any) -> argparse.ArgumentParser:
     p = sub.add_parser("validate", help="certify this host: lint, deep check, the six correctness tests on the real "
-                       "data, memory and latency, live sources, replication, the model server (markdown + JSON)")
-    p.add_argument("--only", help=f"comma-separated steps to run ({', '.join(STEPS)})")
+                       "data, memory and latency, live sources, the configured extensions (the paper replication), "
+                       "the model server (markdown + JSON)")
+    p.add_argument("--only", help=f"comma-separated steps to run ({', '.join(STEPS)}, and the steps the modules in "
+                   "validate.extensions register: the shipped default adds replication)")
     p.add_argument("--skip", help="comma-separated steps to leave out")
     p.add_argument("--depth", choices=["standard", "deep"], default="deep", help="readiness depth (default deep)")
     p.add_argument("--servers", help="comma-separated MCP servers for the correctness and live steps (default: all)")
@@ -503,7 +526,8 @@ def add_validate_parser(sub: Any) -> argparse.ArgumentParser:
     p.add_argument("--memory-tables", type=int, default=4, help="largest present tables whose load the memory step "
                    "measures, among those that fit the server limit (default 4; 0 = none)")
     p.add_argument("--replicate", choices=["quick", "full", "off"], default="quick",
-                   help="Case 1 replication: quick (no permutations, GLMMs or expression models), full, off")
+                   help="the replication extension's mode: quick (no permutations, GLMMs or expression models), "
+                        "full, off")
     p.add_argument("--timeout-s", type=float, default=600, help="per tool call (default 600)")
     p.add_argument("--out", help="report directory (default <state>/validate/<UTC time>)")
     p.add_argument("--check-from", help="reuse the check.json an earlier run wrote (its CheckResponse) instead of "
@@ -514,11 +538,12 @@ def add_validate_parser(sub: Any) -> argparse.ArgumentParser:
 
 
 def cmd_validate(args: argparse.Namespace, config: dict[str, Any]) -> int:
-    steps = [s.strip() for s in (args.only or ",".join(STEPS)).split(",") if s.strip()]
+    known = steps_for(config)
+    steps = [s.strip() for s in (args.only or ",".join(known)).split(",") if s.strip()]
     skip = {s.strip() for s in (args.skip or "").split(",") if s.strip()}
-    unknown = [s for s in [*steps, *skip] if s not in STEPS]
+    unknown = [s for s in [*steps, *skip] if s not in known]
     if unknown:
-        print(f"error: unknown step(s) {', '.join(unknown)}; steps: {', '.join(STEPS)}", file=sys.stderr)
+        print(f"error: unknown step(s) {', '.join(unknown)}; steps: {', '.join(known)}", file=sys.stderr)
         return 2
     opts = Options(steps=[s for s in steps if s not in skip], depth=args.depth,
                    servers=[s for s in (args.servers or "").split(",") if s] or None, max_tools=args.max_tools,

@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "tests" / "datalayer"))
 pa = pytest.importorskip("pyarrow")
 pq = pytest.importorskip("pyarrow.parquet")
 
-from vbt.validate import STEPS, Options, run_validate  # noqa: E402
+from vbt.validate import STEPS, Options, run_validate, steps_for  # noqa: E402
 from vbt.validate.cases import Case, complete_cases, judge, judge_off, oracle_queries, plan_cases, table_source  # noqa: E402
 from vbt.validate.contained import Outcome, run_oracle  # noqa: E402
 from vbt.validate.report import FAIL, PASS, SKIPPED, WARN, StepResult, ValidationReport, percentile  # noqa: E402
@@ -311,7 +311,22 @@ def test_the_cli_runs_the_host_and_lint_steps(tmp_path, capsys):
     assert "at full load" in host["summary"] and report["verdict"] == "pass"
     assert "Host and host-scaled limits" in out.out
     assert cli.main(["--profile", "mock", "validate", "--only", "nope"]) == 2
-    assert set(STEPS) >= {"host", "lint", "check", "correctness", "latency", "memory", "live", "replication", "model"}
+    assert set(STEPS) == {"host", "lint", "check", "correctness", "latency", "memory", "live", "model"}
+    # ASN-6: the paper replication is an extension the shipped configuration registers, after `live`
+    assert steps_for(_config()) == ("host", "lint", "check", "correctness", "latency", "memory", "live",
+                                    "replication", "model")
+    assert "replication" not in steps_for({"validate": {"extensions": []}})
+
+
+def test_a_broken_validate_extension_is_an_error_step_not_a_crash(tmp_path):
+    from vbt.validate.report import ERROR
+
+    config = _config(validate={"extensions": ["vbt.no_such_validate_extension"]})
+    assert "extension:vbt.no_such_validate_extension" in steps_for(config)
+    report, _out = run_validate(config, Options(steps=["extension:vbt.no_such_validate_extension"],
+                                                out=tmp_path / "v"))
+    [step] = report.steps
+    assert step.status == ERROR and "did not load" in step.summary and not report.ok
 
 
 @linux_only

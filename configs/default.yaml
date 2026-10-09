@@ -180,6 +180,11 @@ preflight:
   skip: false                     # skip the readiness gate entirely
   allow_missing_data: false       # start degraded (MANIFEST.degraded) instead of refusing
 
+# ---------------------------------------------------------------- vbt validate (validate/__init__.py)
+validate:
+  extensions:                     # modules that register further steps (run after `live`) when imported
+    - vbt.case_studies.trial_outcomes.validate_step   # the paper's Case 1 replication on the Zenodo archive
+
 # ---------------------------------------------------------------- MCP servers (tools/mcp_bridge.py)
 mcp:
   start_attempts: 3               # startup attempts per server

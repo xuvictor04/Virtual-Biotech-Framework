@@ -67,8 +67,12 @@ def test_subprocess_check_gives_one_result_per_part(baseline: dict[str, Any]) ->
     # Open Targets stores SO:0001583 in so.id: the so plugin's canonical form, so no encoding drift (F12)
     assert not [r for r in _findings(results) if r.scope["table"] == "so"], [r.line() for r in _findings(results)]
     labels = {r.label for r in results}
-    assert "Open Targets reference data (OPEN_TARGETS_DATA_PATH)" in labels
-    assert "Tahoe-100M data (TAHOE_DATA_PATH)" in labels and DATA_TOOLS_LABEL in labels
+    # ASN-6: one summary per source the granted tools read, the same for every source
+    assert {"data source: open_targets", "data source: tahoe_100m", DATA_TOOLS_LABEL} <= labels
+    assert not any(label.startswith(("Open Targets reference data", "Tahoe-100M data")) for label in labels)
+    ot = next(r for r in results if r.label == "data source: open_targets")
+    assert ot.scope == {"source": "open_targets"} and "granted tools reading open_targets ready" in ot.detail
+    assert "vbt data acquire open_targets --env-file .env" in ot.hint
     assert all(r.ok for r in results if r.scope and "table" not in r.scope)    # aggregates and summary pass
     assert degraded_servers(cfg, results) == {}
     assert "mcp__drug__search_known_drugs" not in baseline["tools"]
@@ -162,7 +166,7 @@ def test_missing_tahoe_leaves_depmap_tools_ready(ot_root: Path, tahoe_root: Path
     assert new and all(t.startswith("mcp__functional_genomics__") for t in new), new
     assert all("tahoe_100m.de_permissive" in tools[t] for t in new)
     assert not depmap & set(tools)                               # a missing Tahoe file leaves DepMap ready
-    tahoe_label = next(r for r in results if "TAHOE_DATA_PATH" in r.label)
+    tahoe_label = next(r for r in results if r.label == "data source: tahoe_100m")
     assert not tahoe_label.ok and tahoe_label.scope == {"source": "tahoe_100m"}
     assert "functional_genomics" not in degraded_servers(cfg, results)
 
@@ -175,7 +179,7 @@ def test_require_ready_blocks_only_when_no_granted_tool_is_ready(tahoe_root: Pat
     servers = degraded_servers(cfg, results)
     assert {"target", "disease", "drug"} <= set(servers), servers
     assert "pubmed" not in servers and "clinicaltrials" not in servers
-    ot = next(r for r in results if "OPEN_TARGETS_DATA_PATH" in r.label)
+    ot = next(r for r in results if r.label == "data source: open_targets")
     assert not ot.ok                                          # no granted Open Targets tool is ready
     only_ot = _config(tmp_path / "cfg-ot", empty, tahoe_root)
     only_ot["mcp_servers"]["servers"] = [s for s in only_ot["mcp_servers"]["servers"] if s["name"] in ("target", "drug")]

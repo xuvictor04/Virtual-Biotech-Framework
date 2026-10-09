@@ -379,8 +379,8 @@ def check_reference_data(config: dict[str, Any], *, per_turn: bool = False) -> l
     With the data layer (``data.enabled`` and a gateway mode other than ``off``) readiness is
     scoped to each tool (§13): the data child's ``--check`` runs once as a subprocess and every
     unready part (table, column, container, partition) becomes one result with ``scope`` and the
-    tools it makes unready; the legacy labels (Open Targets, Tahoe) stay as aggregates that fail
-    only when no granted tool reading that source is ready. ``per_turn`` reuses the session's
+    tools it makes unready; one summary per source (``data source: <id>``) fails only when no granted
+    tool reading that source is ready. ``per_turn`` reuses the session's
     cached results and re-checks only tables whose stat-only signature moved. Without the data
     layer, or when the data child cannot run, the legacy whole-release checks apply (with a note).
     A descriptor or overlay file that does not load is quarantined on its own (R8): one required
@@ -481,6 +481,8 @@ def _legacy_reference_data(config: dict[str, Any]) -> list[CheckResult]:
 DATA_SERVICE_SCRIPT = ("src", "vbt", "datalayer", "service", "server.py")
 DATA_CHECK_TIMEOUT_S = 1800.0
 DATA_TOOLS_LABEL = "data tools ready"
+# the whole-release checks' labels (no data layer, or its check cannot run); with the data layer every source has
+# the same per-source summary (source_label)
 OPEN_TARGETS_LABEL = "Open Targets reference data (OPEN_TARGETS_DATA_PATH)"
 TAHOE_LABEL = "Tahoe-100M data (TAHOE_DATA_PATH)"
 # the acquisition engine's commands (the not_ready payload names the same; DEP-16): they fetch the pinned release
@@ -1036,34 +1038,36 @@ def _source_tools(dr: DataReadiness, source: str) -> list[str]:
     return sorted(t for t, refs in dr.reads.items() if any(r.split(".")[0] == source for r in refs))
 
 
+def source_label(source: str) -> str:
+    """The per-source readiness summary's label (the same shape for every source)."""
+    return f"data source: {source}"
+
+
+def _source_hint(source: str, config: dict[str, Any]) -> str:
+    env = OPTIONAL_SOURCES.get(source)
+    hint = (f"`vbt ds check` lists the unready tables; `vbt data acquire {source} --env-file .env` fetches the "
+            "pinned release into the acquisition home and writes its root variable")
+    return hint + (f" ({source} is optional: unset {env})" if env and _env_value(config, env) else "")
+
+
 def _data_aggregates(config: dict[str, Any], dr: DataReadiness) -> list[CheckResult]:
-    """The legacy labels (ok unless no granted tool reading that source is ready) and the summary
+    """One summary per source the granted tools read (ok unless no granted tool reading it is ready; ASN-6: the
+    same for every source, where Open Targets and Tahoe had labels and branches of their own) and the summary
     over every granted data tool, which is what ``require_ready`` blocks on."""
     from .datalayer.settings import DataSettings
 
-    names = {s.get("name") for s in _servers(config)}
     out = []
-    legacy = []
-    if names & OPEN_TARGETS_SERVERS:
-        legacy.append((OPEN_TARGETS_LABEL, "open_targets", "OPEN_TARGETS_DATA_PATH", OPEN_TARGETS_HINT))
-    if "functional_genomics" in names and _env_value(config, "TAHOE_DATA_PATH"):
-        legacy.append((TAHOE_LABEL, "tahoe_100m", "TAHOE_DATA_PATH", TAHOE_HINT))
-    for label, source, env, hint in legacy:
+    optional = {src for src, env in OPTIONAL_SOURCES.items() if not _env_value(config, env)}
+    sources = sorted({str(r).split(".")[0] for t in dr.granted for r in (dr.reads.get(t) or ())})
+    for source in sources:
         tools = [t for t in _source_tools(dr, source) if t in dr.granted]
         ready = [t for t in tools if t not in dr.unready]
-        value = _env_value(config, env) or f"{env} is not set"
-        bad = sorted({dr.unready[t]["table"] for t in tools if t in dr.unready})
-        detail = f"{value}: {len(ready)} of {len(tools)} granted tools reading {source} ready"
+        bad = sorted({str(dr.unready[t].get("table")) for t in tools if t in dr.unready})
+        detail = f"{len(ready)} of {len(tools)} granted tools reading {source} ready"
         if bad:
             detail += f"; not ready: {', '.join(bad[:6])}" + (f" (+{len(bad) - 6})" if len(bad) > 6 else "")
-        if not tools:
-            # no granted tool binds the source (a mis-set catalog, an unbound server): the tool-scoped
-            # view says nothing about the data, so the whole-release check decides
-            out.append(check_open_targets(config) if source == "open_targets" else (check_tahoe(config) or
-                       CheckResult(label, True, hint=hint, detail=detail, kind="data", scope={"source": source})))
-            continue
-        out.append(CheckResult(label, bool(ready), hint=hint, detail=detail, kind="data",
-                               scope={"source": source}))
+        out.append(CheckResult(source_label(source), bool(ready), hint=_source_hint(source, config), detail=detail,
+                               kind="data", required=source not in optional, scope={"source": source}))
     block_when = DataSettings.from_config(config).readiness.block_when
     granted = sorted(dr.granted)
     ready = [t for t in granted if t not in dr.unready]
