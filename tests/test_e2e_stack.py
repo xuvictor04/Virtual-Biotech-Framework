@@ -194,8 +194,57 @@ async def test_a_server_that_is_down_is_named_with_the_command_that_starts_it(mo
         await p.aclose()
 
 
+def test_the_native_data_tools_are_listed_without_every_tables_column_map(tmp_path):
+    """The first CPU run's genomics-analyst could not make a single request: 117,265 tokens against a 32K window,
+    nearly all of it tool definitions. mcp__data__find and mcp__data__aggregate each listed every table's columns
+    (``where.x-vbt-where``, 128 KB on the shipped catalog) in a schema the model reads on every request. The listing
+    keeps the table enum and points at mcp__data__describe for a table's columns."""
+    from vbt.datalayer import build_gateway
+    from vbt.datalayer.gateway.gateway import WHERE_POINTER
+
+    config = load_config(["mock"], overrides={"paths": {"runs_dir": str(tmp_path / "runs")},
+                                              "data": {"enabled": True, "gateway": {"mode": "enforce"},
+                                                       "cache_dir": str(tmp_path / "dl-cache")}})
+    gw = build_gateway(config)
+    listed = {}
+    for verb in ("find", "aggregate", "similar", "neighbors", "describe"):
+        d = gw.rewrite_listing("data", verb, verb, {"type": "object", "properties": {"table": {"type": "string"}}})
+        assert d.visible, verb
+        listed[verb] = d.input_schema
+        assert "x-vbt-where" not in json.dumps(d.input_schema), verb
+    for verb in ("find", "aggregate"):
+        where = listed[verb]["properties"]["where"]
+        assert where["description"].endswith(WHERE_POINTER) and "x-vbt-where" not in where["description"]
+        assert "open_targets.target" in listed[verb]["properties"]["table"]["enum"]
+        assert len(json.dumps(listed[verb])) < 8000, len(json.dumps(listed[verb]))
+    assert listed["describe"]["properties"]["table"]["enum"]         # describe still names the tables
+
+
+async def test_an_agent_whose_tools_fill_the_window_says_so(config):
+    """A request that cannot fit because of the agent's own system prompt and tool definitions used to end with
+    "the conversation no longer fits" (the run's genomics-analyst had no conversation yet): the report now names the
+    fixed part, the remedies and what the server reported."""
+    from vbt.providers.base import ContextOverflowError
+    from vbt.providers.mock import fail
+    from vbt.runtime import Runtime
+    from vbt.session import Run
+
+    for tier in config["models"].values():
+        tier["context_window_tokens"] = 2000
+    overflow = "llamacpp: request (117265 tokens) exceeds the available context size (32768 tokens)"
+    run = Run(Path(config["paths"]["runs_dir"]), config=config)
+    rt = Runtime(config, run, provider=ScriptedProvider(lambda *a: fail(ContextOverflowError(overflow))))
+    try:
+        res = await rt.run_agent(rt.agents["genomics-analyst"], "Look up PCSK9.", depth=1)
+    finally:
+        run.close()
+    assert res.status == "context_exceeded"
+    assert "tool definitions" in res.text and "larger window" in res.text and "117265 tokens" in res.text, res.text
+    assert any(e.get("type") == "context_fixed_part" for e in run.events())
+
+
 @pytest.mark.parametrize("argv", [["ds", "retro-audit", "latest"], ["ds", "graduate", "target", "--run", "latest"],
-                                  ["ds", "replay", "latest", "--all"]])
+                                  ["ds", "replay", "latest", "--all"], ["ds", "status", "latest"]])
 def test_the_commands_that_read_a_project_run_take_the_project(tmp_path, monkeypatch, argv):
     """A project's runs are under <project>/runs: `vbt ds retro-audit RUN` of the end-to-end run did not find it
     (only `--profile <project>/profile.yaml` did). The data commands that read a recorded run take --project, which

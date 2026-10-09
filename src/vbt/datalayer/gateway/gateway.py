@@ -149,12 +149,15 @@ from .transforms import (
     trim_column,
 )
 
-__all__ = ["DataGateway", "build_gateway", "GATEWAY_VERSION"]
+__all__ = ["DataGateway", "build_gateway", "GATEWAY_VERSION", "compact_native_listing"]
 
 log = logging.getLogger(__name__)
 
 GATEWAY_VERSION = "1.0"
 _STATE = "_vbt_state"
+#: What a native verb's listed ``where`` says instead of carrying every table's column map (``x-vbt-where``).
+WHERE_POINTER = (" The columns of a table, their roles, identifier types and operators: "
+                 "mcp__data__describe(source, table).")
 _INCLUDE_NEGATED = "include_negated"
 _INCLUDE_DUPLICATES = "include_duplicates"
 _SERVICE_SCRIPT = ("src", "vbt", "datalayer", "service", "server.py")
@@ -462,6 +465,8 @@ class DataGateway:
         except Exception:  # noqa: BLE001 - never lose a tool over its description
             log.warning("deriving the listing of %s.%s failed", server, tool, exc_info=True)
             return ListingDecision(True, description, input_schema)
+        if server == DATA_SERVER:
+            schema = compact_native_listing(schema)
         return ListingDecision(True, text, schema)
 
     # ================================================================== readiness
@@ -3673,6 +3678,30 @@ class DataGateway:
 
 
 # ====================================================================== helpers
+
+def compact_native_listing(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """A native verb's listed schema without the per-table column map of its ``where`` (``x-vbt-where``): every
+    table's columns with their roles, identifier types and operators. The model reads a tool's whole schema on every
+    request; on the shipped catalog (94 tables, 791 columns) the map was 128 KB in each of ``find`` and
+    ``aggregate``, about 70,000 tokens per specialist request with ``similar`` and ``neighbors``, more than a 32K
+    window holds and a large share of a 262K one on every agent. ``mcp__data__describe`` returns one table's columns
+    on demand; the ``where`` description names it. Nothing else reads the listed map (the data child resolves
+    ``where`` against the catalog)."""
+    out = dict(schema)
+    props = out.get("properties")
+    if not isinstance(props, Mapping):
+        return out
+    if set(props) == {"request"} and isinstance(props["request"], Mapping):     # the hidden-verb form
+        return {**out, "properties": {"request": compact_native_listing(props["request"])}}
+    where = props.get("where")
+    if isinstance(where, Mapping) and "x-vbt-where" in where:
+        slim = {k: v for k, v in where.items() if k != "x-vbt-where"}
+        text = str(slim.get("description") or "")
+        slim["description"] = text.replace("; per column: x-vbt-where)", ")").replace(
+            " (per column: x-vbt-where)", "") + WHERE_POINTER
+        out["properties"] = {**props, "where": slim}
+    return out
+
 
 class _OneTool:
     """A catalog view with one tool, for per-tool readiness in listings."""

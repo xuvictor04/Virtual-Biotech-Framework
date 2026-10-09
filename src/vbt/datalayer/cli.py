@@ -1575,7 +1575,7 @@ def _add_common(p: argparse.ArgumentParser, *flags: str) -> None:
 
 def add_datasource_parsers(sub: Any) -> Any:
     """Register ``vbt datasource`` (alias ``vbt ds``) on an argparse subparsers object. The commands that read a
-    recorded run (``retro-audit``, ``replay``, ``graduate``) take ``--project``: a project's runs are under
+    recorded run (``retro-audit``, ``replay``, ``graduate``, ``status``) take ``--project``: a project's runs are under
     ``<project>/runs`` and its calls may read the project's own tables."""
     from ..projects.cli import add_project_argument
 
@@ -1657,6 +1657,7 @@ def add_datasource_parsers(sub: Any) -> Any:
     p.add_argument("run", nargs="?", help="run id, prefix, path or 'latest' (reads <run>/logs/mcp)")
     p.add_argument("--log-dir", help="a directory of <server>.status.json files")
     _add_common(p, "json")
+    add_project_argument(p)
     p.set_defaults(handler=cmd_status)
 
     p = ds.add_parser("calibrate", help="sample-and-scale memory calibration of tables (runs the data child)")

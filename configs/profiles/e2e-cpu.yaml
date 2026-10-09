@@ -4,7 +4,7 @@
 # (orientation, delegation, tool calls through the gateway, review, claims, the audit record, projects) before the
 # owners run the production model on their GPUs; a small model's answers are weak by design.
 #
-#   llama-server -m Qwen3.5-2B-Q4_K_M.gguf --alias qwen3.5-2b --host 127.0.0.1 --port 8012 -c 65536 -np 2 \
+#   llama-server -m Qwen3.5-2B-Q4_K_M.gguf --alias qwen3.5-2b --host 127.0.0.1 --port 8012 -c 131072 -np 2 \
 #       --jinja --reasoning-format deepseek --cache-ram 2048          # or: scripts/dev/cpu_server.sh --engine llamacpp
 #   vbt --profile e2e-cpu project init e2e
 #   vbt --profile e2e-cpu run --project e2e "Is PCSK9 a genetically supported target for hypercholesterolaemia?"
@@ -27,16 +27,18 @@ model_aliases:
   qwen: ${VBT_E2E_MODEL:-qwen3.5-2b}
 
 # One small model for every tier. Thinking off: on CPU a reasoning trace costs minutes of decoding per call, and
-# llama.cpp ignores the per-request thinking budget (only its --reasoning-budget flag applies).
+# llama.cpp ignores the per-request thinking budget (only its --reasoning-budget flag applies). A 64K window per slot
+# (-c 131072 -np 2): an agent's first request already carries its system prompt and tool definitions, ~25K tokens
+# for the genomics analyst's 49 tools.
 models:
   orchestrator: {model: "${VBT_E2E_MODEL:-qwen3.5-2b}", effort: null, thinking: false, max_tokens: 2048,
-                 thinking_budget: null, context_window_tokens: 32768}
+                 thinking_budget: null, context_window_tokens: 65536}
   scientist:    {model: "${VBT_E2E_MODEL:-qwen3.5-2b}", effort: null, thinking: false, max_tokens: 2048,
-                 thinking_budget: null, context_window_tokens: 32768}
+                 thinking_budget: null, context_window_tokens: 65536}
   support:      {model: "${VBT_E2E_MODEL:-qwen3.5-2b}", effort: null, thinking: false, max_tokens: 2048,
-                 thinking_budget: null, context_window_tokens: 32768}
+                 thinking_budget: null, context_window_tokens: 65536}
   bulk:         {model: "${VBT_E2E_MODEL:-qwen3.5-2b}", effort: null, thinking: false, max_tokens: 1024,
-                 thinking_budget: null, context_window_tokens: 32768}
+                 thinking_budget: null, context_window_tokens: 65536}
 
 # Small budgets: a run is minutes of CPU per model call. Agents with their own max_turns in agents.yaml are capped
 # here too (agent_overrides wins over agents.yaml).
@@ -55,7 +57,7 @@ agent_overrides:
   single-cell-analyst: {max_turns: 8, effort: null}
 
 context:
-  default_window_tokens: 32768
+  default_window_tokens: 65536
   soft_ratio: 0.55
   hard_ratio: 0.7
   summary_max_tokens: 1024

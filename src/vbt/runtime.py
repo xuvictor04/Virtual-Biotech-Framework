@@ -483,6 +483,7 @@ class _Loop:
     empty_nudged: bool = False         # the empty-reply nudge was sent (once per invocation)
     call_mode: str | None = None       # None | 'force' | 'none': tool_choice of the next call
     budget_forced: BudgetExceeded | None = None  # the budget-exempt forced call was granted for this
+    overflow_error: str = ""           # the provider's last context-overflow message (what did not fit)
 
     @property
     def specs(self):
@@ -1224,7 +1225,7 @@ class Runtime:
                 r.status = r.stop_reason = "context_exceeded"
                 r.text = st.report or (st.segments[-1] if st.segments else "")
                 if not r.text:
-                    r.text = "[The conversation no longer fits the model's context window; no report was written.]"
+                    r.text = self._overflow_text(st)
                 return
             st.messages.append(resp.message)
             self._absorb_text(st, resp.message.text)
@@ -1456,6 +1457,7 @@ class Runtime:
                                                  settings=self._call_settings(st), system=st.system,
                                                  messages=st.messages, tools=st.specs, **kwargs)
             except ContextOverflowError as exc:
+                st.overflow_error = str(exc)[:500]
                 self._trace("context_overflow", agent=st.agent.name, error=str(exc)[:500], recovered=not overflowed)
                 if overflowed or not await self._recover_overflow(st):
                     return None
@@ -1469,6 +1471,31 @@ class Runtime:
                     self.emit("message_end", invocation_id=st.inv, agent=st.agent.name)
                     continue  # the truncated response is discarded and the request re-sent
             return resp
+
+    def _overflow_text(self, st: _Loop) -> str:
+        """The report of an agent whose request could not be made to fit the window. When the fixed part (system
+        prompt and tool definitions, which compaction never removes) alone takes most of the window, it says so and
+        names the remedies, since compacting the conversation cannot help (observed on a 32K CPU server: one
+        specialist's first request was 117,265 tokens, nearly all of it tool definitions)."""
+        from .context import estimate_tokens
+
+        try:
+            window = int(self.context.window_for(st.settings) or 0)
+        except Exception:  # noqa: BLE001 - the report must never fail
+            window = 0
+        specs = st.specs
+        tools = sum(estimate_tokens(json.dumps({"name": sp.name, "description": sp.description,
+                                                "parameters": sp.input_schema}, default=str)) for sp in specs)
+        system = estimate_tokens(st.system or "")
+        seen = f" The server reported: {st.overflow_error}" if st.overflow_error else ""
+        if window and system + tools >= 0.7 * window:
+            self._trace("context_fixed_part", agent=st.agent.name, system_tokens=system, tool_tokens=tools,
+                        tools=len(specs), window=window)
+            return (f"[No request of this agent fits the model's context window: its system prompt (~{system:,} "
+                    f"tokens) and its {len(specs)} tool definitions (~{tools:,} tokens) take most of the "
+                    f"{window:,}-token window before any conversation, and compaction cannot remove them. Serve the "
+                    f"model with a larger window or grant this agent fewer tools; no report was written.{seen}]")
+        return f"[The conversation no longer fits the model's context window; no report was written.{seen}]"
 
     def _account(self, st: _Loop, resp: ModelResponse, thinking_streamed: bool) -> None:
         r = st.result
