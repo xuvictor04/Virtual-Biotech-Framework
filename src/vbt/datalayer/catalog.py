@@ -19,8 +19,9 @@
   (:func:`~.descriptor.load.project_search_dirs`) are loaded after the shipped directories and can only add.
   A project file that would replace or widen what is shipped is refused on its own
   (``Catalog.project_refused``; never ``quarantined``, so it cannot take a shipped tool down): a source or
-  server the core declares, a generic overlay, a ``same_as`` naming another server's tool, and a project file
-  that does not load without a project-only name. Other project files that do not load are quarantined like
+  server the core declares, a generic overlay, a ``same_as`` naming another server's tool, a descriptor whose
+  acquisition declares ``prepare`` steps or ``env`` variables (they would act outside the sandbox when
+  ``vbt data acquire`` or ``vbt setup`` runs), and a project file that does not load without a project-only name. Other project files that do not load are quarantined like
   shipped ones (only the project's own tools depend on them). ``Catalog.project_sources`` and
   ``project_servers`` name what the project added.
 """
@@ -830,6 +831,15 @@ def _add_project(dirs: tuple[Path, Path], descriptors: dict[str, SourceDescripto
             refused.append(_refuse(ddir / f"{name}.yaml", "descriptor", name,
                                    f"source {name!r} is shipped (data.descriptors_dir); a project adds sources and "
                                    "never redefines one: choose another source name"))
+            continue
+        acq = desc.acquisition
+        acts = [f"acquisition.{k} ({', '.join(v)})" for k, v in
+                (("prepare", acq.prepare if acq else {}), ("env", acq.env if acq else {})) if v]
+        if acts:
+            # a prepare step runs as the operator (`vbt data acquire`); env reaches host.env (`vbt setup`)
+            refused.append(_refuse(ddir / f"{name}.yaml", "descriptor", name,
+                                   f"{'; '.join(acts)}: a project descriptor cannot declare these, they act outside "
+                                   "the sandbox (a command run as the operator, variables every vbt command loads)"))
             continue
         descriptors[name] = desc
         sources.add(name)

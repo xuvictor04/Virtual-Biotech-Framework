@@ -80,7 +80,8 @@ Activating a project (`vbt.projects.activate`, or the generated `profile.yaml`) 
 `VBT_PROJECT_DIR` reaches every process that reads data: the harness's catalog (as `env.VBT_PROJECT_DIR`), the
 data child, `vbt ds` commands, Bash and the data client. The catalog loads `<project>/descriptors` and
 `<project>/overlays` **after** `data.descriptors_dir`/`overlays_dir`, and a project can only add: a project file
-naming a shipped source or server, a generic overlay (`_*.yaml`), an overlay whose `same_as` names another
+naming a shipped source or server, a descriptor whose acquisition declares `prepare` steps or `env` variables, a
+generic overlay (`_*.yaml`), an overlay whose `same_as` names another
 server's tool, or a file that does not load and whose name cannot be told apart from a shipped one is **refused**
 on its own (`Catalog.project_refused`, an error in `vbt ds lint`) and never marks a shipped tool quarantined.
 Other broken project files are quarantined like shipped ones (only the project's own tools depend on them).

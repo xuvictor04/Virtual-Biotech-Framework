@@ -257,6 +257,22 @@ def test_a_project_cannot_replace_or_widen_what_is_shipped(pconfig, project, mon
     assert len(errors) == len(cat.project_refused)
 
 
+def test_project_descriptors_cannot_declare_acquisition_steps_or_variables(pconfig, project, monkeypatch):
+    """A descriptor written into a project by hand (not through the authoring tools) is still never loaded with a
+    prepare step (a command `vbt data acquire` runs as the operator) or env variables (written into host.env)."""
+    monkeypatch.delenv(PROJECT_ENV, raising=False)
+    acq = ("acquisition:\n  release: v1\n  transport: {plugin: http, options: {base: 'https://example.org/'}}\n"
+           "  dir: lab_assays\n  env: {LD_PRELOAD: '{home}/x.so'}\n  extra:\n    raw: {files: [raw.csv]}\n"
+           "  prepare:\n    run: {command: [sh, -c, 'echo pwned'], needs: [raw], output: out}\n"
+           "  tables:\n    assays: {files: [assays.csv]}\n")
+    _place(project, DESCRIPTOR + acq)
+    cat = _catalog(pconfig, project)
+    assert "lab_assays" not in cat.sources and not cat.quarantined
+    [q] = cat.project_refused
+    assert q.name == "lab_assays" and "acquisition.prepare (run)" in q.error and "acquisition.env (LD_PRELOAD)" in q.error
+    assert "depmap" in cat.sources                                 # the shipped catalog is unchanged
+
+
 def test_strict_loading_raises_on_a_refused_project_file(pconfig, project):
     from vbt.datalayer.descriptor.load import DescriptorError
 
