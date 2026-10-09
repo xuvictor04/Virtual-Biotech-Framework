@@ -890,9 +890,32 @@ def _safe_id(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", s or "")[:120] or f"t{int(time.time() * 1000)}"
 
 
-#: ``data.memory.workspace_mb`` default: the RLIMIT_DATA of Bash (and the notebooks it runs) in MB.
+#: ``data.memory.workspace_mb``: the limit of Bash (and the notebooks it runs) in MB. ``auto`` (the default) scales
+#: it from the memory the harness plans with (``datalayer.memory.sizing.workspace_for``); this is the value when that
+#: memory is unknown, and the rule's floor on a host of 16 GB or more.
 WORKSPACE_MB = 8000
 _EXIT_MARKER = re.compile(r"^VBT_CHILD_EXIT (\{.*\})[ \t]*(?:\n|$)", re.MULTILINE)
+
+
+def workspace_mb(config: Mapping[str, Any]) -> int:
+    """``data.memory.workspace_mb`` in MB: a number as configured; ``auto`` (or unset) from the memory this harness
+    plans with (``data.memory.host_mb``, ``$VBT_HOST_MEMORY_MB``, else the host) and ``limits.max_parallel_agents``:
+    on a 6,000 MB share a utility's tests ran at 8,000 MB, more than the harness had. 0 lifts the limit."""
+    data = config.get("data") if isinstance(config.get("data"), Mapping) else {}
+    memory = data.get("memory") if isinstance(data.get("memory"), Mapping) else {}
+    value = memory.get("workspace_mb", "auto")
+    if isinstance(value, str) and value.strip().lower() == "auto" or value is None:
+        try:
+            from ..datalayer.memory import sizing
+        except Exception:  # noqa: BLE001 - no data layer in this checkout: the shipped value
+            return WORKSPACE_MB
+        plan = sizing.plan_mb(memory)
+        parallel = int((config.get("limits") or {}).get("max_parallel_agents") or 8)
+        return sizing.workspace_for(plan, parallel) if plan else WORKSPACE_MB
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return WORKSPACE_MB
 
 
 def _workspace_limit(config: Mapping[str, Any], argv: list[str], run_dir: Path, call_id: str
@@ -906,10 +929,7 @@ def _workspace_limit(config: Mapping[str, Any], argv: list[str], run_dir: Path, 
 
     data = config.get("data") if isinstance(config.get("data"), Mapping) else {}
     memory = data.get("memory") if isinstance(data.get("memory"), Mapping) else {}
-    try:
-        limit = int(memory.get("workspace_mb", WORKSPACE_MB) or 0)
-    except (TypeError, ValueError):
-        limit = WORKSPACE_MB
+    limit = workspace_mb(config)
     kind = str(memory.get("limit_kind") or "rlimit_data")
     if limit <= 0 or kind == "none" or not sys.platform.startswith("linux") or data.get("enabled") is False:
         return None, None, None

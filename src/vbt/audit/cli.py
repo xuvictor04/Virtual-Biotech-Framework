@@ -5,6 +5,10 @@ handler has the signature ``handler(args, config)`` and resolves its run
 argument with ``vbt.audit.index.resolve_run`` against ``config.paths.runs_dir``
 (a path, a run id, a unique id prefix, the id's hex suffix, or ``latest``).
 
+Every command that reads runs takes ``--project NAME``: a project's runs are under
+``<project>/runs`` (``projects.runs_in_project``) and ``verify --data`` re-reads the
+project's own tables, so the project is activated as ``vbt chat --project`` does.
+
 Exit codes: 0 success; ``verify`` returns 0 only for COMPLETE (1 for INCOMPLETE
 or FAIL); 2 when the run cannot be resolved or the command fails.
 """
@@ -196,7 +200,9 @@ def cmd_show(args, config) -> int:
 # ----------------------------------------------------------------- parsers
 
 def add_audit_parsers(sub) -> None:
-    """Register verify, list, index, export, audit and show on ``vbt``'s subparsers."""
+    """Register verify, list, index, export, audit and show on ``vbt``'s subparsers (each with ``--project``)."""
+    from ..projects.cli import add_project_argument
+
     v = sub.add_parser("verify", help="check a run's artifact integrity and evidence coverage",
                        description="Exit status 0 only when the run verifies COMPLETE.")
     v.add_argument("run", help="run directory, run id, unique id prefix, or 'latest'")
@@ -209,14 +215,17 @@ def add_audit_parsers(sub) -> None:
                         "every cited data call (replay_mismatch, source_updated)")
     v.add_argument("--backend", choices=("auto", "inprocess", "bridge"), default="auto",
                    help="--data: how cited calls are replayed (see `vbt ds replay`)")
+    add_project_argument(v)
     v.set_defaults(handler=cmd_verify)
 
     ls = sub.add_parser("list", help="list runs (newest first)")
     ls.add_argument("--json", action="store_true")
     ls.add_argument("--limit", type=int, metavar="N")
+    add_project_argument(ls)
     ls.set_defaults(handler=cmd_list)
 
     ix = sub.add_parser("index", help="rebuild runs/INDEX.md and runs/INDEX.json")
+    add_project_argument(ix)
     ix.set_defaults(handler=cmd_index)
 
     ex = sub.add_parser("export", help="zip a run (or write its chat transcript)")
@@ -227,6 +236,7 @@ def add_audit_parsers(sub) -> None:
                     help="leave out large raw data (*.h5ad, *.h5, *.loom; *.parquet over the size cap)")
     ex.add_argument("--max-file-mb", type=float, metavar="N", help="leave out analysis files larger than N MB")
     ex.add_argument("--chat", action="store_true", help="export the conversation as Markdown instead")
+    add_project_argument(ex)
     ex.set_defaults(handler=cmd_export)
 
     au = sub.add_parser("audit", help="rebuild a run's MANIFEST, provenance and README/audit.html from its trace")
@@ -236,18 +246,22 @@ def add_audit_parsers(sub) -> None:
     au.add_argument("-o", "--out", metavar="DIR", help="where audit copies go (default: <runs>/../audits)")
     au.add_argument("--link", action="store_true", help="hard-link files into the copy instead of copying")
     au.add_argument("--json", action="store_true")
+    add_project_argument(au)
     au.set_defaults(handler=cmd_audit)
 
     sh = sub.add_parser("show", help="summarise a run; --files lists its figures, tables and code by agent")
     sh.add_argument("run")
     sh.add_argument("--files", action="store_true", help="list figures, tables and code grouped by agent")
     sh.add_argument("--json", action="store_true")
+    add_project_argument(sh)
     sh.set_defaults(handler=cmd_show)
 
 
 def main(argv: list[str] | None = None) -> int:
     """Standalone entry point (``python -m vbt.audit.cli``) using the default config."""
     from ..config import load_config
+    from ..projects import ProjectError
+    from ..projects.cli import apply_project
 
     p = argparse.ArgumentParser(prog="python -m vbt.audit.cli")
     p.add_argument("--profile", action="append", default=[])
@@ -256,7 +270,12 @@ def main(argv: list[str] | None = None) -> int:
     add_audit_parsers(sub)
     args = p.parse_args(argv)
     overrides = {"paths": {"runs_dir": args.runs_dir}} if args.runs_dir else None
-    return args.handler(args, load_config(args.profile, overrides))
+    try:
+        config = apply_project(args, load_config(args.profile, overrides))
+    except ProjectError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    return args.handler(args, config)
 
 
 if __name__ == "__main__":  # pragma: no cover

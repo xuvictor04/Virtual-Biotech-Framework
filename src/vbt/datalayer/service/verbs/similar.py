@@ -30,7 +30,7 @@ from ...predicate import Eq, Predicate, from_json
 from ...result import inject_header
 from ...rowkey import canonical
 from .. import ServiceContext, ServiceError
-from .public import LongView, _invalid, _limit, compile_where, guarded, header, long_view, table_access
+from .public import LongView, _invalid, _limit, compile_where, guarded, header, key_label, long_view, table_access
 
 __all__ = ["similar", "serve_similar", "cosine_ranking", "pair_similarity", "vector_column", "VERBS"]
 
@@ -161,7 +161,7 @@ def serve_similar(ctx: ServiceContext, req: Mapping[str, Any]) -> dict[str, Any]
     if len(anchors) >= 2:
         row = pair_similarity(view, anchors, columns=list(req.get("columns") or []), budget=req.get("budget_bytes"))
         if row is None:
-            return ServeResponse(rows=[], total=0, key_columns=list(view.key),
+            return ServeResponse(rows=[], total=0, key_columns=[key_label(k) for k in view.key],
                                  reason="an anchor has no vector").model_dump(mode="json")
         return ServeResponse(rows=[json_value(row)], total=1, key_columns=[str(a.get("name")) for a in anchors[:2]],
                              served_by="derived").model_dump(mode="json")
@@ -172,10 +172,10 @@ def serve_similar(ctx: ServiceContext, req: Mapping[str, Any]) -> dict[str, Any]
     rows, total, bad, found = cosine_ranking(view, anchor["value"], pred, req.get("limit"),
                                              columns=list(req.get("columns") or []), budget=req.get("budget_bytes"))
     if not found:
-        return ServeResponse(rows=[], total=0, key_columns=list(view.key),
+        return ServeResponse(rows=[], total=0, key_columns=[key_label(k) for k in view.key],
                              reason=f"anchor {anchor['value']!r} has no vector").model_dump(mode="json")
     keys = [[r.get(c) for c in view.key] for r in rows]
-    resp = ServeResponse(rows=json_value(rows), total=total, truncated=total > len(rows), key_columns=list(view.key),
+    resp = ServeResponse(rows=json_value(rows), total=total, truncated=total > len(rows), key_columns=[key_label(k) for k in view.key],
                          excluded_unknown={"similarity": bad} if bad else {}, served_by="derived",
                          row_keys=json_value(keys))
     return resp.model_dump(mode="json")

@@ -1477,15 +1477,14 @@ class Runtime:
         prompt and tool definitions, which compaction never removes) alone takes most of the window, it says so and
         names the remedies, since compacting the conversation cannot help (observed on a 32K CPU server: one
         specialist's first request was 117,265 tokens, nearly all of it tool definitions)."""
-        from .context import estimate_tokens
+        from .context import estimate_tokens, tool_tokens
 
         try:
             window = int(self.context.window_for(st.settings) or 0)
         except Exception:  # noqa: BLE001 - the report must never fail
             window = 0
         specs = st.specs
-        tools = sum(estimate_tokens(json.dumps({"name": sp.name, "description": sp.description,
-                                                "parameters": sp.input_schema}, default=str)) for sp in specs)
+        tools = tool_tokens(specs)
         system = estimate_tokens(st.system or "")
         seen = f" The server reported: {st.overflow_error}" if st.overflow_error else ""
         if window and system + tools >= 0.7 * window:
@@ -1519,7 +1518,7 @@ class Runtime:
     async def _maybe_compact(self, st: _Loop) -> None:
         try:
             res = await self.context.maybe_compact(st.messages, last_usage=st.last_usage, settings=st.settings,
-                                                   system=st.system, agent=st.agent.name)
+                                                   system=st.system, agent=st.agent.name, tools=st.specs)
         except BaseException as exc:
             self._charge_failed_compaction(st, exc)
             if not isinstance(exc, Exception):

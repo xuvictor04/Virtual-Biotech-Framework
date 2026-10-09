@@ -171,7 +171,9 @@ def test_status_and_explain_text_forms(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setenv("VBT_DATA_DIR", str(tmp_path))
     assert cli.main(["--profile", "mock", "ds", "status"]) == 0
     out = capsys.readouterr().out
-    assert "host: 16,095 MB" in out and "16094.69" not in out
+    # the line leads with the plan the budgets use and its source; MemTotal is given beside it (D4: `host:` printed
+    # MemTotal as if it were the plan)
+    assert "MemTotal 16,095 MB" in out and "16094.69" not in out and out.startswith("host: plan ")
     assert cli.main(["--profile", "mock", "ds", "explain", "target.get_target_info"]) == 0
     out = capsys.readouterr().out
     assert '"properties": {}' not in out and '"target_id"' in out

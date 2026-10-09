@@ -207,6 +207,11 @@ class Calls:
         extra = base_tool_env(dict(self.config))
         extra.update({"VBT_RUN_DIR": str(tmp), "MCP_OUTPUT_DIR": str(tmp / "mcp")})
         options = {**(self.config.get("mcp") or {}), "default_timeout_s": self.timeout_s}
+        if self.readiness:
+            # before the servers list their tools (Runtime.start_mcp does the same): handed over after the listing,
+            # the data child would already be computing a second full check, which set_readiness cancels only in
+            # this process while the child keeps at it for minutes
+            self.gateway.set_readiness(self.readiness)
         self.bridge = MCPBridge(specs, extra_env=extra, log_dir=self.log_dir / "logs", options=options,
                                 gateway=self.gateway)
         self._instrument()
@@ -214,8 +219,6 @@ class Calls:
         await self.bridge.start()
         self.started_s = time.monotonic() - t0
         self.failures = dict(self.bridge.failures or {})
-        if self.readiness:
-            self.gateway.set_readiness(self.readiness)
         return self
 
     async def __aexit__(self, *exc: Any) -> None:

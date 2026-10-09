@@ -45,7 +45,7 @@ from ...rowkey import canonical
 from .. import ServiceContext
 from . import public as _public
 from .hierarchy import serve_extension
-from .public import LongView, _invalid, _limit, compile_where, guarded, header, long_view, table_access
+from .public import LongView, _invalid, _limit, compile_where, guarded, header, key_label, long_view, table_access
 
 __all__ = ["Network", "expand_network", "node_hash", "neighbors", "serve_network", "common_interactors"]
 
@@ -359,7 +359,7 @@ def serve_network(ctx: ServiceContext, req: Mapping[str, Any]) -> dict[str, Any]
     sections = {name: json_value(stats) for name in (req.get("sections") or {})}
     sections["_network"] = json_value(stats)
     return ServeResponse(rows={"$.nodes": json_value(nodes), "$.edges": json_value(edges)},
-                         total=len(nodes) + len(edges), truncated=net.truncated, key_columns=list(view.key),
+                         total=len(nodes) + len(edges), truncated=net.truncated, key_columns=[key_label(k) for k in view.key],
                          sections=sections, served_by="derived").model_dump(mode="json")
 
 

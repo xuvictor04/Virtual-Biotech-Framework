@@ -43,7 +43,7 @@ curl -L -o Qwen3.5-2B-Q4_K_M.gguf \
   https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf
 LLAMA_SERVER=llama-build/bin/llama-server scripts/dev/cpu_server.sh --engine llamacpp \
   --model Qwen3.5-2B-Q4_K_M.gguf --served-name qwen3.5-2b --port 8012 --slots 2 --max-model-len 131072 \
-  -- --cache-ram 2048 -t 4
+  --cache-ram 2048 -- -t 4                   # --max-model-len is the total of the 2 slots: 64K each
 #   == llama-server -m Qwen3.5-2B-Q4_K_M.gguf --alias qwen3.5-2b --host 127.0.0.1 --port 8012 -c 131072 --jinja \
 #      --reasoning-format deepseek -np 2 --metrics --cache-ram 2048 -t 4
 
@@ -64,7 +64,7 @@ curl -L -o <projects>/e2e/incoming/gene_condition_source_id.tsv \
 vbt --profile e2e-cpu run --project e2e --events ndjson "<question>" "<answer>" > s2.ndjson
 
 # 5. after the run
-vbt --profile e2e-cpu --profile <projects>/e2e/profile.yaml verify --data <run>
+vbt --profile e2e-cpu verify --project e2e --data <run>
 vbt --profile e2e-cpu ds retro-audit --project e2e <run>
 vbt --profile e2e-cpu ds graduate --project e2e target pathway --run <run>
 vbt --profile e2e-cpu ds status --project e2e <run>        # per-server memory from the reaper's status files
@@ -224,6 +224,26 @@ Each was fixed at its root and has a regression test in `tests/test_e2e_stack.py
 | `vbt ds retro-audit` of the served-model run reported four calls the harness had refused before they ran (an argument that did not match the tool's schema) as `source_error`, and `search_go_terms(query="cholesterol")`, an empty search when recorded, as now refused `invalid_argument` ("not a valid go_term") | retro-audit read the harness's refusal text as the source's error, and it resolved every argument bound to an identifier column, free-text search arguments included, which the gateway matches as text and never resolves | a call recorded with `model_error` is `invalid_argument` ("refused before the call ran"); free-text arguments are not resolved | `test_retro_audit_blames_neither_the_source_nor_a_search_text` |
 | `vbt ds retro-audit` reported the gateway's recorded `too_large` refusal as `source_error`, and `vbt ds graduate ... data` always failed `observe_evidence` ("no recorded call of this server") | retro-audit re-classified the refusal's text instead of keeping the typed kind the enforcing gateway recorded, and it skips the data child's own verbs (served from the descriptors, nothing upstream to re-check), so graduation never saw them | a recorded typed refusal keeps its kind; the report counts the native calls and lists outcomes beyond the classify set; graduation's observe item is not applicable for the data child | `test_an_enforced_runs_refusals_and_native_calls_audit_as_recorded` |
 
+### Follow-ups closed when the run was integrated
+
+The contract requests the run left for files outside its own were closed at integration (offline regressions in
+`tests/test_e2e_stack.py` unless named otherwise):
+
+| Request | Change | Test |
+|---|---|---|
+| `vbt verify` of a project's run needed `--profile <project>/profile.yaml` | `--project` on `verify`, `list`, `index`, `export`, `audit` and `show` | `test_the_commands_that_read_a_project_run_take_the_project` |
+| `vbt doctor`'s model-server hint was vLLM's for every provider | `preflight.serve_hint(config)`: llama-server for `llamacpp` | `test_the_doctor_names_the_server_of_the_configured_provider` |
+| `vbt validate`'s bridge handed its check over after `bridge.start()` | the check reaches the gateway before the listing | `test_vbt_validate_hands_its_check_to_the_gateway_before_the_listing` |
+| The host budget relied on the gateway filtering out the data child | `HostBudget` leaves out `HARNESS_SERVERS` itself (never counted, admitted or recycled) | `test_the_host_budget_never_counts_or_recycles_the_data_child` (`tests/datalayer/test_dl_memory_v2.py`) |
+| `vbt ds status` printed `MemTotal` as the host and the data child inside `resident` | the plan and its source (`VBT_HOST_MEMORY_MB`, `data.memory.host_mb`, ...), MemTotal, the upstream resident and the data child apart | `test_status_reads_status_files_and_calibrations` |
+| The column maps were built and then dropped by the listing | `annotate_schema(column_maps=False)` builds none; `describe` gives each column's `ops` | `test_the_listing_never_builds_the_column_maps_it_leaves_out` |
+| Compaction thresholds counted the fixed part | ratios of the room after the system prompt and tool definitions; no summary of a removable part under `summary_max_tokens` | `test_the_thresholds_set_the_fixed_part_aside` (`tests/test_context.py`) |
+| `get_go_enrichment` without go-basic.obo failed `service_unavailable` | an unreadable hierarchy is `not_ready` in the data child; the enrichment answers with direct annotations and says so in its header; readiness counts a derived serve's dependencies (`derived_dependencies`) | `test_go_enrichment_without_go_basic_obo_answers_direct_annotations_and_says_so` (`tests/datalayer/test_dl_enrichment.py`) |
+| `data.memory.workspace_mb` was a fixed 8,000 MB | `auto` (the default): `0.25 x plan / max_parallel_agents` within 8,000-65,536 MB, at most half the plan (3,000 MB on a 6,000 MB share) | `test_bash_runs_under_the_workspace_memory_limit` (`tests/datalayer/test_dl_client.py`) |
+| Overrides of the project-only data-engineer logged "unknown agents ignored" outside a project | overrides of declared, inactive roles are kept silently | `test_the_overrides_of_a_project_only_role_are_quiet_outside_a_project` |
+| `cpu_server.sh` had no `--cache-ram`, and the slot split was easy to get wrong | `--cache-ram MIB`; the script prints the tokens per slot | `test_the_cpu_server_script_takes_the_prompt_cache_and_says_how_the_window_splits` |
+| `_vbt.key` of a project table named the reference `` `#GeneID` `` | keys are the column names the rows carry; `lookup` and `where` take `#GeneID` | `test_a_header_that_is_not_a_word_registers_as_drafted` |
+
 ## 7. Tests
 
 `tests/test_e2e_stack.py` has three layers:
@@ -287,8 +307,9 @@ What this run measured that matters when the owners deploy on their GPUs:
   definitions included, which compaction cannot shrink. At the first profile's 0.55 / 0.7 of a 64K window the
   genomics analyst (about 30K of fixed part) was summarised four times in one task, each summary removing at most
   ~2,100 tokens and costing a model call of minutes on this CPU. The profile now uses 0.75 / 0.85; the production
-  windows leave room either way. The thresholds would better count only what compaction can remove (contract
-  request in the D4 report).
+  windows leave room either way. The harness now sets the fixed part aside (`vbt.context`): `soft_ratio` and
+  `hard_ratio` are shares of the room the window leaves after the system prompt and tool definitions, and a request
+  whose removable part is under `summary_max_tokens` is not compacted at all.
 * **Slots and prompt caches.** With two slots and three or more agents working, a slot's cache belongs to whichever
   agent ran there last: the genomics analyst's first call of its second task prefilled its whole 37,482-token
   prompt again. On CPU a long prefill in one slot also slows the other slot's decoding to 0.4 to 2 tokens/s. A

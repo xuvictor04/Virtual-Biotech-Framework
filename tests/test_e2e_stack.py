@@ -167,6 +167,28 @@ async def test_the_preflight_check_reaches_the_gateway_before_the_data_child_lis
         run.close()
 
 
+@needs_mcp
+async def test_vbt_validate_hands_its_check_to_the_gateway_before_the_listing(tmp_path, monkeypatch):
+    """``vbt validate``'s bridge (validate/contained.py) handed its check to the gateway after ``bridge.start()``,
+    by which time the listing had sent the data child a second full check (the same bug as the session start)."""
+    from vbt.datalayer.gateway.service_client import ServiceClient
+    from vbt.validate.contained import Calls
+
+    sent: list[list[str]] = []
+
+    async def check(self, tables=(), depth="standard"):
+        sent.append(list(tables))
+        return {"tables": {}}
+
+    monkeypatch.setattr(ServiceClient, "check", check)
+    async with Calls(_echo_config(tmp_path), ["pathway"], tmp_path / "validate", readiness={"tables": {}}) as calls:
+        assert calls.gateway is not None and not calls.failures, calls.failures
+        task = calls.gateway._check_task                                  # noqa: SLF001
+        if task is not None:
+            await task
+        assert sent == [] and calls.gateway._readiness_supplied           # noqa: SLF001
+
+
 @pytest.mark.parametrize("name,expected,absent", [("llamacpp", "llama-server", "vbt local serve"),
                                                    ("vllm", "vbt local serve", "llama-server")])
 async def test_a_server_that_is_down_is_named_with_the_command_that_starts_it(monkeypatch, name, expected, absent):
@@ -192,6 +214,48 @@ async def test_a_server_that_is_down_is_named_with_the_command_that_starts_it(mo
         assert expected in str(ei.value) and absent not in str(ei.value)
     finally:
         await p.aclose()
+
+
+@pytest.mark.parametrize("name,expected,absent", [("llamacpp", "llama-server", "vbt local serve"),
+                                                   ("vllm", "vbt local serve", "llama-server")])
+def test_the_doctor_names_the_server_of_the_configured_provider(name, expected, absent):
+    """``vbt doctor``'s model-server checks gave the vLLM hint (`vbt local serve`) for every provider; a llama.cpp
+    provider is told to start llama-server, as the provider's own errors say."""
+    from vbt.preflight import check_server_reachable, serve_hint
+
+    class Down:
+        def __init__(self) -> None:
+            self.name = name
+
+        async def reachable(self, timeout_s=3.0):
+            return [("http://127.0.0.1:9/v1", "connection refused")]
+
+        async def aclose(self):
+            return None
+
+    config = {"provider": {"name": name}}
+    hint = serve_hint(config)
+    assert expected in hint and absent not in hint and hint[:1].islower()
+    res = check_server_reachable(config, Down())
+    assert not res.ok and expected in res.hint and absent not in res.hint, res
+
+
+@pytest.mark.skipif(not Path("/bin/bash").exists(), reason="bash is needed")
+def test_the_cpu_server_script_takes_the_prompt_cache_and_says_how_the_window_splits():
+    """The CPU run passed --cache-ram after `--` and had to work out that -c is the total over the -np slots (64K
+    per slot needs --max-model-len 131072 --slots 2): the script takes --cache-ram and says what each slot gets."""
+    import subprocess
+
+    script = REPO / "scripts" / "dev" / "cpu_server.sh"
+    out = subprocess.run(["bash", str(script), "--engine", "llamacpp", "--model", "/m/q.gguf", "--slots", "2",
+                          "--max-model-len", "131072", "--cache-ram", "2048", "--dry-run", "--", "-t", "4"],
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert "-c 131072" in out.stdout and "-np 2" in out.stdout and "--cache-ram 2048 -t 4" in out.stdout
+    assert "65536 tokens per request" in out.stderr
+    bad = subprocess.run(["bash", str(script), "--cache-ram", "1", "--dry-run"], capture_output=True, text=True,
+                         timeout=30)
+    assert bad.returncode == 2 and "llama.cpp option" in bad.stderr
 
 
 def test_the_native_data_tools_are_listed_without_every_tables_column_map(tmp_path):
@@ -220,6 +284,49 @@ def test_the_native_data_tools_are_listed_without_every_tables_column_map(tmp_pa
     assert listed["describe"]["properties"]["table"]["enum"]         # describe still names the tables
 
 
+def test_the_listing_never_builds_the_column_maps_it_leaves_out(monkeypatch):
+    """The maps were built (131,733 characters per verb on Open Targets 25.09) and then dropped by the listing. The
+    gateway now derives the native schemas without them (``column_maps=False``): no table's where schema is built
+    for a listing or a description, and ``describe`` serves one table's operators (``ops``) instead."""
+    from vbt.datalayer import build_gateway
+    from vbt.datalayer.derive import tools as native
+
+    built: list[str] = []
+    real = native.where_schema
+
+    def counting(catalog, ref, **kw):
+        built.append(ref)
+        return real(catalog, ref, **kw)
+
+    monkeypatch.setattr(native, "where_schema", counting)
+    config = load_config(["mock"], overrides={"data": {"enabled": True, "gateway": {"mode": "enforce"}}})
+    gw = build_gateway(config)
+    for verb in ("find", "aggregate", "similar", "neighbors"):
+        d = gw.rewrite_listing("data", verb, verb, {"type": "object", "properties": {"table": {"type": "string"}}})
+        assert d.visible and "where" in d.input_schema["properties"], verb
+    assert built == [], f"{len(built)} column maps built for a listing that drops them"
+    full = native.native_tool(gw.catalog, "find")                       # the maps are still there when asked for
+    assert full is not None and "x-vbt-where" in full.input_schema["properties"]["where"] and built
+
+
+async def test_the_overrides_of_a_project_only_role_are_quiet_outside_a_project(config, caplog):
+    """The e2e-cpu profile sets ``agent_overrides: data-engineer`` (a project-only role); outside a project every
+    command logged "agent_overrides for unknown agents ignored: data-engineer". An override of a roster agent that
+    is not active here is kept silently; a name the roster does not have is still reported."""
+    import logging
+
+    from vbt.agents import load_roster
+
+    config["agent_overrides"] = {ENGINEER: {"max_turns": 24}}
+    with caplog.at_level(logging.WARNING, logger="vbt.agents"):
+        _cso, agents = load_roster(config)
+    assert ENGINEER not in agents and "unknown agents" not in caplog.text
+    config["agent_overrides"] = {"no-such-agent": {"max_turns": 2}}
+    with caplog.at_level(logging.WARNING, logger="vbt.agents"):
+        load_roster(config)
+    assert "no-such-agent" in caplog.text
+
+
 async def test_an_agent_whose_tools_fill_the_window_says_so(config):
     """A request that cannot fit because of the agent's own system prompt and tool definitions used to end with
     "the conversation no longer fits" (the run's genomics-analyst had no conversation yet): the report now names the
@@ -244,11 +351,13 @@ async def test_an_agent_whose_tools_fill_the_window_says_so(config):
 
 
 @pytest.mark.parametrize("argv", [["ds", "retro-audit", "latest"], ["ds", "graduate", "target", "--run", "latest"],
-                                  ["ds", "replay", "latest", "--all"], ["ds", "status", "latest"]])
+                                  ["ds", "replay", "latest", "--all"], ["ds", "status", "latest"],
+                                  ["verify", "latest", "--data"], ["show", "latest"], ["list"]])
 def test_the_commands_that_read_a_project_run_take_the_project(tmp_path, monkeypatch, argv):
     """A project's runs are under <project>/runs: `vbt ds retro-audit RUN` of the end-to-end run did not find it
     (only `--profile <project>/profile.yaml` did). The data commands that read a recorded run take --project, which
-    activates the project as `vbt run --project` does (its runs, descriptors and overlays)."""
+    activates the project as `vbt run --project` does (its runs, descriptors and overlays). So do `vbt verify` (the
+    end-to-end run was verified with `--profile <project>/profile.yaml`), `show` and `list`."""
     from vbt import cli
     from vbt.projects.model import init_project
 
@@ -261,11 +370,12 @@ def test_the_commands_that_read_a_project_run_take_the_project(tmp_path, monkeyp
 
 
 @needs_arrow
-async def test_a_header_that_is_not_a_word_registers_as_drafted(config, tmp_path):
+async def test_a_header_that_is_not_a_word_registers_as_drafted(config, tmp_path, monkeypatch):
     """ClinVar's ``gene_condition_source_id`` (2026-10-07): the key InspectDataset drafted named ``#GeneID``, which
     the descriptor reads as a path, and lint refused the draft ("'#GeneID' is not a valid path: empty segment at
     0"). References are now written as paths (backtick-quoted), the column keeps its literal name, and the repeated
-    rows are declared ``row_identity: none``."""
+    rows are declared ``row_identity: none``. The data child's ``_vbt.key`` names the column as the rows do
+    (``#GeneID``, not the reference ```#GeneID```), and ``lookup`` takes it by that name."""
     from vbt.projects.model import activate, init_project
     from vbt.runtime import Runtime
     from vbt.session import Run
@@ -293,6 +403,21 @@ async def test_a_header_that_is_not_a_word_registers_as_drafted(config, tmp_path
                          files=["gene_condition_source_id.tsv"], why="the draft as is")
         assert out["status"] == "registered", out
         assert out["check"]["clinvar_gcs.gene_conditions"]["status"] == "ready", out
+        from vbt.datalayer.service import ServiceContext
+        from vbt.datalayer.service.verbs import load_verbs
+        from vbt.datalayer.settings import DataSettings
+
+        for k, v in (cfg.get("tool_env") or {}).items():
+            monkeypatch.setenv(k, str(v))
+        verbs, ctx = load_verbs(), ServiceContext(DataSettings.from_config(cfg))
+        found = verbs["find"](ctx, {"table": "clinvar_gcs.gene_conditions", "where": {"AssociatedGenes": "PCSK9"}})
+        assert found["_vbt"]["key"][0] == "#GeneID" and found["_vbt"]["total"] == 2, found["_vbt"]
+        assert all(k in found["rows"][0] for k in found["_vbt"]["key"]), "every key column names a row field"
+        rec = verbs["lookup"](ctx, {"table": "clinvar_gcs.gene_conditions",
+                                    "key": {"#GeneID": 255738, "SourceID": "MONDO:0011369"}})
+        assert rec["_vbt"]["status"] == "ok" and rec["rows"][0]["DiseaseMIM"] == 603776, rec
+        desc = verbs["describe"](ctx, {"source": "clinvar_gcs", "table": "gene_conditions"})
+        assert desc["key"][0] == "#GeneID" and desc["columns"]["#GeneID"]["ops"], desc
     finally:
         run.close()
 

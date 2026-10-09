@@ -101,7 +101,7 @@ def describe_tool(contract: Any, description: str | None, *, catalog: Any = None
         return _cap(unavailable_text(b.block.reason, list(b.block.alternatives), description), max_chars)
     from .tools import NATIVE_SERVER, NATIVE_VERBS, native_tool
     if catalog is not None and getattr(contract, "server", None) == NATIVE_SERVER and contract.tool in NATIVE_VERBS:
-        tool = native_tool(catalog, contract.tool)
+        tool = native_tool(catalog, contract.tool, column_maps=False)      # the description only
         if tool is not None:
             head = f"UNAVAILABLE: {unready}.\n" if unready else ""
             return _cap(head + tool.description, max_chars)

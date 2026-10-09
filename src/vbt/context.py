@@ -4,6 +4,15 @@ The CSO keeps one conversation across a whole session and specialists can make
 hundreds of model calls with large tool outputs, so histories outgrow the
 model's context window. :class:`ContextManager` keeps them inside it:
 
+The thresholds below apply to the part of the request compaction can remove: the
+system prompt and the tool definitions (the *fixed part*, which no compaction
+shrinks) are set aside, and ``soft_ratio``/``hard_ratio`` are shares of the room
+the window leaves after them. With a 30K-token fixed part in a 64K window, a
+threshold on the whole request summarised four times in one task, each removing
+at most ~2,100 tokens. A request whose removable part is under
+``summary_max_tokens`` is not compacted at all (a summary of that size would gain
+nothing); if it overflows, the runtime reports the fixed part.
+
 1. **Tool-result clearing** (above ``soft_ratio`` of the window): the content of
    tool results older than the last ``keep_recent_calls`` model calls is
    persisted to ``spill_dir`` (unless the runtime's truncation note already names
@@ -239,6 +248,16 @@ def estimate_tokens(obj: Any) -> int:
     return len(str(obj)) // CHARS_PER_TOKEN
 
 
+def tool_tokens(tools: Any) -> int:
+    """Rough token estimate of tool definitions as a request carries them (name, description, parameters)."""
+    total = 0
+    for sp in tools or ():
+        body = {"name": getattr(sp, "name", ""), "description": getattr(sp, "description", ""),
+                "parameters": getattr(sp, "input_schema", None)}
+        total += len(json.dumps(body, default=str)) // CHARS_PER_TOKEN
+    return total
+
+
 def _clip(text: str, n: int) -> str:
     if len(text) <= n:
         return text
@@ -360,28 +379,43 @@ class ContextManager:
         return replace(settings, extra={**(settings.extra or {}), "context_management": True})
 
     def _projected_tokens(self, messages: list[Message], last_usage: Usage | None,
-                          system: str | list[SystemSegment] | None) -> int:
+                          system: str | list[SystemSegment] | None, tools: Any = None) -> int:
         used = self.used_tokens(last_usage)
         if used > 0 and last_usage is not None:
             last_asst = max((i for i, m in enumerate(messages) if m.role == "assistant"), default=-1)
             since = estimate_tokens(messages[last_asst + 1:]) if last_asst >= 0 else 0
             return used + int(last_usage.output_tokens) + since
-        return estimate_tokens(system_text(system)) + estimate_tokens(messages)
+        return estimate_tokens(system_text(system)) + tool_tokens(tools) + estimate_tokens(messages)
+
+    def thresholds(self, window: int, fixed: int = 0) -> tuple[float, float]:
+        """``(soft, hard)`` in request tokens: the fixed part plus the policy's shares of the room after it."""
+        room = max(0.0, float(window) - float(fixed))
+        return fixed + self.policy.soft_ratio * room, fixed + self.policy.hard_ratio * room
 
     # ------------------------------------------------------------------ public API
 
     async def maybe_compact(self, messages: list[Message], *, last_usage: Usage | None, settings: ModelSettings,
-                            system: str | list[SystemSegment] | None, agent: str) -> CompactionResult | None:
+                            system: str | list[SystemSegment] | None, agent: str,
+                            tools: Any = None) -> CompactionResult | None:
         """Compact ``messages`` in place if the next request would exceed the soft
-        threshold. Returns None when nothing was needed (or possible)."""
+        threshold (of the room the fixed part leaves: system prompt and ``tools``,
+        the tool definitions the request carries). Returns None when nothing was
+        needed (or possible)."""
         if not self.policy.enabled or len(messages) < 2:
             return None
         window = self.window_for(settings)
-        projected = self._projected_tokens(messages, last_usage, system)
-        if projected < self.policy.soft_ratio * window:
+        projected = self._projected_tokens(messages, last_usage, system, tools)
+        fixed = estimate_tokens(system_text(system)) + tool_tokens(tools)
+        soft, _hard = self.thresholds(window, fixed)
+        if projected < soft:
+            return None
+        if projected - fixed < self.policy.summary_max_tokens:
+            # nearly all of the request is the fixed part: a summary (up to summary_max_tokens) gains nothing
+            log.warning("context for %s is at ~%d tokens (window %d), ~%d of them the system prompt and tool "
+                        "definitions, which compaction cannot remove; not compacting", agent, projected, window, fixed)
             return None
         return await self._compact(messages, settings=settings, system=system, agent=agent, window=window,
-                                   tokens_before=projected, aggressive=False)
+                                   tokens_before=projected, aggressive=False, fixed=fixed)
 
     async def recover_overflow(self, messages: list[Message], *, settings: ModelSettings,
                                system: str | list[SystemSegment] | None, agent: str) -> CompactionResult:
@@ -407,11 +441,11 @@ class ContextManager:
 
     async def _compact(self, messages: list[Message], *, settings: ModelSettings,
                        system: str | list[SystemSegment] | None, agent: str, window: int, tokens_before: int,
-                       aggressive: bool) -> CompactionResult | None:
+                       aggressive: bool, fixed: int = 0) -> CompactionResult | None:
         snapshot = list(messages)
         pre_problems = validate_tool_pairing(messages, allow_pending=True)
         pol = self.policy
-        soft, hard = pol.soft_ratio * window, pol.hard_ratio * window
+        soft, hard = self.thresholds(window, fixed)
         st = _Stats()
         steps: list[str] = []
         first_edit: int | None = None
@@ -747,4 +781,4 @@ class ContextManager:
 
 __all__ = ["CLEARED_PREFIX", "CompactionResult", "ContextManager", "ContextPolicy", "SUMMARIZER_AGENT",
            "compaction_spend",
-           "SUMMARY_HEADER", "content_chars", "estimate_tokens"]
+           "SUMMARY_HEADER", "content_chars", "estimate_tokens", "tool_tokens"]

@@ -1227,9 +1227,12 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
         return args.handler(args, config)
     except ProviderNotReadyError as exc:  # the model server: nothing was sent to the model
-        print(f"error: {exc}\nStart the model server (`vbt local serve`, deploy/local/README.md) or point "
-              "provider.options.base_url / VBT_LLM_BASE_URL at it; `vbt doctor --smoke` and `vbt local check` "
-              "test it. `--profile claude` uses the Anthropic API instead.", file=sys.stderr)
+        start = ("llama-server (docs/E2E_RUN.md; scripts/dev/cpu_server.sh --engine llamacpp)"
+                 if str((config.get("provider") or {}).get("name") or "") == "llamacpp"
+                 else "the model server (`vbt local serve`, deploy/local/README.md)")
+        print(f"error: {exc}\nStart {start} or point provider.options.base_url / VBT_LLM_BASE_URL at it; "
+              "`vbt doctor --smoke` and `vbt local check` test it. `--profile claude` uses the Anthropic API "
+              "instead.", file=sys.stderr)
         return 2
     except DataReadinessError as exc:  # session preflight: nothing was sent to the model
         print(f"error: {exc}\nRun `vbt doctor` for details; --allow-missing-data starts a degraded run, "

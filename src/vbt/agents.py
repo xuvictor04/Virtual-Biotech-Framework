@@ -215,7 +215,10 @@ def load_roster(config: dict[str, Any]) -> tuple[AgentDefinition, dict[str, Agen
 
     cso = build("cso", {**spec["cso"], "role": "Chief Scientific Officer (CSO)"}, can_delegate=True)
     agents = {n: build(n, d) for n, d in (spec.get("agents") or {}).items() if wanted(d)}
-    unknown = sorted(set(overrides) - set(agents) - {"cso"})
+    # an override of a roster agent left out here (a project-only role such as the data-engineer outside a project,
+    # a disabled agent) is the profile's setting for when that agent runs: kept silently
+    declared = set(spec.get("agents") or {})
+    unknown = sorted(set(overrides) - set(agents) - declared - {"cso"})
     if unknown:
         log.warning("agent_overrides for unknown agents ignored: %s", ", ".join(unknown))
     return cso, agents

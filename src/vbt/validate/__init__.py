@@ -104,7 +104,8 @@ def step_host(ctx: _Ctx) -> StepResult:
 
     servers = {s["name"]: s.get("mem_limit_mb") for s in (ctx.config.get("mcp_servers") or {}).get("servers", [])
                if s.get("mem_limit_mb") is not None}
-    desc = sizing.describe(ctx.settings.raw, servers=servers)
+    parallel = int((ctx.config.get("limits") or {}).get("max_parallel_agents") or 8)
+    desc = sizing.describe(ctx.settings.raw, servers=servers, parallel=parallel)
     try:
         from ..setup.probe import containment_facts
 

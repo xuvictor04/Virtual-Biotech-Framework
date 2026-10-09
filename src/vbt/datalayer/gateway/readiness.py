@@ -15,6 +15,12 @@ universes, and the item tables it serves. One drifted field no longer takes down
 the table, and a partial partition blocks only calls that can include it. Resolver indexes are
 decided per accepted kind by the gateway (a kind without its index is dropped with a note).
 
+A derived serve also reads tables its binding does not name (:func:`derived_dependencies`): the table a
+``split.compare_with`` compares against and an ``enrich`` split's declared universe are required (read like the
+binding's tables); the hierarchy an ``enrich`` split propagates annotations over (``membership.propagate_via``) is
+optional: without it the data child answers with direct annotations and says so (``pathway.get_go_enrichment``
+without go-basic.obo), so it is checked with the session but never refuses the call.
+
 A reason whose status acquiring the files fixes (``missing``, ``partial``, ``stale``) on a table whose descriptor
 declares an ``acquisition`` entry also says how (:func:`acquisition_hint`): ``acquire`` holds the command
 (``vbt data acquire <source>.<table>``), the declared bytes and files, the prepare steps, the licence and login
@@ -36,6 +42,7 @@ from ..plugins.base import LayoutSpec
 
 __all__ = ["READY_STATUSES", "TABLE_LEVEL_STATUSES", "CallReadiness", "ReadinessCache", "call_readiness",
            "section_tables", "layout_spec", "table_signature", "tables_read", "columns_read", "degraded_tools", "norm_path",
+           "derived_dependencies",
            "parse_partition_label", "partitions_selected", "table_status", "ACQUIRE_STATUSES", "acquisition_hint",
            "auto_decision"]
 
@@ -293,11 +300,73 @@ def _strip_table(column: str, table: str) -> str:
     return column[len(table) + 1:] if column.startswith(table + ".") else column
 
 
-def tables_read(contract: Any, bound_table: str | None, args: Mapping[str, Any] | None = None) -> list[str]:
+def _qualified(ref: str | None, source: str | None) -> str | None:
+    if not ref:
+        return None
+    return ref if "." in ref or not source else f"{source}.{ref}"
+
+
+def _hierarchy_table(catalog: Any, id_type: str, source: str | None) -> str | None:
+    """The table holding ``id_type``'s hierarchy: its own ``hierarchy``, else one an id_type that ``extends`` it
+    declares (``gene_ontology:go_term`` over ``open_targets:go_term``); the data child's ``hierarchy_of`` order."""
+    try:
+        src, spec = catalog.id_type(id_type, source)
+    except Exception:  # noqa: BLE001 - an unknown id_type is lint's to report
+        return None
+    qualified = f"{src}:{id_type.partition(':')[2] or id_type}"
+    if getattr(spec, "hierarchy", None) is not None:
+        return _qualified(spec.hierarchy.table, src)
+    for other_src, desc in sorted((getattr(catalog, "sources", None) or {}).items()):
+        for _name, other in sorted((getattr(desc, "id_types", None) or {}).items()):
+            if getattr(other, "extends", None) == qualified and getattr(other, "hierarchy", None) is not None:
+                return _qualified(other.hierarchy.table, other_src)
+    return None
+
+
+def derived_dependencies(contract: Any, catalog: Any = None) -> tuple[list[str], list[str]]:
+    """``(required, optional)``: tables a derived serve reads beyond the tables its binding names (see the module
+    docstring). Without ``catalog`` only what the contract's own tables tell."""
+    b = getattr(contract, "binding", None)
+    d = getattr(b, "derived", None) if b is not None else None
+    split = getattr(d, "split", None) if d is not None else None
+    required: list[str] = []
+    optional: list[str] = []
+    if not isinstance(split, Mapping):
+        return required, optional
+    other = split.get("compare_with")
+    if isinstance(other, str) and other:
+        required.append(other)
+    enrich = split.get("enrich")
+    if isinstance(enrich, Mapping) and d.table:
+        t = (getattr(contract, "tables", None) or {}).get(d.table)
+        if t is None and catalog is not None:
+            try:
+                t = catalog.table(d.table)
+            except Exception:  # noqa: BLE001
+                t = None
+        source = str(d.table).split(".", 1)[0]
+        cols = getattr(t, "columns", None) or {}
+        col = cols.get(enrich.get("column")) if enrich.get("column") else next(
+            (c for c in cols.values() if getattr(getattr(c, "membership", None), "enrichment", None)), None)
+        membership = getattr(col, "membership", None)
+        universe = getattr(getattr(getattr(membership, "enrichment", None), "universe", None), "table", None)
+        ref = _qualified(universe, source)
+        if ref:
+            required.append(ref)
+        via = getattr(membership, "propagate_via", None)
+        if isinstance(via, Mapping) and via.get("id_type") and catalog is not None:
+            ref = _hierarchy_table(catalog, str(via["id_type"]), source)
+            if ref:
+                optional.append(ref)
+    return required, optional
+
+
+def tables_read(contract: Any, bound_table: str | None, args: Mapping[str, Any] | None = None, *,
+                catalog: Any = None) -> list[str]:
     """The tables (and item tables) one call reads: ``reads`` (``when`` honoured; an ``upstream`` read of
     a derived tool left out), the bound table after selector resolution, the derived table and its
-    sections, ``rows_of``, result sections and coverage-universe tables. Tables only reachable through
-    an unselected selector value are left out."""
+    sections, the tables a derived serve requires (:func:`derived_dependencies`), ``rows_of``, result sections
+    and coverage-universe tables. Tables only reachable through an unselected selector value are left out."""
     b = getattr(contract, "binding", None)
     if b is None:
         return []
@@ -326,6 +395,9 @@ def tables_read(contract: Any, bound_table: str | None, args: Mapping[str, Any] 
         add(b.derived.table)
         for s in b.derived.sections.values():
             add(s.table)
+        if b.serve == "derived":
+            for ref in derived_dependencies(contract, catalog)[0]:
+                add(ref)
     add(b.result.rows_of)
     for s in b.result.sections.values():
         add(s.table)
@@ -572,7 +644,7 @@ def call_readiness(contract: Any, cache: ReadinessCache, *, bound_table: str | N
     """Readiness of one call over exactly the parts it reads (see the module docstring).
     ``partition_values`` is ``{table: {partition column: values fixed by the call}}``."""
     out = CallReadiness()
-    for ref in tables_read(contract, bound_table, args):
+    for ref in tables_read(contract, bound_table, args, catalog=getattr(cache, "catalog", None)):
         phys, item = cache.physical(ref)
         m = cache.get(phys)
         if m is None:

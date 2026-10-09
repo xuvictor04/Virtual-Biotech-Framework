@@ -306,6 +306,44 @@ async def test_pathway_tools_are_derived_with_upstream_fields(ctx, tmp_path) -> 
     assert go.obj["count"] == len(terms)
 
 
+async def test_go_enrichment_without_go_basic_obo_answers_direct_annotations_and_says_so(tmp_path) -> None:
+    """The served-model run on Open Targets 25.09 without go-basic.obo: ``pathway.get_go_enrichment`` was listed
+    ready, and the derived serve failed ``service_unavailable`` ("data child failed on _serve: TableUnavailable:
+    gene_ontology.term"), as if the data layer were down. The hierarchy is the derived serve's optional dependency
+    (readiness.derived_dependencies): an unreadable one is not_ready in the closure, and the call answers with
+    direct annotations, saying so in its header."""
+    from test_dl_native_tools import _derived, _gateway
+
+    from vbt.datalayer.errors import ErrorKind, GatewayError
+    from vbt.datalayer.gateway.readiness import derived_dependencies
+    from vbt.datalayer.service import ServiceContext
+    from vbt.datalayer.service.verbs.hierarchy import closure_for
+    from vbt.datalayer.settings import DataSettings
+
+    roots = build(tmp_path)
+    (roots["go"] / "go-basic.obo").unlink()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("OPEN_TARGETS_DATA_PATH", str(roots["ot"]))
+        mp.setenv("GO_DATA_PATH", str(roots["go"]))
+        mp.setenv("MSIGDB_DATA_PATH", str(roots["msigdb"]))
+        settings = DataSettings.from_dict({"descriptors_dir": str(REPO / "configs" / "data" / "sources"),
+                                           "overlays_dir": str(REPO / "configs" / "data" / "overlays"),
+                                           "cache_dir": str(tmp_path / "cache")}, project_root=REPO)
+        ctx = ServiceContext(settings)
+        required, optional = derived_dependencies(ctx.catalog.contract("pathway", "get_go_enrichment"), ctx.catalog)
+        assert "open_targets.target_go" in required and optional == ["gene_ontology.term"]
+        with pytest.raises(GatewayError) as err:
+            closure_for(ctx, "open_targets:go_term")
+        assert err.value.kind == ErrorKind.not_ready and "gene_ontology.term" in err.value.message
+        gw = _gateway(ctx, tmp_path)
+        go = await _derived(gw, "pathway", "get_go_enrichment",
+                            {"gene_list": [G[1], G[3]], "go_type": "P", "pvalue_threshold": 1.0})
+    notes = " ".join(go.header.get("notes") or [])
+    assert go.header["served_by"] == "derived" and "annotations not propagated" in notes, go.header
+    terms = {r["go_id"]: r for r in go.obj["enriched_terms"]}
+    assert "GO:0000001" not in terms, "the root is reached only through propagation"
+
+
 # ---------------------------------------------------------------------------- DepMap essentiality aggregation
 
 LUNG, BREAST = ("UBERON_0002048", "lung"), ("UBERON_0000310", "breast")

@@ -10,6 +10,8 @@
 #   scripts/dev/cpu_server.sh --model Qwen/Qwen3-0.6B   # Qwen3 (hermes tool format) instead
 #   scripts/dev/cpu_server.sh --max-model-len 8192 --port 8012    # small window (overflow probes)
 #   scripts/dev/cpu_server.sh --engine llamacpp --model /path/model.gguf   # llama.cpp llama-server
+#   scripts/dev/cpu_server.sh --engine llamacpp --model /path/model.gguf --slots 2 --max-model-len 131072 \
+#     --cache-ram 2048 -- -t 4        # two 64K slots (the e2e-cpu profile, docs/E2E_RUN.md)
 #
 # Then, from the harness environment:
 #   VBT_LIVE_LOCAL_URL=http://127.0.0.1:8011/v1 VBT_LIVE_LOCAL_MODEL=qwen3.5-0.8b \
@@ -26,7 +28,8 @@
 #   --tool-parser NAME       vLLM tool-call parser (default: qwen3_coder for Qwen3.5/3.6/3.8, hermes
 #                            for Qwen3, otherwise hermes)
 #   --host H / --port P      bind address (default 127.0.0.1:8011; keep it on loopback)
-#   --max-model-len N        context window (default 32768)
+#   --max-model-len N        context window (default 32768). llama.cpp: the TOTAL across --slots (-c is split
+#                            between the -np slots): 64K per request with 2 slots is --max-model-len 131072
 #   --kv-cache-gb N          VLLM_CPU_KVCACHE_SPACE in GiB (default 4)
 #   --batch-tokens N         vLLM --max-num-batched-tokens (default 2048). NB: vllm-cpu 0.30 still
 #                            prefilled each Qwen3.5 (hybrid) prompt in ONE engine step: ~6 min for a
@@ -34,6 +37,8 @@
 #                            else. Keep client read timeouts above the longest prefill.
 #   --slots N                llama.cpp server slots (default 1). The window is split between slots:
 #                            -c 32768 with 2 slots gives 16384 tokens per request (/v1/models meta.n_ctx)
+#   --cache-ram MIB          llama.cpp prompt-cache RAM (--cache-ram; default: the engine's). The server's memory
+#                            is about the model + slots x window of KV + this; 0 disables the prompt cache
 #   --threads SPEC           VLLM_CPU_OMP_THREADS_BIND (default auto)
 #   --venv DIR               venv for the engine (default $VBT_CPU_VENV or ~/.cache/vbt/cpu-venv-<engine>)
 #   --install                create the venv and install the engine, then exit
@@ -51,6 +56,7 @@ MAX_LEN=32768
 KV_GB=4
 BATCH_TOKENS=2048
 SLOTS=1
+CACHE_RAM=""
 THREADS=auto
 VENV="${VBT_CPU_VENV:-}"
 INSTALL=0
@@ -72,6 +78,7 @@ while [ $# -gt 0 ]; do
     --kv-cache-gb) KV_GB="$2"; shift 2 ;;
     --batch-tokens) BATCH_TOKENS="$2"; shift 2 ;;
     --slots) SLOTS="$2"; shift 2 ;;
+    --cache-ram) CACHE_RAM="$2"; shift 2 ;;
     --threads) THREADS="$2"; shift 2 ;;
     --venv) VENV="$2"; shift 2 ;;
     --install) INSTALL=1; shift ;;
@@ -83,6 +90,10 @@ while [ $# -gt 0 ]; do
 done
 
 case "$ENGINE" in vllm|llamacpp) ;; *) echo "error: --engine must be vllm or llamacpp" >&2; exit 2 ;; esac
+if [ -n "$CACHE_RAM" ] && [ "$ENGINE" != llamacpp ]; then
+  echo "error: --cache-ram is a llama.cpp option (--engine llamacpp)" >&2
+  exit 2
+fi
 VENV="${VENV:-$HOME/.cache/vbt/cpu-venv-$ENGINE}"
 
 if [ -z "$SERVED" ]; then
@@ -163,7 +174,11 @@ else
   # reasoning in message.reasoning_content.
   CMD=("${LS:-llama-server}" -m "$MODEL" --alias "$SERVED" --host "$HOST" --port "$PORT"
        -c "$MAX_LEN" --jinja --reasoning-format deepseek -np "$SLOTS" --metrics)
+  [ -n "$CACHE_RAM" ] && CMD+=(--cache-ram "$CACHE_RAM")
   ENVS=()
+  if [ "$SLOTS" -gt 1 ]; then
+    echo "llama.cpp: -c $MAX_LEN is split across $SLOTS slots: $((MAX_LEN / SLOTS)) tokens per request" >&2
+  fi
 fi
 CMD+=(${EXTRA[@]+"${EXTRA[@]}"})
 

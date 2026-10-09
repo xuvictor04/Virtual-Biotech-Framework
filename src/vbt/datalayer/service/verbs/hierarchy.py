@@ -322,7 +322,16 @@ def closure_for(ctx: ServiceContext, id_type: str) -> Closure:
         except (OSError, ValueError, KeyError):
             closure = None
     if closure is None:
-        closure = _build(ctx, source, fp)
+        from ...plugins.base import FormatError
+
+        try:
+            closure = _build(ctx, source, fp)
+        except (ServiceError, FormatError, OSError) as exc:
+            # the hierarchy's file is absent or unreadable (go-basic.obo not acquired): not ready, never a crash of
+            # the verb (which the gateway could only report as service_unavailable) nor an empty closure
+            raise GatewayError(ErrorKind.not_ready, f"the hierarchy of {id_type} ({source.table}) cannot be read: "
+                               f"{exc}", payload=not_ready_payload([{"name": source.table, "check": "hierarchy",
+                                                                     "detail": str(exc)[:200]}])) from None
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".part")
         tmp.write_bytes(gzip.compress(json.dumps({**closure.to_json(), "tag": tag}, sort_keys=True).encode()))

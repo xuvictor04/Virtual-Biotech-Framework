@@ -174,8 +174,11 @@ with `--max-model-len 65536` compacts against 65,536. The prompt size is read fr
 (`input + cache_read + cache_write`, plus its output and any tool results
 appended since).
 
-- `maybe_compact(messages, last_usage=, settings=, system=, agent=)` — call after
-  each response. Above `soft_ratio` (0.70) it clears old tool results: content of
+- `maybe_compact(messages, last_usage=, settings=, system=, agent=, tools=)` — call after
+  each response. The ratios are shares of the room the window leaves after the
+  fixed part (the system prompt and `tools`, the tool definitions the request
+  carries), which compaction cannot remove; a request whose removable part is
+  under `summary_max_tokens` is not compacted. Above `soft_ratio` (0.70) it clears old tool results: content of
   results older than the last `keep_recent_calls` (6) model calls and at least
   `min_clear_chars` (2000) long is saved to `spill_dir` (or the file the harness
   already saved it to is reused) and replaced by

@@ -133,14 +133,14 @@ def _plugin(registry: Any, catalog: Any, qualified: str | None) -> Any:
 
 
 def native_schema(contract: Any, schema: Mapping[str, Any] | None, catalog: Any, *, enum_max: int = 64,
-                  agent: str | None = None, ready: Any = None) -> dict[str, Any] | None:
+                  agent: str | None = None, ready: Any = None, column_maps: bool = True) -> dict[str, Any] | None:
     """The schema of a data-child public verb (None for any other tool); under ``request`` when the
-    listed schema takes the payload as one ``request`` argument."""
+    listed schema takes the payload as one ``request`` argument. ``column_maps``: ``tools.native_input_schema``."""
     from .tools import NATIVE_SERVER, NATIVE_VERBS, native_tool, wrap_request
 
     if catalog is None or getattr(contract, "server", None) != NATIVE_SERVER or contract.tool not in NATIVE_VERBS:
         return None
-    tool = native_tool(catalog, contract.tool, agent=agent, ready=ready, enum_max=enum_max)
+    tool = native_tool(catalog, contract.tool, agent=agent, ready=ready, enum_max=enum_max, column_maps=column_maps)
     if tool is None:
         return None
     props = (schema or {}).get("properties") or {}
@@ -149,15 +149,16 @@ def native_schema(contract: Any, schema: Mapping[str, Any] | None, catalog: Any,
 
 def annotate_schema(contract: Any, schema: Mapping[str, Any] | None, *, catalog: Any = None, registry: Any = None,
                     vocab: Mapping[str, Any] | None = None, enum_max: int = 64,
-                    limit_max: Mapping[str, int] | None = None) -> dict[str, Any]:
+                    limit_max: Mapping[str, int] | None = None, column_maps: bool = True) -> dict[str, Any]:
     """The annotated schema (a copy; see the module docstring). ``vocab`` maps
     ``"source.table.column"`` to vocabulary snapshots; ``limit_max`` the memory-derived maximum
-    per limit argument."""
+    per limit argument. ``column_maps=False`` lists a native verb's ``where`` without every table's column
+    map (``tools.native_input_schema``; the gateway's listing)."""
     out: dict[str, Any] = copy.deepcopy(dict(schema or {"type": "object"}))
     b = getattr(contract, "binding", None)
     if b is None or getattr(contract, "generic", False):
         return out
-    native = native_schema(contract, schema, catalog, enum_max=enum_max)
+    native = native_schema(contract, schema, catalog, enum_max=enum_max, column_maps=column_maps)
     if native is not None:
         return native
     vocab = dict(vocab or {})

@@ -67,6 +67,7 @@ from typing import Any, Mapping, Sequence
 from ...config import base_tool_env
 from ..api import CallPlan, CrashDecision, LaunchSpec, ListingDecision, RawResult
 from ..catalog import Catalog, CatalogError, ToolContract, build_catalog
+from ..derive.tools import WHERE_POINTER
 from ..descriptor.columns import is_container
 from ..descriptor.load import variables_from_config
 from ..errors import (
@@ -124,7 +125,14 @@ from .fields import (FieldMapper, extract_rows, get_path, grain_values, jp_first
                      parse_payload, place_rows)
 from .files import MaterializedRegistry, reconcile
 from .leakage import LeakagePlan, ceiling_of, leakage_record, prepare_leakage
-from .readiness import ReadinessCache, call_readiness, degraded_tools, partitions_selected, tables_read
+from .readiness import (
+    ReadinessCache,
+    call_readiness,
+    degraded_tools,
+    derived_dependencies,
+    partitions_selected,
+    tables_read,
+)
 from .scope import ScopeDecision, grain_columns, scope_completeness
 from .service_client import DATA_SERVER, ServiceClient, ServiceError
 from .transforms import (
@@ -149,15 +157,12 @@ from .transforms import (
     trim_column,
 )
 
-__all__ = ["DataGateway", "build_gateway", "GATEWAY_VERSION", "compact_native_listing"]
+__all__ = ["DataGateway", "build_gateway", "GATEWAY_VERSION", "compact_native_listing", "WHERE_POINTER"]
 
 log = logging.getLogger(__name__)
 
 GATEWAY_VERSION = "1.0"
 _STATE = "_vbt_state"
-#: What a native verb's listed ``where`` says instead of carrying every table's column map (``x-vbt-where``).
-WHERE_POINTER = (" The columns of a table, their roles, identifier types and operators: "
-                 "mcp__data__describe(source, table).")
 _INCLUDE_NEGATED = "include_negated"
 _INCLUDE_DUPLICATES = "include_duplicates"
 _SERVICE_SCRIPT = ("src", "vbt", "datalayer", "service", "server.py")
@@ -383,15 +388,9 @@ class DataGateway:
         self.bridge = bridge
         self.service.bind(bridge)
         with contextlib.suppress(Exception):
+            # the host budget covers the upstream servers only: it leaves out the data child itself
+            # (memory/host.py HARNESS_SERVERS), whatever the bridge lists
             self.admission.bind_bridge(bridge)
-        host = getattr(self.admission, "host", None)
-        listed = getattr(host, "servers", None)
-        if callable(listed):
-            # the host budget is the UPSTREAM servers' share (memory/sizing.py): the data child is the harness's own
-            # process, inside the harness reserve and under its own limit (data.service.mem_limit_mb), and never an
-            # idle server to recycle. Counted, its 1.6 GB after a few finds on a 6,000 MB share filled the 2,452 MB
-            # budget with the idle upstream servers, and every later upstream call was refused host_busy.
-            host.servers = lambda: [s for s in listed() if s != DATA_SERVER]
 
     def _mode_for(self, server: str) -> str:
         if self.mode == "enforce" and not self.settings.gateway.enforces(server):
@@ -464,8 +463,9 @@ class DataGateway:
             return ListingDecision(True, description, input_schema)
         from ..derive import annotate_schema, describe_tool
         try:
+            # a native verb is listed without every table's column map (derive/tools.py, column_maps)
             schema = annotate_schema(contract, input_schema, catalog=self.catalog, registry=self.registry,
-                                     vocab=self._vocab, enum_max=self.settings.derive.enum_max)
+                                     vocab=self._vocab, enum_max=self.settings.derive.enum_max, column_maps=False)
             unready = degraded_tools(_OneTool(self.catalog, server, tool), self.readiness).get(
                 f"mcp__{server}__{tool}") if self.readiness.tables else None
             text = describe_tool(contract, description, catalog=self.catalog,
@@ -500,7 +500,10 @@ class DataGateway:
                 continue
             for tool in self.catalog.tools(server):
                 try:
-                    out.update(self.readiness.physical(ref)[0] for ref in self.catalog.contract(server, tool).tables)
+                    contract = self.catalog.contract(server, tool)
+                    required, optional = derived_dependencies(contract, self.catalog)
+                    # a derived serve's dependencies too (an enrichment's universe and hierarchy)
+                    out.update(self.readiness.physical(ref)[0] for ref in (*contract.tables, *required, *optional))
                 except Exception:  # noqa: BLE001 - a broken contract is reported by lint, not here
                     continue
         return sorted(out)
@@ -1224,7 +1227,7 @@ class DataGateway:
 
     async def _check_readiness(self, plan: CallPlan, st: _CallState, contract: ToolContract,
                                selected: str | None) -> None:
-        tables = tables_read(contract, selected, plan.args_raw)
+        tables = tables_read(contract, selected, plan.args_raw, catalog=self.catalog)
         self.readiness.shallow_refresh(tables)
         parts = self._partition_values(contract, plan.args_raw)
         r = call_readiness(contract, self.readiness, bound_table=selected, args=plan.args_raw, partition_values=parts)
@@ -2786,6 +2789,13 @@ class DataGateway:
                                    self.settings.witness.repair_max_bytes / 1e6, 1),
                                    hint="narrow the query (a more specific filter, a smaller limit), or read the "
                                         "rows with mcp__data__find", alternative="mcp__data__find"))
+        for name in ("_statistics", "_propagation"):
+            # what the handler did differently from its contract (annotations not propagated for want of the
+            # hierarchy, a caller's universe) is said in the header, not only in the provenance record
+            rec = (resp.sections or {}).get(name)
+            for note in (rec.get("notes") or [] if isinstance(rec, Mapping) else []):
+                if isinstance(note, str) and note not in st.notes:
+                    st.notes.append(note)
         if isinstance(resp.rows, list) and verb == "find" and self._live_table(d.table) and not (
                 d.aggregate or d.split or d.nest or d.group_by or d.explode):
             # rows of a live table as the source holds them: a key the call names and the rows lack is unknown there
@@ -3693,8 +3703,9 @@ def compact_native_listing(schema: Mapping[str, Any]) -> dict[str, Any]:
     request; on the shipped catalog (94 tables, 791 columns) the map was 128 KB in each of ``find`` and
     ``aggregate``, about 70,000 tokens per specialist request with ``similar`` and ``neighbors``, more than a 32K
     window holds and a large share of a 262K one on every agent. ``mcp__data__describe`` returns one table's columns
-    on demand; the ``where`` description names it. Nothing else reads the listed map (the data child resolves
-    ``where`` against the catalog)."""
+    (with each column's ``ops``) on demand; the ``where`` description names it. Nothing else reads the listed map
+    (the data child resolves ``where`` against the catalog). The listing builds the schema without the map
+    (``annotate_schema(column_maps=False)``); this strips one built elsewhere."""
     out = dict(schema)
     props = out.get("properties")
     if not isinstance(props, Mapping):

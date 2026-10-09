@@ -233,6 +233,31 @@ async def test_host_budget_evicts_the_lru_idle_server() -> None:
     assert await host.reserve("drug", 6000.0) == ["target"]
 
 
+async def test_the_host_budget_never_counts_or_recycles_the_data_child() -> None:
+    """The e2e run on a 6,000 MB share: the data child (1.6 GB after a few finds) was summed with the idle upstream
+    servers into the 2,452 MB budget, and every upstream call was refused host_busy. The budget covers the upstream
+    servers whatever lists the data child (the ledger, the bridge's servers, begin/touch): HostBudget leaves out
+    HARNESS_SERVERS itself, so no caller has to filter it."""
+    from vbt.datalayer.launch import DATA_SERVER
+    from vbt.datalayer.memory.host import HARNESS_SERVERS
+
+    assert DATA_SERVER in HARNESS_SERVERS
+    ledger = _ledger_with({DATA_SERVER: 2400.0, "target": 170.0})
+    recycled: list[str] = []
+
+    async def recycle(server: str, wait_s: float = 30.0) -> bool:
+        recycled.append(server)
+        return True
+
+    host = HostBudget(2452.0, ledger, recycle=recycle, servers=lambda: [DATA_SERVER, "target"])
+    host.touch(DATA_SERVER)
+    host.begin(DATA_SERVER)
+    assert host.known_servers() == ["target"] and host.resident_mb() == {"target": 270.0}   # + the 100 MB baseline
+    assert await host.reserve("target", 47.0) == [] and recycled == []
+    assert await host.reserve(DATA_SERVER, 99_999.0) == [], "the data child is under its own limit, not this one"
+    assert DATA_SERVER not in host.snapshot()["resident_mb"]
+
+
 async def test_admission_uses_the_host_budget() -> None:
     ledger = _ledger_with({"a": 4000.0})
     calls: list[str] = []
@@ -488,7 +513,7 @@ def test_huge_index_refuses_undeclared_columns(lit_ctx: ServiceContext) -> None:
 # --------------------------------------------------------------------------- vbt ds status
 
 
-def test_status_reads_status_files_and_calibrations(tmp_path: Path) -> None:
+def test_status_reads_status_files_and_calibrations(tmp_path: Path, capsys) -> None:
     logs = tmp_path / "logs"
     logs.mkdir()
     (logs / "target.status.json").write_text(json.dumps({"pid": 1, "rss_mb": 812.5, "peak_rss_mb": 900.0,
@@ -500,14 +525,23 @@ def test_status_reads_status_files_and_calibrations(tmp_path: Path) -> None:
     cal = fit({"rows": 4, "columns": {"a": {"uncompressed_bytes": 32}}}, {"a": {"pandas_bytes": 64}}, 4)
     cal.update({"fingerprint": "fp1:z", "table": "s.t"})
     write_calibration(cache, "s", "fp1:z", cal)
-    config = {"data": {"cache_dir": str(cache), "memory": {"host_budget_mb": 9000}}}
+    (logs / "data.status.json").write_text(json.dumps({"pid": 3, "rss_mb": 1574.0, "peak_rss_mb": 1600.0,
+                                                       "limit_mb": 3000, "containment": "rss", "ts": time.time()}))
+    config = {"data": {"cache_dir": str(cache), "memory": {"host_budget_mb": 9000, "host_mb": 6000}}}
     body = memory_status(config, logs)
+    # resident is the upstream servers' sum the budget caps; the data child is reported on its own (e2e run: the
+    # line printed 'resident' with the data child next to an upstream-only budget, and MemTotal as 'host')
     assert body["host"]["budget_mb"] == 9000.0 and body["host"]["resident_mb"] == 812.5
-    assert set(body["servers"]) == {"target", "drug"} and body["calibrations"]["fp1:z"]["table"] == "s.t"
+    assert body["host"]["harness_resident_mb"] == 1574.0
+    assert body["host"]["plan_mb"] == 6000.0 and body["host"]["plan_source"] == "data.memory.host_mb"
+    assert set(body["servers"]) == {"target", "drug", "data"} and body["calibrations"]["fp1:z"]["table"] == "s.t"
     from vbt.datalayer import cli
 
     ns = type("NS", (), {"log_dir": str(logs), "run": None, "json": False})()
     assert cli.cmd_status(ns, config) == 0
+    line = capsys.readouterr().out.splitlines()[0]
+    assert "plan 6,000 MB (data.memory.host_mb" in line and "upstream resident 812 MB" in line, line
+    assert "data child 1,574 MB (not in the budget)" in line, line
 
 
 def test_status_and_calibrate_commands_are_registered() -> None:

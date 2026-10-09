@@ -17,6 +17,11 @@ budget caps the **sum** of resident memory over every server the bridge runs:
 Resident memory per server comes from the :class:`~.ledger.ResidencyLedger` (the reaper's RSS when
 fresh, else the estimates). Calls mark servers busy with :meth:`HostBudget.begin` / :meth:`end`
 (``AdmissionController`` does it for upstream calls), which also refreshes their LRU position.
+
+The budget covers the **upstream** servers only. The harness's own servers (:data:`HARNESS_SERVERS`, the data
+child) are inside the harness reserve and under their own limit (``data.service.mem_limit_mb``): the budget never
+counts, admits or recycles them, whatever a caller's server listing or the ledger names (on a 6,000 MB share the
+data child's 1.6 GB after a few finds filled the 2,452 MB budget, and every upstream call was refused host_busy).
 """
 
 from __future__ import annotations
@@ -29,10 +34,12 @@ from ..errors import ErrorKind, GatewayError, too_large_payload
 from . import sizing
 from .ledger import ResidencyLedger
 
-__all__ = ["HOST_SHARE", "DEFAULT_RESERVE_MB", "host_total_mb", "host_budget_mb", "HostBudget"]
+__all__ = ["HOST_SHARE", "DEFAULT_RESERVE_MB", "HARNESS_SERVERS", "host_total_mb", "host_budget_mb", "HostBudget"]
 
 HOST_SHARE = sizing.HOST_SHARE
 DEFAULT_RESERVE_MB = sizing.DEFAULT_RESERVE_MB
+#: Servers the harness runs itself (``launch.DATA_SERVER``): never part of the upstream budget.
+HARNESS_SERVERS = frozenset({"data"})
 
 
 def host_total_mb() -> float | None:
@@ -83,11 +90,12 @@ class HostBudget:
     def __init__(self, budget_mb: float | None, ledger: ResidencyLedger, *,
                  recycle: Callable[..., Awaitable[bool] | bool] | None = None,
                  servers: Callable[[], Iterable[str]] | None = None, recycle_wait_s: float = 30.0,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic, exclude: Iterable[str] = HARNESS_SERVERS) -> None:
         self.budget_mb = budget_mb
         self.ledger = ledger
         self.recycle = recycle
         self.servers = servers
+        self.exclude = frozenset(exclude)       # not upstream: never counted, admitted or recycled
         self.recycle_wait_s = float(recycle_wait_s)
         self.clock = clock
         self.in_flight: dict[str, int] = {}
@@ -136,13 +144,14 @@ class HostBudget:
     # ------------------------------------------------------------------ accounting
 
     def known_servers(self) -> list[str]:
+        """The upstream servers the budget covers (never :attr:`exclude`)."""
         names = set(self.last_used) | set(self.in_flight) | set(self.ledger.servers())
         if self.servers is not None:
             try:
                 names |= set(self.servers())
             except Exception:  # noqa: BLE001 - a listing failure only narrows the view
                 pass
-        return sorted(names)
+        return sorted(names - self.exclude)
 
     def resident_mb(self, exclude: Iterable[str] = ()) -> dict[str, float]:
         skip = set(exclude)
@@ -163,7 +172,7 @@ class HostBudget:
     async def reserve(self, server: str, need_mb: float, *, tool: str | None = None) -> list[str]:
         """Make room for ``need_mb`` more on ``server``; returns the servers recycled for it. Raises
         ``too_large`` (``host_busy``) when the budget cannot be met without touching a busy server."""
-        if not self.enabled or need_mb <= 0:
+        if not self.enabled or need_mb <= 0 or server in self.exclude:
             return []
         evicted: list[str] = []
         while True:

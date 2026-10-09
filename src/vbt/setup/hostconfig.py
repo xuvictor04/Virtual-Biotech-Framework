@@ -21,7 +21,8 @@ so ``vbt setup`` writes the numbers ``auto`` would give on this host:
   server's estimate x ``estimate_safety`` above that raises it, up to the host budget;
 * ``data.service.mem_limit_mb`` = ``clamp(0.05 x ram, 3000, 32768)`` (the data child; ``max_resident_mb`` 2/3
   of it), ``data.service.max_concurrency`` = ``clamp(cpus // 2, 4, 16)``;
-* ``data.memory.workspace_mb`` = ``clamp(0.25 x ram / limits.max_parallel_agents, 8000, 65536)`` (agent Bash);
+* ``data.memory.workspace_mb`` = ``clamp(0.25 x ram / limits.max_parallel_agents, 8000, 65536)``, at most half of
+  ram (agent Bash; ``sizing.workspace_for``, what ``auto`` gives at run time);
 * ``data.memory.limit_kind`` = ``cgroup`` where a memory cgroup can be created, else left at its default (``rss``);
 * ``bash.sandbox.os`` = ``bwrap`` where bubblewrap works.
 """
@@ -49,7 +50,7 @@ COMPOSE_VLLM = "compose.vllm.yaml"
 #: The floor of one server's limit (``vbt.datalayer.memory.sizing.SERVER_FLOOR_MB``).
 DEFAULT_SERVER_MB_MIN = _sizing.SERVER_FLOOR_MB
 SERVICE_MB_MIN, SERVICE_MB_MAX = _sizing.CHILD_FLOOR_MB, _sizing.CHILD_CEILING_MB
-WORKSPACE_MB_MIN, WORKSPACE_MB_MAX = 8000, 65536
+WORKSPACE_MB_MIN, WORKSPACE_MB_MAX = _sizing.WORKSPACE_FLOOR_MB, _sizing.WORKSPACE_CEILING_MB
 RESERVE_MB_MIN = int(_sizing.DEFAULT_RESERVE_MB)
 
 
@@ -101,7 +102,7 @@ def size_host(facts: Mapping[str, Any], config: Mapping[str, Any], *,
     out["service_mem_limit_mb"] = _sizing.data_child_for(ram)
     out["service_max_resident_mb"] = int(out["service_mem_limit_mb"] * 2 / 3)
     out["service_max_concurrency"] = _clamp(cpus // 2, 4, 16)
-    out["workspace_mb"] = _clamp(0.25 * ram / max(1, parallel), WORKSPACE_MB_MIN, WORKSPACE_MB_MAX)
+    out["workspace_mb"] = _sizing.workspace_for(ram, parallel)     # the rule `auto` applies at run time
     kind = (facts.get("containment") or {}).get("limit_kind")
     if kind == "cgroup":
         out["limit_kind"] = "cgroup"

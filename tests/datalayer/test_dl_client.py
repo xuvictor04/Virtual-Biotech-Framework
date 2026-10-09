@@ -275,7 +275,7 @@ def test_register_artifact_records_derived_from(client, tmp_path) -> None:
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="RLIMIT_DATA under the reaper is Linux-only")
-def test_bash_runs_under_the_workspace_memory_limit(tmp_path) -> None:
+def test_bash_runs_under_the_workspace_memory_limit(tmp_path, monkeypatch) -> None:
     from vbt.tools.builtin import WORKSPACE_MB, _strip_exit_marker, _workspace_limit
 
     probe = [sys.executable, "-c", "import resource; print(resource.getrlimit(resource.RLIMIT_DATA)[0])"]
@@ -287,7 +287,13 @@ def test_bash_runs_under_the_workspace_memory_limit(tmp_path) -> None:
     text, reason = _strip_exit_marker(out.stdout + out.stderr)
     assert "VBT_CHILD_EXIT" not in text and reason == "exit_code"
     assert json.loads(status.read_text())["limit_mb"] == 3000
+    # unset is auto: 8,000 MB on a 16 GB host; on a 6,000 MB share (the e2e CPU run) half the share, not 8,000
+    monkeypatch.setenv("VBT_HOST_MEMORY_MB", "16384")
     assert _workspace_limit({}, probe, tmp_path, "tu_2")[0] == WORKSPACE_MB == 8000
+    monkeypatch.setenv("VBT_HOST_MEMORY_MB", "6000")
+    assert _workspace_limit({"data": {"memory": {"workspace_mb": "auto"}}}, probe, tmp_path, "tu_5")[0] == 3000
+    big = {"limits": {"max_parallel_agents": 8}, "data": {"memory": {"host_mb": 1024 * 1024}}}
+    assert _workspace_limit(big, probe, tmp_path, "tu_6")[0] == 32768
     assert _workspace_limit({"data": {"memory": {"workspace_mb": 0}}}, probe, tmp_path, "tu_3") == (None, None, None)
     assert _workspace_limit({"data": {"enabled": False}}, probe, tmp_path, "tu_4") == (None, None, None)
 

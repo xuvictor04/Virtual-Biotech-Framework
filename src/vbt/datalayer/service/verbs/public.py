@@ -105,6 +105,43 @@ def coverage_of(table: Any, *, covered: bool | None = None, excluded_unknown: in
     return ("partial_unknown" if excluded_unknown else "covered"), statement
 
 
+def key_label(ref: str) -> str:
+    """A key column as the rows name it: a descriptor reference of one plain name is that name unquoted (ClinVar's
+    ```#GeneID``` is the column ``#GeneID``); a path into items (``go[].id``) stays the path the rows carry."""
+    from ...roles import PathError, parse_path
+
+    try:
+        p = parse_path(str(ref))
+    except PathError:
+        return str(ref)
+    if len(p.segments) == 1 and not p.segments[0].brackets and p.axis is None and not p.up and not p.absolute:
+        return p.segments[0].name
+    return str(ref)
+
+
+def column_path(name: str) -> str:
+    """A long-view column name as a predicate path: a name that is not a path (``#GeneID``, ``Gene Symbol``) is
+    backtick-quoted, as the descriptor references it; a path (``go[].id``, a dotted literal) is kept."""
+    from ...roles import PathError, format_name, parse_path
+
+    try:
+        parse_path(str(name))
+    except PathError:
+        return format_name(str(name))
+    return str(name)
+
+
+def _key_short(ref: str) -> str:
+    """The last field of a key column (``nctId`` for ``protocolSection...nctId``), unquoted."""
+    from ...roles import PathError, parse_path
+
+    try:
+        named = [s.name for s in parse_path(str(ref)).segments if s.name]
+    except PathError:
+        named = []
+    return named[-1] if named else str(ref).split(".")[-1].replace("[]", "")
+
+
 def header(view: "LongView", *, rows: Sequence[Any], total: int | None, truncated: bool = False,
            order: str | None = None, resolved: Mapping[str, str] | None = None,
            excluded_unknown: Mapping[str, int] | None = None, covered: bool | None = None,
@@ -121,7 +158,8 @@ def header(view: "LongView", *, rows: Sequence[Any], total: int | None, truncate
     desc = view.table.descriptor
     rel = desc.release.expect
     return Header(status=status, source=f"{desc.source}@{rel}" if rel else desc.source, tables=[view.ref],
-                  key=list(key if key is not None else view.key), returned=len(rows), total=total,
+                  key=[key_label(k) for k in (key if key is not None else view.key)], returned=len(rows),
+                  total=total,
                   total_method="data_child" if total is not None else "unknown", truncated=truncated, order=order,
                   resolved=dict(resolved) or None if resolved else None, excluded_unknown=eu or None,
                   coverage=coverage, coverage_statement=statement,
@@ -573,7 +611,7 @@ def compile_where(view: LongView, where: Mapping[str, Any] | None, *, argument: 
                                        [json_value(x) for x in vocab])
         elif op in _CMP and op != "ne" and not isinstance(value, (int, float)):
             raise _invalid(f"{argument}.{col}", value, f"{op} compares numbers")
-        parts.append(_leaf(col, op, value))
+        parts.append(_leaf(column_path(col), op, value))
     if not parts:
         return None, keys
     return (parts[0] if len(parts) == 1 else And(tuple(parts))), keys
@@ -888,7 +926,7 @@ def _live_find(ctx: ServiceContext, table: Any, payload: Mapping[str, Any]) -> d
     as_of = got.get("as_of")
     src = table.descriptor.source
     hdr = Header(status=status, source=f"{src}@{as_of}" if as_of else src, tables=[ref],  # type: ignore[arg-type]
-                 key=list(table.key), returned=len(rows), total=got.get("total"),
+                 key=[key_label(k) for k in table.key], returned=len(rows), total=got.get("total"),
                  total_method="remote" if got.get("total") is not None else "unknown",
                  truncated=bool(got.get("truncated")), withheld=withheld, not_found_items=missing or None,
                  coverage=coverage, coverage_statement=statement,  # type: ignore[arg-type]
@@ -953,12 +991,13 @@ def lookup(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     names = [k for k in (table.key if view is None else view.key) if not k.endswith("#")]
     if not isinstance(key, Mapping):
         raise _invalid("key", key, "key maps every key column to one value", names)
-    # a key column is named by its full path or its last field (nctId for protocolSection...nctId), live or not
-    short = {k.split(".")[-1].replace("[]", ""): k for k in names}
+    # a key column is named by its full path or its last field (nctId for protocolSection...nctId), live or not;
+    # a quoted name (`#GeneID`) by the column's own name too
+    short = {_key_short(k): k for k in names}
     missing = [s for s, k in short.items() if s not in key and k not in key]
     if missing:
         raise GatewayError(ErrorKind.incomplete_key, f"key misses {', '.join(missing)} of {table.ref}",
-                           payload={"argument": "key", "missing": missing, "key": names})
+                           payload={"argument": "key", "missing": missing, "key": [key_label(k) for k in names]})
     if view is None:
         where = {k: key.get(k, key.get(s)) for s, k in short.items()}
         # a live record: the source is the authority on its keys (a key it does not hold is not_found)

@@ -135,6 +135,8 @@ def test_lookup_search_vocab_resolve_describe(ot) -> None:
     assert r["rows"][0]["canonical"] == F.PCSK9 and r["rows"][0]["rule"] == "synonym:alias"
     d = call(ot, "describe", source="open_targets", table="interaction")
     assert d["kind"] == "edges" and "neighbors" in d["verbs"] and d["columns"]["targetA"]["role"] == "endpoint"
+    # the operators a `where` entry takes per column: the listing names describe instead of carrying the map
+    assert d["columns"]["targetA"]["ops"] == ["eq", "in", "ne"] and "ge" in d["columns"]["scoring"]["ops"]
     listing = call(ot, "describe", source="open_targets")
     assert any(t["table"] == "open_targets.target_go" and t["item_table_of"] == "open_targets.target"
                for t in listing["tables"])

@@ -289,3 +289,47 @@ def test_window_policy_and_server_side_settings():
     assert ContextPolicy.from_config(None) == ContextPolicy()
     off = ContextManager(ScriptedProvider.from_rules({}), ContextPolicy(server_side=True))
     assert "context_management" not in off.settings_for(settings()).extra  # mock lacks the capability
+
+
+async def test_the_thresholds_set_the_fixed_part_aside(tmp_path):
+    """The e2e CPU run: a specialist's system prompt and tool definitions were ~30K of a 64K window, which no
+    compaction removes, and thresholds on the whole request summarised it four times in one task, each summary
+    removing at most ~2,100 tokens. The ratios now apply to the room after the fixed part, and a request whose
+    removable part is under ``summary_max_tokens`` is left alone."""
+    from vbt.context import tool_tokens
+    from vbt.providers.base import ToolSpec
+
+    tools = [ToolSpec(f"mcp__x__t{i}", "d" * 400, {"type": "object", "properties": {"a": {"description": "x" * 4000}}})
+             for i in range(28)]
+    fixed = tool_tokens(tools) + estimate_tokens("sys")
+    assert 28_000 < fixed < 32_000
+    calls: list[str] = []
+    p = provider()
+    real = p.complete
+
+    async def counting(*a, **kw):
+        calls.append(kw.get("settings").extra.get("agent_name"))
+        return await real(*a, **kw)
+
+    p.complete = counting
+    cm = manager(p, tmp_path, soft_ratio=0.7, hard_ratio=0.85, summary_max_tokens=4000)
+    win = settings(context_window_tokens=65_536)
+    assert cm.window_for(win) == 65_536
+    assert fixed + 20_000 > 0.7 * 65_536, "the whole request is over the old threshold"
+    soft, hard = cm.thresholds(65_536, fixed)
+    assert soft == fixed + 0.7 * (65_536 - fixed) and hard > soft
+    # 50K in all, 20K of it conversation: over 0.7 of the window, but not over 0.7 of the room after the tools
+    msgs = history(rounds=4, chars=16_000)
+    res = await cm.maybe_compact(msgs, last_usage=Usage(input_tokens=fixed + 20_000), settings=win, system="sys",
+                                 agent="genomics-analyst", tools=tools)
+    assert res is None and calls == []
+    # the fixed part alone over the threshold: nothing to gain from a summary, no model call
+    res = await cm.maybe_compact(history(rounds=2, chars=100), last_usage=Usage(input_tokens=fixed + 1_500),
+                                 settings=settings(context_window_tokens=fixed + 1_000), system="sys",
+                                 agent="genomics-analyst", tools=tools)
+    assert res is None and calls == []
+    # a conversation that fills the room is compacted as before
+    msgs = history(rounds=10, chars=12_000)
+    res = await cm.maybe_compact(msgs, last_usage=Usage(input_tokens=int(hard) + 500), settings=win, system="sys",
+                                 agent="genomics-analyst", tools=tools)
+    assert res is not None and res.tokens_before > hard

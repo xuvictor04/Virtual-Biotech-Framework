@@ -1046,10 +1046,14 @@ def _status_dir(args: argparse.Namespace, config: dict[str, Any]) -> Path | None
 
 
 def memory_status(config: dict[str, Any], status_dir: Path | None) -> dict[str, Any]:
-    """Servers' reaper status files, the host budget and the stored calibrations (``vbt ds status``)."""
-    from .memory import MemoryEstimator
+    """Servers' reaper status files, the host budget and the stored calibrations (``vbt ds status``). ``host``:
+    ``plan_mb`` is the memory the budgets are planned from (``plan_source``: ``data.memory.host_mb``,
+    ``VBT_HOST_MEMORY_MB``, the cgroup limit or ``MemTotal``), ``total_mb`` the host's ``MemTotal``; ``resident_mb``
+    is the upstream servers' sum the budget caps, ``harness_resident_mb`` the harness's own servers' (the data
+    child), which the budget never counts (memory/host.py)."""
+    from .memory import MemoryEstimator, sizing
     from .memory.calibrate import factors_summary, load_calibrations, load_feedback
-    from .memory.host import host_budget_mb, host_total_mb
+    from .memory.host import HARNESS_SERVERS, host_budget_mb, host_total_mb
     from .memory.ledger import read_status
     from .settings import DataSettings
 
@@ -1062,9 +1066,16 @@ def memory_status(config: dict[str, Any], status_dir: Path | None) -> dict[str, 
                 servers[path.name[:-len(".status.json")]] = data
     cals = load_calibrations(settings.cache_dir)
     feedback = load_feedback(settings.cache_dir)
-    resident = sum(float(d.get("rss_mb") or 0.0) for d in servers.values() if not d.get("exit"))
-    return {"host": {"total_mb": host_total_mb(), "budget_mb": host_budget_mb(settings),
-                     "resident_mb": round(resident, 1), "limit_kind": settings.memory.limit_kind},
+    running = {name: float(d.get("rss_mb") or 0.0) for name, d in servers.items() if not d.get("exit")}
+    resident = sum(v for name, v in running.items() if name not in HARNESS_SERVERS)
+    harness = sum(v for name, v in running.items() if name in HARNESS_SERVERS)
+    raw = settings.raw.get("memory") if isinstance(getattr(settings, "raw", None), Mapping) else None
+    raw = raw if isinstance(raw, Mapping) else {}
+    plan = sizing.plan_mb(raw)
+    return {"host": {"total_mb": host_total_mb(), "plan_mb": round(plan, 1) if plan else None,
+                     "plan_source": sizing.plan_source(raw), "budget_mb": host_budget_mb(settings),
+                     "resident_mb": round(resident, 1), "harness_resident_mb": round(harness, 1),
+                     "limit_kind": settings.memory.limit_kind},
             "servers": servers, "status_dir": str(status_dir) if status_dir else None,
             "calibrations": {fp: {"table": c.get("table"), "rows_sampled": c.get("rows_sampled"),
                                   "bytes_per_row": c.get("bytes_per_row"),
@@ -1088,9 +1099,11 @@ def cmd_status(args: argparse.Namespace, config: dict[str, Any]) -> int:
         return 0
     host = body["host"]
     budget = host["budget_mb"]
-    total = f"{host['total_mb']:,.0f}" if host["total_mb"] else "?"
-    _out(f"host: {total} MB; budget "
-         + (f"{budget:,.0f} MB" if budget else "off") + f"; resident {host['resident_mb']:,.0f} MB; "
+    plan = f"{host['plan_mb']:,.0f} MB" if host.get("plan_mb") else "? MB"
+    total = f"MemTotal {host['total_mb']:,.0f} MB" if host["total_mb"] else "MemTotal unknown"
+    _out(f"host: plan {plan} ({host.get('plan_source')}; {total}); upstream budget "
+         + (f"{budget:,.0f} MB" if budget else "off") + f"; upstream resident {host['resident_mb']:,.0f} MB; "
+         f"data child {host.get('harness_resident_mb', 0):,.0f} MB (not in the budget); "
          f"containment {host['limit_kind']}")
     if status_dir is None:
         _out("servers: pass a run (or --log-dir) to read the reaper status files")

@@ -364,4 +364,6 @@ source's page budget is `partial`.
 * `host_budget_mb`: `auto`, a number, or `off`. The host budget with LRU idle recycle.
 * `relay_max_message_mb`: 0 means off. A server message larger than this is replaced by an error with
   the same id.
-* `workspace_mb`: the memory limit of agent Bash commands.
+* `workspace_mb`: the memory limit of agent Bash commands (and the notebooks and project utility tests they run).
+  `auto` (the default) is `0.25 x plan / limits.max_parallel_agents` within 8,000-65,536 MB and at most half the
+  plan: 8,000 MB on a 16 GB host, 3,000 MB on a 6,000 MB share (`VBT_HOST_MEMORY_MB=6000`).

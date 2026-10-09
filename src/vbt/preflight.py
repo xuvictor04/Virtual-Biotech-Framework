@@ -1592,6 +1592,19 @@ SERVE_HINT = ("start the inference server (`vbt local serve --profile <h100|h200
               "and check provider.options.base_url / VBT_LLM_BASE_URL; `vbt local check` probes its capabilities")
 
 
+def serve_hint(config: dict[str, Any], provider: Any = None) -> str:
+    """How to start the model server of the configured provider. ``vbt local serve`` starts vLLM, so a provider that
+    talks to another server (``llamacpp``: llama-server) is told how to start that one
+    (``providers.openai_compat.serve_hint``, the hint the provider's own errors give)."""
+    name = _provider_name(config, provider)
+    if name == "llamacpp":
+        from .providers.openai_compat import serve_hint as provider_hint
+
+        hint = provider_hint(name).split("? ", 1)[-1]     # the provider's question is the check's label here
+        return f"{hint[:1].lower()}{hint[1:]}; `vbt local check` probes its capabilities"
+    return SERVE_HINT
+
+
 def check_server_reachable(config: dict[str, Any], provider: Any, *, timeout_s: float = 3.0) -> CheckResult:
     """``vbt doctor`` without ``--smoke``: is the local model server up at all? One
     bounded ``GET /health`` per server; optional (never fails the doctor), the
@@ -1616,12 +1629,13 @@ def check_server_reachable(config: dict[str, Any], provider: Any, *, timeout_s: 
         servers = asyncio.run(run())
     except Exception as exc:  # noqa: BLE001 - a probe failure is reported, never raised
         return CheckResult(label, False, required=False, kind="model",
-                           detail=f"could not be checked ({type(exc).__name__}: {exc})"[:1500], hint=SERVE_HINT)
+                           detail=f"could not be checked ({type(exc).__name__}: {exc})"[:1500],
+                           hint=serve_hint(config, provider))
     down = [(u, why) for u, why in servers if why]
     if down:
         where = "; ".join(f"nothing answers at {u} ({why})" for u, why in down)
         return CheckResult(label, False, required=False, kind="model",
-                           detail=f"not running: {where}"[:1500], hint=SERVE_HINT)
+                           detail=f"not running: {where}"[:1500], hint=serve_hint(config, provider))
     return CheckResult(label, True, required=False, kind="model",
                        detail=f"responding at {', '.join(u for u, _ in servers)} ({full})")
 
@@ -1636,7 +1650,8 @@ async def check_model_server(config: dict[str, Any], provider: Any) -> list[Chec
     try:
         await prepare_provider(provider, config)
     except ProviderNotReadyError as exc:
-        return [CheckResult(f"{name} model server ready", False, detail=str(exc)[:1500], hint=SERVE_HINT,
+        return [CheckResult(f"{name} model server ready", False, detail=str(exc)[:1500],
+                            hint=serve_hint(config, provider),
                             kind="model")]
     info = await provider_server_info(provider)
     served = [str(m.get("id")) for m in info.get("models") or [] if isinstance(m, dict)]

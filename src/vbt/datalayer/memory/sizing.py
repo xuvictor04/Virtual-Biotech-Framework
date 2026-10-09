@@ -16,6 +16,8 @@ The harness runs on hosts from a 16 GB workstation to a 1 TB server, so its memo
   and the setting.
 * ``data.service.mem_limit_mb: auto``, the data child: 5% of plan, 3,000 to 32,768; ``max_resident_mb: auto`` is
   two thirds of it.
+* ``data.memory.workspace_mb: auto``, one agent command (Bash, the notebooks it runs, a utility's tests):
+  ``0.25 x plan / limits.max_parallel_agents`` within 8,000-65,536, never above half the plan (:func:`workspace_for`).
 * The witness and readiness budgets (``data.witness.max_scan_bytes``, ``max_inflate_bytes``, ``max_key_set``,
   ``repair_max_bytes``; ``data.readiness.vocab_budget_bytes``) at ``auto``: the shipped value times
   ``data child limit / 3,000``, never less than the shipped value.
@@ -36,7 +38,9 @@ from typing import Any, Mapping
 __all__ = [
     "AUTO", "HOST_SHARE", "DEFAULT_RESERVE_MB", "RESERVE_FRACTION", "BUDGET_FLOOR_MB", "SERVER_SHARE",
     "SERVER_FLOOR_MB", "CHILD_FRACTION", "CHILD_FLOOR_MB", "CHILD_CEILING_MB", "SCALED", "HOST_MB_ENV",
-    "meminfo_total_mb", "cgroup_limit_mb", "effective_memory_mb", "plan_mb", "is_auto", "host_budget_for",
+    "WORKSPACE_FLOOR_MB", "WORKSPACE_CEILING_MB", "WORKSPACE_PLAN_SHARE", "workspace_for",
+    "meminfo_total_mb", "cgroup_limit_mb", "effective_memory_mb", "plan_mb", "plan_source", "is_auto",
+    "host_budget_for",
     "server_limit_for", "plan_for_server", "data_child_for", "witness_scale", "resolve_auto", "describe",
 ]
 
@@ -50,6 +54,10 @@ SERVER_FLOOR_MB = 2048
 CHILD_FRACTION = 0.05
 CHILD_FLOOR_MB = 3000
 CHILD_CEILING_MB = 32768
+#: ``data.memory.workspace_mb: auto`` (agent Bash, notebooks, utility tests): :func:`workspace_for`.
+WORKSPACE_FLOOR_MB = 8000
+WORKSPACE_CEILING_MB = 65536
+WORKSPACE_PLAN_SHARE = 0.5
 #: ``(section, key)``: the shipped value, which ``auto`` scales by ``data child / CHILD_FLOOR_MB`` and never goes under.
 SCALED: dict[tuple[str, str], int] = {
     ("witness", "max_scan_bytes"): 2_000_000_000,
@@ -163,6 +171,17 @@ def plan_mb(memory: Mapping[str, Any] | None = None, *, measured: float | None =
     return effective_memory_mb()
 
 
+def plan_source(memory: Mapping[str, Any] | None = None, *, measured: float | None = None) -> str:
+    """Where :func:`plan_mb` takes its number from, in the words ``vbt validate`` and ``vbt ds status`` print."""
+    own = _number((memory or {}).get("host_mb")) if not is_auto((memory or {}).get("host_mb")) else None
+    if own and own > 0:
+        return "data.memory.host_mb"
+    env = _number(os.environ.get(HOST_MB_ENV))
+    if env and env > 0:
+        return HOST_MB_ENV
+    return "measured" if measured else "MemTotal and the cgroup limit"
+
+
 # --------------------------------------------------------------------------- the rules
 
 
@@ -199,6 +218,14 @@ def plan_for_server(need_mb: float, memory: Mapping[str, Any] | None = None) -> 
 def data_child_for(plan: float) -> int:
     """The data child's limit for ``mem_limit_mb: auto``: 5% of plan, within 3,000-32,768 MB."""
     return int(max(CHILD_FLOOR_MB, min(CHILD_CEILING_MB, CHILD_FRACTION * float(plan))))
+
+
+def workspace_for(plan: float, parallel: int = 8) -> int:
+    """An agent command's limit for ``data.memory.workspace_mb: auto``: ``0.25 x plan / limits.max_parallel_agents``
+    within 8,000-65,536 MB, and never above half the plan (at least 1,024): 8,000 MB on a 16 GB host, 32,768 on
+    1 TB with 8 agents, 3,000 on a 6,000 MB share (where 8,000 was more than the harness had)."""
+    rule = max(WORKSPACE_FLOOR_MB, min(WORKSPACE_CEILING_MB, 0.25 * float(plan) / max(1, int(parallel))))
+    return int(min(rule, max(1024.0, WORKSPACE_PLAN_SHARE * float(plan))))
 
 
 def witness_scale(child_mb: float) -> float:
@@ -239,10 +266,11 @@ def resolve_auto(data: Mapping[str, Any], *, measured_mb: float | None = None) -
 
 
 def describe(data: Mapping[str, Any] | None, *, measured_mb: float | None = None,
-             servers: Mapping[str, Any] | None = None) -> dict[str, Any]:
+             servers: Mapping[str, Any] | None = None, parallel: int = 8) -> dict[str, Any]:
     """Per memory setting: ``{configured, effective, rule}`` on this host, plus the host facts (``vbt validate``,
     ``vbt ds status``). ``data`` is the merged ``data`` mapping before :func:`resolve_auto` (``DataSettings.raw``).
-    ``servers``: ``{name: mem_limit_mb}`` of servers with their own limit."""
+    ``servers``: ``{name: mem_limit_mb}`` of servers with their own limit; ``parallel``:
+    ``limits.max_parallel_agents`` (the workspace rule)."""
     data = dict(data or {})
     memory = _section(data, "memory")
     total = meminfo_total_mb()
@@ -251,9 +279,7 @@ def describe(data: Mapping[str, Any] | None, *, measured_mb: float | None = None
     out: dict[str, Any] = {
         "host": {"memtotal_mb": round(total) if total else None, "cgroup_limit_mb": round(cgroup) if cgroup else None,
                  "plan_mb": round(plan) if plan else None,
-                 "plan_from": ("data.memory.host_mb" if _number(memory.get("host_mb")) else
-                               HOST_MB_ENV if _number(os.environ.get(HOST_MB_ENV)) else
-                               "measured" if measured_mb else "MemTotal and the cgroup limit")},
+                 "plan_from": plan_source(memory, measured=measured_mb)},
         "settings": {}}
     resolved = resolve_auto(data, measured_mb=measured_mb)
 
@@ -272,6 +298,11 @@ def describe(data: Mapping[str, Any] | None, *, measured_mb: float | None = None
     put("memory.limit_kind", memory.get("limit_kind"), memory.get("limit_kind"),
         "rss: a memory cgroup when one can be created, else the RSS watchdog; no RLIMIT_DATA"
         if memory.get("limit_kind") == "rss" else "as configured")
+    ws = memory.get("workspace_mb", AUTO)
+    put("memory.workspace_mb", ws, workspace_for(plan, parallel) if is_auto(ws) and plan else
+        (WORKSPACE_FLOOR_MB if is_auto(ws) else ws),
+        "0.25 x plan / max_parallel_agents within 8,000-65,536, at most half the plan" if is_auto(ws)
+        else "as configured")
     for key in ("mem_limit_mb", "max_resident_mb"):
         configured = _section(data, "service").get(key)
         put(f"service.{key}", configured, _section(resolved, "service").get(key),

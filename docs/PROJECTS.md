@@ -33,8 +33,10 @@ prints the exact `--profile` argument. `vbt project` (and `python -m vbt.project
 exactly as every `vbt` command does (`host.env` from the setup state directory and the profiles `vbt setup`
 recorded), so a project is created where the sessions will look for it and its profile is generated from the same
 configuration. `vbt chat --project oncology`, `vbt run --project oncology ...` and `vbt setup --project oncology`
-activate it without a profile path (`vbt --profile <projects>/oncology/profile.yaml chat` does the same); a resumed
-session (`--resume`) and `vbt replay` continue in the project the run was pinned with.
+activate it without a profile path (`vbt --profile <projects>/oncology/profile.yaml chat` does the same), and so do
+the commands that read its runs (`vbt verify|show|list|export|audit --project oncology`, `vbt ds
+retro-audit|replay|graduate|status --project oncology`); a resumed session (`--resume`) and `vbt replay` continue in the
+project the run was pinned with.
 
 In the session, ask for what you need ("we have an assay export in `incoming/assays.csv`; how do lung lines
 compare?"). The CSO delegates to the `data-engineer` when a dataset, format or helper is missing; the engineer

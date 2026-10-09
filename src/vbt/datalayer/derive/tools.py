@@ -10,7 +10,10 @@ see for them: one :class:`NativeTool` per verb (``mcp__data__<verb>``) with
   tables whose ``expose.withhold_from`` names the agent;
 * a ``where`` schema per table and long-view column derived from the roles (``x-vbt-id-type`` and the
   accepted kinds for identifiers, ``enum`` for small declared vocabularies, ``minimum``/``maximum``
-  from a measure's ``scale``, the operators a role supports), under ``x-vbt-where``;
+  from a measure's ``scale``, the operators a role supports), under ``x-vbt-where``. The gateway lists the
+  verbs without it (``column_maps=False``): on the shipped catalog the map is about 130 KB in each of
+  ``find`` and ``aggregate``, read by the model on every request; ``mcp__data__describe(source, table)``
+  returns one table's columns with the same operators (``ops``) on demand (:data:`WHERE_POINTER`);
 * a description that states what the verb guarantees (resolution, honest totals, coverage).
 
 :func:`native_tool_names` gives the ``mcp__data__*`` names an agent may call (``configs/agents.yaml``
@@ -28,7 +31,7 @@ from ..roles import Role
 __all__ = [
     "NATIVE_SERVER", "NATIVE_VERBS", "NativeTool", "native_tools", "native_tool", "native_tool_names",
     "tables_for", "visible_to", "long_columns", "where_schema", "native_input_schema", "wrap_request",
-    "VERB_DESCRIPTIONS",
+    "VERB_DESCRIPTIONS", "WHERE_POINTER",
 ]
 
 NATIVE_SERVER = "data"
@@ -66,6 +69,11 @@ VERB_DESCRIPTIONS = {
 }
 _TAIL = ("Unknown identifiers are errors, never empty results; an empty result states its coverage and is citable "
          "only as an absence.")
+#: What a listed ``where`` says instead of carrying every table's column map (``x-vbt-where``).
+WHERE_POINTER = (" The columns of a table, their roles, identifier types and operators: "
+                 "mcp__data__describe(source, table).")
+_WHERE_TEXT = ("{column: value | [values] | {op: value}}; ops eq, in, ne, ge, gt, le, lt, contains, search (a live "
+               "source's engine-matched text")
 _RANKABLE = (Role.measure.value, Role.count.value, Role.time.value)
 _COUNT = Role.count.value                              # the default aggregation shares the role's name
 
@@ -204,13 +212,16 @@ def where_schema(catalog: Any, ref: str, *, enum_max: int = 64) -> dict[str, Any
             if getattr(spec, "role", None) not in ("payload", "ignore", "nested", "vector")}
 
 
-def native_input_schema(catalog: Any, verb: str, tables: list[str], *, enum_max: int = 64) -> dict[str, Any]:
-    """The argument schema of one verb, with the ``table`` enum and the ``where`` schema per table."""
+def native_input_schema(catalog: Any, verb: str, tables: list[str], *, enum_max: int = 64,
+                        column_maps: bool = True) -> dict[str, Any]:
+    """The argument schema of one verb, with the ``table`` enum and (``column_maps``) the ``where`` schema per
+    table; without the maps, ``where`` names ``mcp__data__describe`` (:data:`WHERE_POINTER`) and none is built."""
     table = {"type": "string", "enum": tables, "description": "source.table (see mcp__data__describe)"}
-    where = {"type": "object", "description": "{column: value | [values] | {op: value}}; ops eq, in, ne, ge, gt, "
-                                              "le, lt, contains, search (a live source's engine-matched text; per "
-                                              "column: x-vbt-where)",
-             "x-vbt-where": {ref: where_schema(catalog, ref, enum_max=enum_max) for ref in tables}}
+    if column_maps:
+        where = {"type": "object", "description": _WHERE_TEXT + "; per column: x-vbt-where)",
+                 "x-vbt-where": {ref: where_schema(catalog, ref, enum_max=enum_max) for ref in tables}}
+    else:
+        where = {"type": "object", "description": _WHERE_TEXT + ")" + WHERE_POINTER}
     limit = {"type": "integer", "minimum": 1, "maximum": 1000}
     props: dict[str, Any]
     required: list[str]
@@ -310,14 +321,16 @@ def _hierarchy_id_types(catalog: Any, tables: list[str]) -> set[str]:
 
 
 def native_tool(catalog: Any, verb: str, *, agent: str | None = None,
-                ready: Collection[str] | Callable[[str], bool] | None = None, enum_max: int = 64) -> NativeTool | None:
-    """The listing of one verb for ``agent`` (None when no table is left for it)."""
+                ready: Collection[str] | Callable[[str], bool] | None = None, enum_max: int = 64,
+                column_maps: bool = True) -> NativeTool | None:
+    """The listing of one verb for ``agent`` (None when no table is left for it); ``column_maps``: see
+    :func:`native_input_schema`."""
     if verb not in NATIVE_VERBS:
         raise ValueError(f"unknown native verb {verb!r}")
     tables = tables_for(catalog, "find" if verb == "resolve" else verb, agent=agent, ready=ready)
     if not tables:
         return None
-    schema = native_input_schema(catalog, verb, tables, enum_max=enum_max)
+    schema = native_input_schema(catalog, verb, tables, enum_max=enum_max, column_maps=column_maps)
     return NativeTool(verb=verb, name=f"mcp__{NATIVE_SERVER}__{verb}", description=f"{VERB_DESCRIPTIONS[verb]} {_TAIL}",
                       input_schema=schema, tables=tables)
 

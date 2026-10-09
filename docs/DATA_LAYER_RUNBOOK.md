@@ -79,7 +79,9 @@ the tools that read the failing part are refused; every other tool keeps working
 
 `vbt ds status <run>` (or `--log-dir <dir>` for a live session) reads the reaper status files: RSS,
 limit, containment (`rlimit_data`, `cgroup_v2`, `watchdog`), OOM kills, recycles and the measured
-feedback the estimator learned. An `oom` is never retried; the same call is refused with `too_large`
+feedback the estimator learned. Its first line gives the memory the limits are planned from and where that number
+comes from (`data.memory.host_mb`, `VBT_HOST_MEMORY_MB`, else MemTotal and the cgroup limit), the upstream budget,
+the upstream servers' resident sum it caps, and the data child's own RSS (not in the budget). An `oom` is never retried; the same call is refused with `too_large`
 afterwards. Check the server's log under `<run>/logs/mcp/`. Raise the server's `mem_limit_mb`, enable
 `data.memory.limit_kind: cgroup` where the host delegates cgroups, or calibrate the tables it loads
 (`vbt ds calibrate`). `max_oom_kills` per session stops a server that keeps dying.

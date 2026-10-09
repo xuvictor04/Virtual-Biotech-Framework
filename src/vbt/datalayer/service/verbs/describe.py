@@ -3,8 +3,10 @@
 Without ``table``: the source's title, release, coverage notes and its tables (kind, grain, key and
 whether the native tools serve them). With ``table``: the table's long view, with each column's role
 and the facets an agent needs to query it (id_type, vocabulary, scale, unit, direction, cutoff,
-level, family, censoring, missing-value codes), its rank, coverage statement, evidence nature and
-which verbs apply to it. Tables withheld from the calling ``agent`` (``expose.withhold_from``) and
+level, family, censoring, missing-value codes, and ``ops``: the operators a ``where`` entry on it takes),
+its rank, coverage statement, evidence nature and which verbs apply to it. This is where an agent reads a
+table's column map: the listed ``find``/``aggregate`` schemas name ``describe`` instead of carrying every
+table's (``derive.tools.WHERE_POINTER``). Tables withheld from the calling ``agent`` (``expose.withhold_from``) and
 tables with ``expose.native: false`` are not listed and cannot be described.
 """
 
@@ -15,7 +17,7 @@ from typing import Any, Mapping
 from ...errors import json_value
 from ...result import Header, inject_header
 from .. import ServiceContext
-from .public import _invalid, exposed_tables, long_view, table_access
+from .public import _invalid, exposed_tables, key_label, long_view, table_access
 
 __all__ = ["describe", "verbs_for", "column_facets"]
 
@@ -57,6 +59,18 @@ def column_facets(spec: Any) -> dict[str, Any]:
     return out
 
 
+def _where_ops(ctx: ServiceContext, ref: str) -> dict[str, list[str]]:
+    """``{column: operators}`` a ``where`` entry takes on each filterable long-view column (the listing's per-column
+    map, ``derive.tools.where_schema``); empty when it cannot be derived."""
+    from ...derive.tools import where_schema
+
+    try:
+        schema = where_schema(ctx.catalog, ref)
+    except Exception:  # noqa: BLE001 - describe never fails over the operators
+        return {}
+    return {name: list(col.get("x-vbt-ops") or []) for name, col in schema.items() if col.get("x-vbt-ops")}
+
+
 def describe(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     """The source, or one of its tables (see the module docstring)."""
     agent = payload.get("agent")
@@ -73,7 +87,7 @@ def describe(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
         rows = []
         for ref in refs:
             t = ctx.catalog.table(ref)
-            rows.append({"table": ref, "kind": t.kind, "grain": t.grain, "key": list(t.key),
+            rows.append({"table": ref, "kind": t.kind, "grain": t.grain, "key": [key_label(k) for k in t.key],
                          "item_table_of": str(t.physical) if t.is_item_table else None})
         hdr = Header(status="ok" if rows else "empty", source=f"{source}@{rel}" if rel else str(source),
                      returned=len(rows), total=len(rows), served_by="derived", key=["table"])
@@ -82,9 +96,12 @@ def describe(ctx: ServiceContext, payload: Mapping[str, Any]) -> dict[str, Any]:
     t = table_access(ctx, ref, agent=agent)
     view = long_view(ctx, ref)
     cols = {name: column_facets(spec) for name, spec in view.columns.items()}
+    for name, where in _where_ops(ctx, ref).items():
+        if name in cols:
+            cols[name]["ops"] = where
     cov = t.spec.coverage
     body = {
-        "table": ref, "kind": t.kind, "grain": t.grain, "key": list(view.key), "columns": cols,
+        "table": ref, "kind": t.kind, "grain": t.grain, "key": [key_label(k) for k in view.key], "columns": cols,
         "rank": [r.model_dump(exclude_none=True) for r in t.spec.rank],
         "coverage": cov.model_dump(exclude_none=True) if cov is not None else None,
         "evidence": t.spec.evidence_nature.caveat if t.spec.evidence_nature is not None else None,

@@ -133,7 +133,9 @@ retry:
   max_retry_after_s: 600.0
 
 # ---------------------------------------------------------------- context management (context.py)
-# Before each model call: above soft_ratio of the window, old tool results are
+# Before each model call (ratios of the room the window leaves after the system
+# prompt and tool definitions, which no compaction removes; nothing is compacted
+# when what is left is under summary_max_tokens): above soft_ratio, old tool results are
 # cleared (spilled to logs/tool_outputs/cleared) - for the local model also the
 # reasoning of old turns, which its chat template replays; above hard_ratio,
 # older spans are summarised. One overflow recovery per provider "prompt too
@@ -266,6 +268,10 @@ data:
     max_result_bytes: 2000000
     host_budget_mb: auto          # the sum over servers: auto = 0.75 x host_mb - reserve; a number; off
     harness_reserve_mb: 2048      # host_budget_mb auto keeps max(this, 5% of host_mb) for the harness
+    # One agent command (Bash, the notebooks it runs, a project utility's tests): auto = 0.25 x host_mb /
+    # limits.max_parallel_agents within 8,000-65,536 MB and at most half of host_mb (8,000 on 16 GB, 3,000 on a
+    # 6,000 MB share); a number; 0 lifts the limit.
+    workspace_mb: auto
     relay_max_message_mb: 0       # > 0: the reaper relays server stdout and replaces larger messages with an error
   readiness:
     per_turn_depth: shallow       # stat-only signatures before every turn
