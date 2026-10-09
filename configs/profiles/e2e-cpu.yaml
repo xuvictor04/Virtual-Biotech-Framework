@@ -56,10 +56,13 @@ agent_overrides:
   data-engineer: {max_turns: 24}
   single-cell-analyst: {max_turns: 8, effort: null}
 
+# The thresholds count the whole request, and a specialist's system prompt and tools are ~30K of the 64K window that
+# compaction cannot shrink: at 0.55 / 0.7 (the recorded runs) the genomics analyst summarised four times in one
+# task, each removing at most ~2,100 tokens and each a model call of minutes on CPU (docs/E2E_RUN.md section 8).
 context:
   default_window_tokens: 65536
-  soft_ratio: 0.55
-  hard_ratio: 0.7
+  soft_ratio: 0.75
+  hard_ratio: 0.85
   summary_max_tokens: 1024
 
 orchestration:

@@ -82,6 +82,113 @@ processes the other slot's prompt in the same batches). An agent's first request
 system prompt and tool definitions (section 8), so a fresh prefill takes 2 to 11 minutes here; the same agent's
 later calls reuse the slot's prompt cache (`cache_read_tokens` in the trace) and cost seconds to a minute.
 
+## 3. Session 1: a research question on the real Open Targets release
+
+The question (turn 1) asked whether PCSK9 is a genetically supported and tractable target for
+hypercholesterolaemia, named the genomics analyst and the bio-pathways analyst, asked for a check of a gene called
+PCSK99, and asked for review and claims. Turn 2 answered the CSO's clarification interview ("1) a, d, e. 2) a.
+3) No constraints. Proceed now: use the Task tool to delegate ...").
+
+**Served-model attempts.** Three runs drove the stack with the 2B model; each found something, fixed before the next.
+
+| Run | What happened | Wall time |
+|---|---|---|
+| `20261009_085747_87706d42` | Orientation ran: the Chief of Staff's brief (7 calls, stopped at its 6-turn limit with its brief) and the CSO's clarification interview. Turn 2 answered "proceed with the analysis exactly as specified"; the CSO repeated its interview instead of delegating. The data child spent the session start computing a second readiness check (section 6). | 753 s |
+| `20261009_091119_39e04cc2` | With the interview answered option by option, the CSO wrote a 3-step plan (`write_plan`) and called `Task` for the genomics analyst three times; each ended `context_exceeded` before any call: the analyst's first request was 117,265 tokens against a 32,768-token slot (section 6). Stopped by hand. | 1,576 s |
+| `20261009_093814_0235427f` | The full run, below. | 9,339 s |
+
+The full served-model run (`20261009_093814_0235427f`, after the listing fix, with 64K slots):
+
+* **Orientation** (turn 1, 8 min 22 s): the Chief of Staff's brief (7 model calls; first request 8,148 tokens) and the
+  CSO's clarification interview (one call, 11,260-token request).
+* **Plan and delegation** (turn 2): `write_plan` with four steps, then one CSO call issuing three `Task` calls:
+  genomics analyst, bio-pathways analyst and clinical trialist (the profile's two parallel agents: the trialist
+  started when the pathways analyst finished).
+* **Tool calls through the enforcing gateway**: 80 tool calls in all, 44 to the unmodified upstream servers and 10
+  to the native data tools. The model resolved PCSK9 with `target.search_targets_by_name("PCSK9")` and
+  `mcp__data__search` (ENSG00000169174) and read its Reactome pathways (`pathway.get_gene_pathways`, 4 rows, `ok`).
+  The gateway's typed refusals: `not_found` for `drug.search_known_drugs(disease_id="hypercholesterolaemia")` (the
+  British spelling is neither an Open Targets disease id nor a disease name; the refusal lists the ten
+  resolutions it tried and suggests HP_0003124 "Hypercholesterolemia", edit distance 1); `too_large` 22 times (11 `over_limit`: whole-table loads such as `target.get_target_info`
+  needing ~3,930 MB, `genetics.query_l2g_predictions` ~15,034 MB, `interaction.get_interactions` ~12,803 MB against
+  the 2,048 MB server limit of a 6,000 MB share; 11 `host_busy`: the bug of section 6, fixed after this run);
+  `not_ready` for `genetics.query_gwas_associations` (`credible_set` is not downloaded here); `service_unavailable`
+  for `pathway.get_go_enrichment` (the derived serve needs the GO ontology file, which is not on this host); `empty`
+  and `partial` results with their totals ("top 10 of 16"). Four calls the harness refused before they ran: the
+  model passed `include_indirect` as a string (`"false"`), and the schema check said so.
+* **The model server restart**: at 10:06 the llama-server process passed the 5,000 MB memory cap this host's run gave
+  it and was killed; the provider's retries (`provider_retry`, then HTTP 503 "Loading model" while it reloaded)
+  carried both specialists across the restart.
+* **Review**: each specialist stopped at its 8-turn limit with a report. The CSO then tried to end the turn
+  without review; the harness enforced it (`review_enforced`, round 1), the CSO delegated to the scientific reviewer
+  (one call, 5,915-token request, a 1,280-token review naming the missing genetic metrics as a technical gap), and
+  the CSO sent the genomics analyst and the clinical trialist back for a second round, as the review asked. In that
+  round the genomics analyst's context was summarised four times (section 8).
+* **The end**: the CSO's second review request was in flight when the model server was stopped at 12:07 by this
+  sandbox's two-hour limit on background commands. The provider retried for about six minutes with the llama-server
+  start command in its message (section 6) and the turn ended `failed`; the run record was written as such
+  (MANIFEST `incomplete`, `audit.html`). The CSO had used 13 of its 14 turns; no claims had been filed.
+
+Peak memory of the harness's process tree: 4,056 MB (data child 2,089 MB at most, each idle upstream server about
+172 MB, the association server 739 MB after its one admitted whole-table call).
+
+**The same session driven by the scripted model over the real stack** (`scratchpad/D4/drive_real.py 1`, run
+`20261009_094151_882f50d7`): the steps the small model did not reach, on the same release, servers, gateway,
+data child and project, with the scripted provider named so that the session preflight runs as for a served model.
+Session start 7.8 s, the turn 26.7 s, peak tree RSS 2,380 MB.
+
+* `target.get_target_info(target_id="PCSK99")`: `not_found`, with what was tried (`ensembl_gene`, then the
+  approved symbol exactly and case-folded, previous symbols, aliases) and a suggestion (PCSK9, edit distance 1).
+* `pathway.get_gene_pathways(target_id="PCSK9")`: `ok`, 4 Reactome pathways; the gateway resolved the symbol
+  (`PCSK9 -> ENSG00000169174 (label_exact:approvedSymbol)`, recorded in the result's `_vbt.resolved`).
+* `target.get_target_info(target_id="PCSK9")`: `too_large` / `over_limit` (3,930 MB needed), so the analyst read
+  the target row with `mcp__data__find` (`ok`) and its direct associations with `mcp__data__find(rank_by="score
+  desc", limit=5)`: `partial`, "top 5 of 992", MONDO_0011369 first (score 0.816).
+* Review, then `record_claims` with two claims, each citing a tool call (`ok: true`); the answer cites
+  `[[claim:C1]]` and `[[claim:C2]]`, and the harness appended its data warning naming the refused tool.
+
+## 4. Session 2: a dataset the harness has no descriptor for
+
+The user downloaded ClinVar's `gene_condition_source_id`
+(https://ftp.ncbi.nlm.nih.gov/pub/clinvar/gene_condition_source_id, Last-Modified 2026-10-07; 1,323,448 bytes,
+sha256 `36ea1e52...a1206`, 14,211 rows x 9 columns, 484 exact duplicate rows) into the project's `incoming/`
+directory and asked which conditions ClinVar associates with PCSK9, asking for the data engineer to register it with
+a small tested helper utility and the genomics analyst to answer with both.
+
+S2B_PLACEHOLDER
+
+**Driven by the scripted model over the real stack** (`drive_real.py 2`, run `20261009_104536_5d78baac`, project
+`e2e`; session start 8.6 s, the turn 12.2 s, peak tree RSS 1,778 MB):
+
+* The data engineer: `ProjectInfo`, `InspectDataset` on the real file (14,211 rows profiled, `#GeneID` int64 with
+  5,179 distinct values, `SourceName` 8 values, key drafted as (`#GeneID`, `DiseaseName`, `SourceID`) with
+  `row_identity: none` for the repeated rows), `RegisterDataSpec` of the draft as is: registered (version 1) and
+  checked `ready` (`clinvar_gcs.gene_conditions`), "available now: the data tools serve it in this session".
+* The utility: `Write` of `utilities/condition_summary/utility.py` and its test file, then `RegisterUtility`: its 2
+  tests passed in the sandbox (`bwrap+netns`, 0.11 s), registered as `util__condition_summary`.
+* The genomics analyst, in the same turn: `mcp__data__find(table="clinvar_gcs.gene_conditions",
+  where={"AssociatedGenes": "PCSK9"})`: 2 of 2 rows (Familial hypercholesterolemia, MONDO:0005439;
+  Hypercholesterolemia, autosomal dominant, 3, MONDO:0011369), then `util__condition_summary` on them:
+  `n_conditions 2`, `by_source {"MONDO": 2}`.
+* Review, one claim citing the find, the answer citing `[[claim:C1]]`. The project's provenance ledger
+  (`provenance/ledger.jsonl`) records both registrations with the agent, run and tool call; the trace has
+  `project_registration` (2) and `project_utility_call` (1) events.
+
+## 5. After the run: verify, retro-audit, graduate
+
+| Command | Run | Result | Time, peak RSS |
+|---|---|---|---|
+| `verify --data` | served-model session 1 | `INCOMPLETE`, 19 problems: the failed turn, 14 refused data calls (`data_source_unavailable`), `degraded_run`, no claims; 29 tables re-checked, 0 changed | 26 s, 1,071 MB |
+| `verify --data` | scripted session 1 | `INCOMPLETE`, 2 problems: the refused `get_target_info` and `degraded_run`; 30 tables checked, 0 changed; replays: match 2 (both cited calls replayed with the same rows) | 74 s, 1,302 MB |
+| `verify --data` | scripted session 2 | `INCOMPLETE`, 1 problem: `degraded_run`; 29 tables checked, 0 changed; replays: match 1 | 33 s, 1,002 MB |
+| `ds retro-audit` | served-model session 1 | 44 upstream calls: ok 14, not_found 1, invalid_argument 5, not_ready 1, service_unavailable 1, too_large 22; none would now be refused or qualified; 10 native calls counted | 5.2 s, 322 MB |
+| `ds retro-audit` | scripted session 1 | ok 1, not_found 1, too_large 1; 2 native calls | 4.6 s, 266 MB |
+| `ds graduate ... data` | served-model session 1 | target, pathway, drug, association, genetics, interaction and data graduated (every overlay lints, every tool reviewed, observe evidence from the run) | 6.6 s, 362 MB |
+
+`degraded_run` is this host's partial release (section 8); every other problem is a real gap of that run. The
+numbers in the retro-audit row are after the retro-audit fixes of section 6; before them the same run read 4
+`source_error`, and one empty search was reported as now refused.
+
 ## 6. Harness bugs the run found
 
 Each was fixed at its root and has a regression test in `tests/test_e2e_stack.py` (offline, on fixtures).
@@ -95,6 +202,7 @@ Each was fixed at its root and has a regression test in `tests/test_e2e_stack.py
 | When the model server was down, the `llamacpp` provider told the user to run `vbt local serve` (which starts vLLM on a GPU) | one hint for every OpenAI-compatible provider | `serve_hint(provider)`: the llama.cpp provider names llama-server and `scripts/dev/cpu_server.sh --engine llamacpp` | `test_a_server_that_is_down_is_named_with_the_command_that_starts_it` |
 | `vbt ds retro-audit <run>` did not find a project's run | the data commands that read a recorded run had no `--project`, so they looked under the default runs directory | `--project` on `ds retro-audit`, `ds replay`, `ds graduate` and `ds status`, activating the project as `vbt run --project` does | `test_the_commands_that_read_a_project_run_take_the_project` |
 | The data engineer's `RegisterDataSpec` of `InspectDataset`'s own draft failed lint: `'#GeneID' is not a valid path: empty segment at 0` (ClinVar's header) | the draft wrote column references bare, and a reference is parsed as a path | references that are not plain words are written backtick-quoted (`_ref`); the column keeps its literal name. The real file then registered as drafted and checked `ready` in 4.6 s | `test_a_header_that_is_not_a_word_registers_as_drafted` |
+| `vbt ds retro-audit` of the served-model run reported four calls the harness had refused before they ran (an argument that did not match the tool's schema) as `source_error`, and `search_go_terms(query="cholesterol")`, an empty search when recorded, as now refused `invalid_argument` ("not a valid go_term") | retro-audit read the harness's refusal text as the source's error, and it resolved every argument bound to an identifier column, free-text search arguments included, which the gateway matches as text and never resolves | a call recorded with `model_error` is `invalid_argument` ("refused before the call ran"); free-text arguments are not resolved | `test_retro_audit_blames_neither_the_source_nor_a_search_text` |
 | `vbt ds retro-audit` reported the gateway's recorded `too_large` refusal as `source_error`, and `vbt ds graduate ... data` always failed `observe_evidence` ("no recorded call of this server") | retro-audit re-classified the refusal's text instead of keeping the typed kind the enforcing gateway recorded, and it skips the data child's own verbs (served from the descriptors, nothing upstream to re-check), so graduation never saw them | a recorded typed refusal keeps its kind; the report counts the native calls and lists outcomes beyond the classify set; graduation's observe item is not applicable for the data child | `test_an_enforced_runs_refusals_and_native_calls_audit_as_recorded` |
 
 ## 7. Tests
@@ -132,7 +240,8 @@ VBT_E2E_MODEL_URL=http://127.0.0.1:8012/v1 python -m pytest -q -p no:cacheprovid
 What this run measured that matters when the owners deploy on their GPUs:
 
 * **Context per request.** An agent's first request carries its system prompt and every granted tool's definition
-  before any conversation: on this roster (after the listing fix of section 6) the CSO's was 15,724 tokens, the
+  before any conversation: on this roster (after the listing fix of section 6) the CSO's was 15,724 tokens (with
+  the brief; 11,260 for its tool-less clarification interview), the
   Chief of Staff's 8,148, the pathways analyst's 21,016 and the genomics analyst's 29,699. Serve every tier with a
   window of at least 64K (the production profiles' 262K windows hold them easily); a window that cannot hold an
   agent's fixed part now says so by name instead of failing as an overflow.
@@ -150,6 +259,16 @@ What this run measured that matters when the owners deploy on their GPUs:
   each here). The CSO's clarification interview is a call without tools, so the CSO's first call of the next turn
   shares no prefix with it and is prefilled in full (15,724 tokens, about three minutes on this CPU; a fraction of
   a second on a GPU).
+* **Compaction against a large fixed part.** The context thresholds count the whole request, system prompt and tool
+  definitions included, which compaction cannot shrink. At the first profile's 0.55 / 0.7 of a 64K window the
+  genomics analyst (about 30K of fixed part) was summarised four times in one task, each summary removing at most
+  ~2,100 tokens and costing a model call of minutes on this CPU. The profile now uses 0.75 / 0.85; the production
+  windows leave room either way. The thresholds would better count only what compaction can remove (contract
+  request in the D4 report).
+* **Slots and prompt caches.** With two slots and three or more agents working, a slot's cache belongs to whichever
+  agent ran there last: the genomics analyst's first call of its second task prefilled its whole 37,482-token
+  prompt again. On CPU a long prefill in one slot also slows the other slot's decoding to 0.4 to 2 tokens/s. A
+  production server with more slots (vLLM's prefix cache is shared across requests) does not have either cost.
 * **Model server memory.** llama-server's resident memory grew with both 64K slots in use and the prompt cache:
   it reached 5,017 MB, over the 5,000 MB cap this host's run gave it, and was restarted mid-session; the provider's
   retries (`provider_retry` events, HTTP 503 "Loading model" while it reloaded) carried the session across the
