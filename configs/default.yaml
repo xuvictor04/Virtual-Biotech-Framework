@@ -266,6 +266,15 @@ data:
     alias: {}                     # {open_targets: zenodo_vbt}: serve open_targets.* from tables that implement them
   provenance: {row_keys_max: 10000, dir: logs/data_provenance}
   plugins: {paths: [], entry_points: true, disabled: [], override: {}, require_conformance: false}
+  acquisition:                    # `vbt data acquire` (docs/DATA_SETUP.md)
+    root: ${VBT_DATA_DIR:-data}/sources   # homes <root>/<source>/<release>; acquisitions.jsonl logs every run
+    auto: "off"                   # "off" | ask | under_budget: what a not_ready refusal leads to between turns
+    budget_bytes: 0               # under_budget: acquisitions up to this size ("5 GB") happen between turns
+    workers: auto                 # parallel transfers (auto: 4 per CPU, at most 32)
+    rate_mbps: 50                 # the rate the plan assumes until one is measured on this host
+    reserve_bytes: 1073741824     # free disk kept after a download (1 GiB)
+    retries: 4
+    timeout_s: 120
 
 # ---------------------------------------------------------------- bulk (Case 1 / BulkDispatch)
 bulk:

@@ -31,7 +31,8 @@ carries the plan out. The steps are:
    readiness check (R2) and the upstream doctor read it.
 5. **Run the prepare steps** whose inputs are all verified. Each runs an unmodified upstream script.
 6. **Pin the release** in `<home>/.vbt-acquisition.json`. A home that holds another release is refused.
-7. **Record provenance**: one JSON line in `<data.provenance.dir>/acquisitions.jsonl`.
+7. **Record provenance**: one JSON line in `<data.acquisition.root>/acquisitions.jsonl`, next to the homes it
+   describes (`data.provenance.dir` is relative to a run directory, so it is not used for host-wide records).
 8. **Print the variables** that point the data layer at the files. `--env-file PATH` writes them as
    `KEY="value"` lines; the project `.env` is read at start-up.
 
@@ -172,8 +173,15 @@ data:
 | `ask` | the tables are queued in `<data.cache_dir>/acquisition/pending.json`; `vbt data acquire --pending` acquires them once an operator approves |
 | `under_budget` | between turns the system acquires the refused tables when the whole acquisition fits `budget_bytes` (prepare inputs included); larger ones are queued as with `ask`. Each such acquisition is recorded with `by: auto`, the policy and the budget, in `acquisitions.jsonl` and in the run's `data_acquisitions.jsonl` |
 
-The between-turns step is `vbt.data.ondemand.between_turns(config, refusals=..., run_dir=...)`. Without refusals
-it takes every table that the readiness cache reports as missing, partial or stale.
+The between-turns step is `vbt.data.ondemand.between_turns(config, refusals=..., run_dir=...)`. Under `ask` and
+`under_budget` the session calls it after every turn that had `not_ready` refusals (in a worker thread; the
+refusals' tables are recorded in each `tool_end` event as `not_ready`). The next turn waits for it, records a
+`data_acquisition` event (policy, tables, bytes, decision) and re-checks the tables it acquired; a session that
+closes first records none, and the process finishes the transfer (within the budget) before it exits. The data child
+reads the directories its descriptors' variables named when it started: files acquired into a home those
+variables do not point at are served once they do (`--env-file`, or the `host.env` that `vbt setup` writes), and
+the event lists the variables as `env_needed`. Without refusals `between_turns` takes every table that the
+readiness cache reports as missing, partial or stale.
 `vbt data acquire --missing` does the same from the command line, for example from a scheduled job.
 
 ## Releases

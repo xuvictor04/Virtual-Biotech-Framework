@@ -267,8 +267,9 @@ else starts guarded. `lenient` lets those calls run unguarded.
 | `vbt ds resolve <id_type> <value...>` | resolver rules and candidates |
 | `vbt ds explain s.t \| --all [--json]` | binding, serve mode, derived schema (from the upstream source, offline) and text |
 | `vbt ds fingerprint [--write]` | table fingerprints (what runs pin) |
-| `vbt ds index build [--id-type T] [--access-paths [--huge]]` | resolver and access-path sidecars |
-| `vbt ds estimate`, `calibrate`, `status` | memory estimates, calibration, per-server memory and the host budget |
+| `vbt ds index build [--id-type T] [--table S.T] [--access-paths [--huge]]` | resolver and access-path sidecars; `--table` alone builds only the id types those tables hold |
+| `vbt ds estimate [--json]`, `calibrate`, `status` | memory estimates, calibration, per-server memory and the host budget |
+| `vbt ds conformance [--kind K] [--plugin NAME] [--list]` | the plugin conformance suites of both registries (the data child's kinds and the harness's `acquisition`); a passing `--plugin` run writes its stamp under `data.cache_dir/conformance/` |
 | `vbt ds replay <run> <tool_use_id...> \| --all [--backend bridge\|inprocess]` | re-execute recorded calls (the default `auto` is the guarded bridge) |
 | `vbt ds diff-release`, `graduate`, `retro-audit` | release drift, the observe-to-enforce checklist, offline re-classification |
 | `vbt verify <run> --data` | fresh fingerprints and replays; missing tables, unreadable fingerprints and lost records leave the run INCOMPLETE |
@@ -277,6 +278,40 @@ Open Targets release files are fetched with `vbt data ot list|fetch|manifest` (s
 sha1 is checked against the release's `release_data_integrity`, and `.download-manifest.json` (the upstream
 downloader's format, plus sha1) is what readiness R2 reads. `vbt data ot manifest` writes it for tables
 already on disk without downloading anything.
+
+### Acquiring data
+
+[DATA_SETUP.md](DATA_SETUP.md) is the guide. Each descriptor's `acquisition` section (`descriptor/models.py`
+`AcquisitionSpec`) names a transport plugin, the files of each table, optional preparation steps, the
+release, the licence and the variables that point the data layer at the files. Transports are plugins of the
+harness-side kind `acquisition` (`plugins/acquisition/`: `http`, `huggingface`, `s3`, `gcs`, `json_index`,
+`zip_member`; registry `discover_harness`, conformance suite A-1 to A-7, run with `vbt ds conformance --kind
+acquisition`). The engine is `vbt.data.acquire`:
+
+| Command | What it does |
+|---|---|
+| `vbt data acquire <source>[.<table>] ... [--plan] [--json]` | list the release, plan (bytes, files, time, licence), download in parallel with resume, verify size and checksum, run the preparation step, write `.download-manifest.json`; `--plan --json` prints the plan (an empty plan too) |
+| `vbt data acquire --for-tools T ... \| --for-agents A ... \| --all` | the tables those tools or agents read |
+| `vbt data acquire --missing \| --pending` | what readiness reports missing; what `auto: ask` queued |
+| `vbt data status [--check]` | per source: home, release, files present and verified, readiness |
+
+The download manifests are declared in the descriptors (`manifests:`) of Open Targets, DepMap, GO, MSigDB
+and the Zenodo archive (whose manifest sits one level above its root; entries are taken relative to the
+root), so R2 compares every file's size with it and requires `complete: true`; DepMap, MSigDB and Zenodo
+also compare its `release` with `release.expect`. The Cell Ontology declares none: its table path is a file
+variable (`VBT_CL_OBO`) with no root to resolve the manifest against.
+
+A `not_ready` reason whose status acquiring fixes (`missing`, `partial`, `stale`) carries `acquire` (command,
+bytes, files, preparation steps, licence, login, and the `data.acquisition.auto` decision) in the refusal's
+payload. `data.acquisition` (typed in `settings.py`, defaults in `configs/default.yaml`) sets the root
+(`${VBT_DATA_DIR:-data}/sources`), `auto` (`"off"` | `ask` | `under_budget`), `budget_bytes`, `workers`,
+`rate_mbps`, `reserve_bytes`, `retries` and `timeout_s`. Under `ask` or `under_budget` the session hands
+each turn's `not_ready` refusals to `vbt.data.ondemand.between_turns` after the turn; the next turn waits for
+it, records a `data_acquisition` event and re-checks what it acquired. Every acquisition is logged in
+`<data.acquisition.root>/acquisitions.jsonl` and, during a run, in the run's `data_acquisitions.jsonl`. The
+data child reads the directories its descriptors' variables named when it started: a home they do not point
+at is served once they do (`--env-file`, the `host.env` that `vbt setup` writes), and the event lists those
+variables as `env_needed`.
 
 ### Native tools for agents
 

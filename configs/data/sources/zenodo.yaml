@@ -15,8 +15,13 @@ schema: vbt.datasource/1
 source: zenodo_vbt
 title: The Virtual Biotech case-study archive (Zenodo 22259123)
 kind: local
-release: {expect: "22259123", from: literal}
+release: {expect: "22259123", from: [literal, manifest.release]}
 root: ${VBT_ZENODO_DIR:-${vars.project_root}/data/zenodo}/virtualbiotech_submission
+manifests:
+  # what `vbt data acquire` verified (CRC-32 of each archive member), in the upstream downloader's format. R2
+  # checks the sizes against the files, that the acquisition completed and that its release is the expected one.
+  # It sits in the acquisition home, one level above the root; its entries are taken relative to the root.
+  - {path: ../.download-manifest.json, required: false, require: {complete: true}}
 defaults: {format: parquet, layout: sharded_dir, missing: unknown}
 strict: true
 

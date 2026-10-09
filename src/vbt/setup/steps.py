@@ -5,9 +5,9 @@ probe       host facts (:mod:`vbt.setup.probe`)
 configure   serving profile, sizing, data roots -> ``host.yaml``, ``host.env``, ``compose.vllm.yaml``
 acquire     ``vbt data acquire`` for the tools the enabled agents may call (what to fetch comes from the
             descriptors' acquisition sections and the roster, never from setup)
-size        ``vbt ds estimate`` of the tables the enabled servers load whole -> per-server memory, then the
-            host configuration is written again with it
-index       ``vbt ds index build``: resolver and access-path sidecars
+size        ``vbt ds estimate --json`` of the tables the enabled servers load whole -> per-server memory, then
+            the host configuration is written again with it
+index       ``vbt ds index build --table T ...``: the resolver sidecars of the id types the enabled tools' tables hold
 check       ``vbt ds check`` of the tables the enabled tools read (readiness R1-R10)
 calibrate   ``vbt ds calibrate`` of the local tables loaded whole (memory admission on this host's data)
 smoke       an offline mock session; ``vbt doctor`` (``--smoke`` once the model server answers); the analysis stack
@@ -50,8 +50,8 @@ GB = 1e9
 _COMMANDS: dict[str, dict[str, list[str]]] = {
     "acquire": {"run": ["data", "acquire", "--for-tools", "{tools}"],
                 "plan": ["data", "acquire", "--for-tools", "{tools}", "--plan", "--json"]},
-    "size": {"run": ["ds", "estimate", "{full_tables}"]},
-    "index": {"run": ["ds", "index", "build"]},
+    "size": {"run": ["ds", "estimate", "--json", "{full_tables}"]},
+    "index": {"run": ["ds", "index", "build", "{tables}"]},     # only the id types of the tables tools read
     "check": {"run": ["ds", "check", "--json", "{tables}"]},
     "calibrate": {"run": ["ds", "calibrate", "--json", "{full_local_tables}"]},
 }
@@ -548,9 +548,17 @@ _EST_ERR = re.compile(r"^(?P<table>[\w.]+): error: (?P<err>.*)$")
 
 
 def parse_estimate(text: str) -> tuple[dict[str, float], dict[str, str]]:
-    """``({table: MB}, {table: error})`` from ``vbt ds estimate`` output."""
+    """``({table: MB}, {table: error})`` from ``vbt ds estimate --json`` (``tables.<ref>.upstream_mb``,
+    ``errors``), or from its text lines."""
     sizes: dict[str, float] = {}
     errors: dict[str, str] = {}
+    doc = _json_out(text)
+    if isinstance(doc, Mapping) and isinstance(doc.get("tables"), Mapping):
+        for ref, rec in doc["tables"].items():
+            if isinstance(rec, Mapping) and isinstance(rec.get("upstream_mb"), (int, float)):
+                sizes[str(ref)] = float(rec["upstream_mb"])
+        errors = {str(k): str(v) for k, v in (doc.get("errors") or {}).items()}
+        return sizes, errors
     for line in (text or "").splitlines():
         m = _EST_LINE.match(line.strip())
         if m:
@@ -632,6 +640,9 @@ class IndexStep(_DataStep):
     help = "build the resolver and access-path sidecars (`vbt ds index build`)"
 
     def run(self, ctx: SetupContext) -> StepResult:
+        if ctx.needs is not None and not ctx.needs.tables:
+            # without --table, `vbt ds index build` would build every local id type of every source
+            return StepResult("done", "no enabled tool reads a table", {"built": []})
         res, took = self.execute(ctx)
         lines = [ln.strip() for ln in (res.stdout or "").splitlines()]
         built = [ln.split(":", 2)[0].removeprefix("built ") + ":" + ln.split(":", 2)[1]

@@ -20,7 +20,11 @@ schema: vbt.datasource/1
 source: depmap
 title: DepMap Public CRISPR (Chronos) gene effect and model annotations
 root: ${DEPMAP_DATA_PATH:-${vars.project_root}/data/depmap}
-release: {expect: "24Q4", from: literal}
+release: {expect: "24Q4", from: [literal, manifest.release]}
+manifests:
+  # what `vbt data acquire` verified (md5 of each file against the Figshare listing), in the upstream downloader's
+  # format. R2 checks the sizes against the files, that the acquisition completed and that its release is 24Q4.
+  - {path: .download-manifest.json, required: false, require: {complete: true}}
 defaults: {format: csv, layout: single_file, missing: unknown}
 strict: true
 

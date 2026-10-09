@@ -56,6 +56,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -187,6 +188,8 @@ class CSOSession:
         self._cancel_requested = False
         self._ts: dict[str, Any] = {}       # per-turn state (review / plan / unstreamed)
         self.last_turn: dict[str, Any] | None = None
+        self._acquisition: asyncio.Future | None = None   # the between-turns acquisition (data.acquisition.auto)
+        self.last_acquisition: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------ properties
 
@@ -219,6 +222,7 @@ class CSOSession:
             raise SessionBusy()
         async with self._lock:
             self._cancel_requested = False
+            await self.settle_acquisition()       # the previous turn's acquisition lands before this turn's checks
             task = asyncio.ensure_future(self._turn(user_input))
             self._task = task
             try:
@@ -244,6 +248,15 @@ class CSOSession:
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        acq = self._acquisition
+        if acq is not None and acq.done():
+            await self.settle_acquisition()
+        elif acq is not None:
+            # a running transfer finishes in its worker thread and records itself (acquisitions.jsonl, the run's
+            # data_acquisitions.jsonl); the session closes without its event (the process joins the thread at exit)
+            self._acquisition = None
+            acq.cancel()
+            log.info("closing with a between-turns acquisition still running")
         try:
             await self.rt.cancel_outstanding()
         finally:
@@ -337,7 +350,73 @@ class CSOSession:
             self._finish(n, user_input, reply, status, t0, cost0, deleg0, ev0)
             raise
         self._finish(n, user_input, reply, status, t0, cost0, deleg0, ev0)
+        self._start_acquisition(ev0)
         return self.last_turn.get("response", reply) if self.last_turn else reply
+
+    # ------------------------------------------------------------------ between turns
+
+    def _acquisition_policy(self) -> str:
+        auto = ((self.config.get("data") or {}).get("acquisition") or {}).get("auto", "off")
+        return "off" if auto in (False, None, "") else str(auto)
+
+    def _start_acquisition(self, ev0: int) -> None:
+        """Between turns (docs/DATA_SETUP.md): under ``data.acquisition.auto`` ``ask`` or ``under_budget``, hand
+        the turn's ``not_ready`` refusals to :func:`vbt.data.ondemand.between_turns` in a worker thread. The next
+        turn waits for it (:meth:`settle_acquisition`) and re-checks what it acquired. Never raises."""
+        if self._acquisition_policy() == "off" or self._acquisition is not None:
+            return
+        try:
+            refusals = [{"tables": ev["not_ready"]} for ev in self.run.events()[ev0:]
+                        if ev.get("type") == "tool_end" and ev.get("error_kind") == "not_ready"
+                        and isinstance(ev.get("not_ready"), list)]
+            if not refusals:
+                return
+            from .data.ondemand import between_turns
+
+            config, run_dir = dict(self.config), self.run.dir
+            self.run.trace("data_acquisition_start", turn=self.turn, refusals=len(refusals),
+                           policy=self._acquisition_policy())
+            self._acquisition = asyncio.ensure_future(
+                asyncio.to_thread(between_turns, config, refusals=refusals, run_dir=run_dir))
+        except Exception:  # noqa: BLE001 - acquisition is best effort; the refusal already said how
+            log.warning("starting the between-turns acquisition failed", exc_info=True)
+
+    async def settle_acquisition(self) -> dict[str, Any] | None:
+        """Wait for the between-turns acquisition (if any), record it (``data_acquisition`` event) and, when it
+        acquired files, re-check the tables it acquired so this turn's calls see them. Never raises."""
+        task, self._acquisition = self._acquisition, None
+        if task is None:
+            return None
+        try:
+            out = await task
+        except Exception as exc:  # noqa: BLE001
+            log.warning("the between-turns acquisition failed", exc_info=True)
+            out = {"policy": self._acquisition_policy(), "decision": f"failed: {type(exc).__name__}: {exc}"}
+        rec = {k: out.get(k) for k in ("policy", "budget_bytes", "wanted", "bytes", "decision") if k in out}
+        report = out.get("report")
+        if report is not None:
+            rec["bytes_downloaded"] = getattr(report, "bytes_downloaded", None)
+            rec["seconds"] = getattr(report, "seconds", None)
+            # the data child reads what its descriptors' variables named at launch: a home they do not point at
+            # is served only once they do (`vbt data acquire --env-file`, host.env), in a new session
+            unset = {k: v for src in getattr(report, "sources", [])
+                     for k, v in (getattr(src, "env", None) or {}).items() if os.environ.get(k) != v}
+            if unset:
+                rec["env_needed"] = unset
+        self.last_acquisition = rec
+        try:
+            self.run.trace("data_acquisition", **rec)
+        except Exception:  # noqa: BLE001
+            pass
+        self.rt.emit("data_acquisition", **rec)
+        gw = getattr(self.rt, "gateway", None)
+        if out.get("decision") == "acquired" and gw is not None:
+            tables = [f"{s}.{t}" for s, ts in (out.get("wanted") or {}).items() for t in ts]
+            try:
+                await gw.refresh_readiness(tables)
+            except Exception:  # noqa: BLE001 - the per-turn signatures catch the change anyway
+                log.warning("re-checking acquired tables failed", exc_info=True)
+        return rec
 
     def _partial_text(self, hist0: int) -> str:
         parts = [_strip_sentinels(m.text) for m in self.history[hist0:] if m.role == "assistant" and m.text]

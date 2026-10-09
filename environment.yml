@@ -31,16 +31,14 @@ dependencies:
   - scanpy>=1.10
   - h5py
   - harmonypy
-  - decoupler>=2.0
-  - liana>=1.5
   - pydeseq2>=0.4
   - gseapy>=1.1
   - pronto>=2.5
   # Survival analysis (B7-H3 case study)
   - lifelines>=0.29
-  # CELLxGENE Census (single_cell MCP server, cross-disease survey)
+  # CELLxGENE Census (single_cell MCP server, cross-disease survey); it brings its storage engine, tiledbsoma-py
+  # (conda-forge has no `tiledbsoma` package)
   - cellxgene-census>=1.15
-  - tiledbsoma
   # MCP data-server dependencies
   - pyarrow>=16
   - requests
@@ -56,6 +54,8 @@ dependencies:
   - r-mumin
   - rpy2>=3.5
   - pip:
+      - decoupler>=2.0           # neither is on conda-forge or bioconda at these versions (deploy/full/requirements.in)
+      - liana>=1.5
       - fastmcp>=3.2,<5
       - mcp>=1.26
       - pybioportal>=1.0

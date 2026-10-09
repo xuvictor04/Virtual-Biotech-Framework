@@ -1968,7 +1968,16 @@ predicate, so the witness counts candidates under the other bound filters (`cate
 KINDS: dict[str, type] = {"format": FormatPlugin, "layout": LayoutPlugin,
                           "statistic": StatisticPlugin, "identifier": IdentifierPlugin}
 # phase 4 adds "envelope": EnvelopePlugin (the worked example of adding a kind)
+HARNESS_KINDS: dict[str, type] = {"acquisition": AcquisitionPlugin}   # harness side only
 ```
+
+`acquisition` is a harness-side kind: the transports of `vbt data acquire` (`http`, `huggingface`, `s3`,
+`gcs`, `json_index`, `zip_member`; [DATA_SETUP.md](DATA_SETUP.md)), which list a release's files with their
+sizes and checksums and read them with byte ranges. `discover_harness(settings)` finds them the same way
+(builtins in `vbt.datalayer.plugins.acquisition`, entry points in `vbt.datalayer.acquisition`,
+`data.plugins.paths`, `disabled`, `override`); they are not part of the data child's registry. A
+descriptor's `acquisition` section names the transport and the files of each table. Its conformance suite
+(A-1 to A-7) runs with the others: `vbt ds conformance [--kind K] [--plugin NAME]` covers both registries.
 
 `PluginRegistry.discover(settings)` loads, in order: in-tree builtins (`vbt.datalayer.plugins.<kind>s.*`
 modules decorated with `@register`), Python entry points in group `vbt.datalayer.<kind>`, and modules
@@ -1978,7 +1987,7 @@ use the plugin `plugin_unavailable` with an install hint) and `conformance_cases
 are an error unless `data.plugins.override` names the winner. Builtins are conformance-tested in CI,
 not gated at runtime; third-party plugins can be gated with `data.plugins.require_conformance: true`,
 which checks a stamp written by `vbt datasource conformance --plugin <name>` (module digest + suite
-version).
+version, under `data.cache_dir/conformance/`; `vbt ds conformance --list` shows each plugin's stamp).
 
 **Capabilities (rev 2).** Protocol methods that only some plugins implement are **optional
 capabilities declared in phase 1**: a plugin lists the capability, the conformance suite runs only
@@ -2901,7 +2910,7 @@ Payloads are fixed per kind (rev 2; the correctness tests assert these fields):
 | `incomplete_key` | `dimension, argument, values` (sorted, JSON-typed, rendered in the storage type) `, unit?, subkind?, retry_with` |
 | `unsupported_filter` | `argument, column, reason` (`scale`, `unconfirmed_encoding`, `unbound_argument`) `, confirmed_range?` |
 | `insufficient_resolution` | `argument, requested, resolved, unresolved[], ambiguous[], outside_universe[], min_resolved_fraction` |
-| `not_ready` | `tables[{name, column?, partition?, check, detail, hint}]` |
+| `not_ready` | `tables[{name, column?, partition?, check, detail, hint, acquire?}]`; `acquire` (when acquiring the files fixes it): `{command, source, table, release, bytes, files, prepare, mode, licence?, login?, policy?, decision?}` |
 | `tool_defect` | `check (W1..W6), witness{total, topk?}, returned, defect_ids[]` |
 
 ### 12.2 Success: the `_vbt` header
@@ -3430,6 +3439,15 @@ data:
     alias: {}                         # {open_targets: zenodo_vbt}: serve open_targets.* from tables that implement them
   provenance: {row_keys_max: 10000, dir: logs/data_provenance}
   plugins: {paths: [], entry_points: true, disabled: [], override: {}, require_conformance: false}
+  acquisition:                        # `vbt data acquire` (docs/DATA_SETUP.md)
+    root: ${VBT_DATA_DIR:-data}/sources   # homes <root>/<source>/<release>; acquisitions.jsonl logs every run
+    auto: "off"                       # "off" | ask | under_budget (what a not_ready refusal leads to between turns)
+    budget_bytes: 0                   # under_budget: acquisitions up to this size happen between turns
+    workers: auto                     # parallel transfers (auto: 4 per CPU, at most 32)
+    rate_mbps: 50
+    reserve_bytes: 1073741824         # free disk kept after a download
+    retries: 4
+    timeout_s: 120
 ```
 
 Per server in `configs/mcp_servers.yaml` (all optional): `mem_limit_mb`, `overlay` (default

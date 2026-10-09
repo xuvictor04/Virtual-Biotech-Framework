@@ -328,7 +328,8 @@ class DataGateway:
             # data.memory.host_budget_mb (auto: a share of host RAM) caps resident memory over all servers;
             # bind_bridge wires its LRU idle recycle (§14.3)
             self.admission.enable_host_budget()
-        self.readiness = readiness or ReadinessCache(settings.cache_dir, catalog, self.registry)
+        self.readiness = readiness or ReadinessCache(settings.cache_dir, catalog, self.registry,
+                                                     acquisition=settings.acquisition.policy())
         self.readiness.load()
         self.resolver = Resolver(self.registry, catalog, self._index_provider, remote=self._remote, settings=settings)
         self.bridge: Any = None

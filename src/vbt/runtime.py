@@ -1751,6 +1751,7 @@ class Runtime:
         model_error: str | None = None  # the harness rejected the call before running it
         data: Any = None                # a data-layer result (DataResult): status, provenance, unshrunk text
         error_kind: str | None = None   # a data-layer error's kind (GatewayError.kind)
+        not_ready: list[Any] | None = None   # a not_ready refusal's tables (what acquiring them would fix)
         try:
             rejected = self._argument_problem(call, tool) if tool is not None else None
             if tool is None:
@@ -1777,6 +1778,9 @@ class Runtime:
                     kind = getattr(exc, "kind", None)  # GatewayError
                     if kind is not None:
                         error_kind = str(getattr(kind, "value", kind))
+                        tables = (getattr(exc, "payload", None) or {}).get("tables")
+                        if error_kind == "not_ready" and isinstance(tables, list):
+                            not_ready = tables[:20]
                 except BudgetExceeded:
                     raise
                 except Exception as exc:  # noqa: BLE001 - surface any tool crash to the model
@@ -1809,6 +1813,8 @@ class Runtime:
             end.update(self._record_data_result(call, data))
         if error_kind:
             end["error_kind"] = error_kind
+        if not_ready:
+            end["not_ready"] = not_ready             # the session's between-turns acquisition reads it
         if spill is not None:
             end["output_path"] = self.run.rel(spill)
         if call.name.startswith("mcp__") and not err:

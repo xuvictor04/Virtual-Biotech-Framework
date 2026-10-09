@@ -56,6 +56,21 @@ def json_path(data: Any, path: str | None) -> Any:
     return cur
 
 
+def _rebased(entries: Mapping[str, Any], manifest_dir: Path, root: Path) -> dict[str, Any]:
+    """Entry paths are relative to the manifest's own directory (the downloader's format); a manifest kept above
+    the root (``path: ../.download-manifest.json``, the Zenodo archive's top directory) has them made relative
+    to the root, and entries outside the root dropped."""
+    a, b = os.path.normpath(os.path.abspath(manifest_dir)), os.path.normpath(os.path.abspath(root))
+    if a == b:
+        return dict(entries)
+    out = {}
+    for key, entry in entries.items():
+        rel = os.path.relpath(os.path.normpath(os.path.join(a, str(key).lstrip("./"))), b).replace(os.sep, "/")
+        if rel != ".." and not rel.startswith("../"):
+            out[rel] = entry
+    return out
+
+
 def load_manifest(root: str | None, spec: Any) -> Manifest | None:
     """A source's manifest (``ManifestSpec``): a JSON file under ``root`` or an inline map; None when the file
     is absent or unreadable (R2 reports that)."""
@@ -72,6 +87,8 @@ def load_manifest(root: str | None, spec: Any) -> Manifest | None:
     entries = json_path(data, spec.entries) or {}
     if isinstance(entries, list):                      # [{path, bytes, sha256}] lists are accepted too
         entries = {str(e.get("path") or e.get("name")): e for e in entries if isinstance(e, Mapping)}
+    if isinstance(entries, Mapping) and root:
+        entries = _rebased(entries, path.parent, Path(root))
     complete = data.get("complete") if isinstance(data, Mapping) else None
     return Manifest(path=str(path), entries=dict(entries) if isinstance(entries, Mapping) else {},
                     data=data if isinstance(data, Mapping) else {}, sha256=hashlib.sha256(raw).hexdigest(),

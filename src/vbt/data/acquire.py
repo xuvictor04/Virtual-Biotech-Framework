@@ -83,38 +83,29 @@ class AcquisitionSettings:
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any] | None) -> "AcquisitionSettings":
+        """From the typed ``data.acquisition`` section (:class:`vbt.datalayer.settings.AcquisitionSettings`, which
+        merges the defaults, expands variables and refuses an unknown ``auto``). The acquisition log
+        (``acquisitions.jsonl``) lives in the root, next to the homes it describes."""
         from .. import config as _config
         from ..datalayer.settings import DataSettings
 
         config = config or {}
-        data = dict(config.get("data") or {})
-        raw = dict(data.get("acquisition") or {})
         variables = {str(k): "" if v is None else str(v) for k, v in (config.get("vars") or {}).items()}
         root_project = Path(variables.get("project_root") or _config.PROJECT_ROOT)
-        variables.setdefault("project_root", str(root_project))
-        raw = _config._expand(raw, variables)
         settings = DataSettings.from_config(config)
+        acq = settings.acquisition
 
         def path(value: Any) -> Path:
             p = Path(str(value)).expanduser()
             return p if p.is_absolute() else root_project / p
 
-        root = raw.get("root") or _config._expand("${VBT_DATA_DIR:-data}/sources", variables)
-        auto = raw.get("auto", "off")
-        # YAML 1.1 reads an unquoted `off` as false: map it back; `on`/true names no policy and is refused
-        auto = "off" if auto is False else auto
-        if auto not in ("off", "ask", "under_budget"):
-            raise ValueError(f"data.acquisition.auto must be off, ask or under_budget (got {auto!r}); quote the "
-                             "value in YAML")
-        workers = raw.get("workers", "auto")
+        workers = acq.workers
         if workers in (None, "auto"):
             workers = max(1, min(32, 4 * (os.cpu_count() or 1)))
-        prov = settings.raw.get("provenance") or {}
-        return cls(root=path(root), auto=auto, budget_bytes=_bytes(raw.get("budget_bytes", raw.get("budget", 0))),
-                   workers=int(workers), rate_mbps=float(raw.get("rate_mbps", 50.0)),
-                   retries=int(raw.get("retries", 4)), timeout_s=float(raw.get("timeout_s", 120.0)),
-                   reserve_bytes=_bytes(raw.get("reserve_bytes", 1 << 30)),
-                   provenance_dir=path(prov.get("dir") or "logs/data_provenance"), cache_dir=settings.cache_dir)
+        root = path(acq.root or _config._expand("${VBT_DATA_DIR:-data}/sources", variables))
+        return cls(root=root, auto=acq.auto, budget_bytes=_bytes(acq.budget_bytes), workers=int(workers),
+                   rate_mbps=float(acq.rate_mbps), retries=int(acq.retries), timeout_s=float(acq.timeout_s),
+                   reserve_bytes=_bytes(acq.reserve_bytes), provenance_dir=root, cache_dir=settings.cache_dir)
 
 
 def _bytes(value: Any) -> int:
@@ -943,7 +934,7 @@ def write_env_file(path: Path, values: Mapping[str, str]) -> list[str]:
 
 def record_provenance(settings: AcquisitionSettings, report: AcquisitionReport, *, by: str,
                       run_dir: Path | None = None, extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Append one acquisition record to ``<data.provenance.dir>/acquisitions.jsonl`` (and to
+    """Append one acquisition record to ``<data.acquisition.root>/acquisitions.jsonl`` (and to
     ``<run_dir>/data_acquisitions.jsonl`` when the acquisition happened during a run)."""
     rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "by": by, "policy": settings.auto,
            "budget_bytes": settings.budget_bytes, "seconds": report.seconds, "bytes": report.bytes_downloaded,

@@ -12,6 +12,7 @@ Nothing here contacts the network; git and package lookups fail soft.
 from __future__ import annotations
 
 import hashlib
+import os
 import platform
 import re
 import subprocess
@@ -129,8 +130,14 @@ def _git(args: list[str], cwd: Path) -> str | None:
     return out.stdout.strip()
 
 
+#: The commits an image without ``.git`` was built from (set by deploy/full/Dockerfile).
+HARNESS_COMMIT_ENV = "VBT_HARNESS_COMMIT"
+UPSTREAM_COMMIT_ENV = "VBT_UPSTREAM_COMMIT"
+
+
 def git_info(upstream: str | Path | None = None) -> dict[str, Any]:
-    """Harness commit and dirty flag, and the upstream submodule commit."""
+    """Harness commit and dirty flag, and the upstream submodule commit (without git: the commits the image
+    recorded in ``VBT_HARNESS_COMMIT`` / ``VBT_UPSTREAM_COMMIT``, with ``dirty`` unknown)."""
     from .config import PROJECT_ROOT
 
     info: dict[str, Any] = {"commit": None, "dirty": None, "upstream_commit": None}
@@ -150,6 +157,13 @@ def git_info(upstream: str | Path | None = None) -> dict[str, Any]:
             if len(parts) >= 3 and parts[1] == "commit":
                 info["upstream_commit"] = parts[2]
                 info["upstream_commit_source"] = "submodule pointer"
+    # the harness image has no .git: its build records both commits in the environment (deploy/full/Dockerfile)
+    if info["commit"] is None and os.environ.get(HARNESS_COMMIT_ENV, "").strip():
+        info["commit"] = os.environ[HARNESS_COMMIT_ENV].strip()
+        info["commit_source"] = f"environment ({HARNESS_COMMIT_ENV})"
+    if info["upstream_commit"] is None and os.environ.get(UPSTREAM_COMMIT_ENV, "").strip():
+        info["upstream_commit"] = os.environ[UPSTREAM_COMMIT_ENV].strip()
+        info["upstream_commit_source"] = f"environment ({UPSTREAM_COMMIT_ENV})"
     info["version"] = _harness_version(PROJECT_ROOT)
     return info
 

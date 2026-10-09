@@ -356,7 +356,9 @@ def insufficient_resolution_payload(argument: str, requested: int, resolved: int
 
 
 def not_ready_payload(tables: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """``tables[{name, column?, partition?, check, detail, hint}]``."""
+    """``tables[{name, column?, partition?, check, detail, hint, acquire?}]``. ``acquire`` (a reason whose files
+    acquiring fixes, on a table whose descriptor declares an ``acquisition`` entry) is the structured how-to:
+    ``command, source, table, release, bytes, files, prepare, mode, licence?, login?, policy?, decision?``."""
     out = []
     for t in tables:
         entry: dict[str, Any] = {"name": t.get("name")}
@@ -364,6 +366,8 @@ def not_ready_payload(tables: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             if t.get(opt) is not None:
                 entry[opt] = t.get(opt)
         entry.update({"check": t.get("check"), "detail": t.get("detail"), "hint": t.get("hint")})
+        if isinstance(t.get("acquire"), Mapping):
+            entry["acquire"] = json_value(dict(t["acquire"]))
         out.append(entry)
     return {"tables": out}
 

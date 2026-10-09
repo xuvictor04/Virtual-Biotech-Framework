@@ -23,7 +23,8 @@ from .. import config as _config
 __all__ = [
     "DATA_DEFAULTS", "SETTINGS_ENV", "GatewaySettings", "ServiceSettings", "ResolutionSettings", "WitnessSettings",
     "DeriveSettings", "MemorySettings", "ReadinessSettings", "ResultsSettings", "LeakageSettings",
-    "SourcesSettings", "ProvenanceSettings", "PluginsSettings", "DataSettings",
+    "SourcesSettings", "ProvenanceSettings", "PluginsSettings", "AcquisitionSettings", "ACQUISITION_AUTO",
+    "DataSettings",
 ]
 
 SETTINGS_ENV = "VBT_DATA_SETTINGS"
@@ -89,6 +90,16 @@ DATA_DEFAULTS: dict[str, Any] = {
     "sources": {"alias": {}},
     "provenance": {"row_keys_max": 10000, "dir": "logs/data_provenance"},
     "plugins": {"paths": [], "entry_points": True, "disabled": [], "override": {}, "require_conformance": False},
+    "acquisition": {
+        "root": "${VBT_DATA_DIR:-data}/sources",
+        "auto": "off",
+        "budget_bytes": 0,
+        "workers": "auto",
+        "rate_mbps": 50,
+        "reserve_bytes": 1073741824,
+        "retries": 4,
+        "timeout_s": 120,
+    },
 }
 
 
@@ -243,11 +254,45 @@ class PluginsSettings:
     require_conformance: bool = False
 
 
+#: ``data.acquisition.auto`` values (docs/DATA_SETUP.md).
+ACQUISITION_AUTO = ("off", "ask", "under_budget")
+
+
+@dataclass(frozen=True)
+class AcquisitionSettings:
+    """``data.acquisition`` (``vbt data acquire``; docs/DATA_SETUP.md): where acquired sources land, and what the
+    system may acquire by itself after a ``not_ready`` refusal (``auto: off | ask | under_budget`` with
+    ``budget_bytes``). Sizes may be written ``"5 GB"``; :class:`vbt.data.acquire.AcquisitionSettings` resolves the
+    paths, sizes and ``workers: auto`` (4 per CPU, at most 32)."""
+
+    root: str = "${VBT_DATA_DIR:-data}/sources"
+    auto: Literal["off", "ask", "under_budget"] = "off"
+    budget_bytes: int | str = 0
+    workers: int | str = "auto"
+    rate_mbps: float = 50
+    reserve_bytes: int | str = 1 << 30
+    retries: int = 4
+    timeout_s: float = 120
+
+    def __post_init__(self) -> None:
+        # YAML 1.1 reads an unquoted `off` as false: map it back; `on`/true names no policy and is refused
+        if self.auto is False:
+            object.__setattr__(self, "auto", "off")
+        if self.auto not in ACQUISITION_AUTO:
+            raise ValueError(f"data.acquisition.auto must be off, ask or under_budget (got {self.auto!r}); quote "
+                             "the value in YAML")
+
+    def policy(self) -> dict[str, Any]:
+        """``{auto, budget_bytes}``: what a ``not_ready`` reason's acquisition hint says the policy decides."""
+        return {"auto": self.auto, "budget_bytes": self.budget_bytes}
+
+
 _SECTIONS: dict[str, type] = {
     "gateway": GatewaySettings, "service": ServiceSettings, "resolution": ResolutionSettings,
     "witness": WitnessSettings, "derive": DeriveSettings, "memory": MemorySettings,
     "readiness": ReadinessSettings, "results": ResultsSettings, "leakage": LeakageSettings,
     "sources": SourcesSettings, "provenance": ProvenanceSettings, "plugins": PluginsSettings,
+    "acquisition": AcquisitionSettings,
 }
 
 
@@ -302,6 +347,7 @@ class DataSettings:
     sources: SourcesSettings = field(default_factory=SourcesSettings)
     provenance: ProvenanceSettings = field(default_factory=ProvenanceSettings)
     plugins: PluginsSettings = field(default_factory=PluginsSettings)
+    acquisition: AcquisitionSettings = field(default_factory=AcquisitionSettings)
     raw: Mapping[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
     @classmethod

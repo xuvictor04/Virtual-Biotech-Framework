@@ -111,7 +111,8 @@ def _catalog(config: dict[str, Any]) -> tuple[Any, Any, Any]:
 def _cache(config: dict[str, Any], catalog: Any, registry: Any) -> Any:
     from .gateway.readiness import ReadinessCache
     from .settings import DataSettings
-    cache = ReadinessCache(DataSettings.from_config(config).cache_dir, catalog, registry)
+    settings = DataSettings.from_config(config)
+    cache = ReadinessCache(settings.cache_dir, catalog, registry, acquisition=settings.acquisition.policy())
     cache.load()
     return cache
 
@@ -852,6 +853,25 @@ def cmd_index_build_huge(args: argparse.Namespace, config: dict[str, Any]) -> in
     return rc
 
 
+def _id_type_tables(source: str, spec: Any) -> set[str]:
+    """``source.table`` refs an id type's index reads: its universe, label/synonym columns, retired lists and
+    hierarchy."""
+    refs: list[str] = []
+    u = spec.universe
+    if isinstance(u, str):
+        refs.append(u)
+    elif isinstance(u, list):
+        refs.extend(str(x) for x in u)
+    elif u is not None:
+        refs.append(str(getattr(u, "table", "") or ""))
+    refs.extend(str(x) for x in spec.resolve_via or [])
+    if spec.retired is not None:
+        refs.extend(str(x) for x in spec.retired.listed_in or [])
+    if spec.hierarchy is not None:
+        refs.append(str(getattr(spec.hierarchy, "table", "") or ""))
+    return {f"{source}.{r.split('.', 1)[0].strip()}" for r in refs if r.split(".", 1)[0].strip()}
+
+
 def cmd_index_build(args: argparse.Namespace, config: dict[str, Any]) -> int:
     from ..preflight import DataCheckUnavailable
 
@@ -866,10 +886,21 @@ def cmd_index_build(args: argparse.Namespace, config: dict[str, Any]) -> int:
             child += ["--table", t]
     if not args.id_type and not args.access_paths:
         _settings, catalog, _registry = _catalog(config)
+        only = set(args.table or [])
+        bad = _unknown_tables(catalog, only)
+        if bad:
+            _err(f"error: unknown table(s): {', '.join(bad)}")
+            return 2
         for source, desc in sorted(catalog.sources.items()):
             for name, spec in sorted(desc.id_types.items()):
                 if spec.universe is not None and getattr(spec, "index", None) != "remote":
+                    # --table: only the id types whose universe or label columns those tables hold
+                    if only and not (_id_type_tables(source, spec) & only):
+                        continue
                     child += ["--id-type", f"{source}:{name}"]
+        if only and "--id-type" not in child:
+            _out(f"no local id type reads {', '.join(sorted(only))}")
+            return 0
     if args.force:
         child.append("--force")
     try:
@@ -946,6 +977,8 @@ def cmd_estimate(args: argparse.Namespace, config: dict[str, Any]) -> int:
         return 2
     est = MemoryEstimator.from_settings(settings)
     host = host_memory_mb()
+    as_json = bool(getattr(args, "json", False))
+    doc: dict[str, Any] = {"tables": {}, "errors": {}, "host_mb": host}
     limit = None
     if server is not None:
         spec = next((s for s in (config.get("mcp_servers") or {}).get("servers", []) if s.get("name") == server), {})
@@ -962,22 +995,36 @@ def cmd_estimate(args: argparse.Namespace, config: dict[str, Any]) -> int:
         scan = est.peak_arrow_scan(model)
         if ref in full or str(ref) in {str(f) for f in full}:
             total_upstream += up
-        _out(f"{ref}: {model.rows if model.rows is not None else '?'} rows, {model.fragments} fragments, "
-             f"{model.bytes_on_disk / 1e6:.1f} MB on disk; upstream full load ~{up / 1e6:.0f} MB, "
-             f"projected scan ~{scan / 1e6:.0f} MB")
+        doc["tables"][str(ref)] = {"rows": model.rows, "fragments": model.fragments,
+                                   "bytes_on_disk": model.bytes_on_disk, "upstream_mb": round(up / 1e6, 1),
+                                   "scan_mb": round(scan / 1e6, 1), "full_load": str(ref) in {str(f) for f in full}}
+        if not as_json:
+            _out(f"{ref}: {model.rows if model.rows is not None else '?'} rows, {model.fragments} fragments, "
+                 f"{model.bytes_on_disk / 1e6:.1f} MB on disk; upstream full load ~{up / 1e6:.0f} MB, "
+                 f"projected scan ~{scan / 1e6:.0f} MB")
     errors = dict(stats.get("table_errors") or stats.get("errors") or {})
-    for ref, err in sorted(errors.items()):
-        _out(f"{ref}: error: {err}")
+    doc["errors"] = {str(k): str(v) for k, v in sorted(errors.items())}
+    if not as_json:
+        for ref, err in sorted(errors.items()):
+            _out(f"{ref}: error: {err}")
     missing = sorted(str(r) for r in errors if str(r) in {str(f) for f in full} or server is None)
     if server is not None:
-        if missing:
+        admissible = None if missing else (not limit or total_upstream / 1e6 <= limit)
+        doc["tool"] = {"name": args.tool, "upstream_mb": None if missing else round(total_upstream / 1e6, 1),
+                       "limit_mb": limit, "admissible": admissible, "unavailable": missing}
+        if as_json:
+            _out(json.dumps(doc, sort_keys=True, default=str))
+        elif missing:
             # a table the tool loads whole could not be measured: no size, so no admission verdict
             _out(f"tool {args.tool}: not estimable ({', '.join(missing)} unavailable)")
-            return 1
-        _out(f"tool {args.tool}: upstream peak ~{total_upstream / 1e6:.0f} MB"
-             + (f"; server limit {limit} MB" if limit else "")
-             + (f"; host {host} MB" if host else "")
-             + ("; admissible" if not limit or total_upstream / 1e6 <= limit else "; NOT admissible (too_large)"))
+        else:
+            _out(f"tool {args.tool}: upstream peak ~{total_upstream / 1e6:.0f} MB"
+                 + (f"; server limit {limit} MB" if limit else "")
+                 + (f"; host {host} MB" if host else "")
+                 + ("; admissible" if admissible else "; NOT admissible (too_large)"))
+        return 1 if missing else 0
+    if as_json:
+        _out(json.dumps(doc, sort_keys=True, default=str))
     elif host:
         _out(f"host memory: {host} MB")
     return 1 if missing else 0
@@ -1433,6 +1480,79 @@ def cmd_graduate(args: argparse.Namespace, config: dict[str, Any]) -> int:
     return 0 if all(e["graduated"] for e in report.values()) else 1
 
 
+# ---------------------------------------------------------------------------- conformance
+
+
+def cmd_conformance(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    """Run the plugin conformance suites (§9.3) over both registries: the data child's kinds (``discover``) and
+    the harness kinds (``discover_harness``: ``acquisition``). With ``--plugin``, a passing run writes the plugin's
+    stamp under ``data.cache_dir/conformance/`` (what ``data.plugins.require_conformance`` reads)."""
+    import os
+
+    from .plugins import HARNESS_KINDS, KINDS
+    from .plugins.base import plugin_key
+    from .plugins.conformance import read_stamp, run, stamp_valid, suite_path, write_stamp
+    from .plugins.registry import discover, discover_harness
+    from .settings import SETTINGS_ENV, DataSettings
+
+    settings = DataSettings.from_config(config)
+    every = [k for k in (*KINDS, *HARNESS_KINDS) if suite_path(k).is_file()]
+    if args.kind and args.kind not in every:
+        _err(f"error: no conformance suite for kind {args.kind!r} (suites: {', '.join(every)})")
+        return 2
+    data_reg, harness_reg = discover(settings), discover_harness(settings)
+
+    def plugins(kind: str) -> list[Any]:
+        return list((harness_reg if kind in HARNESS_KINDS else data_reg).all(kind))
+
+    def matches(p: Any) -> bool:
+        return args.plugin in (p.name, plugin_key(p), f"{p.kind}:{p.name}")
+
+    kinds = [args.kind] if args.kind else every
+    if args.plugin:
+        kinds = [k for k in kinds if any(matches(p) for p in plugins(k))]
+        if not kinds:
+            _err(f"error: no registered plugin {args.plugin!r}" + (f" of kind {args.kind}" if args.kind else ""))
+            return 2
+    if args.list:
+        rows = [{"kind": k, "plugin": plugin_key(p), "version": str(p.version),
+                 "stamp": "valid" if stamp_valid(p, settings.cache_dir) else
+                 ("stale" if read_stamp(p, settings.cache_dir) else "none")}
+                for k in kinds for p in plugins(k) if not args.plugin or matches(p)]
+        if args.json:
+            _out(json.dumps({"plugins": rows}, sort_keys=True))
+        else:
+            for r in rows:
+                _out(f"{r['kind']:<12} {r['plugin']:<40} {r['version']:<8} stamp {r['stamp']}")
+        return 0
+    # the suites discover with DataSettings.from_env(): give them this configuration's plugins
+    previous = os.environ.get(SETTINGS_ENV)
+    os.environ[SETTINGS_ENV] = settings.to_json()
+    results: dict[str, int] = {}
+    stamps: list[str] = []
+    try:
+        for kind in kinds:
+            name = next((p.name for p in plugins(kind) if matches(p)), None) if args.plugin else None
+            code = run(kind, name, extra_args=["-x"] if name else [])
+            results[kind] = code
+            if code == 0 and args.plugin:
+                stamps.extend(str(write_stamp(p, settings.cache_dir)) for p in plugins(kind) if matches(p))
+    finally:
+        if previous is None:
+            os.environ.pop(SETTINGS_ENV, None)
+        else:
+            os.environ[SETTINGS_ENV] = previous
+    failed = sorted(k for k, c in results.items() if c != 0)
+    if args.json:
+        _out(json.dumps({"kinds": results, "failed": failed, "stamps": stamps}, sort_keys=True))
+    else:
+        for kind, code in results.items():
+            _out(f"{kind}: {'passed' if code == 0 else f'FAILED (pytest exit {code})'}")
+        for path in stamps:
+            _out(f"stamp written: {path}")
+    return 1 if failed else 0
+
+
 # ---------------------------------------------------------------------------- parser
 
 COMMANDS: dict[str, Callable[[argparse.Namespace, dict[str, Any]], int]] = {
@@ -1440,7 +1560,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace, dict[str, Any]], int]] = {
     "explain": cmd_explain, "fingerprint": cmd_fingerprint, "index build": cmd_index_build,
     "estimate": cmd_estimate, "retro-audit": cmd_retro_audit, "status": cmd_status, "calibrate": cmd_calibrate,
     "overlay init": cmd_overlay_init, "replay": cmd_replay, "diff-release": cmd_diff_release,
-    "graduate": cmd_graduate,
+    "graduate": cmd_graduate, "conformance": cmd_conformance,
 }
 
 
@@ -1503,7 +1623,9 @@ def add_datasource_parsers(sub: Any) -> Any:
     b = ix.add_parser("build", help="prebuild resolver sidecars and row-group value indexes")
     b.add_argument("--id-type", action="append", help="[source:]id_type (repeatable; default: every local one)")
     b.add_argument("--access-paths", action="store_true", help="row-group indexes of declared access paths")
-    b.add_argument("--table", action="append", help="limit --access-paths to these tables")
+    b.add_argument("--table", action="append",
+                   help="source.table (repeatable): only the id types these tables hold (with --access-paths: only "
+                        "these tables' access paths)")
     b.add_argument("--force", action="store_true", help="rebuild indexes that exist")
     b.add_argument("--huge", action="store_true",
                    help="with --access-paths: resumable builds of huge tables (time and byte budgets per step)")
@@ -1516,6 +1638,7 @@ def add_datasource_parsers(sub: Any) -> Any:
     p = ds.add_parser("estimate", help="memory estimate and admissibility on this host")
     p.add_argument("--table", action="append", help="source.table (repeatable)")
     p.add_argument("--tool", help="server.tool")
+    _add_common(p, "json")
     p.set_defaults(handler=cmd_estimate)
 
     p = ds.add_parser("retro-audit", help="re-classify a recorded run's data calls offline")
@@ -1567,6 +1690,13 @@ def add_datasource_parsers(sub: Any) -> Any:
     p.add_argument("--quick", action="store_true", help="footers only: no vocabulary snapshots or matrix axes")
     _add_common(p, "json")
     p.set_defaults(handler=cmd_diff_release)
+
+    p = ds.add_parser("conformance", help="run the plugin conformance suites (data-child and harness kinds)")
+    p.add_argument("--kind", help="one kind (format, layout, statistic, identifier, envelope, acquisition)")
+    p.add_argument("--plugin", help="one plugin (name, kind:name or kind/name); a pass writes its conformance stamp")
+    p.add_argument("--list", action="store_true", help="list the plugins each suite covers and their stamps")
+    _add_common(p, "json")
+    p.set_defaults(handler=cmd_conformance)
 
     p = ds.add_parser("graduate", help="observe -> enforce checklist per server with retro-audit evidence")
     p.add_argument("server", nargs="*", help="servers (default: every overlay)")

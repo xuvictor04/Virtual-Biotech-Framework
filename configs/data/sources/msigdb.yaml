@@ -17,7 +17,11 @@ schema: vbt.datasource/1
 source: msigdb
 title: MSigDB Hallmark gene sets (GMT)
 root: ${MSIGDB_DATA_PATH:-${vars.project_root}/data/msigdb}
-release: {expect: "2024.1.Hs", from: literal}
+release: {expect: "2024.1.Hs", from: [literal, manifest.release]}
+manifests:
+  # what `vbt data acquire` verified (sha256 of the GMT file), in the upstream downloader's format. R2 checks the
+  # size against the file, that the acquisition completed and that its release is the expected one.
+  - {path: .download-manifest.json, required: false, require: {complete: true}}
 defaults: {format: gmt, layout: single_file, missing: unknown}
 strict: true
 

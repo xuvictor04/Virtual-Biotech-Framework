@@ -12,7 +12,7 @@ login notes). What happens next is the operator's policy, ``data.acquisition``::
 
 :func:`between_turns` is that step: the harness calls it after a turn with the turn's refusals (or ``None``, to take
 every table the readiness cache reports missing). Every acquisition it makes is recorded in
-``<data.provenance.dir>/acquisitions.jsonl`` and, with ``run_dir``, in the run's ``data_acquisitions.jsonl``
+``<data.acquisition.root>/acquisitions.jsonl`` and, with ``run_dir``, in the run's ``data_acquisitions.jsonl``
 (``by: auto``, the policy and the budget).
 """
 

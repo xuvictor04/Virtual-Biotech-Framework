@@ -30,6 +30,10 @@ cost lines lead with token counts (0 USD unless ``provider.options.pricing``).
 * ``--model`` accepts a ``model_aliases`` label, a configured model id, or an id
   matching ``provider.model_pattern`` (default: Claude ids for anthropic, any
   served model name for vllm / sglang / openai_compat / llamacpp).
+* The host configuration ``vbt setup`` wrote applies to every command, as with
+  ``deploy/full/vbt-host`` (:func:`apply_host_config`): ``<state>/host.env`` is
+  loaded (a variable already set wins) and its ``VBT_PROFILES`` come before the
+  command's own ``--profile`` flags. ``VBT_NO_HOST_ENV=1`` turns this off.
 """
 
 from __future__ import annotations
@@ -1120,10 +1124,47 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+#: Set (non-empty) to ignore the host configuration (the test suite sets it).
+NO_HOST_ENV = "VBT_NO_HOST_ENV"
+
+
+def apply_host_config(args, environ: dict[str, str] | None = None) -> Path | None:
+    """What ``deploy/full/vbt-host`` does, for a plain ``vbt``: load ``host.env`` from the setup state directory
+    (``$VBT_STATE_DIR``, else ``$VBT_HOME/state``, else ``<data>/.vbt-setup``; a variable already set to a
+    non-empty value wins) and put the profiles ``vbt setup`` recorded (``VBT_PROFILES``; before the first setup,
+    and for ``vbt setup`` itself, ``VBT_BASE_PROFILES``) before the command's own ``--profile`` flags, so those
+    still apply last. A resumed session or a replay without ``--profile`` keeps the profiles it was pinned with.
+    Returns the ``host.env`` loaded (None when there is none)."""
+    env = os.environ if environ is None else environ
+    if env.get(NO_HOST_ENV):
+        return None
+    from .setup.hostconfig import HOST_ENV, read_env_file
+    from .setup.layout import resolve_layout
+
+    loaded = None
+    path = resolve_layout(environ=env).state / HOST_ENV
+    if path.is_file():
+        for key, value in read_env_file(path).items():
+            if key.isidentifier() and not env.get(key):
+                env[key] = value
+        loaded = path
+    cmd = getattr(args, "cmd", None)
+    explicit = list(getattr(args, "profile", None) or [])
+    if not explicit and (getattr(args, "resume", None) or cmd == "replay"):
+        return loaded
+    names = env.get("VBT_BASE_PROFILES", "") if cmd == "setup" else \
+        (env.get("VBT_PROFILES") or env.get("VBT_BASE_PROFILES") or "")
+    host = [n for n in names.split() if n]
+    if host and hasattr(args, "profile"):
+        args.profile = list(dict.fromkeys(host + explicit))
+    return loaded
+
+
 def main(argv: list[str] | None = None) -> int:
     p = build_parser()
     args = p.parse_args(argv)
     try:
+        apply_host_config(args)
         config = build_config(args)
         if args.cmd == "replay" and getattr(args, "replay_model", None):
             resolve_model(config, args.replay_model)

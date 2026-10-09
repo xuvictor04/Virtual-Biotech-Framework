@@ -823,7 +823,9 @@ def test_the_cli_plans_acquires_and_reports(site, tmp_path, capsys, monkeypatch)
     assert main([*base, "acquire", "demo", "--env-file", str(env)]) == 0
     out = capsys.readouterr().out
     assert "demo 1.0: 4 file(s) downloaded" in out and env.read_text() == f'DEMO_DATA_PATH="{tmp_path / "acq" / "demo" / "1.0"}"\n'
-    assert json.loads((tmp_path / "prov" / "acquisitions.jsonl").read_text().splitlines()[-1])["by"] == "cli"
+    # the host-wide log sits in the acquisition root (data.provenance.dir is relative to a run)
+    assert json.loads((tmp_path / "acq" / "acquisitions.jsonl").read_text().splitlines()[-1])["by"] == "cli"
+    assert not (tmp_path / "prov").exists()
     monkeypatch.setenv("DEMO_DATA_PATH", str(tmp_path / "acq" / "demo" / "1.0"))
     assert main([*base, "status", "demo"]) == 0
     assert "demo.gamma" in capsys.readouterr().out

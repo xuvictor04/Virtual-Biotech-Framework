@@ -76,6 +76,21 @@ part of it is mapped to its module in [docs/PAPER_TO_CODE.md](docs/PAPER_TO_CODE
 [docs/LOCAL_LLM.md](docs/LOCAL_LLM.md) has the per-GPU profiles, their expected capacity and
 the full setup; [deploy/local/README.md](deploy/local/README.md) is the operations reference.
 
+**A whole deployment in one command.** [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) covers the
+locked harness image, the full compose stack (`deploy/full/deploy.sh up`), Apptainer on HPC
+and bare metal. On any of them `vbt setup` brings the host up from a clean clone or the
+image: it probes the host (CPUs, memory, GPUs, cgroups), picks the serving profile, sizes the
+servers' memory, acquires the data the enabled agents' tools read (`vbt data acquire`), builds
+the indexes, checks readiness and runs a smoke session. It resumes where it stopped, and
+`vbt setup --plan` prints what it would do, with sizes and times, without changing anything.
+It writes the host configuration (`host.yaml`, `host.env`) that every later `vbt` command
+applies (as `deploy/full/vbt-host` does; `VBT_NO_HOST_ENV=1` turns that off).
+
+```bash
+vbt --profile production setup --plan    # what would be fetched, built and checked, and how long it takes
+vbt --profile production setup           # do it (resumable; `vbt setup --status` shows the steps)
+```
+
 ```bash
 git clone --recursive <this repo> && cd Virtual-Biotech-Framework
 # or, in an existing clone:
@@ -90,9 +105,10 @@ pip install -e ".[web,tools,dev]"
 # analysis/single-cell/survival stacks and the web UI; `full` adds rpy2 and Cell2Location.
 #   pip install -e ".[all]"
 
-# 2. Configuration and reference data.
-cp .env.example .env    # set OPEN_TARGETS_DATA_PATH (and VBT_LLM_BASE_URL if vLLM runs elsewhere)
-python third_party/TheVirtualBiotech/tools/download_open_targets.py /data/open_targets --workers 8
+# 2. Configuration and reference data (docs/DATA_SETUP.md).
+cp .env.example .env    # set VBT_LLM_BASE_URL if vLLM runs elsewhere
+vbt data acquire --for-agents genomics-analyst --plan   # what the agents' tools read: files, sizes, licences
+vbt data acquire --for-agents genomics-analyst --env-file .env   # fetch and verify it; .env points the servers at it
 
 # 3. The model server: Qwen3.8-27B on vLLM 0.31, plus SearxNG for WebSearch.
 vbt local profiles --detect                                            # recommends a serving profile
@@ -283,6 +299,26 @@ vbt data zenodo fetch --preset case1       # download the Case 1 part of the arc
 vbt case1 replicate                        # re-run the Case 1 statistics on the archive and compare
 ```
 
+### Reference data
+
+`vbt data acquire` fetches what the descriptors' `acquisition` sections declare (Open Targets, Tahoe-100M,
+DepMap, GO, the Cell Ontology, MSigDB, the Zenodo archive) through transport plugins (`http`, `huggingface`,
+`s3`, `gcs`, `json_index`, `zip_member`): it lists the release, plans the transfer with sizes, licences and
+the time it will take, downloads in parallel with resume, verifies every file's size and checksum, runs a
+source's preparation step (the unmodified upstream script) and writes `.download-manifest.json`, which the
+readiness check (R2) reads. [docs/DATA_SETUP.md](docs/DATA_SETUP.md) is the guide.
+
+```bash
+vbt data acquire open_targets.target open_targets.go --plan   # files, bytes and time, nothing written
+vbt data acquire --for-tools target.get_target_info           # the tables a tool reads
+vbt data status --check                                       # what is present, verified and ready
+```
+
+A call refused `not_ready` because a table's files are absent says how to acquire them (command, size,
+licence). `data.acquisition.auto` decides what happens next: `"off"` (default; an operator runs it), `ask`
+(queued for `vbt data acquire --pending`) or `under_budget` (the session acquires it between turns when it
+fits `budget_bytes`, and records it in the run).
+
 ### Open Targets release tables
 
 `vbt data ot` downloads tables of an Open Targets Platform release (default 25.09) into the directory the
@@ -330,8 +366,9 @@ vbt ds lint [--strict]                    # validate descriptors and overlays
 vbt ds check [--table S.T | --tool s.t]   # readiness R1-R10, run in the data child under the reaper
 vbt ds explain target.get_target_info     # binding, serve mode, derived schema and text of a tool
 vbt ds resolve ensembl_gene PCSK9         # resolver rules and candidates
-vbt ds index build                        # resolver and access-path indexes
+vbt ds index build [--table S.T]          # resolver and access-path indexes (of the tables given)
 vbt ds estimate | calibrate | status      # memory estimates, calibration, per-server memory
+vbt ds conformance [--plugin NAME]        # plugin conformance suites (data-child and acquisition kinds)
 vbt ds replay <RUN> --all                 # re-execute a run's recorded data calls
 vbt verify <RUN> --data                   # fresh fingerprints and replays of the cited data
 ```

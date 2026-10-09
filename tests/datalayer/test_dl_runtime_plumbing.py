@@ -16,7 +16,7 @@ from vbt import failures as fl
 from vbt import runtime as runtime_mod
 from vbt.agents import AgentDefinition, _unavailable_text, system_prompt_parts
 from vbt.context import _SPILLED_RE
-from vbt.datalayer.errors import ErrorKind, GatewayError, not_found_payload
+from vbt.datalayer.errors import ErrorKind, GatewayError, not_found_payload, not_ready_payload
 from vbt.datalayer.record import DataProvenance, OrderInfo, ResultInfo, SourceInfo, TableInfo
 from vbt.datalayer.result import DataResult, Header
 from vbt.providers.mock import ScriptedProvider, call, reply
@@ -183,6 +183,21 @@ async def test_data_side_gateway_error_is_a_data_source_failure(config, scripted
     session, res, end, _text = await _run_tool(scripted_session, config, handler)
     assert end["error_kind"] == "not_ready"
     assert [f["tool"] for f in res.unresolved_data_failures] == [TOOL]
+    await session.close()
+
+
+async def test_a_not_ready_refusal_keeps_its_tables_for_the_between_turns_acquisition(config, scripted_session):
+    """The session's between-turns step reads which tables a turn's refusals named (with their ``acquire``
+    entry) from the ``tool_end`` events."""
+    tables = [{"name": "open_targets.go", "check": "missing", "detail": "no files", "hint": "acquire them",
+               "acquire": {"command": "vbt data acquire open_targets.go", "table": "open_targets.go", "bytes": 9}}]
+
+    async def handler(ctx, a):
+        raise GatewayError("not_ready", "open_targets.go is not ready", tool=TOOL, payload=not_ready_payload(tables))
+
+    session, _res, end, text = await _run_tool(scripted_session, config, handler)
+    assert end["error_kind"] == "not_ready" and end["not_ready"] == tables
+    assert json.loads(text[len("Error: "):])["tables"][0]["acquire"]["bytes"] == 9      # the model sees how
     await session.close()
 
 

@@ -19,6 +19,10 @@ source: gene_ontology
 title: Gene Ontology (go-basic.obo)
 root: ${GO_DATA_PATH:-${vars.project_root}/data/go}
 release: {from: format.data-version}
+manifests:
+  # what `vbt data acquire` verified (sha256 of go-basic.obo), in the upstream downloader's format. R2 checks the
+  # size against the file and that the acquisition completed (the release is the file's data-version).
+  - {path: .download-manifest.json, required: false, require: {complete: true}}
 defaults: {format: obo, layout: single_file, missing: unknown}
 strict: true
 

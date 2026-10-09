@@ -13,6 +13,7 @@
   next sessions will get.
 """
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,8 @@ from typing import Any
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# a host configuration `vbt setup` wrote on this machine (host.env, VBT_PROFILES) must not reach the tests
+os.environ["VBT_NO_HOST_ENV"] = "1"
 
 from vbt.config import load_config  # noqa: E402
 

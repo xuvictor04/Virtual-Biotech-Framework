@@ -155,7 +155,7 @@ def collect_status(config: Mapping[str, Any], *, sources: Sequence[str] = (), ch
             st.hint = "acquired at " + str(home) + "; point the data layer at it: " + \
                 " ".join(f"{k}={env[k]}" for k in missing_env) + " (vbt data acquire --env-file .env writes it)"
         out.append(st)
-    cache = ReadinessCache(settings.cache_dir, catalog, registry)
+    cache = ReadinessCache(settings.cache_dir, catalog, registry, acquisition=settings.acquisition.policy())
     cache.load()
     if check and present_refs:
         from ..preflight import run_data_check

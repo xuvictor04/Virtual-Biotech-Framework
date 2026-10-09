@@ -39,6 +39,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -643,6 +644,20 @@ class DataReadiness:
 
 
 _CATALOGS: dict[str, tuple[Any, Any, Any]] = {}
+_ENV_REFS: dict[tuple[str, int], tuple[str, ...]] = {}
+_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _env_refs(path: Path, mtime_ns: int) -> tuple[str, ...]:
+    """The environment variables a descriptor or overlay file expands (``${NAME}``, ``${NAME:-x}``)."""
+    key = (str(path), mtime_ns)
+    if key not in _ENV_REFS:
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            text = ""
+        _ENV_REFS[key] = tuple(sorted({m for m in _ENV_REF.findall(text) if m != "vars"}))
+    return _ENV_REFS[key]
 
 
 def data_catalog(config: dict[str, Any]) -> tuple[Any, Any, Any]:
@@ -661,13 +676,18 @@ def data_catalog(config: dict[str, Any]) -> tuple[Any, Any, Any]:
             raise DataCatalogError(f"data.{what} {d} is missing or holds no YAML files: the data catalog "
                                        "cannot be loaded")
     stamps = []
+    env: dict[str, str | None] = {}
     for d in (settings.descriptors_dir, settings.overlays_dir):
         for p in sorted(Path(d).glob("*.y*ml")) if Path(d).is_dir() else []:
             try:
-                stamps.append((str(p), p.stat().st_mtime_ns))
+                mtime = p.stat().st_mtime_ns
             except OSError:
                 continue
-    key = json.dumps([settings.to_json(), variables, stamps], sort_keys=True, default=str)
+            stamps.append((str(p), mtime))
+            # the descriptors expand these at load: a changed value (VBT_CL_OBO, OPEN_TARGETS_DATA_PATH) is a
+            # different catalog
+            env.update({name: os.environ.get(name) for name in _env_refs(p, mtime)})
+    key = json.dumps([settings.to_json(), variables, stamps, env], sort_keys=True, default=str)
     if key not in _CATALOGS:
         registry = discover(settings)
         _CATALOGS.clear()
@@ -745,7 +765,7 @@ def load_data_readiness(config: dict[str, Any], *, per_turn: bool = False,
     from .datalayer.gateway.readiness import ReadinessCache
 
     settings, catalog, registry = data_catalog(config)
-    cache = ReadinessCache(settings.cache_dir, catalog, registry)
+    cache = ReadinessCache(settings.cache_dir, catalog, registry, acquisition=settings.acquisition.policy())
     servers = list(servers) if servers is not None else None
     enabled = set(servers) if servers is not None else {s.get("name") for s in _servers(config)}
     wanted: set[str] = set()
@@ -1131,11 +1151,12 @@ def check_analysis_stack(config: dict[str, Any]) -> list[CheckResult]:
                                     "(environment.yml)", kind="analysis"))
         return out
     code = ("pk <- c(" + ",".join(f'"{p}"' for p in R_PACKAGES) + "); "
-            "ok <- sapply(pk, requireNamespace, quietly=TRUE); cat(paste0('VBT_R ', pk, '=', ok, '\\n'))")
+            "ok <- sapply(pk, requireNamespace, quietly=TRUE); writeLines(paste0('VBT_R ', pk, '=', ok))")
     try:
         proc = subprocess.run([rscript, "-e", code], capture_output=True, text=True, timeout=300,
                               env=child_env(os.environ))
-        found = dict(ln[6:].split("=", 1) for ln in proc.stdout.splitlines() if ln.startswith("VBT_R "))
+        # one line per package (an earlier cat() of the vector put a space before every line after the first)
+        found = dict(ln.strip()[6:].split("=", 1) for ln in proc.stdout.splitlines() if ln.strip().startswith("VBT_R "))
     except (OSError, subprocess.TimeoutExpired) as exc:
         found = {}
         out.append(CheckResult("analysis: Rscript runs", False, detail=str(exc), kind="analysis"))

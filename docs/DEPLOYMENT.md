@@ -193,8 +193,11 @@ deploy/full/vbt-host web                         # = vbt with the host's profile
 ```
 
 `deploy/full/vbt-host` is `vbt` with the host configuration applied: it loads `host.env` (a variable already set in
-the environment wins) and passes the profiles `vbt setup` recorded (`VBT_PROFILES`, `host.yaml` last). Use it for
-every command (`vbt-host chat`, `vbt-host run ...`, `vbt-host ds status`).
+the environment wins) and passes the profiles `vbt setup` recorded (`VBT_PROFILES`, `host.yaml` last). A plain `vbt`
+does the same on its own (`vbt.cli.apply_host_config`, from `$VBT_STATE_DIR`, else `$VBT_HOME/state`, else
+`data/.vbt-setup`): the recorded profiles come before the command's own `--profile` flags, a resumed session or a
+replay without `--profile` keeps its pinned profiles, and `VBT_NO_HOST_ENV=1` turns it off. The wrapper stays the
+image's entrypoint (it also gives the container a writable `HOME`).
 
 ## 5. HPC with Apptainer
 
@@ -224,8 +227,8 @@ vbt [--profile P ...] setup [--plan | --probe | --status] [--only S,..] [--from 
 | `probe` | CPUs (affinity, cgroup quota), RAM (MemTotal and the container's memory limit), GPUs (`nvidia-smi`, or `state/nvidia-smi.csv`), free disk under each directory, whether a memory cgroup can be created (the reaper's own functions), whether bubblewrap works, the container runtime, and reachability of every URL the descriptors name plus the model server and SearxNG | `setup-state.json` |
 | `configure` | serving profile (from the GPUs), harness profile, memory sizing (below), data roots | `host.yaml`, `host.env`, `compose.vllm.yaml` |
 | `acquire` | `vbt data acquire --for-tools <every tool the enabled agents may call>` (`--plan --json` for the plan, `--offline` with `--no-network`); the variables it reports (`OPEN_TARGETS_DATA_PATH=...`) replace the defaults | the data under `data/sources/<source>/<release>`, then `host.yaml` and `host.env` again |
-| `size` | `vbt ds estimate` of the tables the enabled servers load whole; the largest server's estimate x1.3 becomes `data.memory.default_server_mb` | `host.yaml` again |
-| `index` | `vbt ds index build` | `data/.vbt-datalayer/` |
+| `size` | `vbt ds estimate --json` of the tables the enabled servers load whole; the largest server's estimate x1.3 becomes `data.memory.default_server_mb` | `host.yaml` again |
+| `index` | `vbt ds index build --table ...` for every table the enabled tools read: only the id types those tables hold | `data/.vbt-datalayer/` |
 | `check` | `vbt ds check --json --table ...` for every table the enabled tools read | readiness cache |
 | `calibrate` | `vbt ds calibrate --table ...` for the local tables loaded whole | calibrations |
 | `smoke` | an offline mock session; `vbt doctor` (`--smoke` once the model server answers, else the step is `deferred`); `vbt doctor --analysis` | logs |
@@ -350,9 +353,9 @@ machine, so times are approximate):
   image, `tests/test_setup.py` passes (41 passed, 2 skipped: no `.github`, no Docker in the container). Two
   problems found on the way are fixed here: the SearxNG image listens on `[::]` and exits on a host without IPv6
   (compose sets `GRANIAN_HOST=0.0.0.0`), and a fixed `ulimits:` above the Docker daemon's own limit stopped the
-  containers from starting (removed). `vbt doctor --analysis` reports every R package after the first as missing
-  (its check reads one `cat` of a vector); the smoke step loads each reported package with its own `Rscript` call
-  and fails only on one R cannot load (all five load in the image).
+  containers from starting (removed). `vbt doctor --analysis` reported every R package after the first as missing
+  (its check read one `cat` of a vector; it now prints one line per package); the smoke step still loads each
+  reported package with its own `Rscript` call and fails only on one R cannot load (all five load in the image).
 * **With `vbt data acquire`.** In a scratch merge with the acquisition change (a separate branch), `vbt setup --plan`
   took its acquire row from `vbt data acquire --for-tools <85 tools> --plan --json`: 117.68 GB to fetch for the
   default roster (Open Targets 25.09: 28.82 GB in 2,916 files; Tahoe-100M: 88.86 GB in 1,030 files). A run limited

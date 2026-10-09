@@ -94,11 +94,17 @@ def cmd_acquire(args: Any, config: Mapping[str, Any]) -> int:
     if targets.errors:
         return 2
     if not targets.wanted:
-        for n in targets.notes:
-            print(f"note: {n}")
         if not (names or args.for_tools or args.for_agents or args.missing or args.pending):
             _err("error: name sources or tables, or give --for-tools, --for-agents, --all, --missing or --pending")
             return 2
+        if args.json and args.plan:
+            # the same document as a plan with work in it, so a caller parses one shape
+            print(json.dumps({"root": str(Path(args.dest).expanduser().resolve() if args.dest else settings.root),
+                              "bytes_remaining": 0, "seconds": 0, "sources": [], "notes": list(targets.notes),
+                              "why": targets.why}, indent=1, default=str, sort_keys=True))
+            return 0
+        for n in targets.notes:
+            print(f"note: {n}")
         print("nothing to acquire")
         return 0
     root = Path(args.dest).expanduser().resolve() if args.dest else settings.root
