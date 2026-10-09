@@ -100,13 +100,13 @@ async def run_correctness(ctx: Any) -> StepResult:
                 ctx.calls.append({"server": server, "tool": c.tool, "case": key, "mode": "enforce",
                                   "seconds": enf.seconds, "verdict": verdict, "first": first})
                 guard = None
-                whole = _whole_tables(ctx.catalog, binding)
+                whole, scanned = _upstream_reads(ctx.catalog, binding)
                 if enf.is_error and enf.kind == "too_large":
                     # the gateway refused the load this host cannot hold: the same call without it would load
                     # the tables anyway and be killed at the server's limit (or take the host with it)
                     guard = "not called: the enforce call was refused too_large on this host"
                 else:
-                    guard = await calls.off_guard(server, whole)
+                    guard = await calls.off_guard(server, whole, scanned)
                 if guard:
                     off_text = guard
                 else:
@@ -163,18 +163,22 @@ def release_memory() -> None:
             pass
 
 
-def _whole_tables(catalog: Any, binding: Any) -> list[str]:
-    """The physical tables a tool's upstream call loads whole (``reads.<table>.access: full_table``)."""
-    out: list[str] = []
+def _upstream_reads(catalog: Any, binding: Any) -> tuple[list[str], list[str]]:
+    """``(whole, scanned)``: the physical tables a tool's upstream call loads whole (``access: full_table``) and those
+    it scans with a filter (``bounded_scan``)."""
+    whole: list[str] = []
+    scanned: list[str] = []
     for ref, rs in (getattr(binding, "reads", None) or {}).items():
-        if getattr(rs, "access", None) != "full_table":
+        access = getattr(rs, "access", None)
+        if access not in ("full_table", "bounded_scan"):
             continue
         try:
             t = catalog.table(str(ref))
-            out.append(str(t.physical) if t.is_item_table else str(ref))
+            name = str(t.physical) if t.is_item_table else str(ref)
         except Exception:  # noqa: BLE001
-            out.append(str(ref))
-    return out
+            name = str(ref)
+        (whole if access == "full_table" else scanned).append(name)
+    return whole, scanned
 
 
 def _oracle_text(c: Any) -> str:

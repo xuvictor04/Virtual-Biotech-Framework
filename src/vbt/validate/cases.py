@@ -34,7 +34,8 @@ __all__ = ["Case", "Plan", "table_source", "plan_cases", "oracle_queries", "comp
            "rows_of", "REFUSALS"]
 
 #: Typed refusals that are correct answers on a host or release that cannot serve the call.
-REFUSALS = frozenset({"too_large", "not_ready", "unsupported_filter", "quarantined", "service_unavailable"})
+REFUSALS = frozenset({"too_large", "not_ready", "unsupported_filter", "unsupported_combination", "quarantined",
+                      "service_unavailable"})
 _SUPPORTED_LAYOUTS = {"sharded_dir", "single_file", "hive"}
 _SUPPORTED_FORMATS = {"parquet", "csv", "tsv"}
 _INVALID = "__vbt_validate_invalid__"
@@ -254,7 +255,10 @@ def plan_cases(catalog: Any, registry: Any, server: str, schemas: Mapping[str, M
                     continue
                 cols = [col for tbl, col in c.arg_columns(name) if tbl == table]
                 if cols and _top_level(cols[0]):
-                    found.append(Case("CT-6", args={**fill, name: None}, expect="threshold", queries=sample, **base,
+                    # the threshold alone where the identifier is optional (the oracle's median is the column's):
+                    # an identifier lookup with a threshold is often a combination the binding declines
+                    ct6 = {name: None} if id_arg not in required else {**fill, name: None}
+                    found.append(Case("CT-6", args=ct6, expect="threshold", queries=sample, **base,
                                       threshold={"column": cols[0], "field": _field_for(b, cols[0]), "op": a.op,
                                                  "arg": name}))
                     break
@@ -485,7 +489,8 @@ def judge_off(case: Case, out: Any, binding: Any) -> str:
     if case.expect == "topk" and case.order:
         rows = rows_of(out.obj, binding.result.rows if binding is not None else "$") or []
         got = [r.get(case.order["field"]) for r in rows if isinstance(r, dict)]
-        return f"top {got}" + (" (= oracle)" if _same(got, list(case.oracle.get("top") or [])[:len(got)]) else
+        want = list(case.oracle.get("top") or [])[:len(got) or case.order["k"]]
+        return f"top {got}" + (" (= oracle)" if _same(got, want) else
                                " (differs from the oracle)")
     if case.expect == "threshold" and case.threshold:
         rows = rows_of(out.obj, binding.result.rows if binding is not None else "$") or []

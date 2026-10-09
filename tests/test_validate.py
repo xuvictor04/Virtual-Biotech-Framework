@@ -202,6 +202,8 @@ def test_judges_read_the_typed_answers():
                order={"field": "score", "k": 2})
     assert judge(top, _out({"rows": [{"score": 9.0}, {"score": 5.0}]}), binding)[0] == "correct"
     assert judge(top, _out({"rows": [{"score": 5.0}, {"score": 1.0}]}), binding)[0] == "wrong"
+    assert "differs" in judge_off(top, _out({"rows": []}), binding), "no rows is not the oracle's top k"
+    assert "(= oracle)" in judge_off(top, _out({"rows": [{"score": 9.0}, {"score": 5.0}]}), binding)
     thr = Case("CT-6", "s", "t", {"id": "X1", "min": 0.5}, "threshold", oracle={"median": 0.5},
                threshold={"field": "score", "op": "ge", "arg": "min"})
     assert judge(thr, _out({"rows": [{"score": 0.7}, {"score": 0.5}]}), binding)[0] == "correct"
@@ -250,7 +252,8 @@ async def test_off_calls_never_load_what_the_server_cannot_hold():
         asked.append(list(tables))
         return SimpleNamespace(tables={t: {"mb": {"t.big": 4000, "t.small": 500, "t.mid": 1500}[t]} for t in tables})
 
-    adm = SimpleNamespace(est=SimpleNamespace(safety=1.3, peak_upstream=lambda st, t: st["mb"] * MB),
+    adm = SimpleNamespace(est=SimpleNamespace(safety=1.3, peak_upstream=lambda st, t: st["mb"] * MB,
+                                              transient=lambda st, selectivity: st["mb"] * MB),
                           limit_mb=lambda server: 4400.0, is_learned=lambda server, cold: False,
                           ledger=SimpleNamespace(resident=lambda server: frozenset(resident[server]),
                                                  resident_mb=lambda server: 800.0))
@@ -269,6 +272,10 @@ async def test_off_calls_never_load_what_the_server_cannot_hold():
     assert why and "killed at its memory limit loading t.mid" in why
     calls.after_off("s", ["t.small"], _out({"rows": []}))
     assert await calls.off_guard("s", ["t.small"]) is None
+    # a filtered scan of unknown selectivity counts as the whole table (as admission counts it) and stays transient
+    why = await calls.off_guard("s", [], ["t.big"])
+    assert why and "t.big scanned" in why
+    assert await calls.off_guard("s", [], ["t.small"]) is None and await calls.off_guard("s", [], ["t.small"]) is None
 
 
 def test_the_check_step_reuses_an_earlier_check(tmp_path, monkeypatch):
