@@ -55,6 +55,9 @@ Each source has a home `<root>/<acquisition.dir>` (default `{source}/{release}`)
 | `zenodo_vbt` | record 22259123 | `zenodo/22259123` | `VBT_ZENODO_DIR` | 30 archive members, 92,001,168 bytes |
 | `cellxgene_census` | 2025-11-08 | — | — | read live from the public S3 bucket; nothing to download |
 
+The shipped `cell_ontology` descriptor reads `${VBT_CL_OBO}` (default: `data/cell_ontology/cl-basic.obo`) and checks the
+file's `data-version` against the pinned release, so an OBO of another release is `stale`, not ready.
+
 The sizes are those the descriptors declare. They were observed on the real sources on 2026-10-08, and the opt-in
 test `VBT_DL_NETWORK=1 pytest tests/datalayer/test_dl_acquisition.py` compares them with live listings. The
 variables are passed to the data child through `tool_env` in `configs/default.yaml`.

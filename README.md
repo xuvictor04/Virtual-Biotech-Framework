@@ -104,6 +104,8 @@ pip install -e ".[web,tools,dev]"
 # pip only (no R): `all` covers the providers, every MCP server's imports, the
 # analysis/single-cell/survival stacks and the web UI; `full` adds rpy2 and Cell2Location.
 #   pip install -e ".[all]"
+# Without R, the R-based analyses (rpy2, lme4, glmmTMB ...) are unavailable: `vbt setup` reports
+# them as a warning at its smoke step, and `vbt setup --no-analysis` skips that check.
 
 # 2. Configuration and reference data (docs/DATA_SETUP.md).
 cp .env.example .env    # set VBT_LLM_BASE_URL if vLLM runs elsewhere
@@ -144,9 +146,10 @@ only when it lists it in `env_passthrough` (the PubMed server: `NCBI_API_KEY`, `
 
 **Readiness checks (preflight).** Before a session starts and before every turn, the
 harness checks the provider credentials (a blank key counts as missing) and the reference
-data the enabled MCP servers need (Open Targets layout via the upstream doctor; Tahoe-100M
-when `TAHOE_DATA_PATH` is set); the session check also confirms every MCP server command
-exists. A failing session check refuses to create the run (exit code 2); a failing per-turn
+data the enabled MCP servers need (with the data layer: the tables each granted tool reads,
+summarised per source as `data source: <id>`; without it, the Open Targets layout via the
+upstream doctor and Tahoe-100M when `TAHOE_DATA_PATH` is set); the session check also
+confirms every MCP server command exists. A failing session check refuses to create the run (exit code 2); a failing per-turn
 check records the turn as `not_sent` ("This turn has not been sent to the model") *before
 any billable model call*. It is skipped for the mock provider, with
 `orchestration.require_reference_data: false`, and with `--skip-preflight`.
@@ -157,8 +160,11 @@ MCP interpreter's imports (`--smoke`: one cheap call per server, failing on any 
 `--analysis`: scanpy, PyDESeq2, gseapy, LIANA, lifelines, rpy2 and the R packages).
 
 **Data requirements:**
-- Open Targets 25.09: about 40 GB, required by most data tools.
+- Open Targets 25.09: 31.1 GB (38 tables, 3,508 Parquet files), required by most data tools.
 - Tahoe-100M: optional, about 83 GB.
+- Cell Ontology (CL 2026-06-08, 3.3 MB): read by the native data tools' cell-type identifiers;
+  `vbt data acquire cell_ontology --env-file .env` fetches it and sets `VBT_CL_OBO`. Until then
+  `cell_ontology.term` is `missing` (the shipped descriptor no longer falls back to a test fixture).
 - CELLxGENE Census: streamed on demand.
 - Case-study datasets (Tabula Sapiens, Visium LUAD, TAURUS, GEO): see each scenario's `reference_data` list.
 
@@ -457,8 +463,11 @@ python -m pytest -q      # offline: scripted provider, fake inference servers, s
 VBT_LIVE_LOCAL_URL=http://localhost:8000/v1 VBT_LIVE_LOCAL_MODEL=qwen3.8-27b \
   VBT_LIVE_LOCAL_HARNESS=1 python -m pytest -v tests/test_live_local.py
 
-# the data layer on downloaded releases and on the live APIs (skipped unless set; docs/DATA_LAYER_REAL_DATA.md)
-VBT_DL_REAL_DATA=data/real python -m pytest -q tests/datalayer/test_dl_real_ot_servers.py
+# the data layer on downloaded releases and on the live APIs (skipped unless set; docs/DATA_LAYER_REAL_DATA.md).
+# VBT_DL_REAL_DATA names the acquisition root `vbt setup` / `vbt data acquire` fill ($VBT_HOME/data or its
+# sources/; each source at <acquisition.dir>, e.g. open_targets/25.09); VBT_DL_REAL_DATA_STRICT=1 fails the run
+# when no real-data test passed, so a wrong directory is not a green run of skips
+VBT_DL_REAL_DATA=$VBT_HOME/data VBT_DL_REAL_DATA_STRICT=1 python -m pytest -q tests/datalayer/test_dl_real_ot_servers.py
 VBT_DL_NETWORK=1 python -m pytest -q tests/datalayer/test_dl_real_live.py
 ```
 

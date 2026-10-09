@@ -104,7 +104,7 @@ Recommended RAM for the harness host with the full release:
 | Upstream servers holding every whole-table load at once (above, x1.3 admission safety) | ~137 GB |
 | Data child (readiness checks, witnesses, native tools): `vbt setup` gives it 5% of RAM, 3-32 GB | 16-32 GB |
 | Agents' Bash commands (8 in parallel at `data.memory.workspace_mb`, 8-64 GB each) | 64-256 GB |
-| `single_cell` server (Census pulls; 2.6-3.2 GB measured for 4,771-19,782 cells; a 200,000-cell pull exceeded 4.7 GB) | 16-64 GB |
+| `single_cell` server (Census pulls: 1.8-4.5 GB peak measured for 1,842-149,759 cells through the unmodified upstream functions, DATA_LAYER_REAL_DATA.md §8.1; the donor-balanced pull's estimate is 3,900 MB plus 4,500 bytes per cell; a 200,000-cell pull exceeded 4.7 GB) | 16-64 GB |
 | Harness, web UI, model client | ~4 GB |
 | **Total** | **256 GB minimum; 512 GB to 1 TB** for the full configuration with headroom |
 
@@ -167,7 +167,8 @@ Prerequisites: Linux x86_64, Docker Engine with Compose v2.24 or newer, the NVID
 
 ```bash
 git clone --recursive <this repository> vbt && cd vbt          # or: git submodule update --init
-export VBT_HOME=/srv/vbt                                          # created if missing
+export VBT_HOME=/srv/vbt
+install -d -m 700 "$VBT_HOME"                                     # the secrets file below needs the directory
 install -m 600 /dev/null "$VBT_HOME/secrets.env"
 printf 'VBT_WEB_PASSWORD=%s\n' "$(openssl rand -base64 24)" >> "$VBT_HOME/secrets.env"
 #   optional in the same file: ANTHROPIC_API_KEY, HF_TOKEN, VLLM_API_KEY, NCBI_API_KEY, NCBI_EMAIL
@@ -180,7 +181,7 @@ state directory (the harness container sees no GPU), runs `vbt setup` in the ima
 the smoke test, starts the services, waits for the model server's health check (the first start downloads the
 weights and compiles CUDA graphs: 10-30 minutes; `VBT_MODEL_WAIT_S`, default 3600) and runs the smoke step.
 
-Before the first `up`, see what it will do:
+Before the first `up`, see what it will do (`--plan`, `--probe` and `--status` start, pull and change nothing):
 
 ```bash
 deploy/full/deploy.sh setup --plan          # steps, download sizes, time estimates, memory sizing, warnings
@@ -211,8 +212,8 @@ git clone --recursive <this repository> vbt && cd vbt
 micromamba create -y -p /opt/vbt-env -f deploy/full/conda-linux-64.lock   # the image's exact environment
 /opt/vbt-env/bin/python -m pip install --no-deps -r deploy/full/requirements.lock
 deploy/full/install-harness.sh --prefix /opt/vbt-env --src "$PWD"
-#   the root environment.yml (version ranges) does not solve on 2026-10-08: conda-forge has no `tiledbsoma`
-#   (the package is tiledbsoma-py) and no decoupler >= 2.0; use the lock above
+#   the lock is the image's exact environment; the root environment.yml (README step 1) gives version ranges and
+#   resolves to whatever conda-forge and PyPI hold on the day it is created
 
 export PATH=/opt/vbt-env/bin:$PATH VBT_HOME=/srv/vbt
 vbt --profile production setup --plan
@@ -261,12 +262,15 @@ vbt [--profile P ...] setup [--plan | --probe | --status] [--only S,..] [--from 
 | `index` | `vbt ds index build --table ...` for every table the enabled tools read: only the id types those tables hold | `data/.vbt-datalayer/` |
 | `check` | `vbt ds check --json --table ...` for every table the enabled tools read | readiness cache |
 | `calibrate` | `vbt ds calibrate --table ...` for the local tables loaded whole | calibrations |
-| `smoke` | an offline mock session; `vbt doctor` (`--smoke` once the model server answers, else the step is `deferred`); `vbt doctor --analysis` | logs |
+| `smoke` | an offline mock session; `vbt doctor` (`--smoke` once the model server answers, else the step is `deferred`); `vbt doctor --analysis` (on a pip-only install without `Rscript`, failures that are only about R are a warning, not a failed step; `--no-analysis` skips it) | logs |
 
 Nothing in setup names a dataset: what to fetch, check and calibrate comes from the descriptors, the overlays and the
 enabled roster (agents in `configs/agents.yaml`, servers enabled in `configs/mcp_servers.yaml`). Disable a server or
-an agent and setup stops fetching and checking what only it reads. Data already on disk elsewhere: set its root
-variable (e.g. `OPEN_TARGETS_DATA_PATH`) and run with `--skip acquire`.
+an agent and setup stops fetching and checking what only it reads (a derived serve's optional dependencies, such as
+the Gene Ontology behind `get_go_enrichment`, count as read). Data already on disk elsewhere: set its root variable
+(e.g. `OPEN_TARGETS_DATA_PATH`) and run with `--skip acquire`. A source no bound tool reads is not fetched by setup;
+the Cell Ontology the native data tools resolve cell types with is fetched with `vbt data acquire cell_ontology
+--env-file <file>` (until then `cell_ontology.term` is `missing`, never served from the test fixture).
 
 Each step after `configure` is a `vbt` command run as a child under the host configuration, logged to
 `state/logs/<step>.log`. A step that finished is skipped next time while its inputs are unchanged (its command, the
@@ -311,13 +315,17 @@ deploy/full/deploy.sh upgrade        # git pull --recurse-submodules, build, set
 
 A release is a new directory, never an in-place update, so runs stay verifiable against the release they used.
 
-1. Fetch the new release next to the old one, e.g. `$VBT_HOME/data/open_targets/25.12` (`vbt data acquire`, or
-   `vbt data ot fetch ... --release 25.12 --dest ...`).
-2. `vbt ds diff-release --from $VBT_HOME/data/open_targets/25.09 --to $VBT_HOME/data/open_targets/25.12`: role
-   columns, types, encodings, vocabularies and matrix axes that changed.
+1. Pin the new release in the descriptor's acquisition section (`acquisition.release: "25.12"` in
+   `configs/data/sources/open_targets.yaml`) and fetch it next to the old one: `vbt data acquire open_targets`
+   writes the acquisition home `$VBT_HOME/data/sources/open_targets/25.12` (`<acquisition.dir>`; the engine
+   fetches only the release the descriptor pins). Without `--env-file` the servers keep reading 25.09.
+2. `vbt ds diff-release --from $VBT_HOME/data/sources/open_targets/25.09 --to
+   $VBT_HOME/data/sources/open_targets/25.12`: role columns, types, encodings, vocabularies and matrix axes that
+   changed.
 3. Update the descriptor (`release.expect`, any column the diff names) and lint it: `vbt ds lint --strict`.
-4. Point the root at the new release (`OPEN_TARGETS_DATA_PATH` in the environment or the secrets file) and run
-   `vbt setup --from configure`: `size`, `index`, `check` and `calibrate` rerun because the data changed.
+4. Point the root at the new release (`vbt data acquire open_targets --env-file <file>` rewrites
+   `OPEN_TARGETS_DATA_PATH`, or set it in the environment or the secrets file) and run `vbt setup --from
+   configure`: `size`, `index`, `check` and `calibrate` rerun because the data changed.
 5. Keep the old release until the runs that cite it no longer need re-verification: `vbt verify <run> --data`
    replays a run's data calls against the fingerprints it pinned.
 
@@ -363,13 +371,17 @@ cases, oracles and limits come from the descriptors, the overlays and the upstre
 | `correctness` | the six correctness tests per server, gateway enforcing vs off, against an oracle that reads the files with pyarrow alone |
 | `latency` | p50/p95 per server: enforce, off, first calls, warm overhead, witness and data-child requests |
 | `memory` | the largest present tables that fit the server limit: the upstream loader's measured peak vs the estimates |
-| `live` | endpoint reachability and the live servers' checks (skipped unless `VBT_DL_NETWORK=1`) |
-| `replication` | Case 1 on the Zenodo archive against the authors' tables (skipped without the archive) |
+| `live` | endpoint reachability and the live servers' checks; runs whenever a descriptor declares a remote source (no `VBT_DL_NETWORK` needed), and is skipped with the reason when no remote endpoint answers |
+| `replication` | an extension (`validate.extensions`, shipped: `vbt.case_studies.trial_outcomes.validate_step`): Case 1 on the Zenodo archive against the authors' tables (skipped without the archive) |
 | `model` | `vbt local check` (skipped when no model server answers) |
 
 On the 16 GB development machine (2026-10-09, a 3,000 MB server profile to stay under a 6 GB per-process-tree
-cap shared with other jobs) a deep run took 829 s; its correctness step found 0 wrong answers in enforce mode over 145
-cases on 9 servers, and the latency, memory, live and replication steps passed.
+cap shared with other jobs) a deep run took 829 s and its verdict was **FAIL** (exit 1). The correctness step
+answered 145 cases on 9 servers with 111 correct, 17 typed refusals and 0 wrong in enforce mode, but 4 calls
+(`target.get_chemical_probes`, `target.get_genetic_constraint`) were admitted and then killed at the 3,000 MB server
+limit, and 13 were not answered because the `target` server had reached its OOM kill limit. Host, lint, check,
+latency, memory, live and replication passed; the model step was skipped (no model server). That run used the
+overlays from before Wave C, which changed how those `target` tables are read; it has not been re-run since.
 
 ### 7.6 Monitoring
 
@@ -396,8 +408,10 @@ machine, so times are approximate):
   lifelines and rpy2, and R loads lme4, lmerTest, glmmTMB, betareg and MuMIn.
 * **`vbt setup`** ran end to end on the real Open Targets 25.09 release (the 31 downloaded tables, 1.76 GB), on the
   host and inside the image (`docker run --memory 6g`): probe, configure, size, index, check, calibrate and the
-  offline part of smoke; a second run skipped every data step (18 s on the host, 24 s in the image). `acquire`
-  reported `vbt data acquire` unavailable in this build (the acquisition engine is a separate change).
+  offline part of smoke; the next run re-ran `size` (42 s), because `configure` had raised the recorded server limit
+  from 6,569 to 8,212 MB, and a run after that skipped every data step (18 s on the host, 24 s in the image). In that
+  build (D1's branch, before the acquisition engine was merged) `acquire` reported `vbt data acquire` unavailable;
+  the engine is part of the harness now (next item).
 
   | Step (host run) | Time | Seconds per GB | Result |
   |---|---:|---:|---|
@@ -417,7 +431,8 @@ machine, so times are approximate):
   containers from starting (removed). `vbt doctor --analysis` reported every R package after the first as missing
   (its check read one `cat` of a vector; it now prints one line per package); the smoke step still loads each
   reported package with its own `Rscript` call and fails only on one R cannot load (all five load in the image).
-* **With `vbt data acquire`.** In a scratch merge with the acquisition change (a separate branch), `vbt setup --plan`
+* **With `vbt data acquire`.** In a scratch merge with the acquisition change (then a separate branch, merged since),
+  `vbt setup --plan`
   took its acquire row from `vbt data acquire --for-tools <85 tools> --plan --json`: 117.68 GB to fetch for the
   default roster (Open Targets 25.09: 28.82 GB in 2,916 files; Tahoe-100M: 88.86 GB in 1,030 files). A run limited
   to two small tables (`setup.steps.acquire` in a profile) downloaded 229.58 KB from the EBI FTP, verified against
