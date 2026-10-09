@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..api import LaunchSpec
+from ..memory import sizing
 
 __all__ = ["REAPER", "EXIT_MARKER", "CHILD_ENV", "DATA_SERVER", "LIMIT_KINDS", "build_launch_spec", "limit_kind",
            "server_limit_mb", "host_memory_mb", "status_path"]
@@ -35,19 +36,15 @@ CHILD_ENV: dict[str, str] = {
     "PRELOAD_MCP_DATA": "0",
 }
 
-_AUTO_HOST_SHARE = 0.8
+#: A server limit of ``auto`` on a host whose memory cannot be read (the shipped number before ``auto``).
+UNKNOWN_HOST_SERVER_MB = 12000
 
 
 def host_memory_mb() -> int | None:
-    """``MemTotal`` of this host in MB (Linux), else None."""
-    try:
-        with open("/proc/meminfo", encoding="ascii") as f:
-            for line in f:
-                if line.startswith("MemTotal:"):
-                    return int(line.split()[1]) // 1024
-    except (OSError, ValueError, IndexError):
-        return None
-    return None
+    """The memory this process tree may use, in MB: the smaller of ``MemTotal`` and its memory cgroup limit
+    (a container's ``--memory``), or ``$VBT_HOST_MEMORY_MB``; None when unknown (:mod:`..memory.sizing`)."""
+    plan = sizing.plan_mb()
+    return int(plan) if plan else None
 
 
 def _as_mb(value: Any) -> int | None:
@@ -59,6 +56,12 @@ def _as_mb(value: Any) -> int | None:
     if text.isdigit():
         return int(text)
     return None
+
+
+def _memory_raw(settings: Any) -> dict[str, Any]:
+    raw = getattr(settings, "raw", None) or {}
+    mem = raw.get("memory") if isinstance(raw, dict) else None
+    return dict(mem) if isinstance(mem, dict) else {}
 
 
 LIMIT_KINDS = ("rlimit_data", "cgroup", "watchdog", "rss", "none")
@@ -80,26 +83,31 @@ def server_limit_mb(cfg: Any, settings: Any = None) -> int:
     """The memory limit (MB) a server runs under; 0 means no limit.
 
     Per server ``mem_limit_mb`` wins; the data child defaults to ``data.service.mem_limit_mb``
-    and every other server to ``data.memory.default_server_mb``. ``auto`` (or a default that
-    is not a number) is ``0.8 x`` host memory at launch time; the gateway may set a tighter
-    per-server value from estimates (§14.2). ``limit_kind: none`` disables the limit.
+    and every other server to ``data.memory.default_server_mb``. ``auto`` scales with the host
+    (:mod:`..memory.sizing`): a server gets ``0.8 x`` the host budget (at least 2,048 MB), the data
+    child 5% of the memory it may plan with (3,000-32,768 MB). A number stays as given.
+    ``limit_kind: none`` disables the limit.
     """
     memory = getattr(settings, "memory", None)
     if limit_kind(cfg, settings) == "none":
         return 0
     name = cfg if isinstance(cfg, str) else getattr(cfg, "name", "")
-    explicit = None if isinstance(cfg, str) else _as_mb(getattr(cfg, "mem_limit_mb", None))
+    own = None if isinstance(cfg, str) else getattr(cfg, "mem_limit_mb", None)
+    explicit = _as_mb(own)
     if explicit is not None:
         return max(0, explicit)
-    if name == DATA_SERVER and settings is not None:
-        value = _as_mb(getattr(getattr(settings, "service", None), "mem_limit_mb", None))
-        if value is not None:
-            return max(0, value)
-    value = _as_mb(getattr(memory, "default_server_mb", None)) if memory is not None else 12000
-    if value is not None:
-        return max(0, value)
-    host = host_memory_mb()
-    return int(host * _AUTO_HOST_SHARE) if host else 0
+    raw = _memory_raw(settings)
+    plan = sizing.plan_mb(raw)
+    if name == DATA_SERVER and not sizing.is_auto(own):
+        value = getattr(getattr(settings, "service", None), "mem_limit_mb", None) if settings is not None else None
+        if _as_mb(value) is not None:
+            return max(0, _as_mb(value) or 0)
+        if settings is None or sizing.is_auto(value):
+            return sizing.data_child_for(plan) if plan else sizing.CHILD_FLOOR_MB
+    value = getattr(memory, "default_server_mb", None) if memory is not None else None
+    if not sizing.is_auto(own) and _as_mb(value) is not None:
+        return max(0, _as_mb(value) or 0)
+    return sizing.server_limit_for(plan, raw) if plan else UNKNOWN_HOST_SERVER_MB
 
 
 def status_path(log_dir: str | Path, server: str) -> Path:

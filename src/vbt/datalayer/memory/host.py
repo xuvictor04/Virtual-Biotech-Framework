@@ -4,9 +4,10 @@ Per-server limits stop one server from exhausting the host, but the servers toge
 target, drug and pathway servers each cache the ``target`` table (about 3.5 GB EST each). The host
 budget caps the **sum** of resident memory over every server the bridge runs:
 
-* ``data.memory.host_budget_mb``: a number of MB, ``auto`` (``0.75 x MemTotal - harness reserve``;
-  the reserve is ``data.memory.harness_reserve_mb``, default 2,048 MB, for the orchestrator, the
-  model client and the data child), or ``off``/``0`` (no host budget);
+* ``data.memory.host_budget_mb``: a number of MB, ``auto`` (``0.75 x plan - reserve``, where plan is the memory
+  this process tree may use, the smaller of ``MemTotal`` and its memory cgroup limit, or ``data.memory.host_mb``,
+  and the reserve is the larger of ``data.memory.harness_reserve_mb`` (default 2,048 MB, for the orchestrator, the
+  model client and the data child) and 5% of plan: :mod:`.sizing`), or ``off``/``0`` (no host budget);
 * before an upstream call loads tables, :meth:`HostBudget.reserve` checks ``sum(resident) + need``;
   over budget, it recycles the **least recently used idle** server (no call in flight, not the one
   asking) and checks again, until the need fits or no idle server is left;
@@ -25,12 +26,13 @@ import time
 from typing import Any, Awaitable, Callable, Iterable, Mapping
 
 from ..errors import ErrorKind, GatewayError, too_large_payload
+from . import sizing
 from .ledger import ResidencyLedger
 
 __all__ = ["HOST_SHARE", "DEFAULT_RESERVE_MB", "host_total_mb", "host_budget_mb", "HostBudget"]
 
-HOST_SHARE = 0.75
-DEFAULT_RESERVE_MB = 2048.0
+HOST_SHARE = sizing.HOST_SHARE
+DEFAULT_RESERVE_MB = sizing.DEFAULT_RESERVE_MB
 
 
 def host_total_mb() -> float | None:
@@ -53,7 +55,8 @@ def _raw_memory(settings: Any) -> Mapping[str, Any]:
 
 def host_budget_mb(settings: Any = None, *, total_mb: float | None = None) -> float | None:
     """The host budget in MB, or None when it is off (``off``, ``0``, or ``auto`` on a host whose memory
-    is unknown)."""
+    is unknown). ``auto`` plans from ``total_mb`` when given, else ``data.memory.host_mb``, else the memory this
+    process tree may use (:func:`.sizing.plan_mb`)."""
     mem = getattr(settings, "memory", None)
     value = getattr(mem, "host_budget_mb", "auto") if mem is not None else "auto"
     if isinstance(value, str):
@@ -67,15 +70,11 @@ def host_budget_mb(settings: Any = None, *, total_mb: float | None = None) -> fl
                 return None
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value) if value > 0 else None
-    total = total_mb if total_mb is not None else host_total_mb()
-    if not total:
+    raw = _raw_memory(settings)
+    plan = float(total_mb) if total_mb else sizing.plan_mb(raw)
+    if not plan:
         return None
-    reserve = _raw_memory(settings).get("harness_reserve_mb", DEFAULT_RESERVE_MB)
-    try:
-        reserve = float(reserve)
-    except (TypeError, ValueError):
-        reserve = DEFAULT_RESERVE_MB
-    return max(0.0, HOST_SHARE * float(total) - reserve)
+    return sizing.host_budget_for(plan, raw)
 
 
 class HostBudget:
@@ -94,12 +93,21 @@ class HostBudget:
         self.in_flight: dict[str, int] = {}
         self.last_used: dict[str, float] = {}
         self.evictions: list[tuple[str, float]] = []
+        self.origin: str | None = None          # how the budget was set, for refusals
 
     @classmethod
     def from_settings(cls, settings: Any, ledger: ResidencyLedger, **kw: Any) -> "HostBudget":
         mem = getattr(settings, "memory", None)
         kw.setdefault("recycle_wait_s", float(getattr(mem, "recycle_wait_s", 30) or 30))
-        return cls(host_budget_mb(settings), ledger, **kw)
+        host = cls(host_budget_mb(settings), ledger, **kw)
+        configured = getattr(mem, "host_budget_mb", "auto") if mem is not None else "auto"
+        plan = sizing.plan_mb(_raw_memory(settings))
+        if sizing.is_auto(configured) and plan:
+            host.origin = (f"data.memory.host_budget_mb is auto: 0.75 x this host's {plan:,.0f} MB less the harness "
+                           "reserve")
+        elif host.budget_mb is not None:
+            host.origin = "data.memory.host_budget_mb is configured"
+        return host
 
     @property
     def enabled(self) -> bool:
@@ -171,10 +179,11 @@ class HostBudget:
                                             learned=False)
                 payload.update({"host_resident_mb": round(total, 1), "busy_servers": busy,
                                 "recycled": list(evicted)})
+                origin = f"; {self.origin}" if self.origin else ""
                 raise GatewayError(ErrorKind.too_large,
-                                   f"the host memory budget ({self.budget_mb:,.0f} MB) is in use: servers hold "
-                                   f"about {total:,.0f} MB and {server} needs about {need_mb:,.0f} MB more; no idle "
-                                   f"server is left to recycle", tool=tool, payload=payload, subkind="host_busy",
+                                   f"the host memory budget ({self.budget_mb:,.0f} MB{origin}) is in use: servers "
+                                   f"hold about {total:,.0f} MB and {server} needs about {need_mb:,.0f} MB more; no "
+                                   f"idle server is left to recycle", tool=tool, payload=payload, subkind="host_busy",
                                    retryable="later")
             victim = victims[0]
             ok = await self._recycle(victim)

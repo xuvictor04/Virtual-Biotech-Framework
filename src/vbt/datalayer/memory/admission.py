@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Iterable, Mapping
 
 from ..errors import ErrorKind, GatewayError, too_large_payload
-from ..launch import server_limit_mb
+from . import sizing
 from .estimate import MB, MemoryEstimator
 from .host import HostBudget
 from .ledger import ResidencyLedger
@@ -183,8 +183,31 @@ class AdmissionController:
         if value is None:
             value = self.ledger.limit_mb(server)
         if value is None:
+            from ..launch import server_limit_mb     # launch imports memory.sizing: imported on use
+
             value = server_limit_mb(server, self.settings)
         return max(0.0, float(value))
+
+    def limit_origin(self, server: str, limit_mb: float, need_mb: float) -> tuple[str, dict[str, Any]]:
+        """Where ``limit_mb`` comes from on this host, in words, and the payload keys that say it: ``host_mb`` (the
+        memory the limits are planned from), ``limit_source`` (``auto`` when the limit is the host-scaled one, else
+        ``configured``) and, for ``auto``, ``host_mb_needed`` (the host whose auto limit admits ``need_mb``)."""
+        raw = getattr(self.settings, "raw", None) or {}
+        memory = raw.get("memory") if isinstance(raw, Mapping) else None
+        memory = memory if isinstance(memory, Mapping) else {}
+        plan = sizing.plan_mb(memory)
+        auto = sizing.server_limit_for(plan, memory) if plan else None
+        extra: dict[str, Any] = {"host_mb": round(plan) if plan else None}
+        if auto is not None and abs(float(limit_mb) - auto) < 1.0:
+            needed = sizing.plan_for_server(need_mb, memory)
+            extra.update({"limit_source": "auto", "host_mb_needed": round(needed)})
+            return (f"data.memory.default_server_mb is auto: 0.8 x the host budget of this {plan:,.0f} MB host; a "
+                    f"host with about {needed / 1024:,.0f} GB admits it, or set the server's mem_limit_mb in "
+                    "configs/mcp_servers.yaml"), extra
+        extra["limit_source"] = "configured"
+        host = f" on this {plan:,.0f} MB host" if plan else ""
+        return (f"the limit is configured{host}: data.memory.default_server_mb or the server's mem_limit_mb in "
+                "configs/mcp_servers.yaml"), extra
 
     def cold_lock(self, server: str) -> asyncio.Lock:
         lock = self._cold_locks.get(server)
@@ -256,11 +279,12 @@ class AdmissionController:
         baseline = self.ledger.baseline_mb(server)
         everything = sum(peaks.values()) + transient
         if limit > 0 and everything * safety > limit - baseline:
+            where, sizing_extra = self.limit_origin(server, limit, everything * safety + baseline)
             raise self._too_large(
                 "over_limit", f"{server}: this call needs about {everything * safety:,.0f} MB "
                 f"(x{safety:g} safety) but the server's limit is {limit:,.0f} MB with a {baseline:,.0f} MB baseline; "
-                "it cannot run on this host", tool=tool, need_mb=everything * safety, limit_mb=limit,
-                alternative=alternative, extra={"permanent": True})
+                f"it cannot run on this host ({where})", tool=tool, need_mb=everything * safety, limit_mb=limit,
+                alternative=alternative, extra={"permanent": True, **sizing_extra})
 
         recycled = False
         while True:

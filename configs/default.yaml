@@ -211,6 +211,9 @@ data:
     when_service_down: strict     # strict: guarded tools not_ready; lenient: generic guard
     unbound_empty: empty_unverified   # empty_unverified | error
   service:                        # the `data` child (service/server.py), launched through the reaper
+    # The data child's limit and the witness/readiness budgets below are the floors of their host-scaled values
+    # (vbt.datalayer.memory.sizing: `auto` = 5% of the host's memory within 3,000-32,768 MB, the budgets x that /
+    # 3,000). The launcher already resolves `auto` here; the typed settings take it once DataSettings resolves it.
     mem_limit_mb: 3000
     max_concurrency: 4
     timeout_s: 600
@@ -233,8 +236,18 @@ data:
     topk: true                    # false: counts only (no top-k comparison)
   derive: {enum_max: 64, description_max_chars: 1200}
   memory:
-    default_server_mb: 12000      # 'auto' derives from estimates
-    limit_kind: rlimit_data       # rlimit_data | cgroup | watchdog | none
+    # Every `auto` below scales with the memory this harness may plan with (vbt.datalayer.memory.sizing; `vbt
+    # validate` prints the values on this host). host_mb: auto = the smaller of MemTotal and the memory cgroup limit
+    # (a container's --memory); set a number on a host the harness shares (the model server's RAM on a GPU host).
+    host_mb: auto
+    # One upstream server's limit: auto = 0.8 x the host budget, at least 2,048 MB (7.8 GB on a 16 GB host; 287 GB
+    # on 512 GB, where the servers load every Open Targets table they read whole, as upstream does). A number, or a
+    # server's own mem_limit_mb in configs/mcp_servers.yaml, wins.
+    default_server_mb: auto
+    # rss: resident memory only, in a memory cgroup when one can be created, else the RSS watchdog; no RLIMIT_DATA,
+    # which TileDB's Census reads (std::bad_alloc) and Arrow's thread stacks fail under. rlimit_data | cgroup |
+    # watchdog | rss | none; a server may set its own (configs/mcp_servers.yaml).
+    limit_kind: rss
     estimate_safety: 1.3
     # Fitted to the peak RSS of the upstream loader's whole-table pandas loads of the real Open Targets 25.09
     # tables (26 measured, 6 MB to 3.0 GB; estimate/measured 0.70-1.46, median 1.00, on the 18 over 50 MB).
@@ -247,7 +260,8 @@ data:
     max_recycles_per_10min: 4
     max_oom_kills: 3
     max_result_bytes: 2000000
-    host_budget_mb: auto
+    host_budget_mb: auto          # the sum over servers: auto = 0.75 x host_mb - reserve; a number; off
+    harness_reserve_mb: 2048      # host_budget_mb auto keeps max(this, 5% of host_mb) for the harness
     relay_max_message_mb: 0       # > 0: the reaper relays server stdout and replaces larger messages with an error
   readiness:
     per_turn_depth: shallow       # stat-only signatures before every turn
