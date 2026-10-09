@@ -34,8 +34,8 @@ __all__ = ["Case", "Plan", "table_source", "plan_cases", "oracle_queries", "comp
            "rows_of", "REFUSALS"]
 
 #: Typed refusals that are correct answers on a host or release that cannot serve the call.
-REFUSALS = frozenset({"too_large", "not_ready", "unsupported_filter", "unsupported_combination", "quarantined",
-                      "service_unavailable"})
+REFUSALS = frozenset({"too_large", "not_ready", "unsupported_filter", "unsupported_combination", "incomplete_key",
+                      "quarantined", "service_unavailable"})
 _SUPPORTED_LAYOUTS = {"sharded_dir", "single_file", "hive"}
 _SUPPORTED_FORMATS = {"parquet", "csv", "tsv"}
 _INVALID = "__vbt_validate_invalid__"
@@ -223,7 +223,9 @@ def plan_cases(catalog: Any, registry: Any, server: str, schemas: Mapping[str, M
         column: str | None = None
         for name, a in c.identifier_args.items():
             cols = [col for tbl, col in c.arg_columns(name) if tbl == table]
-            if name in props and cols and _top_level(cols[0]) and a.op in (None, "eq", "in") and not a.gateway_only:
+            # a scalar identifier only: a list argument (op in) is a set whose answer may be an aggregate of it
+            # (common interactors, enrichment), not the rows that hold one member
+            if name in props and cols and _top_level(cols[0]) and a.op in (None, "eq") and not a.gateway_only:
                 id_arg, column = name, cols[0]
                 break
         others = required - ({id_arg} if id_arg else set())
@@ -244,8 +246,10 @@ def plan_cases(catalog: Any, registry: Any, server: str, schemas: Mapping[str, M
             found.append(Case("CT-2", args=dict(fill), expect="not_found", queries=sample, oracle={"plugin": plugin},
                               note="a well-formed identifier no row holds", **base))
             order = list(b.result.order or [])
+            # the global top k: an order within groups (``within``) ranks each group on its own, so the oracle's single
+            # ranking does not apply
             if limit and order and _top_level(order[0].column) and order[0].direction in ("asc", "desc") \
-                    and not b.result.rows_of:
+                    and not b.result.rows_of and not getattr(order[0], "within", None):
                 first = order[0]
                 found.append(Case("CT-4", args={**fill, limit: 3}, expect="topk", queries=sample, **base,
                                   order={"column": first.column, "field": _field_for(b, first.column),
@@ -257,7 +261,8 @@ def plan_cases(catalog: Any, registry: Any, server: str, schemas: Mapping[str, M
                 if cols and _top_level(cols[0]):
                     # the threshold alone where the identifier is optional (the oracle's median is the column's):
                     # an identifier lookup with a threshold is often a combination the binding declines
-                    ct6 = {name: None} if id_arg not in required else {**fill, name: None}
+                    alone = id_arg not in required and not any(id_arg in group for group in b.require_any or [])
+                    ct6 = {name: None} if alone else {**fill, name: None}
                     found.append(Case("CT-6", args=ct6, expect="threshold", queries=sample, **base,
                                       threshold={"column": cols[0], "field": _field_for(b, cols[0]), "op": a.op,
                                                  "arg": name}))
@@ -426,8 +431,14 @@ def _count_rows(case: Case, out: Any, binding_rows: Any) -> int | None:
 
 
 def judge(case: Case, out: Any, binding: Any) -> tuple[str, str]:
-    """``(verdict, detail)`` of the enforce answer: correct | refused | wrong | skipped."""
+    """``(verdict, detail)`` of the enforce answer: correct | refused | wrong | killed (the gateway admitted a call
+    whose load killed the server at its memory limit) | unavailable (the server is down after earlier kills)."""
     kind = out.kind if out.is_error else None
+    text = out.text.lower() if out.is_error and isinstance(out.text, str) else ""
+    if out.is_error and "is unavailable" in text:
+        return "unavailable", _short(out)
+    if out.is_error and (kind == "oom" or "killed for memory" in text):
+        return "killed", f"{kind}: {_short(out)}"
     if out.is_error and kind in REFUSALS:
         return "refused", f"{kind}: {_short(out)}"
     if case.expect == "not_found":

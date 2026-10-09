@@ -88,8 +88,9 @@ def run_live(ctx: Any) -> StepResult:
     t0 = time.monotonic()
     results = asyncio.run(smoke_mcp(ctx.config, servers=servers, mode="gateway")) if servers else []
     for r in results:
-        rows.append({"what": "server", "target": r.name, "ok": r.ok, "detail": (r.detail or "")[:300], "ms": None})
-    failed = [r for r in rows if r["ok"] is False and r["what"] == "server"]
+        rows.append({"what": "server", "target": r.label, "ok": r.ok, "detail": (r.detail or r.hint or "")[:300],
+                     "ms": None, "required": r.required})
+    failed = [r for r in rows if r["ok"] is False and r["what"] == "server" and r.get("required", True)]
     return StepResult("live", TITLE, FAIL if failed else PASS,
                       f"{reachable} of {sum(len(u) for u in endpoints.values())} endpoint(s) reachable; "
                       f"{len(results) - len(failed)} of {len(results)} server check(s) passed on "

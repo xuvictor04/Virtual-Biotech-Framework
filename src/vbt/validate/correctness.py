@@ -107,6 +107,7 @@ async def run_correctness(ctx: Any) -> StepResult:
                     guard = "not called: the enforce call was refused too_large on this host"
                 else:
                     guard = await calls.off_guard(server, whole, scanned)
+                off_ms = None
                 if guard:
                     off_text = guard
                 else:
@@ -115,8 +116,10 @@ async def run_correctness(ctx: Any) -> StepResult:
                     ctx.calls.append({"server": server, "tool": c.tool, "case": key, "mode": "off",
                                       "seconds": off.seconds, "first": first})
                     off_text = judge_off(c, off, binding)
+                    off_ms = round(1000 * off.seconds, 1)
                 rows.append({"test": c.ct, "tool": f"{server}.{c.tool}", "arguments": c.args,
-                             "oracle": _oracle_text(c), "off": off_text, "enforce": verdict, "detail": detail})
+                             "oracle": _oracle_text(c), "off": off_text, "enforce": verdict, "detail": detail,
+                             "enforce ms": round(1000 * enf.seconds, 1), "off ms": off_ms})
             ctx.verbs.extend(calls.verb_times)
             status = calls.server_status()
             servers_out[server] = {"tables": tables, "cases": len(live), "start_s": round(calls.started_s, 1),
@@ -132,11 +135,15 @@ async def run_correctness(ctx: Any) -> StepResult:
                                                        default=str, indent=1), encoding="utf-8")
         release_memory()
     wrong = verdicts.get("wrong", 0)
+    killed = verdicts.get("killed", 0)
     judged = sum(v for k, v in verdicts.items() if k != "skipped")
     summary = (f"{judged} case(s) on {len([s for s in servers_out if servers_out[s].get('cases')])} server(s): "
-               f"{verdicts.get('correct', 0)} correct, {verdicts.get('refused', 0)} typed refusals, {wrong} wrong; "
-               f"{verdicts.get('skipped', 0)} not backed by the oracle")
-    status = FAIL if wrong else (PASS if judged else WARN)
+               f"{verdicts.get('correct', 0)} correct, {verdicts.get('refused', 0)} typed refusals, {wrong} wrong"
+               + (f", {killed} admitted but killed the server at its memory limit" if killed else "")
+               + (f", {verdicts['unavailable']} not answered (the server was down)" if verdicts.get("unavailable")
+                  else "")
+               + f"; {verdicts.get('skipped', 0)} not backed by the oracle")
+    status = FAIL if wrong or killed else (PASS if judged else WARN)
     return StepResult("correctness", TITLE, status, summary, rows=rows, peak_mb=oracle_peak or None,
                       details={"by_test": {k: dict(v) for k, v in sorted(by_ct.items())}, "servers": servers_out,
                                "tools_without_cases": skipped_tools})
